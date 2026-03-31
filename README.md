@@ -44,7 +44,7 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 ### Run from Source
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/DJ-CrateBuilder.git
+git clone https://github.com/Sintax/DJ-CrateBuilder.git
 cd DJ-CrateBuilder
 pip install yt-dlp
 python DJ-CrateBuilder_v1.2.py
