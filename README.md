@@ -1,6 +1,3 @@
-# DJ-CrateBuilder
-DJ-CrateBuilder is a desktop application, using Python built entirely with Claude.ai, that batch-downloads audio from YouTube and SoundCloud channels, playlists, or individual videos and converts them to MP3 files. It is like a digital version of a DJ's record crate. 
-
 # DJ-CrateBuilder v1.2
 
 A desktop application for batch-downloading audio from YouTube and SoundCloud as MP3 files, organized by platform, genre, and channel — like a digital record crate for DJs and music collectors.
