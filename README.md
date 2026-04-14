@@ -52,7 +52,7 @@ python DJ-CrateBuilder_v1.2.py
 
 ### Windows Installer
 
-Download the latest installer from the [Releases](https://github.com/YOUR_USERNAME/DJ-CrateBuilder/releases) page. The installer bundles Python, yt-dlp, and FFmpeg — no additional setup required.
+Download the latest installer from the [Releases](https://github.com/Sintax/DJ-CrateBuilder/releases) page. The installer bundles Python, yt-dlp, and FFmpeg — no additional setup required.
 
 ### Linux
 
