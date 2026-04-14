@@ -824,7 +824,9 @@ class MP3DownloaderApp(tk.Tk):
         """Initialise (or re-initialise) the file logger.
         Called on startup and whenever the base directory changes."""
         os.makedirs(self._base_dir, exist_ok=True)
-        self._log_path = os.path.join(self._base_dir, "DJ-CrateBuilder.log")
+        # Place log in the program's install/script directory
+        app_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        self._log_path = os.path.join(app_dir, "DJ-CrateBuilder.log")
 
         logger = logging.getLogger("CrateBuilder")
         # Clear any existing handlers so re-init doesn't duplicate output
@@ -3323,9 +3325,9 @@ class MP3DownloaderApp(tk.Tk):
             if is_collection:
                 entries = list(info.get("entries") or [])
                 collection_name = info.get("title") or info.get("uploader") or ""
-                # Rename "- Videos" suffix for channel folders
+                # Strip "- Videos" suffix so the folder is just the channel name
                 if collection_name.endswith(" - Videos"):
-                    collection_name = collection_name[:-9] + " -(Complete Catalog)-"
+                    collection_name = collection_name[:-9].strip()
             else:
                 entries = [info]
                 collection_name = ""

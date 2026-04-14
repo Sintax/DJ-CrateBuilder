@@ -2,7 +2,7 @@
 
 A desktop application for batch-downloading audio from YouTube and SoundCloud as MP3 files, organized by platform, genre, and channel — like a digital record crate for DJs and music collectors.
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue) ![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey) ![License](https://img.shields.io/badge/License-Personal_Use-orange)
+![Python](https://img.shields.io/badge/Python-3.10+-blue) ![Platform](https://img.shields.io/badge/Platform-Windows_|_Linux-lightgrey) ![License](https://img.shields.io/badge/License-Personal_Use-orange)
 
 ---
 
@@ -44,7 +44,7 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 ### Run from Source
 
 ```bash
-git clone https://github.com/Sintax/DJ-CrateBuilder.git
+git clone https://github.com/YOUR_USERNAME/DJ-CrateBuilder.git
 cd DJ-CrateBuilder
 pip install yt-dlp
 python DJ-CrateBuilder_v1.2.py
@@ -52,7 +52,25 @@ python DJ-CrateBuilder_v1.2.py
 
 ### Windows Installer
 
-Download the latest installer from the [Releases](https://github.com/Sintax/DJ-CrateBuilder/releases) page. The installer bundles Python, yt-dlp, and FFmpeg — no additional setup required.
+Download the latest installer from the [Releases](https://github.com/YOUR_USERNAME/DJ-CrateBuilder/releases) page. The installer bundles Python, yt-dlp, and FFmpeg — no additional setup required.
+
+### Linux
+
+Prerequisites: Python 3.10+, tkinter, FFmpeg, yt-dlp.
+
+```bash
+# Install dependencies (Ubuntu/Debian)
+sudo apt install python3 python3-tk ffmpeg
+pip install yt-dlp
+
+# Clone and install
+git clone https://github.com/YOUR_USERNAME/DJ-CrateBuilder.git
+cd DJ-CrateBuilder
+chmod +x install-linux.sh
+./install-linux.sh
+```
+
+After installation, launch with `dj-cratebuilder` from terminal or find it in your app launcher. To uninstall: `./uninstall-linux.sh`
 
 ---
 

@@ -29,7 +29,7 @@ sudo pacman -S ffmpeg
 ## Run the Installer
 
 ```bash
-wine DJ-CrateBuilder_v1.2_Setup.exe
+wine DJ-CrateBuilder_v1.2_Setup_Linux.exe
 ```
 
 Follow the installer prompts. Default install location:
