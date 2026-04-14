@@ -45,15 +45,20 @@ Test a short download to confirm yt-dlp + FFmpeg work.
 ## STEP 4 — CREATE INSTALLER
 
 1. Open Inno Setup Compiler
-2. Open DJ-CrateBuilder_Installer.iss
+2. Open the appropriate .iss file:
+   - Windows:  DJ-CrateBuilder_Installer_Windows.iss  (installs to Program Files, requires admin)
+   - Linux/Wine:  DJ-CrateBuilder_Installer_Linux.iss  (installs to user folder, no admin)
 3. Generate a GUID at https://www.guidgenerator.com/ and paste it into the AppId line
 4. Update the Source path under [Files] to your dist\DJ-CrateBuilder\ folder
 5. Ctrl+F9 to compile
 
-Installer output: Output\DJ-CrateBuilder_v1.2_Setup.exe
+Installer output:
+  Windows:  Output\DJ-CrateBuilder_v1.2_Setup_Windows.exe
+  Linux:    Output\DJ-CrateBuilder_v1.2_Setup_Linux.exe
 
 
 ## FILE LOCATIONS (for reference)
 
 Config: %USERPROFILE%\.dj_cratebuilder_config.json
-Log:    %USERPROFILE%\Music\DJ-CrateBuilder\DJ-CrateBuilder.log
+Log:    (install directory)\DJ-CrateBuilder.log
+Downloads: %USERPROFILE%\Music\DJ-CrateBuilder\
