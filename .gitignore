@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+
+# PyInstaller
+dist/
+build/
+*.spec
+
+# Inno Setup output
+Output/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# App-generated
+DJ-CrateBuilder.log
+.dj_cratebuilder_config.json
+.yt_dj_cratebuilder_config.json
+
+# Backups & archives
+_BACKUP/
+*.zip
+
+# Cookies (sensitive)
+_cookies/
+cookies.txt
+cookies.json
+
+# FFmpeg binaries (too large for git)
+ffmpeg.exe
+ffprobe.exe
+ffmpeg_essentials.zip
