@@ -1,6 +1,6 @@
 # DJ-CrateBuilder v1.2
 
-A desktop application for batch-downloading audio from YouTube and SoundCloud as MP3 files, organized by platform, genre, and channel — like a digital record crate for DJs and music collectors.
+A desktop application for batch-downloading audio from YouTube and SoundCloud as MP3 files, organized by platform, genre, and channel — like a digital record crate for DJs and music collectors. 
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue) ![Platform](https://img.shields.io/badge/Platform-Windows_|_Linux-lightgrey) ![License](https://img.shields.io/badge/License-Personal_Use-orange)
 
@@ -26,7 +26,10 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 
 ## Screenshots
 
-![Alt Text](Assests/DJ-CrateBuilder_Screenshot_1.png)  ![Alt Text](Assests/DJ-CrateBuilder_Screenshot_2.png)
+<p align="left">
+  <img src="Assests/DJ-CrateBuilder_Screenshot_1.png" width="400">
+  <img src="Assests/DJ-CrateBuilder_Screenshot_2.png" width="400">
+</p>
 
 ---
 
@@ -44,7 +47,7 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 ### Run from Source
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/DJ-CrateBuilder.git
+git clone https://github.com/Sintax/DJ-CrateBuilder.git
 cd DJ-CrateBuilder
 pip install yt-dlp
 python DJ-CrateBuilder_v1.2.py
@@ -64,7 +67,7 @@ sudo apt install python3 python3-tk ffmpeg
 pip install yt-dlp
 
 # Clone and install
-git clone https://github.com/YOUR_USERNAME/DJ-CrateBuilder.git
+git clone https://github.com/SintaxE/DJ-CrateBuilder.git
 cd DJ-CrateBuilder
 chmod +x install-linux.sh
 ./install-linux.sh
