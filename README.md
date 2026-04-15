@@ -26,7 +26,7 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 
 ## Screenshots
 
-(https://github.com/Sintax/DJ-CrateBuilder/blob/main/Assests/DJ-CrateBuilder_Screenshot_1.png) https://github.com/Sintax/DJ-CrateBuilder/blob/main/Assests/DJ-CrateBuilder_Screenshot_2.png
+![Alt Text](Assests/DJ-CrateBuilder_Screenshot_1.png)  ![Alt Text](Assests/DJ-CrateBuilder_Screenshot_2.png)
 
 ---
 
