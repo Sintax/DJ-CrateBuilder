@@ -67,7 +67,7 @@ sudo apt install python3 python3-tk ffmpeg
 pip install yt-dlp
 
 # Clone and install
-git clone https://github.com/SintaxE/DJ-CrateBuilder.git
+git clone https://github.com/Sintax/DJ-CrateBuilder.git
 cd DJ-CrateBuilder
 chmod +x install-linux.sh
 ./install-linux.sh
