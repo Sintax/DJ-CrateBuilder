@@ -1,5 +1,4 @@
-# DJ-CrateBuilder v1.2
-
+# <img src="assets/DJ-CrateBuilder_LOGO_1.png" width="85"> DJ-CrateBuilder v1.2 
 A desktop application for batch-downloading audio from YouTube and SoundCloud as MP3 files, organized by platform, genre, and channel — like a digital record crate for DJs and music collectors. 
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue) ![Platform](https://img.shields.io/badge/Platform-Windows_|_Linux-lightgrey) ![License](https://img.shields.io/badge/License-Personal_Use-orange)
@@ -27,8 +26,8 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 ## Screenshots
 
 <p align="left">
-  <img src="Assests/DJ-CrateBuilder_Screenshot_1.png" width="400">
-  <img src="Assests/DJ-CrateBuilder_Screenshot_2.png" width="400">
+  <img src="assets/DJ-CrateBuilder_Screenshot_1.png" width="400">
+  <img src="assets/DJ-CrateBuilder_Screenshot_2.png" width="400">
 </p>
 
 ---
