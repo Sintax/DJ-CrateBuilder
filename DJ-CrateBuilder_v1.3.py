@@ -3971,7 +3971,10 @@ class MP3DownloaderApp(tk.Tk):
                     return hook
 
                 ydl_opts = {
-                    "format":   "bestaudio/best",
+                    # Prefer highest-bitrate audio-only stream.
+                    # abr>=160 targets Opus 160k (itag 251) or better;
+                    # falls back to plain bestaudio, then muxed best.
+                    "format":   "bestaudio[abr>=160]/bestaudio/best",
                     "outtmpl":  os.path.join(save_dir, "%(title)s.%(ext)s"),
                     "postprocessors": [{
                         "key":              "FFmpegExtractAudio",
@@ -4014,8 +4017,53 @@ class MP3DownloaderApp(tk.Tk):
                 self._dbg_ydl_opts("download", ydl_opts)
 
                 try:
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        ydl.download([item_url])
+                    # Transient-network retry loop. Handles ConnectionReset
+                    # (Winsock 10054), timeouts, and "connection broken"
+                    # errors — common with VPNs and rate-limiting. Up to 3
+                    # attempts with exponential backoff (2s, 4s). Permanent
+                    # errors (age-gate, unavailable, etc.) fall through on
+                    # the first raise.
+                    import time as _t
+                    _attempt = 0
+                    _max_attempts = 3
+                    while True:
+                        _attempt += 1
+                        try:
+                            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                                ydl.download([item_url])
+                            break
+                        except Exception as _net_exc:
+                            _ne = str(_net_exc).lower()
+                            _transient = (
+                                "10054" in _ne
+                                or "connection reset" in _ne
+                                or "connection broken" in _ne
+                                or "connection aborted" in _ne
+                                or "connectionreseterror" in _ne
+                                or "timed out" in _ne
+                                or "read timeout" in _ne
+                                or "temporary failure" in _ne
+                                or "remote end closed" in _ne
+                            )
+                            if _transient and _attempt < _max_attempts:
+                                _delay = 2 ** _attempt
+                                self._dbg.warning(
+                                    f"NET RETRY   | {item_title!r}  "
+                                    f"attempt {_attempt}/{_max_attempts-1} "
+                                    f"after transient error "
+                                    f"(sleeping {_delay}s): "
+                                    f"{str(_net_exc)[:120]}")
+                                self._logger.info(
+                                    f"NET RETRY   | "
+                                    f"Title: {item_title} | "
+                                    f"Attempt {_attempt}/{_max_attempts-1} "
+                                    f"after network error, "
+                                    f"retrying in {_delay}s")
+                                _t.sleep(_delay)
+                                if self._cancel_flag.is_set():
+                                    raise
+                                continue
+                            raise
                     done += 1
                     self._grand_dl += 1
                     src_str = (f"{int(source_abr[0])} kbps src → "
@@ -4064,7 +4112,7 @@ class MP3DownloaderApp(tk.Tk):
                             f"URL: {item_url} | "
                             f"Retrying without cookies to bypass age gate")
                         retry_opts = {
-                            "format":   "bestaudio/best",
+                            "format":   "bestaudio[abr>=160]/bestaudio/best",
                             "outtmpl":  os.path.join(save_dir,
                                             "%(title)s.%(ext)s"),
                             "postprocessors": [{
