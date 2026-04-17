@@ -1,20 +1,20 @@
 #!/bin/bash
 # ============================================================================
-# DJ-CrateBuilder v1.2 — Linux Installer
+# DJ-CrateBuilder v1.3 — Linux Installer
 # ============================================================================
 
 set -e
 
 APP_NAME="DJ-CrateBuilder"
-APP_VERSION="1.2"
+APP_VERSION="1.3"
 INSTALL_DIR="$HOME/.local/share/DJ-CrateBuilder"
 BIN_LINK="$HOME/.local/bin/dj-cratebuilder"
 DESKTOP_DIR="$HOME/.local/share/applications"
-SCRIPT_NAME="DJ-CrateBuilder_v1.2.py"
+SCRIPT_NAME="DJ-CrateBuilder_v1.3.py"
 
 echo ""
 echo "  ┌─────────────────────────────────────────┐"
-echo "  │   DJ-CrateBuilder v1.2 — Linux Setup    │"
+echo "  │   DJ-CrateBuilder v1.3 — Linux Setup    │"
 echo "  └─────────────────────────────────────────┘"
 echo ""
 

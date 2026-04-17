@@ -1,4 +1,4 @@
-# DJ-CrateBuilder v1.2 — Linux Setup (via Wine)
+# DJ-CrateBuilder v1.3 — Linux Setup (via Wine)
 
 ## Install Wine
 
@@ -29,7 +29,7 @@ sudo pacman -S ffmpeg
 ## Run the Installer
 
 ```bash
-wine DJ-CrateBuilder_v1.2_Setup_Linux.exe
+wine DJ-CrateBuilder_v1.3_Setup_Linux.exe
 ```
 
 Follow the installer prompts. Default install location:

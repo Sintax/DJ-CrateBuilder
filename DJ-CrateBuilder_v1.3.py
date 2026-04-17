@@ -13,7 +13,7 @@ import logging
 # ██  VERSION & ABOUT  ██  ── Edit these values to update the app info ──────
 # ══════════════════════════════════════════════════════════════════════════════
 APP_NAME    = "DJ-CrateBuilder"
-APP_VERSION = "1.2"
+APP_VERSION = "1.3"
 
 ABOUT_CREATED_BY  = "CorruptSintax@Gmail.com"
 ABOUT_DESCRIPTION = "Vibe-Coded entirely with Claude-AI"
@@ -190,7 +190,7 @@ class LogViewerWindow(tk.Toplevel):
         self._match_idx   = []   # list of (line, col_start, col_end) for search hits
         self._match_pos   = -1   # currently-focused match index
 
-        self.title("📋  Download Log  —  DJ CrateBuilder")
+        self.title("📋  Downloads Log  —  DJ CrateBuilder")
         self.geometry("1000x640")
         self.minsize(700, 400)
         self.configure(bg=BG)
@@ -553,6 +553,324 @@ class LogViewerWindow(tk.Toplevel):
                                  parent=self)
 
 
+class DebugLogViewerWindow(tk.Toplevel):
+    """Standalone dark-themed debug log viewer window."""
+
+    _SEARCH_HL  = "#f59e0b"
+    _SEARCH_FG  = "#000000"
+
+    # Colour tags for log levels
+    _LEVEL_COLORS = {
+        "INFO":    TEXT_MED,
+        "DEBUG":   "#6b7280",
+        "WARNING": "#f59e0b",
+        "ERROR":   "#ef4444",
+    }
+
+    def __init__(self, parent, log_path):
+        super().__init__(parent)
+        self._log_path   = log_path
+        self._parent     = parent
+        self._search_var = tk.StringVar()
+        self._match_idx  = []
+        self._match_pos  = -1
+
+        self.title("🔍  Debug Log  —  DJ CrateBuilder")
+        self.geometry("1100x680")
+        self.minsize(700, 400)
+        self.configure(bg=BG)
+        self.resizable(True, True)
+
+        self.update_idletasks()
+        px = parent.winfo_x() + (parent.winfo_width()  - 1100) // 2
+        py = parent.winfo_y() + (parent.winfo_height() - 680)  // 2
+        self.geometry(f"+{max(0,px)}+{max(0,py)}")
+
+        self._build_ui()
+        self.load_log()
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.focus_force()
+
+    def _build_ui(self):
+        # ── Toolbar ───────────────────────────────────────────────────────────
+        toolbar = tk.Frame(self, bg=SURFACE2,
+                           highlightthickness=1, highlightbackground=BORDER)
+        toolbar.pack(fill="x", side="top")
+
+        # Filter buttons
+        tk.Label(toolbar, text="Show:", font=("Segoe UI", 9),
+                 fg=TEXT_DIM, bg=SURFACE2).pack(side="left", padx=(12, 6), pady=8)
+
+        self._filter_var = tk.StringVar(value="All")
+        self._filter_btns = {}
+        for opt in ["All", "INFO", "ERROR", "DEBUG"]:
+            b = tk.Button(
+                toolbar, text=opt,
+                font=("Segoe UI", 9, "bold"),
+                relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
+                command=lambda o=opt: self._set_filter(o))
+            b.pack(side="left", padx=2, pady=6)
+            self._filter_btns[opt] = b
+        self._paint_filter_btns()
+
+        tk.Frame(toolbar, width=1, bg=BORDER).pack(side="left", fill="y",
+                                                    padx=10, pady=6)
+
+        # Word-wrap toggle
+        self._wrap_on = True
+        self._wrap_btn = tk.Button(
+            toolbar, text="Wrap: On",
+            font=("Segoe UI", 9, "bold"),
+            relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
+            bg="#14532d", fg=SUCCESS,
+            activebackground=BORDER, activeforeground=TEXT,
+            command=self._toggle_wrap)
+        self._wrap_btn.pack(side="left", padx=2, pady=6)
+
+        tk.Frame(toolbar, width=1, bg=BORDER).pack(side="left", fill="y",
+                                                    padx=10, pady=6)
+
+        # Search box
+        tk.Label(toolbar, text="Search:", font=("Segoe UI", 9),
+                 fg=TEXT_DIM, bg=SURFACE2).pack(side="left", padx=(0, 6))
+
+        search_frame = tk.Frame(toolbar, bg=SURFACE2)
+        search_frame.pack(side="left", pady=6)
+
+        self._search_entry = tk.Entry(
+            search_frame, textvariable=self._search_var,
+            font=("Segoe UI", 9), bg=SURFACE, fg=TEXT,
+            insertbackground=TEXT, relief="flat",
+            highlightthickness=1, highlightbackground=BORDER,
+            highlightcolor=YT_RED, width=26)
+        self._search_entry.pack(side="left", ipady=4, padx=(0, 4))
+        self._search_entry.bind("<Return>",   lambda e: self._find_next())
+        self._search_entry.bind("<KP_Enter>", lambda e: self._find_next())
+        self._search_var.trace_add("write", lambda *_: self._run_search())
+
+        for sym, cmd in [("▲", self._find_prev), ("▼", self._find_next),
+                         ("✕", self._clear_search)]:
+            tk.Button(search_frame, text=sym, font=("Segoe UI", 9, "bold"),
+                      relief="flat", bd=0, padx=6, pady=2, cursor="hand2",
+                      bg=SURFACE2, fg=TEXT_DIM,
+                      activebackground=BORDER, activeforeground=TEXT,
+                      command=cmd).pack(side="left", padx=1)
+
+        self._match_lbl = tk.Label(search_frame, text="", font=("Segoe UI", 8),
+                                   fg=TEXT_DIM, bg=SURFACE2, width=10)
+        self._match_lbl.pack(side="left", padx=(4, 0))
+
+        # Right cluster
+        for txt, cmd in [("↗  System Viewer", self._open_external),
+                         ("⎘  Copy All", self._copy_all),
+                         ("⟳  Refresh", self.refresh),
+                         ("⤓  End", self._jump_end),
+                         ("⤒  Top", self._jump_top)]:
+            tk.Button(toolbar, text=txt, font=("Segoe UI", 9, "bold"),
+                      relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
+                      bg=SURFACE2, fg=TEXT_DIM,
+                      activebackground=BORDER, activeforeground=TEXT,
+                      command=cmd).pack(side="right", padx=2, pady=6)
+
+        # ── Stats bar ─────────────────────────────────────────────────────────
+        self._stats_bar = tk.Label(
+            self, text="", font=("Segoe UI", 8),
+            fg=TEXT_DIM, bg=SURFACE2, anchor="w", padx=12, pady=3,
+            highlightthickness=1, highlightbackground=BORDER)
+        self._stats_bar.pack(fill="x", side="bottom")
+
+        # ── Log path bar ──────────────────────────────────────────────────────
+        short = self._log_path.replace(os.path.expanduser("~"), "~")
+        tk.Label(self, text=f"  {short}", font=("Consolas", 8),
+                 fg=TEXT_DIM, bg=SURFACE2, anchor="w", pady=3,
+                 highlightthickness=1, highlightbackground=BORDER
+                 ).pack(fill="x", side="bottom")
+
+        # ── Text area ─────────────────────────────────────────────────────────
+        txt_frame = tk.Frame(self, bg=BG)
+        txt_frame.pack(fill="both", expand=True)
+
+        self._txt = tk.Text(
+            txt_frame,
+            font=("Consolas", 9), bg="#0a0a0a", fg=TEXT_MED,
+            insertbackground=TEXT, relief="flat",
+            wrap="word", state="disabled",
+            selectbackground=BORDER, selectforeground=TEXT,
+            padx=12, pady=8)
+
+        v_scroll = ttk.Scrollbar(txt_frame, orient="vertical",
+                                  command=self._txt.yview)
+        self._txt.configure(yscrollcommand=v_scroll.set)
+        v_scroll.pack(side="right", fill="y")
+        self._txt.pack(fill="both", expand=True)
+
+        # Colour tags
+        for level, colour in self._LEVEL_COLORS.items():
+            self._txt.tag_configure(level, foreground=colour)
+        self._txt.tag_configure("separator",
+                                foreground="#4a5568",
+                                font=("Consolas", 9, "bold"))
+        self._txt.tag_configure("search_hl",
+                                background=self._SEARCH_HL,
+                                foreground=self._SEARCH_FG)
+        self._txt.tag_configure("search_cur",
+                                background="#dc2626",
+                                foreground="#ffffff")
+
+    def load_log(self):
+        if not os.path.exists(self._log_path):
+            self._txt.config(state="normal")
+            self._txt.delete("1.0", "end")
+            self._txt.insert("end", "(debug log is empty)")
+            self._txt.config(state="disabled")
+            self._stats_bar.config(text="  No log data.")
+            return
+
+        with open(self._log_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+
+        filt = self._filter_var.get()
+        lines = content.splitlines(keepends=True)
+        if filt != "All":
+            lines = [l for l in lines
+                     if f"| {filt}" in l or "═" in l]
+
+        self._txt.config(state="normal")
+        self._txt.delete("1.0", "end")
+        for line in lines:
+            tag = None
+            if "═" in line:
+                tag = "separator"
+            elif "| ERROR" in line:
+                tag = "ERROR"
+            elif "| WARNING" in line or "| WARN" in line:
+                tag = "WARNING"
+            elif "| DEBUG" in line:
+                tag = "DEBUG"
+            else:
+                tag = "INFO"
+            self._txt.insert("end", line, (tag,) if tag else ())
+        self._txt.config(state="disabled")
+
+        total = len(lines)
+        errs = sum(1 for l in lines if "| ERROR" in l)
+        warns = sum(1 for l in lines if "| WARN" in l)
+        self._stats_bar.config(
+            text=f"  {total} lines  |  {errs} errors  |  {warns} warnings")
+
+    def refresh(self):
+        self._clear_search(silent=True)
+        self.load_log()
+
+    def _set_filter(self, opt):
+        self._filter_var.set(opt)
+        self._paint_filter_btns()
+        self._clear_search(silent=True)
+        self.load_log()
+
+    def _paint_filter_btns(self):
+        cur = self._filter_var.get()
+        for name, btn in self._filter_btns.items():
+            if name == cur:
+                btn.config(bg=YT_RED, fg="#ffffff",
+                           activebackground="#b91c1c", activeforeground="#ffffff")
+            else:
+                btn.config(bg=SURFACE2, fg=TEXT_DIM,
+                           activebackground=BORDER, activeforeground=TEXT)
+
+    def _run_search(self):
+        self._txt.tag_remove("search_hl",  "1.0", "end")
+        self._txt.tag_remove("search_cur", "1.0", "end")
+        self._match_idx = []
+        self._match_pos = -1
+        query = self._search_var.get()
+        if not query:
+            self._match_lbl.config(text="")
+            return
+        start = "1.0"
+        while True:
+            pos = self._txt.search(query, start, stopindex="end", nocase=True)
+            if not pos:
+                break
+            end = f"{pos}+{len(query)}c"
+            self._txt.tag_add("search_hl", pos, end)
+            self._match_idx.append((pos, end))
+            start = end
+        total = len(self._match_idx)
+        if total:
+            self._match_pos = 0
+            self._highlight_current()
+            self._match_lbl.config(text=f"1 / {total}")
+        else:
+            self._match_lbl.config(text="no match")
+
+    def _highlight_current(self):
+        self._txt.tag_remove("search_cur", "1.0", "end")
+        if not self._match_idx:
+            return
+        pos, end = self._match_idx[self._match_pos]
+        self._txt.tag_add("search_cur", pos, end)
+        self._txt.see(pos)
+        n = len(self._match_idx)
+        self._match_lbl.config(text=f"{self._match_pos+1} / {n}")
+
+    def _find_next(self):
+        if not self._match_idx:
+            self._run_search(); return
+        self._match_pos = (self._match_pos + 1) % len(self._match_idx)
+        self._highlight_current()
+
+    def _find_prev(self):
+        if not self._match_idx:
+            self._run_search(); return
+        self._match_pos = (self._match_pos - 1) % len(self._match_idx)
+        self._highlight_current()
+
+    def _clear_search(self, silent=False):
+        self._txt.tag_remove("search_hl",  "1.0", "end")
+        self._txt.tag_remove("search_cur", "1.0", "end")
+        self._match_idx = []
+        self._match_pos = -1
+        self._match_lbl.config(text="")
+        if not silent:
+            self._search_var.set("")
+
+    def _jump_top(self):
+        self._txt.yview_moveto(0.0)
+
+    def _jump_end(self):
+        self._txt.yview_moveto(1.0)
+
+    def _toggle_wrap(self):
+        self._wrap_on = not self._wrap_on
+        if self._wrap_on:
+            self._txt.config(wrap="word")
+            self._wrap_btn.config(text="Wrap: On", bg="#14532d", fg=SUCCESS)
+        else:
+            self._txt.config(wrap="none")
+            self._wrap_btn.config(text="Wrap: Off", bg=SURFACE2, fg=TEXT_DIM)
+
+    def _copy_all(self):
+        content = self._txt.get("1.0", "end").strip()
+        self.clipboard_clear()
+        self.clipboard_append(content)
+        self._stats_bar.config(text="  ✓  Copied to clipboard.")
+        self.after(2000, self.refresh)
+
+    def _open_external(self):
+        try:
+            if sys.platform == "win32":
+                os.startfile(self._log_path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", self._log_path])
+            else:
+                subprocess.Popen(["xdg-open", self._log_path])
+        except Exception as exc:
+            messagebox.showerror("Could Not Open",
+                                 f"Failed to open in system viewer:\n{exc}",
+                                 parent=self)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 COOKIE_HOWTO_TEXT = """\
 Setting Up a Dedicated Chrome Profile for DJ-CrateBuilder
@@ -826,7 +1144,7 @@ class MP3DownloaderApp(tk.Tk):
         os.makedirs(self._base_dir, exist_ok=True)
         # Place log in the program's install/script directory
         app_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
-        self._log_path = os.path.join(app_dir, "DJ-CrateBuilder.log")
+        self._log_path = os.path.join(app_dir, "activity.log")
 
         logger = logging.getLogger("CrateBuilder")
         # Clear any existing handlers so re-init doesn't duplicate output
@@ -842,6 +1160,73 @@ class MP3DownloaderApp(tk.Tk):
         ))
         logger.addHandler(fh)
         self._logger = logger
+
+        # ── Debug logger (separate file for diagnostics) ──────────────────────
+        self._debug_log_path = os.path.join(app_dir, "debug.log")
+        dbg = logging.getLogger("CrateBuilder.debug")
+        dbg.handlers.clear()
+        dbg.setLevel(logging.DEBUG)
+        dbg.propagate = False
+
+        dfh = logging.FileHandler(self._debug_log_path, encoding="utf-8")
+        dfh.setLevel(logging.DEBUG)
+        dfh.setFormatter(logging.Formatter(
+            "%(asctime)s.%(msecs)03d | %(levelname)-5s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"
+        ))
+        dbg.addHandler(dfh)
+        self._dbg = dbg
+        self._dbg.info("═" * 80)
+        self._dbg.info(f"SESSION START  —  {APP_NAME} v{APP_VERSION}")
+        self._dbg.info(f"Platform: {sys.platform}  |  Python: {sys.version.split()[0]}")
+        try:
+            import yt_dlp
+            self._dbg.info(f"yt-dlp version: {yt_dlp.version.__version__}")
+        except Exception:
+            self._dbg.info("yt-dlp version: unknown")
+        self._dbg.info("═" * 80)
+
+    def _dbg_cookie_config(self):
+        """Log the current cookie configuration to debug.log."""
+        enabled = self._use_cookies.get()
+        self._dbg.info(f"COOKIE CONFIG | enabled={enabled}")
+        if not enabled:
+            return
+        method = self._cookie_method.get()
+        self._dbg.info(f"COOKIE CONFIG | method={method}")
+        if method == "Cookie File":
+            cfile = self._cookie_file.get().strip()
+            exists = os.path.exists(cfile) if cfile else False
+            self._dbg.info(f"COOKIE CONFIG | file={cfile!r}  exists={exists}")
+            if exists:
+                try:
+                    size = os.path.getsize(cfile)
+                    with open(cfile, "r", encoding="utf-8", errors="replace") as f:
+                        first_line = f.readline().strip()
+                    self._dbg.info(
+                        f"COOKIE FILE   | size={size} bytes  "
+                        f"first_line={first_line[:120]!r}")
+                except Exception as e:
+                    self._dbg.warning(f"COOKIE FILE   | read error: {e}")
+        else:
+            browser = self._cookies_browser.get()
+            profile = self._cookies_profile.get().strip()
+            self._dbg.info(
+                f"COOKIE CONFIG | browser={browser!r}  "
+                f"profile={profile!r}  "
+                f"tuple={((browser.lower(), profile) if profile else (browser.lower(),))!r}")
+
+    def _dbg_ydl_opts(self, label, opts):
+        """Log yt-dlp options dict to debug.log (redact large values)."""
+        safe = {}
+        for k, v in opts.items():
+            if k == "progress_hooks":
+                safe[k] = f"[{len(v)} hook(s)]"
+            elif k == "postprocessors":
+                safe[k] = v
+            else:
+                safe[k] = v
+        self._dbg.info(f"YDL OPTS ({label}) | {safe}")
 
     def _log_download(self, title, filepath, url, platform, genre,
                       quality="192 kbps MP3"):
@@ -2139,10 +2524,10 @@ class MP3DownloaderApp(tk.Tk):
                                     highlightbackground=BORDER)
         self._tree_lbl.pack(fill="x", pady=(0, 4))
 
-        # ── Download log ──────────────────────────────────────────────────────
+        # ── Downloads log ─────────────────────────────────────────────────────
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(8, 20))
 
-        ttk.Label(outer, text="Download Log",
+        ttk.Label(outer, text="Downloads Log",
                   style="S.White.Section.TLabel").pack(anchor="w", pady=(0, 6))
         ttk.Label(outer,
                   text="A color-coded record of every downloaded, skipped, and failed "
@@ -2163,6 +2548,30 @@ class MP3DownloaderApp(tk.Tk):
         self._log_path_lbl = ttk.Label(log_row, text="", style="S.Dim.TLabel")
         self._log_path_lbl.pack(side="left", fill="x", expand=True)
         self._refresh_log_path_label()
+
+        # ── Debug log ─────────────────────────────────────────────────────────
+        tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(8, 20))
+
+        ttk.Label(outer, text="Debug Log",
+                  style="S.White.Section.TLabel").pack(anchor="w", pady=(0, 6))
+        ttk.Label(outer,
+                  text="Detailed diagnostic log capturing cookie configuration, "
+                       "yt-dlp options, request/response data, and full error "
+                       "tracebacks. Useful for troubleshooting download failures.",
+                  style="S.Dim.TLabel", wraplength=660).pack(anchor="w", pady=(0, 10))
+
+        dbg_row = ttk.Frame(outer)
+        dbg_row.pack(fill="x", pady=(0, 4))
+
+        ttk.Button(dbg_row, text="🔍  View Debug Log", style="Save.TButton",
+                   command=self._open_debug_log_viewer).pack(side="left", padx=(0, 8))
+
+        ttk.Button(dbg_row, text="↗  Open in System Viewer", style="LightBlue.TButton",
+                   command=self._open_debug_log_external).pack(side="left", padx=(0, 16))
+
+        self._debug_path_lbl = ttk.Label(dbg_row, text="", style="S.Dim.TLabel")
+        self._debug_path_lbl.pack(side="left", fill="x", expand=True)
+        self._refresh_debug_path_label()
 
         self._update_tree_preview()
         self._refresh_limit_label()
@@ -2536,7 +2945,7 @@ class MP3DownloaderApp(tk.Tk):
 
             ("Q: What is the download log?",
              "A: A text file that records every downloaded, skipped, and failed file with timestamps. It lives in "
-             "your base save directory as \"DJ-CrateBuilder.log\" and can be viewed with the built-in log viewer "
+             "your base save directory as \"activity.log\" and can be viewed with the built-in log viewer "
              "in the Settings tab."),
 
             ("Q: Why does the Queue stop showing entries after a large number of files?",
@@ -2575,6 +2984,12 @@ class MP3DownloaderApp(tk.Tk):
             short = self._log_path.replace(os.path.expanduser("~"), "~")
             self._log_path_lbl.config(text=short)
 
+    def _refresh_debug_path_label(self):
+        """Update the debug-log-path label in Settings to reflect current path."""
+        if hasattr(self, "_debug_path_lbl") and hasattr(self, "_debug_log_path"):
+            short = self._debug_log_path.replace(os.path.expanduser("~"), "~")
+            self._debug_path_lbl.config(text=short)
+
     def _open_log_viewer(self):
         """Open the built-in dark-themed log viewer window."""
         if not os.path.exists(self._log_path):
@@ -2593,7 +3008,7 @@ class MP3DownloaderApp(tk.Tk):
         self._log_viewer = LogViewerWindow(self, self._log_path)
 
     def _open_log_external(self):
-        """Open DJ-CrateBuilder.log in the OS default text viewer."""
+        """Open activity.log in the OS default text viewer."""
         if not os.path.exists(self._log_path):
             messagebox.showinfo(
                 "Log Not Found",
@@ -2613,6 +3028,45 @@ class MP3DownloaderApp(tk.Tk):
                 "Could Not Open Log",
                 f"Unable to open the log file automatically:\n{exc}\n\n"
                 f"You can open it manually at:\n{self._log_path}"
+            )
+
+    def _open_debug_log_viewer(self):
+        """Open the built-in debug log viewer window."""
+        if not os.path.exists(self._debug_log_path):
+            messagebox.showinfo(
+                "Debug Log Not Found",
+                "No debug log exists yet.\n\n"
+                "The debug log is created automatically when you start a download."
+            )
+            return
+        if hasattr(self, "_debug_viewer") and self._debug_viewer.winfo_exists():
+            self._debug_viewer.lift()
+            self._debug_viewer.focus_force()
+            self._debug_viewer.refresh()
+            return
+        self._debug_viewer = DebugLogViewerWindow(self, self._debug_log_path)
+
+    def _open_debug_log_external(self):
+        """Open debug.log in the OS default text viewer."""
+        if not os.path.exists(self._debug_log_path):
+            messagebox.showinfo(
+                "Debug Log Not Found",
+                "No debug log exists yet.\n\n"
+                "The debug log is created automatically when you start a download."
+            )
+            return
+        try:
+            if sys.platform == "win32":
+                os.startfile(self._debug_log_path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", self._debug_log_path])
+            else:
+                subprocess.Popen(["xdg-open", self._debug_log_path])
+        except Exception as exc:
+            messagebox.showerror(
+                "Could Not Open Debug Log",
+                f"Unable to open the debug log automatically:\n{exc}\n\n"
+                f"You can open it manually at:\n{self._debug_log_path}"
             )
 
     def _open_download_dir(self):
@@ -3273,11 +3727,23 @@ class MP3DownloaderApp(tk.Tk):
                         else (browser,)
                     )
 
+            self._dbg.info(f"─── METADATA FETCH ─── URL: {url}")
+            self._dbg_cookie_config()
+            self._dbg_ydl_opts("metadata", meta_opts)
+
             try:
                 with yt_dlp.YoutubeDL(meta_opts) as ydl:
                     info = ydl.extract_info(url, download=False)
+                self._dbg.info(
+                    f"METADATA OK   | type={info.get('_type', 'single')!r}  "
+                    f"title={info.get('title', '?')!r}  "
+                    f"entries={len(info.get('entries') or [])}")
             except Exception as fetch_exc:
                 raw_err = str(fetch_exc)
+                self._dbg.error(f"METADATA FAIL | URL: {url}")
+                self._dbg.error(f"METADATA FAIL | error: {raw_err}")
+                import traceback
+                self._dbg.debug(f"METADATA FAIL | traceback:\n{traceback.format_exc()}")
                 # Log the full untruncated error to the log file
                 self._logger.error(
                     f"FATAL ERROR | URL: {url} | Full error: {raw_err}")
@@ -3505,7 +3971,10 @@ class MP3DownloaderApp(tk.Tk):
                     return hook
 
                 ydl_opts = {
-                    "format":   "bestaudio/best",
+                    # Prefer highest-bitrate audio-only stream.
+                    # abr>=160 targets Opus 160k (itag 251) or better;
+                    # falls back to plain bestaudio, then muxed best.
+                    "format":   "bestaudio[abr>=160]/bestaudio/best",
                     "outtmpl":  os.path.join(save_dir, "%(title)s.%(ext)s"),
                     "postprocessors": [{
                         "key":              "FFmpegExtractAudio",
@@ -3544,14 +4013,64 @@ class MP3DownloaderApp(tk.Tk):
                             else (browser,)
                         )
 
+                self._dbg.info(f"─── DOWNLOAD ─── {item_title!r}  URL: {item_url}")
+                self._dbg_ydl_opts("download", ydl_opts)
+
                 try:
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        ydl.download([item_url])
+                    # Transient-network retry loop. Handles ConnectionReset
+                    # (Winsock 10054), timeouts, and "connection broken"
+                    # errors — common with VPNs and rate-limiting. Up to 3
+                    # attempts with exponential backoff (2s, 4s). Permanent
+                    # errors (age-gate, unavailable, etc.) fall through on
+                    # the first raise.
+                    import time as _t
+                    _attempt = 0
+                    _max_attempts = 3
+                    while True:
+                        _attempt += 1
+                        try:
+                            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                                ydl.download([item_url])
+                            break
+                        except Exception as _net_exc:
+                            _ne = str(_net_exc).lower()
+                            _transient = (
+                                "10054" in _ne
+                                or "connection reset" in _ne
+                                or "connection broken" in _ne
+                                or "connection aborted" in _ne
+                                or "connectionreseterror" in _ne
+                                or "timed out" in _ne
+                                or "read timeout" in _ne
+                                or "temporary failure" in _ne
+                                or "remote end closed" in _ne
+                            )
+                            if _transient and _attempt < _max_attempts:
+                                _delay = 2 ** _attempt
+                                self._dbg.warning(
+                                    f"NET RETRY   | {item_title!r}  "
+                                    f"attempt {_attempt}/{_max_attempts-1} "
+                                    f"after transient error "
+                                    f"(sleeping {_delay}s): "
+                                    f"{str(_net_exc)[:120]}")
+                                self._logger.info(
+                                    f"NET RETRY   | "
+                                    f"Title: {item_title} | "
+                                    f"Attempt {_attempt}/{_max_attempts-1} "
+                                    f"after network error, "
+                                    f"retrying in {_delay}s")
+                                _t.sleep(_delay)
+                                if self._cancel_flag.is_set():
+                                    raise
+                                continue
+                            raise
                     done += 1
                     self._grand_dl += 1
                     src_str = (f"{int(source_abr[0])} kbps src → "
                                f"{output_kbps} kbps MP3"
                                if source_abr[0] else f"{output_kbps} kbps MP3")
+                    self._dbg.info(
+                        f"DOWNLOAD OK   | {item_title!r}  quality={src_str}")
                     self._log_download(item_title, expected_path, item_url,
                                        platform, genre, quality=src_str)
                     brate_txt = (f"{int(source_abr[0])}k → {output_kbps}k"
@@ -3568,6 +4087,12 @@ class MP3DownloaderApp(tk.Tk):
                     raw_err = str(exc)
                     clean = re.sub(r'\x1b\[[0-9;]*m', '', raw_err).strip()
                     clean_lower = clean.lower()
+                    self._dbg.error(
+                        f"DOWNLOAD FAIL | {item_title!r}  URL: {item_url}")
+                    self._dbg.error(f"DOWNLOAD FAIL | error: {clean}")
+                    import traceback
+                    self._dbg.debug(
+                        f"DOWNLOAD FAIL | traceback:\n{traceback.format_exc()}")
 
                     # Age-restricted videos fail with cookies because
                     # YouTube forces the main player which requires age
@@ -3578,13 +4103,16 @@ class MP3DownloaderApp(tk.Tk):
                               "verify your age" in clean_lower or
                               "adult" in clean_lower)
                     if is_age and using_cookies:
+                        self._dbg.info(
+                            f"AGE-RETRY   | {item_title!r}  "
+                            f"Retrying without cookies to bypass age gate")
                         self._logger.info(
                             f"AGE-RETRY   | "
                             f"Title: {item_title} | "
                             f"URL: {item_url} | "
                             f"Retrying without cookies to bypass age gate")
                         retry_opts = {
-                            "format":   "bestaudio/best",
+                            "format":   "bestaudio[abr>=160]/bestaudio/best",
                             "outtmpl":  os.path.join(save_dir,
                                             "%(title)s.%(ext)s"),
                             "postprocessors": [{
@@ -3641,6 +4169,11 @@ class MP3DownloaderApp(tk.Tk):
                             clean_lower = clean.lower()
                             # Fall through to error handling
 
+                    self._dbg.error(
+                        f"FINAL ERROR | {item_title!r}  "
+                        f"URL: {item_url}  "
+                        f"cookies={using_cookies}  "
+                        f"full_error: {raw_err}")
                     self._logger.error(
                         f"ERROR       | "
                         f"Title: {item_title} | "
