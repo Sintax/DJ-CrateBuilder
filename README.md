@@ -1,4 +1,7 @@
-# <img src="assets/DJ-CrateBuilder_LOGO_1.png" width="85"> DJ-CrateBuilder v1.2 
+BETA [STILL IN DEVELOPMENT!]
+---
+
+# <img src="assets/DJ-CrateBuilder_LOGO_1.png" width="85"> DJ-CrateBuilder v1.3 
 
 A desktop application for batch-downloading audio from YouTube and SoundCloud as MP3 files, organized by platform, genre, and channel — like a digital record crate for DJs and music collectors. 
 
@@ -17,7 +20,8 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 - **Throttle Controls** — Random delays between downloads with Auto presets or Manual min/max to avoid rate limiting
 - **User-Agent Rotation** — Randomized browser fingerprints per session
 - **Geo-Bypass** — Attempt to bypass geographic IP restrictions
-- **Download Log** — Timestamped record of every download, skip, and error with a built-in color-coded log viewer
+- **Downloads Log** — Timestamped record of every download, skip, and error (`activity.log`) with a built-in color-coded log viewer
+- **Debug Log** — Separate diagnostic log (`debug.log`) capturing yt-dlp options, cookie configuration, and full error tracebacks for troubleshooting *(new in v1.3)*
 - **URL History** — The URL field remembers your last 6 inputs
 - **Channel Auto-Detection** — Bare channel URLs (youtube.com/@Name) automatically resolve to the full video list
 - **Dark Themed UI** — Purpose-built dark interface using tkinter
@@ -50,7 +54,7 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 git clone https://github.com/Sintax/DJ-CrateBuilder.git
 cd DJ-CrateBuilder
 pip install yt-dlp
-python DJ-CrateBuilder_v1.2.py
+python DJ-CrateBuilder_v1.3.py
 ```
 
 ### Windows Installer
@@ -150,7 +154,7 @@ All settings auto-save and persist between sessions.
 
 ```bash
 pip install pyinstaller
-pyinstaller --noconfirm --clean --name "DJ-CrateBuilder" --windowed --onedir DJ-CrateBuilder_v1.2.py
+pyinstaller --noconfirm --clean --name "DJ-CrateBuilder" --windowed --onedir DJ-CrateBuilder_v1.3.py
 ```
 
 Copy `ffmpeg.exe` and `ffprobe.exe` into `dist\DJ-CrateBuilder\`.
@@ -168,7 +172,8 @@ See `Packaging_Guide.md` for detailed instructions.
 | File | Path |
 |------|------|
 | Config | `~/.dj_cratebuilder_config.json` |
-| Log | `~/Music/DJ-CrateBuilder/DJ-CrateBuilder.log` |
+| Activity log | `<install dir>/activity.log` |
+| Debug log | `<install dir>/debug.log` *(new in v1.3)* |
 | Downloads | `~/Music/DJ-CrateBuilder/YouTube/` or `.../SoundCloud/` |
 
 ---
@@ -214,6 +219,7 @@ This project is in active development. Bug reports, feature requests, and pull r
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 1.3 | 2026-04 | Debug log with full yt-dlp/cookie diagnostics, renamed DJ-CrateBuilder.log → activity.log, "Downloads Log" rename, native Linux installer improvements (targeting cookie-auth formatting bug) |
 | 1.2 | 2026-03 | Browser cookie auth, cookie file support, age-gate retry, format diagnostics, _No Genre folder, URL history, genre confirmation, renamed from YouTube DJ-CrateBuilder |
 | 1.1 | 2026-03 | Queue rewrite (Text widget), batch system, throttle presets, geo-bypass, UA rotation, log viewer, Settings tab overhaul |
 | 1.0 | 2026-03 | Initial release — single/batch download, genre folders, skip-existing, time limiter, dark UI |
