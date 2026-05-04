@@ -1,5 +1,5 @@
 ; ============================================================================
-; DJ-CrateBuilder v1.2 — Inno Setup Installer (Windows)
+; DJ-CrateBuilder v1.3 — Inno Setup Installer (Windows)
 ; Installs to Program Files with admin privileges
 ; ============================================================================
 ;
@@ -15,14 +15,14 @@
 ; IMPORTANT: Replace this GUID with your own unique identifier
 AppId={{738f32f9-352c-481b-8209-2b44f04502b7}
 AppName=DJ-CrateBuilder
-AppVersion=1.2
-AppVerName=DJ-CrateBuilder v1.2
+AppVersion=1.3
+AppVerName=DJ-CrateBuilder v1.3
 AppPublisher=Corrupt Sintax
 DefaultDirName={autopf}\DJ-CrateBuilder
 DefaultGroupName=DJ-CrateBuilder
 AllowNoIcons=yes
 OutputDir=Output
-OutputBaseFilename=DJ-CrateBuilder_v1.2_Setup_Windows
+OutputBaseFilename=DJ-CrateBuilder_v1.3_Setup_Windows
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -40,7 +40,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 ; IMPORTANT: Update this path to your PyInstaller output folder
-Source: "C:\Users\djsin\Documents\Claude.ai Projects\DJ-CrateBuilder\v_1.2\dist\DJ-CrateBuilder\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "C:\Users\djsin\Documents\Claude.ai Projects\DJ-CrateBuilder\v_1.3\dist\DJ-CrateBuilder\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Dirs]
 Name: "{app}"; Permissions: users-modify

@@ -31,6 +31,8 @@ desktop.ini
 
 # App-generated
 DJ-CrateBuilder.log
+activity.log
+debug.log
 .dj_cratebuilder_config.json
 .yt_dj_cratebuilder_config.json
 
