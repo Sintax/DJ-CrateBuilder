@@ -1065,6 +1065,8 @@ class MP3DownloaderApp(tk.Tk):
                   if not str(cfg.get("bitrate_quality", "192")).endswith("kbps")
                   else cfg.get("bitrate_quality", "192"))
         self._bitrate_quality.trace_add("write", self._autosave_bitrate_setting)
+        self._no_conversion = tk.BooleanVar(value=cfg.get("no_conversion", False))
+        self._no_conversion.trace_add("write", self._autosave_bitrate_setting)
 
         # Download behavior settings
         self._geo_bypass      = tk.BooleanVar(value=cfg.get("geo_bypass", False))
@@ -2180,7 +2182,7 @@ class MP3DownloaderApp(tk.Tk):
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 20))
 
         # ── MP3 Bitrate Selector ──────────────────────────────────────────────
-        ttk.Label(outer, text="MP3 Bitrate",
+        ttk.Label(outer, text="Audio Output",
                   style="S.White.Section.TLabel").pack(anchor="w", pady=(0, 8))
 
         ttk.Label(outer,
@@ -2198,13 +2200,35 @@ class MP3DownloaderApp(tk.Tk):
         self._bitrate_combo = ttk.Combobox(
             bitrate_row,
             textvariable=self._bitrate_quality,
-            values=["192 kbps", "224 kbps", "256 kbps", "320 kbps"],
+            values=["128 kbps", "192 kbps", "224 kbps", "256 kbps", "320 kbps"],
             state="readonly", width=14)
         self._bitrate_combo.pack(side="left", padx=(0, 14))
 
         ttk.Label(bitrate_row,
                   text="192 kbps = good quality  •  320 kbps = maximum MP3 quality",
                   style="S.Dim.TLabel").pack(side="left")
+
+        # ── No-conversion checkbox ────────────────────────────────────────────
+        no_conv_row = ttk.Frame(outer)
+        no_conv_row.pack(fill="x", pady=(0, 4))
+        ttk.Checkbutton(no_conv_row,
+                        text="Keep original format (no conversion)",
+                        variable=self._no_conversion,
+                        command=self._on_no_conversion_toggle,
+                        style="S.Bold.TCheckbutton"
+                        ).pack(side="left")
+
+        tk.Label(outer,
+                 text="      When enabled, files are saved in their original format "
+                      "and bitrate without conversion to MP3. YouTube typically serves "
+                      ".webm (Opus) or .m4a (AAC); SoundCloud serves .mp3 or .webm. "
+                      "Your folder will contain a mix of extensions.",
+                 font=("Segoe UI", 10), fg="#f59e0b", bg=BG,
+                 anchor="w", justify="left", wraplength=660
+                 ).pack(fill="x", pady=(0, 6))
+
+        # Apply initial enabled/disabled state for the bitrate combo
+        self._on_no_conversion_toggle()
 
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 20))
 
@@ -2619,6 +2643,7 @@ class MP3DownloaderApp(tk.Tk):
             "limit_enabled":  self._limit_enabled.get(),
             "limit_minutes":  self._limit_minutes.get(),
             "bitrate_quality": self._bitrate_quality.get(),
+            "no_conversion":  self._no_conversion.get(),
             "skip_existing":  self._skip_existing.get(),
             "skip_mode":      self._skip_mode.get(),
             "geo_bypass":     self._geo_bypass.get(),
@@ -2694,10 +2719,19 @@ class MP3DownloaderApp(tk.Tk):
         save_config(cfg)
 
     def _autosave_bitrate_setting(self, *_):
-        """Auto-save bitrate setting to config whenever the selection changes."""
+        """Auto-save bitrate setting and no-conversion flag to config."""
         cfg = load_config()
         cfg["bitrate_quality"] = self._bitrate_quality.get().split()[0]
+        cfg["no_conversion"]   = self._no_conversion.get()
         save_config(cfg)
+
+    def _on_no_conversion_toggle(self):
+        """Grey out the bitrate combobox when 'no conversion' is enabled."""
+        if hasattr(self, "_bitrate_combo"):
+            if self._no_conversion.get():
+                self._bitrate_combo.config(state="disabled")
+            else:
+                self._bitrate_combo.config(state="readonly")
 
     def _autosave_skip_settings(self, *_):
         """Auto-save skip checkbox and mode to config whenever either value changes."""
@@ -3929,6 +3963,69 @@ class MP3DownloaderApp(tk.Tk):
                 # Resolve configured output bitrate (strip any " kbps" suffix)
                 output_kbps = self._bitrate_quality.get().split()[0]
 
+                # ── Auto-upgrade MP3 bitrate when source exceeds user setting ──
+                # If YouTube serves a higher-bitrate audio stream than the
+                # user's configured MP3 output (e.g. 256 kbps AAC with a
+                # Premium-authenticated account, while the user has selected
+                # 192 kbps), encode the MP3 at that source bitrate instead
+                # of downgrading. Only probe when cookies are enabled and
+                # conversion is actually happening — free-tier YouTube maxes
+                # out at 160 kbps Opus, so a probe would never yield an
+                # upgrade and would just add an extra network round-trip.
+                # Also skip the probe if the user has already chosen the
+                # 320 kbps MP3 ceiling, since no source can exceed it.
+                effective_kbps = output_kbps
+                if (self._use_cookies.get()
+                        and not self._no_conversion.get()
+                        and int(output_kbps) < 320):
+                    try:
+                        probe_opts = {
+                            "quiet":         True,
+                            "no_warnings":   True,
+                            "skip_download": True,
+                        }
+                        # Mirror cookie settings so the probe sees the
+                        # same authenticated format ladder as the download.
+                        method = self._cookie_method.get()
+                        if method == "Cookie File":
+                            cfile = self._cookie_file.get().strip()
+                            if cfile and os.path.exists(cfile):
+                                probe_opts["cookiefile"] = cfile
+                        else:
+                            browser = self._cookies_browser.get().lower()
+                            profile = self._cookies_profile.get().strip()
+                            probe_opts["cookiesfrombrowser"] = (
+                                (browser, profile) if profile
+                                else (browser,)
+                            )
+                        with yt_dlp.YoutubeDL(probe_opts) as probe:
+                            probe_info = probe.extract_info(
+                                item_url, download=False)
+                        best_abr = 0
+                        for f in (probe_info.get("formats") or []):
+                            # Audio-only streams have vcodec == "none"
+                            if f.get("vcodec") == "none":
+                                abr_val = f.get("abr") or f.get("tbr")
+                                if abr_val:
+                                    try:
+                                        best_abr = max(best_abr, int(abr_val))
+                                    except (TypeError, ValueError):
+                                        pass
+                        # Cap at 320 (MP3 ceiling). Upgrade only if we
+                        # actually found a higher bitrate than the user's.
+                        if best_abr > int(output_kbps):
+                            effective_kbps = str(min(best_abr, 320))
+                            self._dbg.info(
+                                f"BITRATE AUTO-UPGRADE | {item_title!r}  "
+                                f"source={best_abr}k > setting={output_kbps}k  "
+                                f"→ encoding MP3 at {effective_kbps}k")
+                    except Exception as probe_exc:
+                        # Probe failures are non-fatal; fall back to
+                        # the user's configured bitrate.
+                        self._dbg.warning(
+                            f"BITRATE PROBE FAIL | {item_title!r}  "
+                            f"{probe_exc}")
+
                 # Track the best source bitrate seen during this download
                 source_abr = [None]
 
@@ -3951,11 +4048,11 @@ class MP3DownloaderApp(tk.Tk):
                                 abr_ref[0] = abr
                                 self.after(0, lambda b=abr:
                                     self._bitrate_lbl.config(
-                                        text=f"src {int(b)}k → {output_kbps}k"))
+                                        text=f"src {int(b)}k → {effective_kbps}k"))
                                 # Show source bitrate on the queue row
                                 self.after(0, lambda b=abr, ii=i:
                                     self._set_row_bitrate(
-                                        ii, f"{int(b)}k → {output_kbps}k"))
+                                        ii, f"{int(b)}k → {effective_kbps}k"))
                             if tb:
                                 self.after(0, lambda p=db/tb*100:
                                     self._vid_progress.config(value=p))
@@ -3976,15 +4073,21 @@ class MP3DownloaderApp(tk.Tk):
                     # falls back to plain bestaudio, then muxed best.
                     "format":   "bestaudio[abr>=160]/bestaudio/best",
                     "outtmpl":  os.path.join(save_dir, "%(title)s.%(ext)s"),
-                    "postprocessors": [{
-                        "key":              "FFmpegExtractAudio",
-                        "preferredcodec":   "mp3",
-                        "preferredquality": output_kbps,
-                    }],
                     "progress_hooks": [make_hook(idx)],
                     "quiet":       True,
                     "no_warnings": True,
                 }
+
+                # Only add the FFmpeg MP3 postprocessor if conversion is enabled.
+                # When "Keep original format" is checked, the file is saved
+                # as-is in whatever container YouTube/SoundCloud served
+                # (typically .webm/Opus or .m4a/AAC for YT; .mp3 or .webm for SC).
+                if not self._no_conversion.get():
+                    ydl_opts["postprocessors"] = [{
+                        "key":              "FFmpegExtractAudio",
+                        "preferredcodec":   "mp3",
+                        "preferredquality": effective_kbps,
+                    }]
 
                 # ── Download behavior options ─────────────────────────
                 if self._geo_bypass.get():
@@ -4067,14 +4170,14 @@ class MP3DownloaderApp(tk.Tk):
                     done += 1
                     self._grand_dl += 1
                     src_str = (f"{int(source_abr[0])} kbps src → "
-                               f"{output_kbps} kbps MP3"
-                               if source_abr[0] else f"{output_kbps} kbps MP3")
+                               f"{effective_kbps} kbps MP3"
+                               if source_abr[0] else f"{effective_kbps} kbps MP3")
                     self._dbg.info(
                         f"DOWNLOAD OK   | {item_title!r}  quality={src_str}")
                     self._log_download(item_title, expected_path, item_url,
                                        platform, genre, quality=src_str)
-                    brate_txt = (f"{int(source_abr[0])}k → {output_kbps}k"
-                                 if source_abr[0] else f"→ {output_kbps}k")
+                    brate_txt = (f"{int(source_abr[0])}k → {effective_kbps}k"
+                                 if source_abr[0] else f"→ {effective_kbps}k")
                     self.after(0, lambda i=idx, b=brate_txt:
                         self._set_row_bitrate(i, b, SUCCESS))
                     self.after(0, lambda i=idx: self._set_row_state(
