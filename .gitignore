@@ -31,8 +31,14 @@ desktop.ini
 
 # App-generated
 DJ-CrateBuilder.log
+activity.log
+debug.log
+cratebuilder.db
 .dj_cratebuilder_config.json
 .yt_dj_cratebuilder_config.json
+
+# Chat-to-Code handoff (private planning notes)
+HANDOFF.md
 
 # Backups & archives
 _BACKUP/
