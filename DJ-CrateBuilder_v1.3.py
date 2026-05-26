@@ -8,6 +8,12 @@ import re
 import json
 import random
 import logging
+import sqlite3
+import time
+import webbrowser
+import urllib.parse
+from datetime import datetime, timedelta, date
+from contextlib import contextmanager
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ██  VERSION & ABOUT  ██  ── Edit these values to update the app info ──────
@@ -17,6 +23,7 @@ APP_VERSION = "1.3"
 
 ABOUT_CREATED_BY  = "CorruptSintax@Gmail.com"
 ABOUT_DESCRIPTION = "Vibe-Coded entirely with Claude-AI"
+GITHUB_URL        = "https://github.com/Sintax/DJ-CrateBuilder"
 
 # ── Add or remove lines below to customize the About tab content. ──────────
 # ── Each tuple is  ("Label", "Value")  and will display as a row. ──────────
@@ -24,6 +31,7 @@ ABOUT_FIELDS = [
     ("Application",  f"{APP_NAME}  v{APP_VERSION}"),
     ("Created by",   ABOUT_CREATED_BY),
     ("Built with",   ABOUT_DESCRIPTION),
+    ("GitHub",       GITHUB_URL),
 ]
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -46,12 +54,17 @@ TEXT_DIM  = "#888888"
 TEXT_MED  = "#bbbbbb"
 SUCCESS   = "#22c55e"
 SKIP_COL  = "#6b7280"
+LINK_COL  = "#60a5fa"   # light blue for clickable links
 
 # Platform accent colours
 YT_RED    = "#ff3b3b"
 YT_DARK   = "#cc2222"
 SC_ORANGE = "#ff5500"
 SC_DARK   = "#cc4400"
+
+# Watch List accent
+WL_PURPLE = "#a78bfa"
+WL_DARK   = "#7c3aed"
 
 # ── Platform config ───────────────────────────────────────────────────────────
 PLATFORMS = {
@@ -127,6 +140,23 @@ THROTTLE_PRESETS = {
     "Aggressive  (5–15 s)": (5, 15),
 }
 
+# ── Watch List: how many days to subtract from the detected cutoff to cushion
+# ── against approximate_date imprecision. If the latest download was on the
+# ── 10th, we scan for anything uploaded after the 5th. Any overlap is caught
+# ── by skip-existing, so over-scanning is safe but under-scanning is not.
+WATCHLIST_CUTOFF_BUFFER_DAYS = 5
+
+# ── "Since" date preset options used in the Add Channel dialog ───────────────
+SINCE_DATE_OPTIONS = [
+    "Today  (only future uploads)",
+    "Last 30 days",
+    "Last 90 days",
+    "Last 6 months",
+    "Last 1 year",
+    "Custom date…",
+    "Scan my music folder",
+]
+
 # ── Config persistence ────────────────────────────────────────────────────────
 CONFIG_NAME = ".dj_cratebuilder_config.json"
 
@@ -161,6 +191,523 @@ def save_config(data):
         pass
 
 DEFAULT_BASE = os.path.join(os.path.expanduser("~"), "Music", "DJ-CrateBuilder")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Date utilities (YYYYMMDD string format used throughout yt-dlp + this app)
+# ══════════════════════════════════════════════════════════════════════════════
+def today_yyyymmdd():
+    return date.today().strftime("%Y%m%d")
+
+def days_ago_yyyymmdd(days):
+    d = date.today() - timedelta(days=int(days))
+    return d.strftime("%Y%m%d")
+
+def subtract_days_from_yyyymmdd(yyyymmdd, days):
+    """Safely subtract *days* from a YYYYMMDD string, returning a new
+    YYYYMMDD string. Returns the input unchanged if parsing fails."""
+    try:
+        dt = datetime.strptime(yyyymmdd, "%Y%m%d").date()
+        return (dt - timedelta(days=int(days))).strftime("%Y%m%d")
+    except (ValueError, TypeError):
+        return yyyymmdd
+
+def format_yyyymmdd_readable(yyyymmdd):
+    """Convert '20260310' to 'March 10, 2026' (or return input if invalid)."""
+    try:
+        dt = datetime.strptime(yyyymmdd, "%Y%m%d").date()
+        return dt.strftime("%B %d, %Y")
+    except (ValueError, TypeError):
+        return str(yyyymmdd)
+
+def format_timestamp_relative(ts):
+    """Convert a unix timestamp into a short 'X days ago' / 'Never' string."""
+    if not ts:
+        return "Never"
+    try:
+        diff = int(time.time() - float(ts))
+        if diff < 60:          return "Just now"
+        if diff < 3600:
+            m = diff // 60
+            return f"{m} minute{'s' if m != 1 else ''} ago"
+        if diff < 86400:
+            h = diff // 3600
+            return f"{h} hour{'s' if h != 1 else ''} ago"
+        if diff < 86400 * 30:
+            d = diff // 86400
+            return f"{d} day{'s' if d != 1 else ''} ago"
+        if diff < 86400 * 365:
+            mo = diff // (86400 * 30)
+            return f"{mo} month{'s' if mo != 1 else ''} ago"
+        y = diff // (86400 * 365)
+        return f"{y} year{'s' if y != 1 else ''} ago"
+    except Exception:
+        return "Unknown"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Tooltip — dark-themed hover tooltip for any tkinter widget.
+# Usage:     Tooltip(widget, "Short explanation of what this does.")
+# ═════════════════════════════════════════════════════════════════════════════
+class Tooltip:
+    def __init__(self, widget, text, delay=500, wraplength=280):
+        self.widget     = widget
+        self.text       = text
+        self.delay      = delay
+        self.wraplength = wraplength
+        self._tip       = None
+        self._after_id  = None
+        widget.bind("<Enter>",       self._on_enter, add="+")
+        widget.bind("<Leave>",       self._on_leave, add="+")
+        widget.bind("<ButtonPress>", self._on_leave, add="+")
+
+    def _on_enter(self, _e=None):
+        self._schedule()
+
+    def _on_leave(self, _e=None):
+        self._unschedule()
+        self._hide()
+
+    def _schedule(self):
+        self._unschedule()
+        if self.text:
+            self._after_id = self.widget.after(self.delay, self._show)
+
+    def _unschedule(self):
+        if self._after_id:
+            try:
+                self.widget.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+
+    def _show(self):
+        if self._tip or not self.text:
+            return
+        try:
+            x = self.widget.winfo_rootx() + 20
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+            self._tip = tk.Toplevel(self.widget)
+            self._tip.wm_overrideredirect(True)
+            self._tip.wm_geometry(f"+{x}+{y}")
+            self._tip.configure(bg="#000000")
+            tk.Label(
+                self._tip, text=self.text,
+                font=("Segoe UI", 9),
+                bg="#1a1a1a", fg="#e5e5e5",
+                padx=9, pady=6,
+                relief="solid", bd=1,
+                wraplength=self.wraplength,
+                justify="left",
+            ).pack()
+        except Exception:
+            self._tip = None
+
+    def _hide(self):
+        if self._tip:
+            try:
+                self._tip.destroy()
+            except Exception:
+                pass
+            self._tip = None
+
+    def update_text(self, new_text):
+        self.text = new_text
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# DownloadsDatabase — SQLite-backed index of downloads + watchlist.
+#
+# The activity.log remains the human-readable source of truth. This DB is
+# the app's fast, queryable index for channel history and Watch List
+# operations. Lives at  <app_dir>/cratebuilder.db  and can be rebuilt from
+# activity.log at any time via Settings → "Rebuild Database from Log".
+# ═════════════════════════════════════════════════════════════════════════════
+class DownloadsDatabase:
+    SCHEMA_VERSION = 1
+
+    def __init__(self, db_path, debug_logger=None):
+        self.db_path = db_path
+        self._lock   = threading.Lock()
+        self._dbg    = debug_logger
+        self._init_schema()
+
+    @contextmanager
+    def _conn(self):
+        with self._lock:
+            conn = sqlite3.connect(self.db_path, timeout=15.0)
+            conn.row_factory = sqlite3.Row
+            try:
+                conn.execute("PRAGMA journal_mode = WAL")
+            except Exception:
+                pass
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise
+            finally:
+                conn.close()
+
+    def _log(self, level, msg):
+        if self._dbg:
+            try:
+                getattr(self._dbg, level)(f"DB | {msg}")
+            except Exception:
+                pass
+
+    def _init_schema(self):
+        try:
+            with self._conn() as conn:
+                conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS schema_info (
+                        key   TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS downloads (
+                        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                        video_id            TEXT,
+                        title               TEXT NOT NULL,
+                        channel_name        TEXT,
+                        channel_url         TEXT,
+                        platform            TEXT NOT NULL,
+                        genre               TEXT,
+                        file_path           TEXT,
+                        upload_date         TEXT,
+                        download_timestamp  INTEGER NOT NULL,
+                        bitrate             TEXT
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_dl_video_id
+                        ON downloads(video_id);
+                    CREATE INDEX IF NOT EXISTS idx_dl_channel_url
+                        ON downloads(channel_url);
+                    CREATE INDEX IF NOT EXISTS idx_dl_channel_name
+                        ON downloads(channel_name);
+                    CREATE INDEX IF NOT EXISTS idx_dl_platform
+                        ON downloads(platform);
+                    CREATE TABLE IF NOT EXISTS watchlist (
+                        id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+                        url                      TEXT NOT NULL UNIQUE,
+                        display_name             TEXT NOT NULL,
+                        platform                 TEXT NOT NULL,
+                        genre                    TEXT,
+                        scan_cutoff_date         TEXT NOT NULL,
+                        date_added               INTEGER NOT NULL,
+                        last_scanned_timestamp   INTEGER,
+                        pending_new_count        INTEGER DEFAULT 0,
+                        pending_entries_json     TEXT    DEFAULT '[]',
+                        total_downloaded         INTEGER DEFAULT 0,
+                        auto_added               INTEGER DEFAULT 0,
+                        status                   TEXT    DEFAULT 'idle',
+                        last_error               TEXT
+                    );
+                """)
+                conn.execute(
+                    "INSERT OR REPLACE INTO schema_info (key, value) VALUES (?, ?)",
+                    ("version", str(self.SCHEMA_VERSION))
+                )
+            self._log("info", f"schema initialized at {self.db_path}")
+        except Exception as e:
+            self._log("error", f"schema init failed: {e}")
+            raise
+
+    def add_download(self, *, video_id, title, channel_name, channel_url,
+                     platform, genre, file_path, upload_date, bitrate):
+        try:
+            with self._conn() as conn:
+                conn.execute("""
+                    INSERT INTO downloads
+                      (video_id, title, channel_name, channel_url, platform,
+                       genre, file_path, upload_date, download_timestamp, bitrate)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (video_id or None, title or "", channel_name or "",
+                      channel_url or "", platform, genre or "",
+                      file_path or "", upload_date or "",
+                      int(time.time()), bitrate or ""))
+        except Exception as e:
+            self._log("error", f"add_download failed for {title!r}: {e}")
+
+    def is_video_downloaded(self, video_id):
+        if not video_id:
+            return False
+        try:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM downloads WHERE video_id = ? LIMIT 1",
+                    (video_id,)).fetchone()
+                return row is not None
+        except Exception as e:
+            self._log("error", f"is_video_downloaded failed: {e}")
+            return False
+
+    def get_most_recent_upload_date(self, channel_url):
+        try:
+            with self._conn() as conn:
+                row = conn.execute("""
+                    SELECT MAX(upload_date) AS max_date FROM downloads
+                    WHERE channel_url = ? AND upload_date IS NOT NULL
+                      AND upload_date != ''
+                """, (channel_url,)).fetchone()
+                return row["max_date"] if row else None
+        except Exception as e:
+            self._log("error", f"get_most_recent_upload_date failed: {e}")
+            return None
+
+    def get_channel_download_count(self, channel_url):
+        try:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS n FROM downloads WHERE channel_url = ?",
+                    (channel_url,)).fetchone()
+                return row["n"] if row else 0
+        except Exception as e:
+            self._log("error", f"get_channel_download_count failed: {e}")
+            return 0
+
+    def get_download_count(self):
+        try:
+            with self._conn() as conn:
+                return conn.execute(
+                    "SELECT COUNT(*) AS n FROM downloads").fetchone()["n"]
+        except Exception as e:
+            self._log("error", f"get_download_count failed: {e}")
+            return 0
+
+    def clear_all_downloads(self):
+        try:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM downloads")
+        except Exception as e:
+            self._log("error", f"clear_all_downloads failed: {e}")
+
+    def add_watchlist_channel(self, *, url, display_name, platform, genre,
+                               scan_cutoff_date, auto_added=False):
+        try:
+            total = self.get_channel_download_count(url)
+            with self._conn() as conn:
+                cur = conn.execute("""
+                    INSERT INTO watchlist
+                      (url, display_name, platform, genre, scan_cutoff_date,
+                       date_added, auto_added, total_downloaded, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'idle')
+                """, (url, display_name, platform, genre, scan_cutoff_date,
+                      int(time.time()), 1 if auto_added else 0, total))
+                return cur.lastrowid
+        except sqlite3.IntegrityError:
+            return None
+        except Exception as e:
+            self._log("error", f"add_watchlist_channel failed: {e}")
+            return None
+
+    def update_watchlist_cutoff(self, url, new_cutoff_date):
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "UPDATE watchlist SET scan_cutoff_date = ? WHERE url = ?",
+                    (new_cutoff_date, url))
+        except Exception as e:
+            self._log("error", f"update_watchlist_cutoff failed: {e}")
+
+    def update_watchlist_scan_result(self, channel_id, *, timestamp,
+                                      pending_count, pending_entries, status,
+                                      last_error=None):
+        try:
+            with self._conn() as conn:
+                conn.execute("""
+                    UPDATE watchlist
+                    SET last_scanned_timestamp = ?, pending_new_count = ?,
+                        pending_entries_json = ?, status = ?, last_error = ?
+                    WHERE id = ?
+                """, (timestamp, pending_count,
+                      json.dumps(pending_entries or []), status,
+                      last_error, channel_id))
+        except Exception as e:
+            self._log("error", f"update_watchlist_scan_result failed: {e}")
+
+    def update_watchlist_status(self, channel_id, status, last_error=None):
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "UPDATE watchlist SET status = ?, last_error = ? WHERE id = ?",
+                    (status, last_error, channel_id))
+        except Exception as e:
+            self._log("error", f"update_watchlist_status failed: {e}")
+
+    def update_watchlist_channel_fields(self, channel_id, **fields):
+        allowed = {"display_name", "genre", "scan_cutoff_date"}
+        fields = {k: v for k, v in fields.items() if k in allowed}
+        if not fields:
+            return
+        try:
+            sets = ", ".join(f"{k} = ?" for k in fields)
+            vals = list(fields.values()) + [channel_id]
+            with self._conn() as conn:
+                conn.execute(f"UPDATE watchlist SET {sets} WHERE id = ?", vals)
+        except Exception as e:
+            self._log("error", f"update_watchlist_channel_fields failed: {e}")
+
+    def remove_watchlist_channel(self, channel_id):
+        try:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM watchlist WHERE id = ?", (channel_id,))
+        except Exception as e:
+            self._log("error", f"remove_watchlist_channel failed: {e}")
+
+    def get_all_watchlist_channels(self):
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT * FROM watchlist ORDER BY date_added DESC"
+                ).fetchall()
+                return [dict(r) for r in rows]
+        except Exception as e:
+            self._log("error", f"get_all_watchlist_channels failed: {e}")
+            return []
+
+    def get_watchlist_channel(self, channel_id):
+        try:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT * FROM watchlist WHERE id = ?", (channel_id,)
+                ).fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            self._log("error", f"get_watchlist_channel failed: {e}")
+            return None
+
+    def get_watchlist_channel_by_url(self, url):
+        try:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT * FROM watchlist WHERE url = ?", (url,)
+                ).fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            self._log("error", f"get_watchlist_channel_by_url failed: {e}")
+            return None
+
+    def get_total_pending_count(self):
+        try:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT COALESCE(SUM(pending_new_count), 0) AS total FROM watchlist"
+                ).fetchone()
+                return int(row["total"] or 0)
+        except Exception as e:
+            self._log("error", f"get_total_pending_count failed: {e}")
+            return 0
+
+    def clear_pending_for_channel(self, channel_id):
+        try:
+            with self._conn() as conn:
+                conn.execute("""
+                    UPDATE watchlist SET pending_new_count = 0,
+                        pending_entries_json = '[]' WHERE id = ?
+                """, (channel_id,))
+        except Exception as e:
+            self._log("error", f"clear_pending_for_channel failed: {e}")
+
+    def refresh_watchlist_totals(self):
+        try:
+            with self._conn() as conn:
+                rows = conn.execute("SELECT id, url FROM watchlist").fetchall()
+                for r in rows:
+                    cnt = conn.execute(
+                        "SELECT COUNT(*) AS n FROM downloads WHERE channel_url = ?",
+                        (r["url"],)).fetchone()["n"]
+                    conn.execute(
+                        "UPDATE watchlist SET total_downloaded = ? WHERE id = ?",
+                        (cnt, r["id"]))
+        except Exception as e:
+            self._log("error", f"refresh_watchlist_totals failed: {e}")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Log parser — extract DOWNLOADED entries from activity.log for import/rebuild
+# ═════════════════════════════════════════════════════════════════════════════
+def parse_activity_log_entries(log_path):
+    entries = []
+    if not os.path.exists(log_path):
+        return entries
+    ts_re = re.compile(r'^(\d{4})-(\d{2})-(\d{2}) \d{2}:\d{2}:\d{2}')
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if "DOWNLOADED" not in line:
+                    continue
+                ts_m = ts_re.match(line)
+                if not ts_m:
+                    continue
+                log_date = f"{ts_m.group(1)}{ts_m.group(2)}{ts_m.group(3)}"
+                plat_m = re.search(r'Platform:\s*(\S+)', line)
+                if not plat_m:
+                    continue
+                platform = plat_m.group(1).strip()
+                genre_m = re.search(r'Genre:\s*([^|]+?)\s*\|', line)
+                genre = genre_m.group(1).strip() if genre_m else "(none)"
+                if genre == "—":
+                    genre = "(none)"
+                title_m = re.search(r'Title:\s*(.+?)\s*\|\s*File:', line)
+                title = title_m.group(1).strip() if title_m else ""
+                file_m = re.search(r'File:\s*(.+?)\s*\|\s*URL:', line)
+                file_path = file_m.group(1).strip() if file_m else ""
+                url_m = re.search(r'URL:\s*(\S+)', line)
+                url = url_m.group(1).strip() if url_m else ""
+                qual_m = re.search(r'Quality:\s*(.+?)$', line)
+                quality = qual_m.group(1).strip() if qual_m else ""
+                channel_name = _infer_channel_from_path(file_path, platform)
+                entries.append({
+                    "timestamp": line[:19], "log_date": log_date,
+                    "platform": platform, "genre": genre,
+                    "title": title, "file_path": file_path,
+                    "channel_name": channel_name, "url": url,
+                    "quality": quality,
+                })
+    except Exception:
+        pass
+    return entries
+
+
+def _infer_channel_from_path(file_path, platform):
+    if not file_path:
+        return ""
+    parts = file_path.replace("\\", "/").split("/")
+    try:
+        idx = parts.index(platform)
+    except ValueError:
+        return ""
+    if idx + 3 >= len(parts):
+        return ""
+    return parts[idx + 2]
+
+
+def scan_folder_newest_mp3(folder):
+    if not folder or not os.path.isdir(folder):
+        return 0, None
+    newest = None
+    count  = 0
+    try:
+        for name in os.listdir(folder):
+            if not name.lower().endswith(".mp3"):
+                continue
+            full = os.path.join(folder, name)
+            try:
+                mtime = os.path.getmtime(full)
+            except OSError:
+                continue
+            count += 1
+            if newest is None or mtime > newest:
+                newest = mtime
+    except OSError:
+        return 0, None
+    if newest is None:
+        return 0, None
+    return count, datetime.fromtimestamp(newest).strftime("%Y%m%d")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Log colours (used by the viewer)
@@ -872,7 +1419,8 @@ class DebugLogViewerWindow(tk.Toplevel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-COOKIE_HOWTO_TEXT = """\
+COOKIE_HOWTO_TEXTS = {
+    "Chrome": """\
 Setting Up a Dedicated Chrome Profile for DJ-CrateBuilder
 ══════════════════════════════════════════════════════════
 
@@ -954,15 +1502,392 @@ Step 8 — When Cookies Expire
     4. Close the window and continue as normal
 
   The cookies refresh automatically when you visit the site.
-"""
+""",
+
+    "Firefox": """\
+Setting Up a Dedicated Firefox Profile for DJ-CrateBuilder
+═══════════════════════════════════════════════════════════
+
+Step 1 — Open Firefox Profile Manager
+
+  Press  Win+R  (or open a terminal) and run:
+      firefox -P
+
+  This opens the Firefox Profile Manager dialog.
+
+Step 2 — Create the Profile
+
+  Click "Create Profile…" and follow the wizard.
+  Name it something recognizable like "DJ-CrateBuilder".
+  Click "Finish."
+
+  Select the new profile and click "Start Firefox."
+  A new Firefox window opens with a clean profile — its own
+  cookies, history, and extensions, isolated from your
+  personal profile.
+
+Step 3 — Create the Throwaway Google Account
+
+  In the new profile window, go to:
+      https://accounts.google.com/signup
+
+  Create a new Google account using a throwaway email.
+  Complete the signup process.
+
+Step 4 — Log into YouTube
+
+  Still in the DJ-CrateBuilder profile window, go to:
+      https://www.youtube.com
+
+  You should be signed in with the account you just created.
+  Watch a video or two briefly and accept any terms prompts.
+  This establishes a valid session with cookies.
+
+Step 5 — Find Your Profile Folder Name
+
+  In the DJ-CrateBuilder profile, type in the address bar:
+      about:profiles
+
+  Look for the profile you just created. The "Root Directory"
+  path will show something like:
+
+      C:\\Users\\YourName\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles\\ab12cd34.DJ-CrateBuilder
+
+  The profile name for DJ-CrateBuilder is the folder name,
+  e.g.:  ab12cd34.DJ-CrateBuilder
+
+  IMPORTANT: You need the full folder name including the
+  random prefix (e.g. "ab12cd34.DJ-CrateBuilder"), not just
+  the display name.
+
+Step 6 — Close the Profile Window
+
+  You can close this Firefox window. The profile and its
+  cookies persist permanently. You don't need to keep it open.
+  Next time you open Firefox normally, it will use your
+  personal profile as usual.
+
+Step 7 — Configure the App
+
+  In DJ-CrateBuilder Settings → Download Behavior:
+    ✓  Enable "Use browser cookies"
+       Browser:  Firefox
+       Profile:  ab12cd34.DJ-CrateBuilder  (from about:profiles)
+
+Step 8 — When Cookies Expire
+
+  Every few weeks or months, the session cookies will expire.
+  To refresh:
+
+    1. Run  firefox -P  and launch the DJ-CrateBuilder profile
+    2. Go to youtube.com — make sure you're still signed in
+    3. Close the window and continue as normal
+
+  The cookies refresh automatically when you visit the site.
+""",
+
+    "Edge": """\
+Setting Up a Dedicated Edge Profile for DJ-CrateBuilder
+═══════════════════════════════════════════════════════
+
+Step 1 — Open Edge Profile Manager
+
+  Open Edge and click your profile icon in the top-right corner.
+  In the dropdown, click "Add profile" then "Add."
+
+Step 2 — Create the Profile
+
+  Choose "Start without your data" for a clean profile.
+  Give it a recognizable name like "DJ-CrateBuilder."
+
+  A new Edge window opens using the new profile — its own
+  cookies, history, and saved logins, isolated from your
+  personal profile.
+
+Step 3 — Create the Throwaway Google Account
+
+  In the new profile window, go to:
+      https://accounts.google.com/signup
+
+  Create a new Google account using a throwaway email.
+  Complete the signup process.
+
+Step 4 — Log into YouTube
+
+  Still in the DJ-CrateBuilder profile window, go to:
+      https://www.youtube.com
+
+  You should be signed in with the account you just created.
+  Watch a video or two briefly and accept any terms prompts.
+  This establishes a valid session with cookies.
+
+Step 5 — Find Your Profile Name
+
+  Open a new tab in the DJ-CrateBuilder profile and type:
+      edge://version
+
+  Look for the line labeled "Profile Path." It will show
+  something like:
+
+      C:\\Users\\YourName\\AppData\\Local\\Microsoft\\Edge\\User Data\\Profile 2
+
+  The profile name is the last folder in that path.
+  In this example, it is:  Profile 2
+
+  IMPORTANT: The display name you chose ("DJ-CrateBuilder")
+  is NOT the folder name. You need the actual folder name
+  from this path (e.g. "Profile 2", "Profile 3", etc.)
+
+Step 6 — Close the Profile Window
+
+  You can close this Edge window. The profile and its cookies
+  persist permanently. Switch back to your personal Edge
+  profile and browse normally.
+
+Step 7 — Configure the App
+
+  In DJ-CrateBuilder Settings → Download Behavior:
+    ✓  Enable "Use browser cookies"
+       Browser:  Edge
+       Profile:  Profile 2  (or whatever edge://version showed)
+
+Step 8 — When Cookies Expire
+
+  Every few weeks or months, the session cookies will expire.
+  To refresh:
+
+    1. Click your Edge profile icon
+    2. Switch to the DJ-CrateBuilder profile
+    3. Go to youtube.com — make sure you're still signed in
+    4. Close the window and continue as normal
+
+  The cookies refresh automatically when you visit the site.
+""",
+
+    "Brave": """\
+Setting Up a Dedicated Brave Profile for DJ-CrateBuilder
+════════════════════════════════════════════════════════
+
+Step 1 — Open Brave Profile Manager
+
+  Open Brave and click your profile icon in the top-right corner.
+  In the dropdown, click "Add" to create a new profile.
+
+Step 2 — Create the Profile
+
+  Click "Continue without an account."
+  Give it a recognizable name like "DJ-CrateBuilder."
+  Pick a distinct color so you can easily identify it.
+
+  A new Brave window opens using the new profile — its own
+  cookies, history, and saved logins, isolated from your
+  personal profile.
+
+Step 3 — Create the Throwaway Google Account
+
+  In the new profile window, go to:
+      https://accounts.google.com/signup
+
+  Create a new Google account using a throwaway email.
+  Complete the signup process.
+
+Step 4 — Log into YouTube
+
+  Still in the DJ-CrateBuilder profile window, go to:
+      https://www.youtube.com
+
+  You should be signed in with the account you just created.
+  Watch a video or two briefly and accept any terms prompts.
+  This establishes a valid session with cookies.
+
+Step 5 — Find Your Profile Name
+
+  Open a new tab in the DJ-CrateBuilder profile and type:
+      brave://version
+
+  Look for the line labeled "Profile Path." It will show
+  something like:
+
+      C:\\Users\\YourName\\AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data\\Profile 2
+
+  The profile name is the last folder in that path.
+  In this example, it is:  Profile 2
+
+  IMPORTANT: The display name you chose ("DJ-CrateBuilder")
+  is NOT the folder name. You need the actual folder name
+  from this path (e.g. "Profile 2", "Profile 3", etc.)
+
+Step 6 — Close the Profile Window
+
+  You can close this Brave window. The profile and its cookies
+  persist permanently. Switch back to your personal Brave
+  profile and browse normally.
+
+Step 7 — Configure the App
+
+  In DJ-CrateBuilder Settings → Download Behavior:
+    ✓  Enable "Use browser cookies"
+       Browser:  Brave
+       Profile:  Profile 2  (or whatever brave://version showed)
+
+Step 8 — When Cookies Expire
+
+  Every few weeks or months, the session cookies will expire.
+  To refresh:
+
+    1. Click your Brave profile icon
+    2. Switch to the DJ-CrateBuilder profile
+    3. Go to youtube.com — make sure you're still signed in
+    4. Close the window and continue as normal
+
+  The cookies refresh automatically when you visit the site.
+""",
+
+    "Opera": """\
+Setting Up a Dedicated Opera Profile for DJ-CrateBuilder
+════════════════════════════════════════════════════════
+
+IMPORTANT: Opera does not support multiple profiles the same
+way Chrome or Firefox do. Instead, use a cookie file.
+
+Step 1 — Install a Cookie Export Extension
+
+  Open Opera and install the "Get cookies.txt LOCALLY"
+  extension from the Chrome Web Store (Opera supports
+  Chrome extensions).
+
+Step 2 — Create the Throwaway Google Account
+
+  Go to:
+      https://accounts.google.com/signup
+
+  Create a new Google account using a throwaway email.
+  Complete the signup process.
+
+Step 3 — Log into YouTube
+
+  Go to:
+      https://www.youtube.com
+
+  Sign in with the throwaway account you just created.
+  Watch a video or two briefly and accept any terms prompts.
+  This establishes a valid session with cookies.
+
+Step 4 — Export Cookies
+
+  While on youtube.com, click the "Get cookies.txt LOCALLY"
+  extension icon and export the cookies for the current site.
+  Save the file somewhere convenient, e.g.:
+      C:\\Users\\YourName\\cookies.txt
+
+Step 5 — Configure the App
+
+  In DJ-CrateBuilder Settings → Download Behavior:
+    ✓  Enable "Use browser cookies"
+       Method:  Cookie File
+       File:    C:\\Users\\YourName\\cookies.txt
+
+Step 6 — When Cookies Expire
+
+  Every few weeks or months, the session cookies will expire.
+  To refresh:
+
+    1. Go to youtube.com in Opera — sign in if needed
+    2. Re-export cookies using the extension
+    3. Overwrite the old cookies.txt file
+
+  The app will pick up the refreshed cookies automatically.
+""",
+
+    "Chromium": """\
+Setting Up a Dedicated Chromium Profile for DJ-CrateBuilder
+══════════════════════════════════════════════════════════
+
+Step 1 — Open Chromium Profile Manager
+
+  Open Chromium and click your profile icon in the top-right
+  corner. In the dropdown, click "Add" at the bottom of the
+  profile list.
+
+Step 2 — Create the Profile
+
+  Click "Continue without an account" for now.
+  Give the profile a recognizable name like "DJ-CrateBuilder."
+  Pick a distinct color or icon so you can easily identify it.
+  Click "Done."
+
+  A new Chromium window opens using the new profile — its own
+  cookies, history, and saved logins, isolated from your
+  personal profile.
+
+Step 3 — Create the Throwaway Google Account
+
+  In the new profile window, go to:
+      https://accounts.google.com/signup
+
+  Create a new Google account using a throwaway email.
+  Complete the signup process.
+
+Step 4 — Log into YouTube
+
+  Still in the DJ-CrateBuilder profile window, go to:
+      https://www.youtube.com
+
+  You should be signed in with the account you just created.
+  Watch a video or two briefly and accept any terms prompts.
+  This establishes a valid session with cookies.
+
+Step 5 — Find Your Profile Name
+
+  Open a new tab in the DJ-CrateBuilder profile and type:
+      chrome://version
+
+  Look for the line labeled "Profile Path." It will show
+  something like:
+
+      C:\\Users\\YourName\\AppData\\Local\\Chromium\\User Data\\Profile 2
+
+  The profile name is the last folder in that path.
+  In this example, it is:  Profile 2
+
+  IMPORTANT: The display name you chose ("DJ-CrateBuilder")
+  is NOT the folder name. You need the actual folder name
+  from this path (e.g. "Profile 2", "Profile 3", etc.)
+
+Step 6 — Close the Profile Window
+
+  You can close this Chromium window. The profile and its
+  cookies persist permanently. Switch back to your personal
+  Chromium profile and browse normally.
+
+Step 7 — Configure the App
+
+  In DJ-CrateBuilder Settings → Download Behavior:
+    ✓  Enable "Use browser cookies"
+       Browser:  Chromium
+       Profile:  Profile 2  (or whatever chrome://version showed)
+
+Step 8 — When Cookies Expire
+
+  Every few weeks or months, the session cookies will expire.
+  To refresh:
+
+    1. Click your Chromium profile icon
+    2. Switch to the DJ-CrateBuilder profile
+    3. Go to youtube.com — make sure you're still signed in
+    4. Close the window and continue as normal
+
+  The cookies refresh automatically when you visit the site.
+""",
+}
 
 
 class CookieHowToWindow(tk.Toplevel):
-    """Standalone dark-themed how-to viewer for Chrome profile setup."""
+    """Standalone dark-themed how-to viewer for browser profile setup."""
 
-    def __init__(self, parent):
+    def __init__(self, parent, browser="Chrome"):
         super().__init__(parent)
-        self.title("📖  How-To: Setting Up a Dedicated Chrome Profile")
+        self.title(f"📖  How-To: Setting Up a Dedicated {browser} Profile")
         self.geometry("700x540")
         self.minsize(500, 350)
         self.configure(bg=BG)
@@ -1003,9 +1928,10 @@ class CookieHowToWindow(tk.Toplevel):
                                  font=("Consolas", 10, "bold"))
         self._txt.tag_configure("body", foreground=TEXT_MED)
 
-        # Populate
+        # Populate with browser-specific text
+        howto_text = COOKIE_HOWTO_TEXTS.get(browser, COOKIE_HOWTO_TEXTS["Chrome"])
         self._txt.config(state="normal")
-        for line in COOKIE_HOWTO_TEXT.splitlines(True):
+        for line in howto_text.splitlines(True):
             stripped = line.strip()
             if stripped.startswith("══"):
                 self._txt.insert("end", line, "divider")
@@ -1051,9 +1977,13 @@ class MP3DownloaderApp(tk.Tk):
         self._downloading   = False
         self._cancel_flag   = threading.Event()
         self._pause_flag    = threading.Event()   # set = paused, clear = running
+        self._wl_scan_active = 0   # count of in-flight Watch List scans
         self._queue         = []
         self._skip_existing   = tk.BooleanVar(value=cfg.get("skip_existing", True))
-        self._skip_mode       = tk.StringVar(value=cfg.get("skip_mode", "In Logs ~ In Folder"))
+        _raw_skip = cfg.get("skip_mode", "In Database ~ In Folder")
+        _migrated = {"In Logs ~ In Folder": "In Database ~ In Folder",
+                     "In Logs Only": "In Database Only"}
+        self._skip_mode       = tk.StringVar(value=_migrated.get(_raw_skip, _raw_skip))
         self._skip_existing.trace_add("write", self._autosave_skip_settings)
         self._skip_mode.trace_add("write",     self._autosave_skip_settings)
         self._platform_var    = tk.StringVar(value="YouTube")
@@ -1090,6 +2020,13 @@ class MP3DownloaderApp(tk.Tk):
         self._cookie_method.trace_add("write",   self._autosave_behavior_settings)
         self._cookies_browser.trace_add("write", self._autosave_behavior_settings)
 
+        # Watch List behavior
+        self._auto_add_to_watchlist = tk.BooleanVar(
+            value=cfg.get("auto_add_to_watchlist", True))
+        self._auto_add_to_watchlist.trace_add(
+            "write", self._autosave_behavior_settings)
+        self._active_watchlist_batch = None   # set by _watchlist_download_*
+
         # Ensure directory structure exists on startup
         self._url_history = cfg.get("url_history", [])[:6]
         self._ensure_dirs()
@@ -1099,6 +2036,9 @@ class MP3DownloaderApp(tk.Tk):
         self._build_ui()
         self._apply_platform()      # paint initial platform colours
         self._check_deps_async()
+
+        # First-run: auto-populate the Watch List from existing channel folders
+        self.after(1200, self._watchlist_populate_from_folders)
 
     # ── Directory management ──────────────────────────────────────────────────
     def _ensure_dirs(self):
@@ -1124,9 +2064,9 @@ class MP3DownloaderApp(tk.Tk):
             if os.path.isdir(os.path.join(pdir, d)) and d != "_No Genre"
         )
 
-    def _resolve_save_dir(self, genre, channel_name=None):
+    def _resolve_save_dir(self, genre, channel_name=None, platform=None):
         """Build the final save path:  base/Platform[/Genre[/Channel]]"""
-        parts = [self._platform_dir()]
+        parts = [self._platform_dir(platform)]
         if genre and genre != "(none)":
             parts.append(genre)
         else:
@@ -1187,6 +2127,10 @@ class MP3DownloaderApp(tk.Tk):
         except Exception:
             self._dbg.info("yt-dlp version: unknown")
         self._dbg.info("═" * 80)
+
+        # ── Downloads database (SQLite) ───────────────────────────────────────
+        self._db_path = os.path.join(app_dir, "cratebuilder.db")
+        self._db = DownloadsDatabase(self._db_path, debug_logger=self._dbg)
 
     def _dbg_cookie_config(self):
         """Log the current cookie configuration to debug.log."""
@@ -1472,7 +2416,7 @@ class MP3DownloaderApp(tk.Tk):
         self._batch_add_btn.pack(side="right", padx=(0, 6))
 
         outer = tk.Frame(parent, bg=SURFACE2,
-                         highlightthickness=1, highlightbackground=BORDER)
+                         highlightthickness=1, highlightbackground=YT_RED)
         outer.pack(fill="x", pady=(0, 12))
 
         self._batch_canvas = tk.Canvas(outer, bg=SURFACE2, bd=0,
@@ -1501,15 +2445,15 @@ class MP3DownloaderApp(tk.Tk):
         """Validate the current URL entry and add it to the batch list."""
         if self._ph_active:
             return
-        url      = self._normalize_url(self._url_var.get().strip())
-        platform = self._platform_var.get()
-        cfg      = PLATFORMS[platform]
+        url = self._normalize_url(self._url_var.get().strip())
 
-        if not url or url == cfg["placeholder"]:
-            messagebox.showwarning("No URL", f"Please enter a {platform} URL.")
+        if not url:
+            messagebox.showwarning("No URL", "Please enter a YouTube or SoundCloud URL.")
             return
+        platform = self._detect_platform(url)
+        cfg      = PLATFORMS[platform]
         if not re.search(cfg["url_pattern"], url):
-            messagebox.showwarning("Invalid URL", cfg["bad_url_msg"])
+            messagebox.showwarning("Invalid URL", "That doesn't look like a YouTube or SoundCloud URL.")
             return
 
         genre = self._genre_var.get()
@@ -1532,7 +2476,7 @@ class MP3DownloaderApp(tk.Tk):
 
         # Clear the entry field and restore placeholder
         self._url_entry.delete(0, "end")
-        self._url_entry.insert(0, cfg["placeholder"])
+        self._url_entry.insert(0, "https://www.youtube.com/  or  https://soundcloud.com/")
         self._url_entry.config(foreground=TEXT_DIM)
         self._ph_active = True
 
@@ -1646,7 +2590,7 @@ class MP3DownloaderApp(tk.Tk):
         s.configure("TNotebook.Tab",
             background=SURFACE2, foreground=TEXT_DIM,
             font=("Segoe UI", 12, "bold"),
-            padding=(50, 10), borderwidth=0, width=12)
+            padding=(50, 10), borderwidth=0)
         s.map("TNotebook.Tab",
             background=[("selected", TAB_BLACK), ("active", SURFACE)],
             foreground=[("selected", TEXT),       ("active", TEXT_MED)],
@@ -1810,6 +2754,11 @@ class MP3DownloaderApp(tk.Tk):
         self._notebook.add(settings_frame, text="   ⚙  Settings   ")
         self._build_settings_tab(settings_frame)
 
+        # ── Watch List tab ────────────────────────────────────────────────────
+        watchlist_frame = ttk.Frame(self._notebook)
+        self._notebook.add(watchlist_frame, text="   👁  Watch List   ")
+        self._build_watchlist_tab(watchlist_frame)
+
         # ── About tab ────────────────────────────────────────────────────────
         about_frame = ttk.Frame(self._notebook)
         self._notebook.add(about_frame, text="    ℹ  About    ")
@@ -1875,6 +2824,9 @@ class MP3DownloaderApp(tk.Tk):
                 self._settings_canvas.yview_scroll(
                     int(-1 * (event.delta / 120)), "units")
             elif tab_idx == 2:
+                self._wl_canvas.yview_scroll(
+                    int(-1 * (event.delta / 120)), "units")
+            elif tab_idx == 3:
                 self._about_canvas.yview_scroll(
                     int(-1 * (event.delta / 120)), "units")
         self.bind_all("<MouseWheel>", _on_global_mousewheel)
@@ -1883,30 +2835,18 @@ class MP3DownloaderApp(tk.Tk):
         hdr = ttk.Frame(outer)
         hdr.pack(fill="x", pady=(0, 4))
 
-        self._logo_lbl = tk.Label(hdr, text="▶", font=("Segoe UI", 20),
+        self._logo_lbl = tk.Label(hdr, text="♫", font=("Segoe UI", 20),
                                    fg=YT_RED, bg=BG)
         self._logo_lbl.pack(side="left", padx=(0, 10))
 
-        self._title_lbl = ttk.Label(hdr, text="YouTube → MP3",
+        self._title_lbl = ttk.Label(hdr, text="DJ-CrateBuilder → MP3",
                                      style="Title.TLabel")
         self._title_lbl.pack(side="left", pady=(2, 0))
 
-        # Platform buttons — right side of header row
-        self._sc_btn = ttk.Button(hdr, text="◈  SoundCloud",
-                                   style="Off.TButton",
-                                   command=lambda: self._switch_platform("SoundCloud"))
-        self._sc_btn.pack(side="right", padx=(6, 0))
-
-        self._yt_btn = ttk.Button(hdr, text="▶  YouTube",
-                                   style="YT.TButton",
-                                   command=lambda: self._switch_platform("YouTube"))
-        self._yt_btn.pack(side="right", padx=(6, 6))
-
-        ttk.Label(hdr, text="Platform", style="White.Section.TLabel").pack(
-            side="right", padx=(0, 10))
+        # Platform is now auto-detected from the URL — no toggle buttons needed
 
         self._sub_lbl = ttk.Label(outer, style="S.Dim.TLabel",
-                                   text="Single video  •  channel URL  •  playlist")
+                                   text="YouTube or SoundCloud  •  single track  •  playlist  •  channel")
         self._sub_lbl.pack(anchor="w", pady=(0, 14))
 
         # ── Divider ───────────────────────────────────────────────────────────
@@ -1933,6 +2873,8 @@ class MP3DownloaderApp(tk.Tk):
         self._url_entry.bind("<Button-3>", self._url_context_menu)
         self._url_entry.bind("<<ComboboxSelected>>", self._url_history_selected)
         self._ph_active = True   # placeholder currently showing
+        self._url_entry.insert(0, "https://www.youtube.com/  or  https://soundcloud.com/")
+        self._url_entry.config(foreground=TEXT_DIM)
 
         # Right-click context menu for the URL field
         self._url_menu = tk.Menu(self, tearoff=0,
@@ -1979,7 +2921,7 @@ class MP3DownloaderApp(tk.Tk):
         self._skip_mode_combo = ttk.Combobox(
             opt,
             textvariable=self._skip_mode,
-            values=["In Logs ~ In Folder", "In Folder Only", "In Logs Only"],
+            values=["In Database ~ In Folder", "In Folder Only", "In Database Only"],
             state="readonly", width=20)
         self._skip_mode_combo.pack(side="left", padx=(14, 0))
 
@@ -2118,13 +3060,11 @@ class MP3DownloaderApp(tk.Tk):
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(0, 20))
 
         # ── Time / Length Limiter ─────────────────────────────────────────────
-        ttk.Label(outer, text="Time / Length Limiter",
-                  style="S.White.Section.TLabel").pack(anchor="w", pady=(0, 8))
-
-        ttk.Label(outer,
-                  text="Skip any file whose duration exceeds the limit below. "
-                       "Uncheck to allow files of any length.",
-                  style="S.Dim.TLabel", wraplength=660).pack(anchor="w", pady=(0, 12))
+        _lbl = ttk.Label(outer, text="Time / Length Limiter",
+                  style="S.White.Section.TLabel")
+        _lbl.pack(anchor="w", pady=(0, 8))
+        Tooltip(_lbl, "Skip any file whose duration exceeds the limit below. "
+                      "Uncheck to allow files of any length.", wraplength=360)
 
         limit_enable_row = ttk.Frame(outer)
         limit_enable_row.pack(fill="x", pady=(0, 8))
@@ -2182,13 +3122,11 @@ class MP3DownloaderApp(tk.Tk):
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 20))
 
         # ── MP3 Bitrate Selector ──────────────────────────────────────────────
-        ttk.Label(outer, text="Audio Output",
-                  style="S.White.Section.TLabel").pack(anchor="w", pady=(0, 8))
-
-        ttk.Label(outer,
-                  text="Bitrate used when converting the downloaded audio to MP3. "
-                       "Higher values produce better quality and larger files.",
-                  style="S.Dim.TLabel", wraplength=660).pack(anchor="w", pady=(0, 10))
+        _lbl = ttk.Label(outer, text="Audio Output",
+                  style="S.White.Section.TLabel")
+        _lbl.pack(anchor="w", pady=(0, 8))
+        Tooltip(_lbl, "Bitrate used when converting the downloaded audio to MP3. "
+                      "Higher values produce better quality and larger files.", wraplength=360)
 
         bitrate_row = ttk.Frame(outer)
         bitrate_row.pack(fill="x", pady=(0, 10))
@@ -2203,73 +3141,82 @@ class MP3DownloaderApp(tk.Tk):
             values=["128 kbps", "192 kbps", "224 kbps", "256 kbps", "320 kbps"],
             state="readonly", width=14)
         self._bitrate_combo.pack(side="left", padx=(0, 14))
-
-        ttk.Label(bitrate_row,
-                  text="192 kbps = good quality  •  320 kbps = maximum MP3 quality",
-                  style="S.Dim.TLabel").pack(side="left")
+        Tooltip(self._bitrate_combo, "192 kbps = good quality  •  320 kbps = maximum MP3 quality", wraplength=360)
 
         # ── No-conversion checkbox ────────────────────────────────────────────
         no_conv_row = ttk.Frame(outer)
         no_conv_row.pack(fill="x", pady=(0, 4))
-        ttk.Checkbutton(no_conv_row,
+        self._no_conv_cb = ttk.Checkbutton(no_conv_row,
                         text="Keep original format (no conversion)",
                         variable=self._no_conversion,
                         command=self._on_no_conversion_toggle,
-                        style="S.Bold.TCheckbutton"
-                        ).pack(side="left")
-
-        tk.Label(outer,
-                 text="      When enabled, files are saved in their original format "
-                      "and bitrate without conversion to MP3. YouTube typically serves "
-                      ".webm (Opus) or .m4a (AAC); SoundCloud serves .mp3 or .webm. "
-                      "Your folder will contain a mix of extensions.",
-                 font=("Segoe UI", 10), fg="#f59e0b", bg=BG,
-                 anchor="w", justify="left", wraplength=660
-                 ).pack(fill="x", pady=(0, 6))
+                        style="S.Bold.TCheckbutton")
+        self._no_conv_cb.pack(side="left")
+        Tooltip(self._no_conv_cb,
+                "When enabled, files are saved in their original format "
+                "and bitrate without conversion to MP3. YouTube typically serves "
+                ".webm (Opus) or .m4a (AAC); SoundCloud serves .mp3 or .webm. "
+                "Your folder will contain a mix of extensions.", wraplength=400)
 
         # Apply initial enabled/disabled state for the bitrate combo
         self._on_no_conversion_toggle()
 
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 20))
 
+        # ── Watch List settings ────────────────────────────────────────────────
+        _lbl = ttk.Label(outer, text="Watch List",
+                  style="S.White.Section.TLabel")
+        _lbl.pack(anchor="w", pady=(0, 6))
+        Tooltip(_lbl, "Channels you download are automatically tracked so you "
+                      "can check for new uploads later from the Watch List tab.", wraplength=360)
+
+        wl_row = ttk.Frame(outer)
+        wl_row.pack(fill="x", pady=(0, 4))
+
+        self._auto_add_cb = ttk.Checkbutton(
+            wl_row, text="Auto-add channels to Watch List after downloading",
+            variable=self._auto_add_to_watchlist,
+            style="S.Bold.TCheckbutton")
+        self._auto_add_cb.pack(side="left")
+        Tooltip(self._auto_add_cb,
+                "When enabled, any channel or playlist you download is "
+                "automatically added to the Watch List so you can scan "
+                "it for new uploads later.")
+
+        tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 20))
+
         # ── Download Behavior ─────────────────────────────────────────────────
         beh_title_row = ttk.Frame(outer)
         beh_title_row.pack(fill="x", pady=(0, 8))
-        ttk.Label(beh_title_row, text="Download Behavior",
-                  style="S.White.Section.TLabel").pack(side="left")
+        _lbl = ttk.Label(beh_title_row, text="Download Behavior",
+                  style="S.White.Section.TLabel")
+        _lbl.pack(side="left")
+        Tooltip(_lbl, "Options that control how DJ-CrateBuilder connects and paces "
+                      "requests. These can help avoid throttling, geographic "
+                      "restrictions, or IP-banning from YouTube/SoundCloud when "
+                      "doing entire channel/batch downloads.", wraplength=360)
         ttk.Label(beh_title_row, text="(Experimental)",
                   style="S.Dim.TLabel").pack(side="left", padx=(8, 0))
-
-        ttk.Label(outer,
-                  text="Options that control how DJ-CrateBuilder connects and paces "
-                       "requests. These can help avoid throttling, geographic "
-                       "restrictions, or IP-banning from YouTube/SoundCloud when "
-                       "doing entire channel/batch downloads.",
-                  style="S.Dim.TLabel", wraplength=660).pack(anchor="w", pady=(0, 12))
 
         # Geo-bypass checkbox
         geo_row = ttk.Frame(outer)
         geo_row.pack(fill="x", pady=(0, 4))
-        ttk.Checkbutton(geo_row,
+        _cb = ttk.Checkbutton(geo_row,
                         text="Enable geo-bypass",
                         variable=self._geo_bypass,
-                        style="S.Bold.TCheckbutton"
-                        ).pack(side="left")
-        ttk.Label(geo_row,
-                  text="Bypass geographic IP-based restrictions using a fake X-Forwarded-For header",
-                  style="S.Dim.TLabel").pack(side="left", padx=(12, 0))
+                        style="S.Bold.TCheckbutton")
+        _cb.pack(side="left")
+        Tooltip(_cb, "Bypass geographic IP-based restrictions using a fake X-Forwarded-For header", wraplength=360)
 
         # Rotate User-Agent checkbox
         ua_row = ttk.Frame(outer)
         ua_row.pack(fill="x", pady=(0, 4))
-        ttk.Checkbutton(ua_row,
+        _cb = ttk.Checkbutton(ua_row,
                         text="Rotate User-Agent",
                         variable=self._rotate_ua,
-                        style="S.Bold.TCheckbutton"
-                        ).pack(side="left")
-        ttk.Label(ua_row,
-                  text="Send a randomized browser User-Agent string (consistent within each session)",
-                  style="S.Dim.TLabel").pack(side="left", padx=(12, 0))
+                        style="S.Bold.TCheckbutton")
+        _cb.pack(side="left")
+        Tooltip(_cb, "Send a randomized browser User-Agent string (consistent within each session)", wraplength=360)
 
         # Sleep interval checkbox + mode selector
         sleep_row = ttk.Frame(outer)
@@ -2312,16 +3259,11 @@ class MP3DownloaderApp(tk.Tk):
 
         # Auto descriptions
         self._sleep_auto_row = ttk.Frame(self._sleep_detail)
-        self._sleep_auto_labels = []
-        for desc in [
-            "Light = Downloading 50 files or less, per 24hrs.",
-            "Moderate = Downloading between 50-200 files, per 24hrs.",
-            "Aggressive = Downloading 200 files or more, per 24hrs.",
-        ]:
-            _sl = tk.Label(self._sleep_auto_row, text=f"            {desc}",
-                     font=("Segoe UI", 10), fg="#f59e0b", bg=BG, anchor="w")
-            _sl.pack(fill="x")
-            self._sleep_auto_labels.append(_sl)
+        Tooltip(self._sleep_preset_combo,
+               "Light = Downloading 50 files or less, per 24hrs.\n"
+               "Moderate = Downloading between 50-200 files, per 24hrs.\n"
+               "Aggressive = Downloading 200 files or more, per 24hrs.",
+               wraplength=360)
 
         # Manual spinboxes
         self._sleep_manual_row = ttk.Frame(self._sleep_detail)
@@ -2373,15 +3315,18 @@ class MP3DownloaderApp(tk.Tk):
 
         cookie_row = ttk.Frame(outer)
         cookie_row.pack(fill="x", pady=(0, 4))
-        ttk.Checkbutton(cookie_row,
+        self._use_cookies_cb = ttk.Checkbutton(cookie_row,
                         text="Use browser cookies",
                         variable=self._use_cookies,
                         command=self._on_cookies_toggle,
-                        style="S.Bold.TCheckbutton"
-                        ).pack(side="left")
-        ttk.Label(cookie_row,
-                  text="Authenticate downloads using a browser login session (increases speed)",
-                  style="S.Dim.TLabel").pack(side="left", padx=(12, 0))
+                        style="S.Bold.TCheckbutton")
+        self._use_cookies_cb.pack(side="left")
+        Tooltip(self._use_cookies_cb,
+                "Authenticate downloads using a browser login session (increases speed).\n\n"
+                "⚠ It is strongly recommended to create a dedicated/throwaway account. "
+                "Chrome 127+ blocks cookie extraction (DPAPI) — use Firefox or a "
+                "cookie file instead. For cookie files: install the 'Get cookies.txt "
+                "LOCALLY' browser extension.", wraplength=400)
 
         # Cookie detail widgets
         self._cookie_labels = []
@@ -2422,7 +3367,7 @@ class MP3DownloaderApp(tk.Tk):
             state="readonly", width=12)
         self._cookies_browser_combo.pack(side="left", padx=(0, 16))
         self._cookies_browser_combo.bind("<<ComboboxSelected>>",
-            lambda _: self._autosave_behavior_settings())
+            lambda _: (self._update_howto_label(), self._autosave_behavior_settings()))
 
         self._profile_lbl = tk.Label(self._cookie_browser_row, text="Profile:",
                  font=("Segoe UI", 11), fg=TEXT_DIM, bg=BG)
@@ -2440,12 +3385,7 @@ class MP3DownloaderApp(tk.Tk):
         self._cookies_profile_entry.pack(side="left", padx=(0, 8))
         self._cookies_profile_entry.bind("<FocusOut>",
             lambda _: self._autosave_behavior_settings())
-
-        _cl = tk.Label(self._cookie_browser_row, text="(leave blank for default)",
-                 font=("Segoe UI", 10), fg=TEXT_DIM, bg=BG)
-        _cl.pack(side="left")
-        self._cookie_labels.append(_cl)
-        self._profile_hint_lbl = _cl
+        Tooltip(self._cookies_profile_entry, "(leave blank for default)")
 
         # Cookie file row (inside container)
         self._cookie_file_row = ttk.Frame(self._cookie_detail)
@@ -2476,28 +3416,12 @@ class MP3DownloaderApp(tk.Tk):
             command=self._browse_cookie_file)
         self._cookie_browse_btn.pack(side="left", padx=(0, 8))
 
-        _cl = tk.Label(self._cookie_file_row,
-                 text="Netscape/Mozilla cookie.txt format",
-                 font=("Segoe UI", 10), fg=TEXT_DIM, bg=BG)
-        _cl.pack(side="left")
-        self._cookie_file_labels.append(_cl)
-
-        self._cookie_note_labels = []
-        for note in [
-            "⚠  It is strongly recommended to create a dedicated/throwaway account",
-            "     for use with this feature, rather than using your personal account.",
-            "     Chrome 127+ blocks cookie extraction (DPAPI). Use Firefox or a cookie file instead.",
-            "     For cookie files: install the 'Get cookies.txt LOCALLY' browser extension.",
-        ]:
-            _cl = tk.Label(outer, text=f"      {note}",
-                     font=("Segoe UI", 10), fg="#f59e0b", bg=BG, anchor="w")
-            _cl.pack(fill="x")
-            self._cookie_note_labels.append(_cl)
+        Tooltip(self._cookie_file_entry, "Netscape/Mozilla cookie.txt format")
 
         howto_row = ttk.Frame(outer)
         howto_row.pack(fill="x", pady=(6, 0))
         self._howto_lbl = tk.Label(howto_row,
-                 text="      How-To:  Setting Up a Dedicated Chrome Profile",
+                 text=f"      How-To:  Setting Up a Dedicated {self._cookies_browser.get()} Profile",
                  font=("Segoe UI", 11, "bold"), fg=TEXT_DIM, bg=BG, anchor="w")
         self._howto_lbl.pack(side="left")
         self._howto_btn = tk.Button(howto_row, text="VIEW",
@@ -2512,12 +3436,11 @@ class MP3DownloaderApp(tk.Tk):
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 20))
 
         # ── Base directory ────────────────────────────────────────────────────
-        ttk.Label(outer, text="Default Save Directory",
-                  style="S.White.Section.TLabel").pack(anchor="w", pady=(0, 8))
-        ttk.Label(outer,
-                  text="All downloads are organized under this folder.  "
-                       "YouTube and SoundCloud sub-folders are created automatically.",
-                  style="S.Dim.TLabel", wraplength=660).pack(anchor="w", pady=(0, 10))
+        _lbl = ttk.Label(outer, text="Default Save Directory",
+                  style="S.White.Section.TLabel")
+        _lbl.pack(anchor="w", pady=(0, 8))
+        Tooltip(_lbl, "All downloads are organized under this folder.  "
+                      "YouTube and SoundCloud sub-folders are created automatically.", wraplength=360)
 
         dir_row = ttk.Frame(outer)
         dir_row.pack(fill="x", pady=(0, 8))
@@ -2551,13 +3474,12 @@ class MP3DownloaderApp(tk.Tk):
         # ── Downloads log ─────────────────────────────────────────────────────
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(8, 20))
 
-        ttk.Label(outer, text="Downloads Log",
-                  style="S.White.Section.TLabel").pack(anchor="w", pady=(0, 6))
-        ttk.Label(outer,
-                  text="A color-coded record of every downloaded, skipped, and failed "
-                       "file. View it here in the built-in viewer, or open it in your "
-                       "system's default text editor.",
-                  style="S.Dim.TLabel", wraplength=660).pack(anchor="w", pady=(0, 10))
+        _lbl = ttk.Label(outer, text="Downloads Log",
+                  style="S.White.Section.TLabel")
+        _lbl.pack(anchor="w", pady=(0, 6))
+        Tooltip(_lbl, "A color-coded record of every downloaded, skipped, and failed "
+                      "file. View it here in the built-in viewer, or open it in your "
+                      "system's default text editor.", wraplength=360)
 
         log_row = ttk.Frame(outer)
         log_row.pack(fill="x", pady=(0, 4))
@@ -2576,13 +3498,12 @@ class MP3DownloaderApp(tk.Tk):
         # ── Debug log ─────────────────────────────────────────────────────────
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(8, 20))
 
-        ttk.Label(outer, text="Debug Log",
-                  style="S.White.Section.TLabel").pack(anchor="w", pady=(0, 6))
-        ttk.Label(outer,
-                  text="Detailed diagnostic log capturing cookie configuration, "
-                       "yt-dlp options, request/response data, and full error "
-                       "tracebacks. Useful for troubleshooting download failures.",
-                  style="S.Dim.TLabel", wraplength=660).pack(anchor="w", pady=(0, 10))
+        _lbl = ttk.Label(outer, text="Debug Log",
+                  style="S.White.Section.TLabel")
+        _lbl.pack(anchor="w", pady=(0, 6))
+        Tooltip(_lbl, "Detailed diagnostic log capturing cookie configuration, "
+                      "yt-dlp options, request/response data, and full error "
+                      "tracebacks. Useful for troubleshooting download failures.", wraplength=360)
 
         dbg_row = ttk.Frame(outer)
         dbg_row.pack(fill="x", pady=(0, 4))
@@ -2596,6 +3517,35 @@ class MP3DownloaderApp(tk.Tk):
         self._debug_path_lbl = ttk.Label(dbg_row, text="", style="S.Dim.TLabel")
         self._debug_path_lbl.pack(side="left", fill="x", expand=True)
         self._refresh_debug_path_label()
+
+        # ── Database management ────────────────────────────────────────────────
+        tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(8, 20))
+
+        _lbl = ttk.Label(outer, text="Downloads Database",
+                  style="S.White.Section.TLabel")
+        _lbl.pack(anchor="w", pady=(0, 6))
+        Tooltip(_lbl, "The SQLite database tracks every download for fast "
+                      "lookups and Watch List history. If it gets corrupted "
+                      "or deleted, rebuild it from the activity log.", wraplength=360)
+
+        db_row = ttk.Frame(outer)
+        db_row.pack(fill="x", pady=(0, 4))
+
+        self._rebuild_db_btn = ttk.Button(
+            db_row, text="🔄  Rebuild Database from Log",
+            style="Save.TButton",
+            command=self._rebuild_db_from_log)
+        self._rebuild_db_btn.pack(side="left", padx=(0, 16))
+        Tooltip(self._rebuild_db_btn,
+                "Re-reads every DOWNLOADED entry from the activity log "
+                "and re-inserts them into the database. This is safe to "
+                "run at any time — it clears and rebuilds from scratch.")
+
+        self._db_path_lbl = ttk.Label(db_row, text="", style="S.Dim.TLabel")
+        self._db_path_lbl.pack(side="left", fill="x", expand=True)
+        if hasattr(self, "_db_path"):
+            short = self._db_path.replace(os.path.expanduser("~"), "~")
+            self._db_path_lbl.config(text=short)
 
         self._update_tree_preview()
         self._refresh_limit_label()
@@ -2658,6 +3608,7 @@ class MP3DownloaderApp(tk.Tk):
             "cookies_browser":  self._cookies_browser.get(),
             "cookies_profile":  self._cookies_profile.get(),
             "cookie_file":      self._cookie_file.get(),
+            "auto_add_to_watchlist": self._auto_add_to_watchlist.get(),
         })
         self._update_tree_preview()
         self._refresh_genre_list()
@@ -2767,8 +3718,7 @@ class MP3DownloaderApp(tk.Tk):
             self._preset_lbl.config(fg=TEXT_DIM if enabled else GREY)
             self._sleep_preset_combo.config(
                 state="readonly" if enabled else "disabled")
-            for lbl in getattr(self, "_sleep_auto_labels", []):
-                lbl.config(fg="#f59e0b" if enabled else GREY)
+            pass  # auto description labels replaced by tooltip
         else:
             # Hide preset from main row, hide auto descriptions, show manual
             self._preset_lbl.pack_forget()
@@ -2798,8 +3748,7 @@ class MP3DownloaderApp(tk.Tk):
                 state="readonly" if enabled else "disabled")
         for lbl in getattr(self, "_cookie_labels", []):
             if lbl not in [getattr(self, "_browser_lbl", None),
-                           getattr(self, "_profile_lbl", None),
-                           getattr(self, "_profile_hint_lbl", None)]:
+                           getattr(self, "_profile_lbl", None)]:
                 lbl.config(fg=TEXT_DIM if enabled else GREY)
 
         # Switch visible row inside the container
@@ -2807,8 +3756,7 @@ class MP3DownloaderApp(tk.Tk):
             self._cookie_browser_row.pack(fill="x", pady=(0, 4))
             self._cookie_file_row.pack_forget()
             # Browser row colors
-            for lbl in [self._browser_lbl, self._profile_lbl,
-                         self._profile_hint_lbl]:
+            for lbl in [self._browser_lbl, self._profile_lbl]:
                 if lbl:
                     lbl.config(fg=TEXT_DIM if enabled else GREY)
             self._cookies_browser_combo.config(
@@ -2827,10 +3775,7 @@ class MP3DownloaderApp(tk.Tk):
                 state="normal" if enabled else "disabled",
                 fg=TEXT_DIM if enabled else GREY)
 
-        # Warning notes
-        note_color = "#f59e0b" if enabled else GREY
-        for lbl in getattr(self, "_cookie_note_labels", []):
-            lbl.config(fg=note_color)
+        # Warning notes replaced by tooltip on self._use_cookies_cb
 
         if hasattr(self, "_howto_lbl"):
             self._howto_lbl.config(fg=TEXT_DIM if enabled else GREY)
@@ -2867,6 +3812,7 @@ class MP3DownloaderApp(tk.Tk):
         cfg["cookies_browser"]  = self._cookies_browser.get()
         cfg["cookies_profile"]  = self._cookies_profile.get()
         cfg["cookie_file"]      = self._cookie_file.get()
+        cfg["auto_add_to_watchlist"] = self._auto_add_to_watchlist.get()
         save_config(cfg)
 
     def _build_about_tab(self, parent):
@@ -2906,15 +3852,44 @@ class MP3DownloaderApp(tk.Tk):
             tk.Label(row, text=label, font=("Segoe UI", 12, "bold"),
                       fg=TEXT, bg=BG, width=14, anchor="w"
                       ).pack(side="left")
-            tk.Label(row, text=value, font=("Segoe UI", 11),
-                      fg=TEXT, bg=BG, anchor="w"
-                      ).pack(side="left", padx=(8, 0))
+            val_lbl = tk.Label(row, text=value, font=("Segoe UI", 11),
+                      fg=TEXT, bg=BG, anchor="w")
+            val_lbl.pack(side="left", padx=(8, 0))
+
+            # Make the GitHub row clickable
+            if label == "GitHub":
+                val_lbl.config(fg=LINK_COL, cursor="hand2")
+                val_lbl.bind("<Button-1>",
+                    lambda _e: webbrowser.open(GITHUB_URL))
+                val_lbl.bind("<Enter>",
+                    lambda _e, w=val_lbl: w.config(
+                        font=("Segoe UI", 11, "underline")))
+                val_lbl.bind("<Leave>",
+                    lambda _e, w=val_lbl: w.config(
+                        font=("Segoe UI", 11)))
+                Tooltip(val_lbl,
+                        "Click to open the DJ-CrateBuilder GitHub page — "
+                        "check here for updates and releases.")
 
         # ── FAQ ───────────────────────────────────────────────────────────────
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(20, 20))
 
-        ttk.Label(outer, text="Frequently Asked Questions",
-                  style="White.Section.TLabel").pack(anchor="w", pady=(0, 16))
+        faq_hdr = ttk.Frame(outer)
+        faq_hdr.pack(fill="x", pady=(0, 16))
+        ttk.Label(faq_hdr, text="Frequently Asked Questions",
+                  style="White.Section.TLabel").pack(side="left")
+
+        self._github_btn = tk.Button(
+            faq_hdr, text="  ↗  View on GitHub — Updates & Releases  ",
+            font=("Segoe UI", 10, "bold"),
+            bg=SURFACE2, fg=LINK_COL,
+            activebackground=BORDER, activeforeground=TEXT,
+            relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
+            command=lambda: webbrowser.open(GITHUB_URL))
+        self._github_btn.pack(side="right")
+        Tooltip(self._github_btn,
+                "Opens the DJ-CrateBuilder GitHub page in your browser. "
+                "Check here for the latest releases and update notes.")
 
         faq = [
             ("Q: What is DJ-CrateBuilder?",
@@ -2940,9 +3915,9 @@ class MP3DownloaderApp(tk.Tk):
              "cannot be downloaded."),
 
             ("Q: What does \"Skip files already downloaded\" do?",
-             "A: It prevents re-downloading files you already have. There are three modes: \"In Logs ~ In Folder\" "
-             "skips if the file is found in either the download log or the destination folder. \"In Folder Only\" "
-             "checks only whether the file exists on disk. \"In Logs Only\" checks only the download log. This "
+             "A: It prevents re-downloading files you already have. There are three modes: \"In Database ~ In Folder\" "
+             "skips if the file is found in either the downloads database or the destination folder. \"In Folder Only\" "
+             "checks only whether the file exists on disk. \"In Database Only\" checks only the database. This "
              "feature acts as a resume function — if a large batch is interrupted, restart it and already-completed "
              "files will be skipped."),
 
@@ -3131,13 +4106,19 @@ class MP3DownloaderApp(tk.Tk):
             self._cookie_file.set(path)
             self._autosave_behavior_settings()
 
+    def _update_howto_label(self):
+        """Update the how-to label to reflect the currently selected browser."""
+        browser = self._cookies_browser.get()
+        if hasattr(self, "_howto_lbl"):
+            self._howto_lbl.config(
+                text=f"      How-To:  Setting Up a Dedicated {browser} Profile")
+
     def _open_cookie_howto(self):
-        """Open the built-in Chrome profile setup guide window."""
+        """Open the built-in browser profile setup guide window."""
+        browser = self._cookies_browser.get()
         if hasattr(self, "_cookie_howto") and self._cookie_howto.winfo_exists():
-            self._cookie_howto.lift()
-            self._cookie_howto.focus_force()
-            return
-        self._cookie_howto = CookieHowToWindow(self)
+            self._cookie_howto.destroy()
+        self._cookie_howto = CookieHowToWindow(self, browser=browser)
 
     # ── Genre management ─────────────────────────────────────────────────────
     def _refresh_genre_list(self):
@@ -3246,82 +4227,44 @@ class MP3DownloaderApp(tk.Tk):
 
     # ── Platform switching ────────────────────────────────────────────────────
     def _switch_platform(self, name):
-        if self._downloading:
-            return
-        self._platform_var.set(name)
-        self._apply_platform()
+        """No-op — platform is now auto-detected from the URL."""
+        pass
 
     def _apply_platform(self):
-        name = self._platform_var.get()
-        cfg  = PLATFORMS[name]
-        acc  = cfg["accent"]
-        dark = cfg["accent_dark"]
-
-        # Header
-        self._logo_lbl.config(text=cfg["icon"], fg=acc)
-        self._title_lbl.config(text=cfg["label"])
-        self._sub_lbl.config(text=cfg["sub"])
-
-        # Toggle button styles
+        """Set up initial app styling. Platform is auto-detected from URL."""
         s = ttk.Style(self)
-        if name == "YouTube":
-            self._yt_btn.config(style="YT.TButton")
-            self._sc_btn.config(style="Off.TButton")
-        else:
-            self._yt_btn.config(style="Off.TButton")
-            self._sc_btn.config(style="SC.TButton")
-
-        # Download button colour
-        s.configure("Download.TButton", background=dark)
+        s.configure("Download.TButton", background=YT_DARK)
         s.map("Download.TButton",
-              background=[("active", acc), ("disabled", "#2a1515")])
-
-        # Per-item progress bar colour
+              background=[("active", YT_RED), ("disabled", "#2a1515")])
         s.configure("Accent.Horizontal.TProgressbar",
-            background=acc, lightcolor=acc, darkcolor=acc)
-
-        # Active queue row icon colour
-        STATE_ICON[ST_ACTIVE] = ("◉", acc)
-
-        # Update URL field placeholder
-        self._set_placeholder(cfg["placeholder"])
-
-        # Update entry focus ring
+            background=YT_RED, lightcolor=YT_RED, darkcolor=YT_RED)
+        STATE_ICON[ST_ACTIVE] = ("◉", YT_RED)
         s.map("TEntry",
-            bordercolor=[("focus", acc), ("!focus", BORDER)],
-            lightcolor=[("focus", acc),  ("!focus", BORDER)])
-
-        # Window title
+            bordercolor=[("focus", YT_RED), ("!focus", BORDER)],
+            lightcolor=[("focus", YT_RED),  ("!focus", BORDER)])
         self.title(f"{APP_NAME}  v{APP_VERSION}")
-
-        # Refresh genre list for the new platform & update save preview
         self._refresh_genre_list()
 
-    def _set_placeholder(self, text):
+    def _set_placeholder(self, text=None):
         """Replace placeholder text without disturbing a real URL."""
-        current = self._url_entry.get()
-        old_ph  = PLATFORMS["YouTube"]["placeholder"] if \
-                  self._platform_var.get() == "SoundCloud" else \
-                  PLATFORMS["SoundCloud"]["placeholder"]
-        if self._ph_active or current == old_ph or current == "":
+        ph = text or "https://www.youtube.com/  or  https://soundcloud.com/"
+        if self._ph_active:
             self._url_entry.config(state="normal")
             self._url_entry.delete(0, "end")
-            self._url_entry.insert(0, text)
+            self._url_entry.insert(0, ph)
             self._url_entry.config(foreground=TEXT_DIM)
             self._ph_active = True
 
     # ── URL placeholder ───────────────────────────────────────────────────────
     def _url_focus_in(self, _e):
-        cfg = PLATFORMS[self._platform_var.get()]
-        if self._url_entry.get() == cfg["placeholder"]:
+        if self._ph_active:
             self._url_entry.delete(0, "end")
             self._url_entry.config(foreground=TEXT)
             self._ph_active = False
 
     def _url_focus_out(self, _e):
         if not self._url_entry.get().strip():
-            cfg = PLATFORMS[self._platform_var.get()]
-            self._url_entry.insert(0, cfg["placeholder"])
+            self._url_entry.insert(0, "https://www.youtube.com/  or  https://soundcloud.com/")
             self._url_entry.config(foreground=TEXT_DIM)
             self._ph_active = True
 
@@ -3398,6 +4341,13 @@ class MP3DownloaderApp(tk.Tk):
         cfg = load_config()
         cfg["url_history"] = self._url_history
         save_config(cfg)
+
+    @staticmethod
+    def _detect_platform(url):
+        """Return 'SoundCloud' or 'YouTube' based on the URL."""
+        if re.search(r'soundcloud\.com', url, re.IGNORECASE):
+            return "SoundCloud"
+        return "YouTube"
 
     @staticmethod
     def _normalize_url(url):
@@ -3540,20 +4490,19 @@ class MP3DownloaderApp(tk.Tk):
         if self._downloading:
             return
 
-        platform = self._platform_var.get()
-        cfg      = PLATFORMS[platform]
-
         # Build the run list: use batch if populated, else fall back to URL field
         if self._batch_urls:
             run_batch = list(self._batch_urls)
         else:
             url = self._normalize_url(self._url_var.get().strip())
-            if not url or url == cfg["placeholder"]:
+            if not url or self._ph_active:
                 messagebox.showwarning("No URL",
-                    f"Add at least one URL to the batch queue, or enter a {platform} URL.")
+                    "Add at least one URL to the batch queue, or enter a YouTube or SoundCloud URL.")
                 return
+            platform = self._detect_platform(url)
+            cfg      = PLATFORMS[platform]
             if not re.search(cfg["url_pattern"], url):
-                messagebox.showwarning("Invalid URL", cfg["bad_url_msg"])
+                messagebox.showwarning("Invalid URL", "That doesn't look like a YouTube or SoundCloud URL.")
                 return
             genre = self._genre_var.get()
             if genre == "(none)":
@@ -3576,6 +4525,7 @@ class MP3DownloaderApp(tk.Tk):
         self._url_entry.config(state="disabled")
         self._cancel_btn.config(state="normal", style="CancelActive.TButton")
         self._pause_btn.config(state="normal", text="⏸  Pause", style="Pause.TButton")
+        self._wl_update_cancel_btn_state()
         self._vid_progress["value"]     = 0
         self._overall_progress["value"] = 0
         self._cur_lbl.config(text="Preparing batch…")
@@ -3650,7 +4600,9 @@ class MP3DownloaderApp(tk.Tk):
                 # Highlight the active batch row
                 self.after(0, lambda i=url_idx: self._batch_highlight(i))
 
-                dl, sk, er = self._process_one_url(url, genre, platform, cfg, session_ua)
+                dl, sk, er = self._process_one_url(
+                    url, genre, platform, cfg, session_ua,
+                    channel_name_override=item.get("channel_name"))
                 if dl is None:   # fatal error inside _process_one_url
                     fatal_error = self._last_fatal_error
                     break
@@ -3712,6 +4664,28 @@ class MP3DownloaderApp(tk.Tk):
             ))
 
         finally:
+            # ── Watch List: update cutoff + clear pending after batch ──
+            wl_batch = self._active_watchlist_batch
+            if wl_batch:
+                try:
+                    for cid in wl_batch.get("channel_ids", []):
+                        ch = self._db.get_watchlist_channel(cid)
+                        if not ch:
+                            continue
+                        # Advance cutoff to today minus buffer
+                        new_cutoff = subtract_days_from_yyyymmdd(
+                            today_yyyymmdd(), WATCHLIST_CUTOFF_BUFFER_DAYS)
+                        self._db.update_watchlist_cutoff(
+                            ch["url"], new_cutoff)
+                        self._db.clear_pending_for_channel(cid)
+                        self._db.update_watchlist_status(cid, "idle")
+                except Exception as wle:
+                    self._dbg.error(
+                        f"WL BATCH CLEANUP | error: {wle}")
+                finally:
+                    self._active_watchlist_batch = None
+                # Refresh the Watch List UI if it exists
+                self.after(200, self._watchlist_refresh)
             self.after(0, self._finish)
 
     def _batch_highlight(self, active_idx):
@@ -3726,7 +4700,8 @@ class MP3DownloaderApp(tk.Tk):
                 pass
 
     # ── Per-URL worker ────────────────────────────────────────────────────────
-    def _process_one_url(self, url, genre, platform, cfg, session_ua=None):
+    def _process_one_url(self, url, genre, platform, cfg, session_ua=None,
+                         channel_name_override=None):
         """
         Download all entries from a single URL.
         Returns (downloaded, skipped, errors) counts, or (None, None, None) on
@@ -3839,8 +4814,12 @@ class MP3DownloaderApp(tk.Tk):
                 return 0, 0, 0
 
             # Resolve save directory
-            channel_sub = collection_name if is_collection else None
-            save_dir    = self._resolve_save_dir(genre, channel_sub)
+            channel_sub = channel_name_override or (
+                collection_name if is_collection else None)
+            save_dir    = self._resolve_save_dir(genre, channel_sub, platform=platform)
+
+            # Track the newest upload date seen in this run (for auto-add)
+            _max_upload_date_this_run = None
 
             self.after(0, lambda sd=save_dir: self._set_status(
                 f"Saving to  {sd.replace(os.path.expanduser('~'), '~')}"))
@@ -3910,41 +4889,39 @@ class MP3DownloaderApp(tk.Tk):
                     mode        = self._skip_mode.get()
                     found_path  = self._file_exists_on_disk(save_dir, item_title)
                     file_exists = found_path is not None
-                    in_log      = self._was_logged(expected_path, title=item_title)
+                    video_id    = entry.get("id")
+                    in_db       = self._db.is_video_downloaded(video_id)
 
                     # Use the actual found path for log/display if available
                     if found_path:
                         expected_path = found_path
 
-                    # Determine whether this entry should be skipped
-                    # based on the selected mode
                     should_skip = False
-                    if mode == "In Logs ~ In Folder":
-                        should_skip = file_exists or in_log
+                    if mode == "In Database ~ In Folder":
+                        should_skip = file_exists or in_db
                     elif mode == "In Folder Only":
                         should_skip = file_exists
-                    elif mode == "In Logs Only":
-                        should_skip = in_log
+                    elif mode == "In Database Only":
+                        should_skip = in_db
 
                     if should_skip:
-                        # File is in log but missing from disk — ask user
-                        if in_log and not file_exists and mode in (
-                                "In Logs ~ In Folder", "In Logs Only"):
+                        if in_db and not file_exists and mode in (
+                                "In Database ~ In Folder", "In Database Only"):
                             result = []
                             evt    = threading.Event()
                             self.after(0, lambda t=item_title, r=result, e=evt:
                                 self._ask_redownload(t, r, e))
                             evt.wait()
-                            if result[0]:   # user chose to re-download
+                            if result[0]:
                                 should_skip = False
 
                     if should_skip:
                         skip_reason = (
-                            "already on disk"   if mode == "In Folder Only" else
-                            "in log"            if mode == "In Logs Only" else
-                            "in log + on disk"  if (in_log and file_exists) else
-                            "already on disk"   if file_exists else
-                            "in log"
+                            "already on disk"    if mode == "In Folder Only" else
+                            "in database"        if mode == "In Database Only" else
+                            "in database + disk" if (in_db and file_exists) else
+                            "already on disk"    if file_exists else
+                            "in database"
                         )
                         skipped += 1
                         done    += 1
@@ -4060,6 +5037,16 @@ class MP3DownloaderApp(tk.Tk):
                                 speed_txt = f"{sp}  {eta}" if eta else sp
                                 self.after(0, lambda s=speed_txt:
                                     self._speed_lbl.config(text=s))
+                            # Update queue row title from actual yt-dlp filename
+                            # so the queue always matches the saved file name.
+                            real_title = d.get("info_dict", {}).get("title", "")
+                            if real_title and i < len(self._queue):
+                                if self._queue[i]["title"] != real_title:
+                                    self._queue[i]["title"] = real_title
+                                    self.after(0, lambda ii=i, t=real_title: (
+                                        self._cur_lbl.config(text=t[:80]),
+                                        self._set_row_state(ii, ST_ACTIVE),
+                                    ))
                         elif st == "finished":
                             self.after(0, lambda: (
                                 self._vid_progress.config(value=95),
@@ -4176,6 +5163,21 @@ class MP3DownloaderApp(tk.Tk):
                         f"DOWNLOAD OK   | {item_title!r}  quality={src_str}")
                     self._log_download(item_title, expected_path, item_url,
                                        platform, genre, quality=src_str)
+                    # ── Record in the downloads database ──────────────
+                    _vid_upload = entry.get("upload_date", "") or ""
+                    self._db.add_download(
+                        video_id=entry.get("id"),
+                        title=item_title,
+                        channel_name=channel_name_override or collection_name,
+                        channel_url=url if is_collection else "",
+                        platform=platform, genre=genre or "(none)",
+                        file_path=expected_path,
+                        upload_date=_vid_upload,
+                        bitrate=src_str)
+                    if _vid_upload and (
+                            _max_upload_date_this_run is None
+                            or _vid_upload > _max_upload_date_this_run):
+                        _max_upload_date_this_run = _vid_upload
                     brate_txt = (f"{int(source_abr[0])}k → {effective_kbps}k"
                                  if source_abr[0] else f"→ {effective_kbps}k")
                     self.after(0, lambda i=idx, b=brate_txt:
@@ -4246,6 +5248,24 @@ class MP3DownloaderApp(tk.Tk):
                             self._log_download(
                                 item_title, expected_path, item_url,
                                 platform, genre, quality=src_str)
+                            # ── Record retry success in DB ────────────
+                            _vid_upload = entry.get("upload_date", "") or ""
+                            self._db.add_download(
+                                video_id=entry.get("id"),
+                                title=item_title,
+                                channel_name=(channel_name_override
+                                              or collection_name),
+                                channel_url=url if is_collection else "",
+                                platform=platform,
+                                genre=genre or "(none)",
+                                file_path=expected_path,
+                                upload_date=_vid_upload,
+                                bitrate=src_str)
+                            if _vid_upload and (
+                                    _max_upload_date_this_run is None
+                                    or _vid_upload
+                                       > _max_upload_date_this_run):
+                                _max_upload_date_this_run = _vid_upload
                             brate_txt = (
                                 f"{int(source_abr[0])}k → {output_kbps}k"
                                 if source_abr[0]
@@ -4315,7 +5335,19 @@ class MP3DownloaderApp(tk.Tk):
                 parts.insert(0, "Cancelled.")
             self.after(0, lambda s="  ".join(parts): self._set_status(s))
 
-            return done - skipped - errors, skipped, errors
+            # ── Auto-add to Watch List (collections only) ─────────────
+            actual_downloaded = done - skipped - errors
+            if (is_collection and actual_downloaded > 0
+                    and not channel_name_override):
+                # Only auto-add when this is a normal user download, not
+                # a Watch List "Download New" run (which has override set)
+                self._watchlist_auto_add_if_enabled(
+                    url,
+                    channel_name_override or collection_name,
+                    genre,
+                    _max_upload_date_this_run)
+
+            return actual_downloaded, skipped, errors
 
         except Exception as exc:
             err = str(exc)
@@ -4348,6 +5380,998 @@ class MP3DownloaderApp(tk.Tk):
         self._cancel_btn.config(state="disabled", style="Cancel.TButton")
         self._pause_btn.config(state="disabled", text="⏸  Pause", style="Pause.TButton")
         self._bitrate_lbl.config(text="")
+        self._wl_update_cancel_btn_state()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ██  WATCH LIST TAB  ██
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _cancel_all_updates(self):
+        """Global cancel: stops in-progress downloads AND Watch List scans."""
+        self._cancel_flag.set()
+        self._pause_flag.clear()
+        if self._downloading:
+            try:
+                self._cancel_btn.config(state="disabled", style="Cancel.TButton")
+                self._pause_btn.config(state="disabled")
+                self._set_status("Cancelling after current track…")
+            except Exception:
+                pass
+        try:
+            self._wl_cancel_btn.config(state="disabled",
+                                       bg=SURFACE2, fg=TEXT_DIM)
+        except Exception:
+            pass
+        if self._wl_scan_active > 0:
+            self._watchlist_log("Cancelling scans…", "info")
+
+    def _wl_update_cancel_btn_state(self):
+        """Enable Watch List Cancel button if any download or scan is active."""
+        try:
+            active = self._downloading or self._wl_scan_active > 0
+            if active:
+                self._wl_cancel_btn.config(
+                    state="normal", bg=YT_DARK, fg=TEXT)
+            else:
+                self._wl_cancel_btn.config(
+                    state="disabled", bg=SURFACE2, fg=TEXT_DIM)
+        except Exception:
+            pass
+
+    def _build_watchlist_tab(self, parent):
+        """Build the Watch List tab: toolbar, scrollable channel cards, scan log."""
+        wrapper = tk.Frame(parent, bg=BG)
+        wrapper.pack(fill="both", expand=True)
+
+        wl_sb = ttk.Scrollbar(wrapper, orient="vertical")
+        wl_sb.pack(side="right", fill="y")
+
+        self._wl_canvas = tk.Canvas(
+            wrapper, bg=BG, bd=0, highlightthickness=0,
+            yscrollcommand=wl_sb.set)
+        self._wl_canvas.pack(side="left", fill="both", expand=True)
+        wl_sb.config(command=self._wl_canvas.yview)
+
+        outer = ttk.Frame(self._wl_canvas, padding=(28, 22, 28, 18))
+        self._wl_cwin = self._wl_canvas.create_window(
+            (0, 0), window=outer, anchor="nw")
+
+        outer.bind("<Configure>", lambda e:
+            self._wl_canvas.configure(scrollregion=self._wl_canvas.bbox("all")))
+        self._wl_canvas.bind("<Configure>", lambda e:
+            self._wl_canvas.itemconfig(self._wl_cwin, width=e.width))
+
+        # ── Header ────────────────────────────────────────────────────────────
+        hdr = ttk.Frame(outer)
+        hdr.pack(fill="x", pady=(0, 4))
+
+        tk.Label(hdr, text="👁", font=("Segoe UI", 20),
+                 fg=WL_PURPLE, bg=BG).pack(side="left", padx=(0, 10))
+        ttk.Label(hdr, text="Watch List",
+                  style="Title.TLabel").pack(side="left", pady=(2, 0))
+
+        ttk.Label(outer,
+                  text="Track YouTube channels and scan for new uploads. "
+                       "Add channels here, then click Scan to check for new content.",
+                  style="S.Dim.TLabel", wraplength=660
+                  ).pack(anchor="w", pady=(0, 14))
+
+        tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(0, 14))
+
+        # ── Toolbar ───────────────────────────────────────────────────────────
+        toolbar = ttk.Frame(outer)
+        toolbar.pack(fill="x", pady=(0, 14))
+
+        self._wl_add_btn = tk.Button(
+            toolbar, text="  +  Add Channel  ",
+            font=("Segoe UI", 10, "bold"),
+            bg=WL_DARK, fg=TEXT,
+            activebackground=WL_PURPLE, activeforeground=TEXT,
+            relief="flat", bd=0, padx=10, pady=5, cursor="hand2",
+            command=self._watchlist_open_add_dialog)
+        self._wl_add_btn.pack(side="left", padx=(0, 6))
+
+        self._wl_scan_all_btn = tk.Button(
+            toolbar, text="  🔍  Scan All  ",
+            font=("Segoe UI", 10, "bold"),
+            bg=SURFACE2, fg=TEXT_MED,
+            activebackground=BORDER, activeforeground=TEXT,
+            relief="flat", bd=0, padx=10, pady=5, cursor="hand2",
+            command=self._watchlist_scan_all)
+        self._wl_scan_all_btn.pack(side="left", padx=(0, 6))
+        Tooltip(self._wl_scan_all_btn,
+                "Check every channel for new uploads since the last scan.")
+
+        self._wl_dl_all_btn = tk.Button(
+            toolbar, text="  ⬇  Download All New (0)  ",
+            font=("Segoe UI", 10, "bold"),
+            bg=SURFACE2, fg=TEXT_MED,
+            activebackground=BORDER, activeforeground=TEXT,
+            relief="flat", bd=0, padx=10, pady=5, cursor="hand2",
+            command=self._watchlist_download_all_new)
+        self._wl_dl_all_btn.pack(side="left", padx=(0, 6))
+        Tooltip(self._wl_dl_all_btn,
+                "Download all pending new tracks across every channel.")
+
+        self._wl_cancel_btn = tk.Button(
+            toolbar, text="  ✕  Cancel  ",
+            font=("Segoe UI", 10, "bold"),
+            bg=SURFACE2, fg=TEXT_DIM,
+            activebackground=YT_DARK, activeforeground=TEXT,
+            disabledforeground=TEXT_DIM,
+            relief="flat", bd=0, padx=10, pady=5, cursor="hand2",
+            state="disabled",
+            command=self._cancel_all_updates)
+        self._wl_cancel_btn.pack(side="left", padx=(0, 6))
+        Tooltip(self._wl_cancel_btn,
+                "Stop all in-progress Watch List scans and downloads.")
+
+        # ── Channel cards area ────────────────────────────────────────────────
+        self._wl_cards_frame = tk.Frame(outer, bg=BG)
+        self._wl_cards_frame.pack(fill="x", pady=(0, 14))
+
+        # ── Scan log ──────────────────────────────────────────────────────────
+        tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(0, 10))
+        tk.Label(outer, text="Scan Log", font=("Segoe UI", 10, "bold"),
+                 fg=TEXT_DIM, bg=BG, anchor="w").pack(anchor="w", pady=(0, 4))
+        self._wl_log_txt = tk.Text(
+            outer, height=6, font=("Consolas", 9),
+            bg="#0a0a0a", fg=TEXT_DIM, relief="flat",
+            wrap="word", state="disabled",
+            selectbackground=BORDER, selectforeground=TEXT,
+            padx=8, pady=6,
+            highlightthickness=1, highlightbackground=BORDER)
+        self._wl_log_txt.pack(fill="x", pady=(0, 8))
+        self._wl_log_txt.tag_configure("ok", foreground=SUCCESS)
+        self._wl_log_txt.tag_configure("err", foreground=YT_RED)
+        self._wl_log_txt.tag_configure("info", foreground=WL_PURPLE)
+
+        # Populate on first load
+        self._watchlist_refresh()
+
+    def _watchlist_log(self, msg, tag="info"):
+        """Append a timestamped line to the Watch List scan log."""
+        try:
+            ts = datetime.now().strftime("%H:%M:%S")
+            self._wl_log_txt.config(state="normal")
+            self._wl_log_txt.insert("end", f"[{ts}]  {msg}\n", tag)
+            self._wl_log_txt.see("end")
+            self._wl_log_txt.config(state="disabled")
+        except Exception:
+            pass
+
+    def _watchlist_refresh(self):
+        """Rebuild all channel cards from the database."""
+        # Clear existing cards
+        for w in self._wl_cards_frame.winfo_children():
+            w.destroy()
+
+        channels = self._db.get_all_watchlist_channels()
+
+        if not channels:
+            tk.Label(self._wl_cards_frame,
+                     text="No channels in the Watch List yet.\n"
+                          "Use  + Add Channel  or  ⎘ Import from Log  to get started.",
+                     font=("Segoe UI", 11), fg=TEXT_DIM, bg=BG,
+                     justify="center", pady=30
+                     ).pack(fill="x")
+        else:
+            for ch in channels:
+                self._watchlist_build_channel_card(self._wl_cards_frame, ch)
+
+        # Update the Download All button count
+        total_pending = self._db.get_total_pending_count()
+        self._wl_dl_all_btn.config(
+            text=f"  ⬇  Download All New ({total_pending})  ")
+
+    def _watchlist_build_channel_card(self, parent, ch):
+        """Build one dark card for a watchlist channel entry."""
+        cid = ch["id"]
+
+        card = tk.Frame(parent, bg=SURFACE, padx=14, pady=10,
+                        highlightthickness=1, highlightbackground=BORDER)
+        card.pack(fill="x", pady=(0, 8))
+
+        # ── Row 1: Name + platform/genre ──────────────────────────────────
+        top = tk.Frame(card, bg=SURFACE)
+        top.pack(fill="x")
+
+        tk.Label(top, text=ch["display_name"],
+                 font=("Segoe UI", 12, "bold"), fg=TEXT, bg=SURFACE,
+                 anchor="w").pack(side="left")
+
+        plat_genre = f"{ch['platform']}  •  {ch.get('genre') or '(none)'}"
+        tk.Label(top, text=plat_genre,
+                 font=("Segoe UI", 9), fg=TEXT_DIM, bg=SURFACE
+                 ).pack(side="left", padx=(12, 0))
+
+        # Status indicator on the right
+        status = ch.get("status", "idle")
+        pending = ch.get("pending_new_count", 0)
+        if status == "found" and pending > 0:
+            st_text = f"✦ {pending} new"
+            st_color = SUCCESS
+        elif status == "scanning":
+            st_text = "⟳ scanning…"
+            st_color = WL_PURPLE
+        elif status == "error":
+            st_text = "✗ error"
+            st_color = YT_RED
+        elif status == "idle":
+            st_text = "○ idle"
+            st_color = TEXT_DIM
+        else:
+            st_text = f"○ {status}"
+            st_color = TEXT_DIM
+
+        tk.Label(top, text=st_text,
+                 font=("Segoe UI", 10, "bold"), fg=st_color, bg=SURFACE
+                 ).pack(side="right")
+
+        # ── Row 2: Details ────────────────────────────────────────────────
+        mid = tk.Frame(card, bg=SURFACE)
+        mid.pack(fill="x", pady=(4, 0))
+
+        last_scan = format_timestamp_relative(ch.get("last_scanned_timestamp"))
+        cutoff_readable = format_yyyymmdd_readable(ch.get("scan_cutoff_date", ""))
+        details = (f"Last scan: {last_scan}  •  "
+                   f"Cutoff: {cutoff_readable}  •  "
+                   f"Total downloaded: {ch.get('total_downloaded', 0)}")
+        if ch.get("auto_added"):
+            details += "  •  auto-added"
+
+        tk.Label(mid, text=details,
+                 font=("Segoe UI", 9), fg=TEXT_DIM, bg=SURFACE,
+                 anchor="w").pack(side="left")
+
+        # ── Row 3: Action buttons ─────────────────────────────────────────
+        btns = tk.Frame(card, bg=SURFACE)
+        btns.pack(fill="x", pady=(6, 0))
+
+        for btn_text, btn_cmd in [
+            ("🔍 Scan",          lambda c=cid: self._watchlist_scan_channel(c)),
+            (f"⬇ Download New ({pending})",
+                                  lambda c=cid: self._watchlist_download_new(c)),
+            ("✏ Edit",           lambda c=cid: self._watchlist_edit_channel(c)),
+            ("✕ Remove",         lambda c=cid: self._watchlist_remove_channel(c)),
+        ]:
+            b = tk.Button(btns, text=btn_text,
+                          font=("Segoe UI", 9),
+                          bg=SURFACE2, fg=TEXT_DIM,
+                          activebackground=BORDER, activeforeground=TEXT,
+                          relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
+                          command=btn_cmd)
+            b.pack(side="left", padx=(0, 4))
+
+        # Show error if present
+        if ch.get("last_error"):
+            tk.Label(btns, text=f"  {ch['last_error'][:60]}",
+                     font=("Segoe UI", 8), fg=YT_RED, bg=SURFACE,
+                     anchor="w").pack(side="left", padx=(8, 0))
+
+    # ── Add Channel dialog ────────────────────────────────────────────────────
+    def _watchlist_open_add_dialog(self):
+        dlg = tk.Toplevel(self)
+        dlg.title("Add Channel to Watch List")
+        dlg.geometry("540x500")
+        dlg.configure(bg=BG)
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        dlg.grab_set()
+
+        # Centre over parent
+        dlg.update_idletasks()
+        px = self.winfo_x() + (self.winfo_width() - 540) // 2
+        py = self.winfo_y() + (self.winfo_height() - 500) // 2
+        dlg.geometry(f"+{max(0,px)}+{max(0,py)}")
+
+        outer = tk.Frame(dlg, bg=BG, padx=24, pady=18)
+        outer.pack(fill="both", expand=True)
+
+        tk.Label(outer, text="Add Channel to Watch List",
+                 font=("Segoe UI", 14, "bold"), fg=TEXT, bg=BG
+                 ).pack(anchor="w", pady=(0, 16))
+
+        # URL
+        tk.Label(outer, text="Channel URL",
+                 font=("Segoe UI", 10, "bold"), fg=TEXT, bg=BG
+                 ).pack(anchor="w", pady=(0, 4))
+        url_var = tk.StringVar()
+        url_entry = tk.Entry(
+            outer, textvariable=url_var,
+            font=("Segoe UI", 10), bg=SURFACE, fg=TEXT,
+            insertbackground=TEXT, relief="flat",
+            highlightthickness=1, highlightbackground=BORDER)
+        url_entry.pack(fill="x", ipady=5, pady=(0, 10))
+        tk.Label(outer,
+                 text="Paste a YouTube channel URL (e.g. https://youtube.com/@ChannelName)",
+                 font=("Segoe UI", 8), fg=TEXT_DIM, bg=BG
+                 ).pack(anchor="w", pady=(0, 8))
+
+        # Display name
+        tk.Label(outer, text="Display Name",
+                 font=("Segoe UI", 10, "bold"), fg=TEXT, bg=BG
+                 ).pack(anchor="w", pady=(0, 4))
+        name_var = tk.StringVar()
+        name_entry = tk.Entry(
+            outer, textvariable=name_var,
+            font=("Segoe UI", 10), bg=SURFACE, fg=TEXT,
+            insertbackground=TEXT, relief="flat",
+            highlightthickness=1, highlightbackground=BORDER)
+        name_entry.pack(fill="x", ipady=5, pady=(0, 4))
+
+        # Auto-fetch name button
+        def _fetch_name():
+            raw_url = url_var.get().strip()
+            if not raw_url:
+                return
+            name_var.set("Fetching…")
+            def _do():
+                try:
+                    import yt_dlp
+                    opts = {"quiet": True, "no_warnings": True,
+                            "extract_flat": "in_playlist", "skip_download": True,
+                            "playlist_items": "0"}
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(raw_url, download=False)
+                    title = info.get("title") or info.get("uploader") or ""
+                    if title.endswith(" - Videos"):
+                        title = title[:-9].strip()
+                    dlg.after(0, lambda: name_var.set(title or raw_url))
+                except Exception:
+                    dlg.after(0, lambda: name_var.set(""))
+            threading.Thread(target=_do, daemon=True).start()
+
+        fetch_btn = tk.Button(
+            outer, text="Auto-fetch name",
+            font=("Segoe UI", 9), bg=SURFACE2, fg=TEXT_DIM,
+            activebackground=BORDER, activeforeground=TEXT,
+            relief="flat", bd=0, padx=8, pady=2, cursor="hand2",
+            command=_fetch_name)
+        fetch_btn.pack(anchor="w", pady=(0, 10))
+
+        # Genre
+        tk.Label(outer, text="Genre",
+                 font=("Segoe UI", 10, "bold"), fg=TEXT, bg=BG
+                 ).pack(anchor="w", pady=(0, 4))
+        genres = self._scan_genres()
+        genre_var = tk.StringVar(value=genres[0] if genres else "(none)")
+        genre_combo = ttk.Combobox(outer, textvariable=genre_var,
+                                    values=genres, state="readonly")
+        genre_combo.pack(fill="x", pady=(0, 10))
+
+        # Download since
+        tk.Label(outer, text="Download uploads since",
+                 font=("Segoe UI", 10, "bold"), fg=TEXT, bg=BG
+                 ).pack(anchor="w", pady=(0, 4))
+        since_var = tk.StringVar(value=SINCE_DATE_OPTIONS[0])
+        since_combo = ttk.Combobox(outer, textvariable=since_var,
+                                    values=SINCE_DATE_OPTIONS, state="readonly")
+        since_combo.pack(fill="x", pady=(0, 16))
+        Tooltip(since_combo,
+                "Choose how far back to look for uploads. 'Today' means "
+                "only future uploads will be detected.")
+
+        # Buttons
+        btn_row = tk.Frame(outer, bg=BG)
+        btn_row.pack(fill="x")
+
+        def _save():
+            raw_url = url_var.get().strip()
+            if not raw_url:
+                messagebox.showwarning("No URL", "Please enter a channel URL.",
+                                       parent=dlg)
+                return
+            name = name_var.get().strip() or raw_url
+            genre = genre_var.get()
+            since = since_var.get()
+
+            # Resolve the cutoff date from the "since" selection
+            if since.startswith("Today"):
+                cutoff = today_yyyymmdd()
+            elif "30 days" in since:
+                cutoff = days_ago_yyyymmdd(30)
+            elif "90 days" in since:
+                cutoff = days_ago_yyyymmdd(90)
+            elif "6 months" in since:
+                cutoff = days_ago_yyyymmdd(180)
+            elif "1 year" in since:
+                cutoff = days_ago_yyyymmdd(365)
+            elif since.startswith("Custom"):
+                custom = simpledialog.askstring(
+                    "Custom Date",
+                    "Enter date as YYYY-MM-DD:",
+                    parent=dlg)
+                if not custom:
+                    return
+                try:
+                    dt = datetime.strptime(custom.strip(), "%Y-%m-%d").date()
+                    cutoff = dt.strftime("%Y%m%d")
+                except ValueError:
+                    messagebox.showerror("Bad Date",
+                                         "Please use YYYY-MM-DD format.",
+                                         parent=dlg)
+                    return
+            elif since.startswith("Scan my"):
+                # Scan music folder for newest mp3
+                plat = "YouTube"
+                folder = os.path.join(self._base_dir, plat, genre or "_No Genre", name)
+                count, newest = scan_folder_newest_mp3(folder)
+                if newest:
+                    cutoff = subtract_days_from_yyyymmdd(
+                        newest, WATCHLIST_CUTOFF_BUFFER_DAYS)
+                else:
+                    cutoff = today_yyyymmdd()
+            else:
+                cutoff = today_yyyymmdd()
+
+            result = self._db.add_watchlist_channel(
+                url=raw_url, display_name=name,
+                platform="YouTube", genre=genre,
+                scan_cutoff_date=cutoff, auto_added=False)
+            if result is None:
+                messagebox.showinfo(
+                    "Already Exists",
+                    f"'{name}' is already in the Watch List.",
+                    parent=dlg)
+            else:
+                self._watchlist_log(f"Added: {name}", "ok")
+            dlg.destroy()
+            self._watchlist_refresh()
+
+        tk.Button(btn_row, text="  Save  ",
+                  font=("Segoe UI", 10, "bold"),
+                  bg=WL_DARK, fg=TEXT,
+                  activebackground=WL_PURPLE, activeforeground=TEXT,
+                  relief="flat", bd=0, padx=16, pady=6, cursor="hand2",
+                  command=_save).pack(side="left", padx=(0, 8))
+        tk.Button(btn_row, text="  Cancel  ",
+                  font=("Segoe UI", 10),
+                  bg=SURFACE2, fg=TEXT_DIM,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  relief="flat", bd=0, padx=16, pady=6, cursor="hand2",
+                  command=dlg.destroy).pack(side="left")
+
+    # ── Edit Channel dialog ───────────────────────────────────────────────────
+    def _watchlist_edit_channel(self, cid):
+        ch = self._db.get_watchlist_channel(cid)
+        if not ch:
+            return
+
+        dlg = tk.Toplevel(self)
+        dlg.title(f"Edit — {ch['display_name']}")
+        dlg.geometry("440x280")
+        dlg.configure(bg=BG)
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        dlg.grab_set()
+
+        dlg.update_idletasks()
+        px = self.winfo_x() + (self.winfo_width() - 440) // 2
+        py = self.winfo_y() + (self.winfo_height() - 280) // 2
+        dlg.geometry(f"+{max(0,px)}+{max(0,py)}")
+
+        outer = tk.Frame(dlg, bg=BG, padx=24, pady=18)
+        outer.pack(fill="both", expand=True)
+
+        tk.Label(outer, text=f"Edit: {ch['display_name']}",
+                 font=("Segoe UI", 13, "bold"), fg=TEXT, bg=BG
+                 ).pack(anchor="w", pady=(0, 16))
+
+        # Genre
+        tk.Label(outer, text="Genre",
+                 font=("Segoe UI", 10, "bold"), fg=TEXT, bg=BG
+                 ).pack(anchor="w", pady=(0, 4))
+        genres = self._scan_genres()
+        genre_var = tk.StringVar(value=ch.get("genre") or "(none)")
+        ttk.Combobox(outer, textvariable=genre_var,
+                     values=genres, state="readonly"
+                     ).pack(fill="x", pady=(0, 12))
+
+        # Cutoff date
+        tk.Label(outer, text="Scan cutoff date (YYYY-MM-DD)",
+                 font=("Segoe UI", 10, "bold"), fg=TEXT, bg=BG
+                 ).pack(anchor="w", pady=(0, 4))
+        current_cutoff = ch.get("scan_cutoff_date", "")
+        try:
+            display_date = datetime.strptime(current_cutoff, "%Y%m%d").strftime("%Y-%m-%d")
+        except (ValueError, TypeError):
+            display_date = current_cutoff
+        cutoff_var = tk.StringVar(value=display_date)
+        tk.Entry(outer, textvariable=cutoff_var,
+                 font=("Segoe UI", 10), bg=SURFACE, fg=TEXT,
+                 insertbackground=TEXT, relief="flat",
+                 highlightthickness=1, highlightbackground=BORDER
+                 ).pack(fill="x", ipady=5, pady=(0, 16))
+
+        btn_row = tk.Frame(outer, bg=BG)
+        btn_row.pack(fill="x")
+
+        def _save():
+            new_genre = genre_var.get()
+            raw_date = cutoff_var.get().strip()
+            try:
+                dt = datetime.strptime(raw_date, "%Y-%m-%d").date()
+                new_cutoff = dt.strftime("%Y%m%d")
+            except ValueError:
+                messagebox.showerror("Bad Date", "Use YYYY-MM-DD format.",
+                                     parent=dlg)
+                return
+            self._db.update_watchlist_channel_fields(
+                cid, genre=new_genre, scan_cutoff_date=new_cutoff)
+            dlg.destroy()
+            self._watchlist_refresh()
+
+        tk.Button(btn_row, text="  Save  ",
+                  font=("Segoe UI", 10, "bold"),
+                  bg=WL_DARK, fg=TEXT,
+                  activebackground=WL_PURPLE, activeforeground=TEXT,
+                  relief="flat", bd=0, padx=16, pady=6, cursor="hand2",
+                  command=_save).pack(side="left", padx=(0, 8))
+        tk.Button(btn_row, text="  Cancel  ",
+                  font=("Segoe UI", 10),
+                  bg=SURFACE2, fg=TEXT_DIM,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  relief="flat", bd=0, padx=16, pady=6, cursor="hand2",
+                  command=dlg.destroy).pack(side="left")
+
+    # ── Remove channel ────────────────────────────────────────────────────────
+    def _watchlist_remove_channel(self, cid):
+        ch = self._db.get_watchlist_channel(cid)
+        if not ch:
+            return
+        ok = messagebox.askyesno(
+            "Remove Channel",
+            f"Remove '{ch['display_name']}' from the Watch List?\n\n"
+            f"This does not delete any downloaded files.",
+            parent=self)
+        if ok:
+            self._db.remove_watchlist_channel(cid)
+            self._watchlist_log(f"Removed: {ch['display_name']}", "info")
+            self._watchlist_refresh()
+
+    # ── Scan one channel ──────────────────────────────────────────────────────
+    def _watchlist_scan_channel(self, cid):
+        """Threaded scan: use yt-dlp flat extraction with dateafter to find
+        new uploads since the channel's scan_cutoff_date."""
+        ch = self._db.get_watchlist_channel(cid)
+        if not ch:
+            return
+
+        # If nothing else is in flight, this is a fresh user-initiated scan
+        # — reset any leftover cancel flag from a prior aborted run.
+        if not self._downloading and self._wl_scan_active == 0:
+            self._cancel_flag.clear()
+
+        if self._cancel_flag.is_set():
+            return
+
+        self._db.update_watchlist_status(cid, "scanning")
+        self._watchlist_refresh()
+        self._watchlist_log(f"Scanning: {ch['display_name']}…", "info")
+
+        self._wl_scan_active += 1
+        self.after(0, self._wl_update_cancel_btn_state)
+
+        def _do_scan():
+            try:
+                if self._cancel_flag.is_set():
+                    self._db.update_watchlist_status(cid, "idle")
+                    self.after(0, lambda: self._watchlist_log(
+                        f"Scan cancelled: {ch['display_name']}", "info"))
+                    return
+
+                import yt_dlp
+
+                # Apply the buffer: scan a few days before the cutoff
+                # so approximate_date imprecision doesn't miss anything
+                raw_cutoff = ch["scan_cutoff_date"]
+                buffered = subtract_days_from_yyyymmdd(
+                    raw_cutoff, WATCHLIST_CUTOFF_BUFFER_DAYS)
+
+                scan_opts = {
+                    "extract_flat":   "in_playlist",
+                    "skip_download":  True,
+                    "lazy_playlist":  True,
+                    "dateafter":      buffered,
+                    "break_on_reject": True,
+                    "extractor_args": {
+                        "youtubetab": {"approximate_date": ["true"]}
+                    },
+                    "quiet":          True,
+                    "no_warnings":    True,
+                }
+
+                # Use cookies if configured
+                if self._use_cookies.get():
+                    method = self._cookie_method.get()
+                    if method == "Cookie File":
+                        cfile = self._cookie_file.get().strip()
+                        if cfile and os.path.exists(cfile):
+                            scan_opts["cookiefile"] = cfile
+                    else:
+                        browser = self._cookies_browser.get().lower()
+                        profile = self._cookies_profile.get().strip()
+                        scan_opts["cookiesfrombrowser"] = (
+                            (browser, profile) if profile
+                            else (browser,))
+
+                url = ch["url"]
+                # Ensure we're hitting the /videos tab for channels
+                if "youtube.com" in url and "/videos" not in url:
+                    if url.rstrip("/").split("/")[-1].startswith("@"):
+                        url = url.rstrip("/") + "/videos"
+
+                # URL-encode the path so handles containing spaces (e.g.
+                # "@BASS ENTITY") aren't truncated by yt-dlp at the first
+                # whitespace, which otherwise produces a 404 from YouTube.
+                parsed = urllib.parse.urlsplit(url)
+                url = urllib.parse.urlunsplit(parsed._replace(
+                    path=urllib.parse.quote(parsed.path, safe="/@&")))
+
+                self._dbg.info(
+                    f"WL SCAN | {ch['display_name']}  url={url}  "
+                    f"cutoff={raw_cutoff}  buffered={buffered}")
+
+                with yt_dlp.YoutubeDL(scan_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+
+                if self._cancel_flag.is_set():
+                    self._db.update_watchlist_status(cid, "idle")
+                    self.after(0, lambda: self._watchlist_log(
+                        f"Scan cancelled: {ch['display_name']}", "info"))
+                    return
+
+                entries = list(info.get("entries") or [])
+                # Filter out entries already in the DB
+                new_entries = []
+                for e in entries:
+                    vid_id = e.get("id")
+                    if vid_id and self._db.is_video_downloaded(vid_id):
+                        continue
+                    new_entries.append({
+                        "id":          vid_id or "",
+                        "title":       e.get("title") or "",
+                        "url":         (e.get("url") or e.get("webpage_url")
+                                        or f"https://www.youtube.com/watch?v={vid_id}"),
+                        "upload_date": e.get("upload_date") or "",
+                    })
+
+                count = len(new_entries)
+                status = "found" if count > 0 else "idle"
+                self._db.update_watchlist_scan_result(
+                    cid,
+                    timestamp=int(time.time()),
+                    pending_count=count,
+                    pending_entries=new_entries,
+                    status=status)
+
+                tag = "ok" if count > 0 else "info"
+                self.after(0, lambda: self._watchlist_log(
+                    f"{ch['display_name']}: {count} new track{'s' if count != 1 else ''} found",
+                    tag))
+
+            except Exception as exc:
+                err = str(exc)[:120]
+                self._dbg.error(
+                    f"WL SCAN FAIL | {ch['display_name']}  error: {err}")
+                self._db.update_watchlist_scan_result(
+                    cid,
+                    timestamp=int(time.time()),
+                    pending_count=0,
+                    pending_entries=[],
+                    status="error",
+                    last_error=err)
+                self.after(0, lambda: self._watchlist_log(
+                    f"Error scanning {ch['display_name']}: {err}", "err"))
+            finally:
+                self._wl_scan_active = max(0, self._wl_scan_active - 1)
+                self.after(0, self._wl_update_cancel_btn_state)
+
+            self.after(0, self._watchlist_refresh)
+
+        threading.Thread(target=_do_scan, daemon=True).start()
+
+    # ── Scan all channels ─────────────────────────────────────────────────────
+    def _watchlist_scan_all(self):
+        channels = self._db.get_all_watchlist_channels()
+        if not channels:
+            self._watchlist_log("No channels to scan.", "info")
+            return
+        self._cancel_flag.clear()
+        self._watchlist_log(
+            f"Scanning {len(channels)} channel{'s' if len(channels) != 1 else ''}…",
+            "info")
+        self._wl_update_cancel_btn_state()
+
+        def _do_all():
+            for i, ch in enumerate(channels):
+                if self._cancel_flag.is_set():
+                    self.after(0, lambda: self._watchlist_log(
+                        "Scan All cancelled.", "info"))
+                    break
+                # Use after(0,...) to call scan on main thread context
+                # but the actual scan is threaded inside _watchlist_scan_channel
+                self.after(0, lambda c=ch["id"]: self._watchlist_scan_channel(c))
+                # Small delay between scans to avoid hammering — wake early on cancel
+                delay = 3.0 + random.uniform(0.5, 2.0)
+                deadline = time.time() + delay
+                while time.time() < deadline:
+                    if self._cancel_flag.is_set():
+                        break
+                    time.sleep(0.25)
+        threading.Thread(target=_do_all, daemon=True).start()
+
+    # ── Download new for one channel ──────────────────────────────────────────
+    def _watchlist_download_new(self, cid):
+        if self._downloading:
+            messagebox.showinfo(
+                "Download in Progress",
+                "A download is already running. Wait for it to finish first.",
+                parent=self)
+            return
+
+        ch = self._db.get_watchlist_channel(cid)
+        if not ch or ch.get("pending_new_count", 0) == 0:
+            messagebox.showinfo(
+                "Nothing to Download",
+                "No new tracks pending. Try scanning first.",
+                parent=self)
+            return
+
+        pending = json.loads(ch.get("pending_entries_json", "[]"))
+        if not pending:
+            return
+
+        # Build batch items that will be processed by the existing pipeline
+        platform = ch.get("platform", "YouTube")
+        genre = ch.get("genre", "(none)")
+        run_batch = []
+        for entry in pending:
+            run_batch.append({
+                "url":          entry.get("url", ""),
+                "genre":        genre,
+                "platform":     platform,
+                "channel_name": ch["display_name"],
+            })
+
+        # Set up the watchlist batch context for cleanup in _batch_worker
+        self._active_watchlist_batch = {
+            "channel_ids": [cid],
+        }
+
+        self._watchlist_log(
+            f"Downloading {len(run_batch)} new track{'s' if len(run_batch) != 1 else ''} "
+            f"from {ch['display_name']}…", "info")
+
+        # Switch to Main tab and kick off the batch
+        self._notebook.select(0)
+        self._downloading = True
+        self._cancel_flag.clear()
+        self._pause_flag.clear()
+        self._dl_btn.config(state="disabled")
+        self._batch_add_btn.config(state="disabled")
+        self._url_entry.config(state="disabled")
+        self._cancel_btn.config(state="normal", style="CancelActive.TButton")
+        self._pause_btn.config(state="normal", text="⏸  Pause",
+                               style="Pause.TButton")
+        self._wl_update_cancel_btn_state()
+        self._vid_progress["value"]     = 0
+        self._overall_progress["value"] = 0
+        self._cur_lbl.config(text="Preparing Watch List batch…")
+        self._ov_lbl.config(text="")
+        self._ov_stats_lbl.config(text="")
+        self._speed_lbl.config(text="")
+        self._grand_dl = 0
+        self._grand_sk = 0
+        self._grand_er = 0
+        self._last_fatal_error = None
+        self._batch_start = time.time()
+        self._clear_queue()
+        self._set_status(f"Watch List: downloading {len(run_batch)} new tracks…")
+
+        threading.Thread(target=self._batch_worker,
+                          args=(run_batch,), daemon=True).start()
+
+    # ── Download all new across all channels ──────────────────────────────────
+    def _watchlist_download_all_new(self):
+        if self._downloading:
+            messagebox.showinfo(
+                "Download in Progress",
+                "A download is already running. Wait for it to finish first.",
+                parent=self)
+            return
+
+        channels = self._db.get_all_watchlist_channels()
+        run_batch = []
+        channel_ids = []
+        for ch in channels:
+            if ch.get("pending_new_count", 0) == 0:
+                continue
+            pending = json.loads(ch.get("pending_entries_json", "[]"))
+            platform = ch.get("platform", "YouTube")
+            genre = ch.get("genre", "(none)")
+            for entry in pending:
+                run_batch.append({
+                    "url":          entry.get("url", ""),
+                    "genre":        genre,
+                    "platform":     platform,
+                    "channel_name": ch["display_name"],
+                })
+            channel_ids.append(ch["id"])
+
+        if not run_batch:
+            messagebox.showinfo(
+                "Nothing to Download",
+                "No new tracks pending across any channels.\nTry Scan All first.",
+                parent=self)
+            return
+
+        self._active_watchlist_batch = {
+            "channel_ids": channel_ids,
+        }
+
+        self._watchlist_log(
+            f"Downloading {len(run_batch)} new tracks across "
+            f"{len(channel_ids)} channels…", "info")
+
+        self._notebook.select(0)
+        self._downloading = True
+        self._cancel_flag.clear()
+        self._pause_flag.clear()
+        self._dl_btn.config(state="disabled")
+        self._batch_add_btn.config(state="disabled")
+        self._url_entry.config(state="disabled")
+        self._cancel_btn.config(state="normal", style="CancelActive.TButton")
+        self._pause_btn.config(state="normal", text="⏸  Pause",
+                               style="Pause.TButton")
+        self._wl_update_cancel_btn_state()
+        self._vid_progress["value"]     = 0
+        self._overall_progress["value"] = 0
+        self._cur_lbl.config(text="Preparing Watch List batch…")
+        self._ov_lbl.config(text="")
+        self._ov_stats_lbl.config(text="")
+        self._speed_lbl.config(text="")
+        self._grand_dl = 0
+        self._grand_sk = 0
+        self._grand_er = 0
+        self._last_fatal_error = None
+        self._batch_start = time.time()
+        self._clear_queue()
+        self._set_status(f"Watch List: downloading {len(run_batch)} new tracks…")
+
+        threading.Thread(target=self._batch_worker,
+                          args=(run_batch,), daemon=True).start()
+
+    # ── Auto-add after a normal channel download ──────────────────────────────
+    def _watchlist_auto_add_if_enabled(self, url, display_name, genre,
+                                        max_upload_date):
+        """Called from _process_one_url after a successful collection download.
+        If auto-add is enabled, adds the channel to the watchlist (or updates
+        the cutoff if it already exists)."""
+        if not self._auto_add_to_watchlist.get():
+            return
+
+        # Determine the cutoff: use the max upload date from this run
+        # (minus buffer), or fall back to today
+        if max_upload_date:
+            cutoff = subtract_days_from_yyyymmdd(
+                max_upload_date, WATCHLIST_CUTOFF_BUFFER_DAYS)
+        else:
+            cutoff = today_yyyymmdd()
+
+        # Try to add; if duplicate, just update the cutoff
+        result = self._db.add_watchlist_channel(
+            url=url, display_name=display_name,
+            platform="YouTube", genre=genre or "(none)",
+            scan_cutoff_date=cutoff, auto_added=True)
+
+        if result is None:
+            # Already exists — update the cutoff if newer
+            existing = self._db.get_watchlist_channel_by_url(url)
+            if existing and cutoff > existing.get("scan_cutoff_date", ""):
+                self._db.update_watchlist_cutoff(url, cutoff)
+                self._dbg.info(
+                    f"WL AUTO-UPDATE | {display_name!r}  "
+                    f"cutoff updated to {cutoff}")
+        else:
+            self._dbg.info(
+                f"WL AUTO-ADD | {display_name!r}  cutoff={cutoff}")
+
+    def _watchlist_populate_from_folders(self):
+        """On first run (empty Watch List), populate it by scanning the
+        existing folder hierarchy:  base/YouTube/<Genre>/<Channel>/*.mp3
+
+        Each channel sub-folder becomes a Watch List entry. The scan cutoff
+        is derived from the newest .mp3 in the folder (minus a small buffer)
+        so future scans only surface genuinely new uploads."""
+        # Only populate when the Watch List is empty.
+        try:
+            if self._db.get_all_watchlist_channels():
+                return
+        except Exception:
+            return
+
+        yt_dir = self._platform_dir("YouTube")
+        if not os.path.isdir(yt_dir):
+            return
+
+        added = 0
+        for genre_dir in sorted(os.listdir(yt_dir)):
+            genre_path = os.path.join(yt_dir, genre_dir)
+            if not os.path.isdir(genre_path):
+                continue
+            genre = "(none)" if genre_dir == "_No Genre" else genre_dir
+
+            for channel_dir in sorted(os.listdir(genre_path)):
+                channel_path = os.path.join(genre_path, channel_dir)
+                if not os.path.isdir(channel_path):
+                    continue
+
+                count, newest = scan_folder_newest_mp3(channel_path)
+                if newest:
+                    cutoff = subtract_days_from_yyyymmdd(
+                        newest, WATCHLIST_CUTOFF_BUFFER_DAYS)
+                else:
+                    cutoff = today_yyyymmdd()
+
+                result = self._db.add_watchlist_channel(
+                    url=f"https://www.youtube.com/@{channel_dir}",
+                    display_name=channel_dir,
+                    platform="YouTube",
+                    genre=genre,
+                    scan_cutoff_date=cutoff,
+                    auto_added=True)
+                if result is not None:
+                    added += 1
+                    self._dbg.info(
+                        f"WL FOLDER-POPULATE | {channel_dir!r}  "
+                        f"genre={genre}  cutoff={cutoff}")
+
+        if added:
+            self._watchlist_log(
+                f"Populated {added} channel(s) from existing folders", "ok")
+            self._watchlist_refresh()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ██  REBUILD  ██
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _rebuild_db_from_log(self):
+        """Rebuild the downloads table from the activity log."""
+        ok = messagebox.askyesno(
+            "Rebuild Database",
+            "This will clear the downloads index and rebuild it by\n"
+            "re-reading every DOWNLOADED entry from the activity log.\n\n"
+            "Your Watch List channels will NOT be affected.\n"
+            "Your actual downloaded files will NOT be touched.\n\n"
+            "Continue?",
+            parent=self)
+        if not ok:
+            return
+
+        entries = parse_activity_log_entries(self._log_path)
+        self._db.clear_all_downloads()
+        count = 0
+        for e in entries:
+            self._db.add_download(
+                video_id=None,
+                title=e.get("title", ""),
+                channel_name=e.get("channel_name", ""),
+                channel_url="",
+                platform=e.get("platform", "YouTube"),
+                genre=e.get("genre", "(none)"),
+                file_path=e.get("file_path", ""),
+                upload_date=e.get("log_date", ""),
+                bitrate=e.get("quality", ""))
+            count += 1
+
+        self._db.refresh_watchlist_totals()
+        messagebox.showinfo(
+            "Rebuild Complete",
+            f"Imported {count} download records from the activity log.",
+            parent=self)
+        self._dbg.info(f"DB REBUILD | imported {count} entries from log")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
