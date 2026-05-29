@@ -146,6 +146,11 @@ THROTTLE_PRESETS = {
 # ── by skip-existing, so over-scanning is safe but under-scanning is not.
 WATCHLIST_CUTOFF_BUFFER_DAYS = 5
 
+# ── Maximum number of channel scans allowed to run concurrently during
+# ── "Scan All". Caps how hard we hit YouTube at once so large watch lists
+# ── don't pile up dozens of simultaneous yt-dlp requests and time out.
+WATCHLIST_MAX_CONCURRENT_SCANS = 3
+
 # ── "Since" date preset options used in the Add Channel dialog ───────────────
 SINCE_DATE_OPTIONS = [
     "Today  (only future uploads)",
@@ -324,7 +329,7 @@ class Tooltip:
 # activity.log at any time via Settings → "Rebuild Database from Log".
 # ═════════════════════════════════════════════════════════════════════════════
 class DownloadsDatabase:
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self, db_path, debug_logger=None):
         self.db_path = db_path
@@ -374,6 +379,7 @@ class DownloadsDatabase:
                         title               TEXT NOT NULL,
                         channel_name        TEXT,
                         channel_url         TEXT,
+                        channel_id          TEXT,
                         platform            TEXT NOT NULL,
                         genre               TEXT,
                         file_path           TEXT,
@@ -392,6 +398,7 @@ class DownloadsDatabase:
                     CREATE TABLE IF NOT EXISTS watchlist (
                         id                       INTEGER PRIMARY KEY AUTOINCREMENT,
                         url                      TEXT NOT NULL UNIQUE,
+                        channel_id               TEXT,
                         display_name             TEXT NOT NULL,
                         platform                 TEXT NOT NULL,
                         genre                    TEXT,
@@ -406,6 +413,19 @@ class DownloadsDatabase:
                         last_error               TEXT
                     );
                 """)
+                # ── Migrations for pre-existing databases ──────────────────
+                # Older DBs (schema v1) lack the channel_id columns. Add them
+                # idempotently — "duplicate column" errors are expected and
+                # harmless on already-migrated DBs.
+                for table in ("downloads", "watchlist"):
+                    try:
+                        conn.execute(
+                            f"ALTER TABLE {table} ADD COLUMN channel_id TEXT")
+                        self._log("info",
+                                  f"migration: added channel_id to {table}")
+                    except sqlite3.OperationalError:
+                        pass  # column already exists
+
                 conn.execute(
                     "INSERT OR REPLACE INTO schema_info (key, value) VALUES (?, ?)",
                     ("version", str(self.SCHEMA_VERSION))
@@ -416,20 +436,44 @@ class DownloadsDatabase:
             raise
 
     def add_download(self, *, video_id, title, channel_name, channel_url,
-                     platform, genre, file_path, upload_date, bitrate):
+                     platform, genre, file_path, upload_date, bitrate,
+                     channel_id=None):
         try:
             with self._conn() as conn:
                 conn.execute("""
                     INSERT INTO downloads
-                      (video_id, title, channel_name, channel_url, platform,
-                       genre, file_path, upload_date, download_timestamp, bitrate)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      (video_id, title, channel_name, channel_url, channel_id,
+                       platform, genre, file_path, upload_date,
+                       download_timestamp, bitrate)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (video_id or None, title or "", channel_name or "",
-                      channel_url or "", platform, genre or "",
-                      file_path or "", upload_date or "",
+                      channel_url or "", channel_id or None, platform,
+                      genre or "", file_path or "", upload_date or "",
                       int(time.time()), bitrate or ""))
         except Exception as e:
             self._log("error", f"add_download failed for {title!r}: {e}")
+
+    def backfill_downloads(self, rows):
+        """Bulk-insert tracks discovered already-on-disk during a scan, so
+        future dedup is exact and instant. `rows` is a list of dicts with the
+        download columns plus a 'ts' timestamp. Returns the count inserted."""
+        if not rows:
+            return 0
+        try:
+            with self._conn() as conn:
+                conn.executemany("""
+                    INSERT INTO downloads
+                      (video_id, title, channel_name, channel_url, channel_id,
+                       platform, genre, file_path, upload_date,
+                       download_timestamp, bitrate)
+                    VALUES (:video_id, :title, :channel_name, :channel_url,
+                            :channel_id, :platform, :genre, :file_path,
+                            :upload_date, :ts, :bitrate)
+                """, rows)
+            return len(rows)
+        except Exception as e:
+            self._log("error", f"backfill_downloads failed: {e}")
+            return 0
 
     def is_video_downloaded(self, video_id):
         if not video_id:
@@ -485,17 +529,20 @@ class DownloadsDatabase:
             self._log("error", f"clear_all_downloads failed: {e}")
 
     def add_watchlist_channel(self, *, url, display_name, platform, genre,
-                               scan_cutoff_date, auto_added=False):
+                               scan_cutoff_date, auto_added=False,
+                               channel_id=None, status="idle"):
         try:
             total = self.get_channel_download_count(url)
             with self._conn() as conn:
                 cur = conn.execute("""
                     INSERT INTO watchlist
-                      (url, display_name, platform, genre, scan_cutoff_date,
-                       date_added, auto_added, total_downloaded, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'idle')
-                """, (url, display_name, platform, genre, scan_cutoff_date,
-                      int(time.time()), 1 if auto_added else 0, total))
+                      (url, channel_id, display_name, platform, genre,
+                       scan_cutoff_date, date_added, auto_added,
+                       total_downloaded, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (url, channel_id or None, display_name, platform, genre,
+                      scan_cutoff_date, int(time.time()),
+                      1 if auto_added else 0, total, status))
                 return cur.lastrowid
         except sqlite3.IntegrityError:
             return None
@@ -537,14 +584,15 @@ class DownloadsDatabase:
         except Exception as e:
             self._log("error", f"update_watchlist_status failed: {e}")
 
-    def update_watchlist_channel_fields(self, channel_id, **fields):
-        allowed = {"display_name", "genre", "scan_cutoff_date"}
+    def update_watchlist_channel_fields(self, wl_id, **fields):
+        allowed = {"display_name", "genre", "scan_cutoff_date",
+                   "channel_id", "url", "status", "last_error"}
         fields = {k: v for k, v in fields.items() if k in allowed}
         if not fields:
             return
         try:
             sets = ", ".join(f"{k} = ?" for k in fields)
-            vals = list(fields.values()) + [channel_id]
+            vals = list(fields.values()) + [wl_id]
             with self._conn() as conn:
                 conn.execute(f"UPDATE watchlist SET {sets} WHERE id = ?", vals)
         except Exception as e:
@@ -707,6 +755,85 @@ def scan_folder_newest_mp3(folder):
     if newest is None:
         return 0, None
     return count, datetime.fromtimestamp(newest).strftime("%Y%m%d")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Channel sidecar metadata (cratebuilder.json)
+#
+# Each downloaded channel folder gets a small JSON file recording the channel's
+# *canonical* identity — its YouTube channel_id (UC…) and the spaceless URL we
+# can reliably scan. This makes every folder self-describing, so the Watch List
+# never has to guess a channel's handle from its (human-readable) folder name.
+# ─────────────────────────────────────────────────────────────────────────────
+CHANNEL_SIDECAR_NAME = "cratebuilder.json"
+
+
+def channel_url_from_id(channel_id):
+    """Build the canonical, spaceless scan URL from a YouTube channel_id."""
+    if not channel_id:
+        return ""
+    return f"https://www.youtube.com/channel/{channel_id}/videos"
+
+
+def read_channel_sidecar(folder):
+    """Return the parsed cratebuilder.json dict for a channel folder, or None."""
+    if not folder:
+        return None
+    path = os.path.join(folder, CHANNEL_SIDECAR_NAME)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def write_channel_sidecar(folder, *, channel_id, channel_url=None, handle=None,
+                          display_name=None, platform="YouTube", genre=None):
+    """Write/update cratebuilder.json in a channel folder. Best-effort:
+    failures are returned as False rather than raised, so a sidecar write can
+    never break a download. Existing keys are preserved and overlaid."""
+    if not folder or not os.path.isdir(folder):
+        return False
+    existing = read_channel_sidecar(folder) or {}
+    meta = dict(existing)
+    if channel_id:
+        meta["channel_id"] = channel_id
+    meta["channel_url"] = channel_url or channel_url_from_id(channel_id) \
+        or meta.get("channel_url", "")
+    if handle:
+        meta["handle"] = handle
+    if display_name:
+        meta["display_name"] = display_name
+    if platform:
+        meta["platform"] = platform
+    if genre is not None:
+        meta["genre"] = genre
+    meta["updated"] = today_yyyymmdd()
+    try:
+        path = os.path.join(folder, CHANNEL_SIDECAR_NAME)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2, ensure_ascii=False)
+        return True
+    except OSError:
+        return False
+
+
+def normalize_track_key(name):
+    """Collapse a video title or .mp3 filename to a comparison key so a
+    YouTube title and its saved (sanitised) filename match despite case,
+    punctuation, spacing, or mangled special characters.
+
+    Deliberately aggressive — only alphanumerics survive — because the chosen
+    trade-off is to *hide* a track when a match is uncertain (avoid showing a
+    track the user already owns) rather than risk re-listing it. A saved file
+    like "1788-L - �THERSUIT.mp3" and the real title "1788-L - ÆTHERSUIT"
+    both reduce to the same key once non-alphanumerics are stripped."""
+    if not name:
+        return ""
+    s = re.sub(r"\.(mp3|m4a|opus|webm|wav|flac|aac)$", "", str(name),
+               flags=re.IGNORECASE)
+    return re.sub(r"[^a-z0-9]+", "", s.lower())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1978,6 +2105,7 @@ class MP3DownloaderApp(tk.Tk):
         self._cancel_flag   = threading.Event()
         self._pause_flag    = threading.Event()   # set = paused, clear = running
         self._wl_scan_active = 0   # count of in-flight Watch List scans
+        self._wl_cancel_cids = set()  # channel ids the user asked to cancel
         self._queue         = []
         self._skip_existing   = tk.BooleanVar(value=cfg.get("skip_existing", True))
         _raw_skip = cfg.get("skip_mode", "In Database ~ In Folder")
@@ -2026,6 +2154,7 @@ class MP3DownloaderApp(tk.Tk):
         self._auto_add_to_watchlist.trace_add(
             "write", self._autosave_behavior_settings)
         self._active_watchlist_batch = None   # set by _watchlist_download_*
+        self._wl_download_active = False      # True while a Watch List batch runs
 
         # Ensure directory structure exists on startup
         self._url_history = cfg.get("url_history", [])[:6]
@@ -2161,6 +2290,22 @@ class MP3DownloaderApp(tk.Tk):
                 f"COOKIE CONFIG | browser={browser!r}  "
                 f"profile={profile!r}  "
                 f"tuple={((browser.lower(), profile) if profile else (browser.lower(),))!r}")
+
+    def _apply_js_runtime(self, opts):
+        """Enable a JavaScript runtime so yt-dlp can solve YouTube's "n"
+        signature challenge. Without it, YouTube returns only storyboard
+        ("images") formats and every real download fails with "Requested
+        format is not available". Node ≥22 plus the yt-dlp-ejs solver scripts
+        are required; if neither is present yt-dlp simply falls back (the
+        download then skips gracefully). See yt-dlp wiki: EJS.
+
+        Only needed on opts that extract real formats (metadata/probe/
+        download) — flat listing/scan opts don't trip the challenge."""
+        opts["js_runtimes"] = {"node": {"path": None}}
+        # Fallback for machines without the local yt-dlp-ejs package: let
+        # yt-dlp fetch the solver scripts from GitHub on demand.
+        opts.setdefault("remote_components", ["ejs:github"])
+        return opts
 
     def _dbg_ydl_opts(self, label, opts):
         """Log yt-dlp options dict to debug.log (redact large values)."""
@@ -4605,7 +4750,19 @@ class MP3DownloaderApp(tk.Tk):
                     channel_name_override=item.get("channel_name"))
                 if dl is None:   # fatal error inside _process_one_url
                     fatal_error = self._last_fatal_error
+                    self._wl_dl_log(f"✗ Stopped: {fatal_error}", "err")
                     break
+
+                # Mirror this track's outcome into the Watch List scan log
+                # (only fires while a Watch List batch is active).
+                wl_title = (item.get("title") or url)[:60]
+                if er:
+                    self._wl_dl_log(
+                        f"✗ {wl_title} — {self._last_url_error or 'failed'}", "err")
+                elif dl:
+                    self._wl_dl_log(f"✓ {wl_title}", "ok")
+                else:
+                    self._wl_dl_log(f"⊘ {wl_title} (already have it)", "info")
 
                 if self._cancel_flag.is_set():
                     break
@@ -4649,6 +4806,8 @@ class MP3DownloaderApp(tk.Tk):
                 summary_parts.append(f"[{elapsed_str}]")
                 summary = "  ".join(summary_parts)
 
+            self._wl_dl_log(summary, "err" if fatal_error else "ok")
+
             self.after(0, lambda s=summary: (
                 self._cur_lbl.config(text=s),
                 self._speed_lbl.config(text=""),
@@ -4686,6 +4845,7 @@ class MP3DownloaderApp(tk.Tk):
                     self._active_watchlist_batch = None
                 # Refresh the Watch List UI if it exists
                 self.after(200, self._watchlist_refresh)
+            self._wl_download_active = False
             self.after(0, self._finish)
 
     def _batch_highlight(self, active_idx):
@@ -4707,6 +4867,7 @@ class MP3DownloaderApp(tk.Tk):
         Returns (downloaded, skipped, errors) counts, or (None, None, None) on
         a fatal error.  Does NOT call _finish — that is the batch_worker's job.
         """
+        self._last_url_error = None   # short reason if this URL fails softly
         try:
             import yt_dlp, time
 
@@ -4736,6 +4897,7 @@ class MP3DownloaderApp(tk.Tk):
                         else (browser,)
                     )
 
+            self._apply_js_runtime(meta_opts)
             self._dbg.info(f"─── METADATA FETCH ─── URL: {url}")
             self._dbg_cookie_config()
             self._dbg_ydl_opts("metadata", meta_opts)
@@ -4785,18 +4947,32 @@ class MP3DownloaderApp(tk.Tk):
                             err = f"Fetch failed ({raw_err[:100]})"
                 else:
                     err = f"Fetch failed ({raw_err[:100]})"
-                self._last_fatal_error = err
+                # A metadata-fetch failure is per-video (bot-check, age-gate,
+                # removed, region-block, …) — skip this track and let the batch
+                # continue rather than aborting everything on one bad video.
+                self._last_url_error = err
+                self._grand_er += 1
+                self._log_error(channel_name_override or url, url, err)
                 self.after(0, lambda e=err: (
                     self._cur_lbl.config(text=f"✗ {e}"),
                     self._set_status(f"Error: {e}"),
                 ))
-                return None, None, None
+                return 0, 0, 1
 
             if self._cancel_flag.is_set():
                 return 0, 0, 0
 
             # Normalise: single item vs collection
             is_collection = info.get("_type") in ("playlist", "channel")
+            # Canonical channel identity (YouTube). Captured here so we can
+            # stamp a cratebuilder.json sidecar into the channel folder — this
+            # is what lets the Watch List scan reliably later instead of
+            # guessing a handle from the folder name.
+            coll_channel_id  = info.get("channel_id") or ""
+            coll_handle      = info.get("uploader_id") or ""   # e.g. "@UKFDnB"
+            coll_channel_url = (channel_url_from_id(coll_channel_id)
+                                or info.get("channel_url")
+                                or info.get("uploader_url") or "")
             if is_collection:
                 entries = list(info.get("entries") or [])
                 collection_name = info.get("title") or info.get("uploader") or ""
@@ -4817,6 +4993,23 @@ class MP3DownloaderApp(tk.Tk):
             channel_sub = channel_name_override or (
                 collection_name if is_collection else None)
             save_dir    = self._resolve_save_dir(genre, channel_sub, platform=platform)
+
+            # Stamp the channel folder with its canonical identity so future
+            # Watch List scans never have to guess the handle. Only meaningful
+            # for YouTube channel/collection downloads where we have a UC id.
+            if (is_collection and platform == "YouTube"
+                    and coll_channel_id and save_dir):
+                if write_channel_sidecar(
+                        save_dir,
+                        channel_id=coll_channel_id,
+                        channel_url=coll_channel_url,
+                        handle=coll_handle,
+                        display_name=channel_sub or collection_name,
+                        platform=platform,
+                        genre=genre or "(none)"):
+                    self._dbg.info(
+                        f"SIDECAR WRITE | {channel_sub!r}  "
+                        f"channel_id={coll_channel_id}")
 
             # Track the newest upload date seen in this run (for auto-add)
             _max_upload_date_this_run = None
@@ -4975,6 +5168,7 @@ class MP3DownloaderApp(tk.Tk):
                                 (browser, profile) if profile
                                 else (browser,)
                             )
+                        self._apply_js_runtime(probe_opts)
                         with yt_dlp.YoutubeDL(probe_opts) as probe:
                             probe_info = probe.extract_info(
                                 item_url, download=False)
@@ -5103,6 +5297,7 @@ class MP3DownloaderApp(tk.Tk):
                             else (browser,)
                         )
 
+                self._apply_js_runtime(ydl_opts)
                 self._dbg.info(f"─── DOWNLOAD ─── {item_title!r}  URL: {item_url}")
                 self._dbg_ydl_opts("download", ydl_opts)
 
@@ -5170,6 +5365,7 @@ class MP3DownloaderApp(tk.Tk):
                         title=item_title,
                         channel_name=channel_name_override or collection_name,
                         channel_url=url if is_collection else "",
+                        channel_id=coll_channel_id or None,
                         platform=platform, genre=genre or "(none)",
                         file_path=expected_path,
                         upload_date=_vid_upload,
@@ -5236,6 +5432,7 @@ class MP3DownloaderApp(tk.Tk):
                                 "http_headers", {})["User-Agent"] = \
                                 session_ua
                         try:
+                            self._apply_js_runtime(retry_opts)
                             with yt_dlp.YoutubeDL(retry_opts) as ydl:
                                 ydl.download([item_url])
                             done += 1
@@ -5256,6 +5453,7 @@ class MP3DownloaderApp(tk.Tk):
                                 channel_name=(channel_name_override
                                               or collection_name),
                                 channel_url=url if is_collection else "",
+                                channel_id=coll_channel_id or None,
                                 platform=platform,
                                 genre=genre or "(none)",
                                 file_path=expected_path,
@@ -5418,31 +5616,37 @@ class MP3DownloaderApp(tk.Tk):
         except Exception:
             pass
 
+    def _watchlist_cancel_card(self, cid):
+        """Cancel just this card's in-flight work. A scan is stopped via its
+        per-channel cancel flag; a download (which runs one batch at a time
+        through the main pipeline) is cancelled as a whole."""
+        ch = self._db.get_watchlist_channel(cid)
+        name = ch.get("display_name") if ch else f"#{cid}"
+        batch = self._active_watchlist_batch or {}
+        is_downloading = bool(self._downloading) and \
+            cid in batch.get("channel_ids", [])
+        if is_downloading:
+            # Downloads are serialised through the main pipeline — cancel it.
+            self._cancel_flag.set()
+            self._watchlist_log(f"Cancelling download: {name}…", "info")
+            try:
+                self._cancel_btn.config(state="disabled", style="Cancel.TButton")
+                self._pause_btn.config(state="disabled")
+            except Exception:
+                pass
+        else:
+            # Scanning — signal just this channel's scan loop to stop.
+            self._wl_cancel_cids.add(cid)
+            self._watchlist_log(f"Cancelling scan: {name}…", "info")
+        self._wl_update_cancel_btn_state()
+
     def _build_watchlist_tab(self, parent):
         """Build the Watch List tab: toolbar, scrollable channel cards, scan log."""
-        wrapper = tk.Frame(parent, bg=BG)
-        wrapper.pack(fill="both", expand=True)
+        # ── Pinned top: header + toolbar (always visible, never scroll) ───────
+        top_fixed = ttk.Frame(parent, padding=(28, 22, 28, 0))
+        top_fixed.pack(side="top", fill="x")
 
-        wl_sb = ttk.Scrollbar(wrapper, orient="vertical")
-        wl_sb.pack(side="right", fill="y")
-
-        self._wl_canvas = tk.Canvas(
-            wrapper, bg=BG, bd=0, highlightthickness=0,
-            yscrollcommand=wl_sb.set)
-        self._wl_canvas.pack(side="left", fill="both", expand=True)
-        wl_sb.config(command=self._wl_canvas.yview)
-
-        outer = ttk.Frame(self._wl_canvas, padding=(28, 22, 28, 18))
-        self._wl_cwin = self._wl_canvas.create_window(
-            (0, 0), window=outer, anchor="nw")
-
-        outer.bind("<Configure>", lambda e:
-            self._wl_canvas.configure(scrollregion=self._wl_canvas.bbox("all")))
-        self._wl_canvas.bind("<Configure>", lambda e:
-            self._wl_canvas.itemconfig(self._wl_cwin, width=e.width))
-
-        # ── Header ────────────────────────────────────────────────────────────
-        hdr = ttk.Frame(outer)
+        hdr = ttk.Frame(top_fixed)
         hdr.pack(fill="x", pady=(0, 4))
 
         tk.Label(hdr, text="👁", font=("Segoe UI", 20),
@@ -5450,16 +5654,16 @@ class MP3DownloaderApp(tk.Tk):
         ttk.Label(hdr, text="Watch List",
                   style="Title.TLabel").pack(side="left", pady=(2, 0))
 
-        ttk.Label(outer,
+        ttk.Label(top_fixed,
                   text="Track YouTube channels and scan for new uploads. "
                        "Add channels here, then click Scan to check for new content.",
                   style="S.Dim.TLabel", wraplength=660
                   ).pack(anchor="w", pady=(0, 14))
 
-        tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(0, 14))
+        tk.Frame(top_fixed, height=1, bg=BORDER).pack(fill="x", pady=(0, 14))
 
-        # ── Toolbar ───────────────────────────────────────────────────────────
-        toolbar = ttk.Frame(outer)
+        # ── Toolbar (pinned) ──────────────────────────────────────────────────
+        toolbar = ttk.Frame(top_fixed)
         toolbar.pack(fill="x", pady=(0, 14))
 
         self._wl_add_btn = tk.Button(
@@ -5481,6 +5685,19 @@ class MP3DownloaderApp(tk.Tk):
         self._wl_scan_all_btn.pack(side="left", padx=(0, 6))
         Tooltip(self._wl_scan_all_btn,
                 "Check every channel for new uploads since the last scan.")
+
+        self._wl_fix_btn = tk.Button(
+            toolbar, text="  🛠  Fix Channels  ",
+            font=("Segoe UI", 10, "bold"),
+            bg=SURFACE2, fg=TEXT_MED,
+            activebackground=BORDER, activeforeground=TEXT,
+            relief="flat", bd=0, padx=10, pady=5, cursor="hand2",
+            command=self._watchlist_fix_broken)
+        self._wl_fix_btn.pack(side="left", padx=(0, 6))
+        Tooltip(self._wl_fix_btn,
+                "Look up the real YouTube channel for any folder that still "
+                "needs one, so it can be scanned. Shows the top matches to "
+                "choose from.")
 
         self._wl_dl_all_btn = tk.Button(
             toolbar, text="  ⬇  Download All New (0)  ",
@@ -5506,39 +5723,103 @@ class MP3DownloaderApp(tk.Tk):
         Tooltip(self._wl_cancel_btn,
                 "Stop all in-progress Watch List scans and downloads.")
 
-        # ── Channel cards area ────────────────────────────────────────────────
-        self._wl_cards_frame = tk.Frame(outer, bg=BG)
-        self._wl_cards_frame.pack(fill="x", pady=(0, 14))
+        # ── Resizable split:  scrollable cards (top)  /  pinned log (bottom) ──
+        paned = tk.PanedWindow(
+            parent, orient="vertical", bg=BORDER, sashwidth=6, sashpad=0,
+            bd=0, relief="flat", opaqueresize=True)
+        paned.pack(side="top", fill="both", expand=True)
+        self._wl_paned = paned
 
-        # ── Scan log ──────────────────────────────────────────────────────────
-        tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(0, 10))
-        tk.Label(outer, text="Scan Log", font=("Segoe UI", 10, "bold"),
+        # Pane 1 — scrollable channel cards.
+        cards_area = tk.Frame(paned, bg=BG)
+        wl_sb = ttk.Scrollbar(cards_area, orient="vertical")
+        wl_sb.pack(side="right", fill="y")
+        self._wl_canvas = tk.Canvas(
+            cards_area, bg=BG, bd=0, highlightthickness=0,
+            yscrollcommand=wl_sb.set)
+        self._wl_canvas.pack(side="left", fill="both", expand=True)
+        wl_sb.config(command=self._wl_canvas.yview)
+
+        outer = ttk.Frame(self._wl_canvas, padding=(28, 14, 28, 18))
+        self._wl_cwin = self._wl_canvas.create_window(
+            (0, 0), window=outer, anchor="nw")
+        outer.bind("<Configure>", lambda e:
+            self._wl_canvas.configure(scrollregion=self._wl_canvas.bbox("all")))
+        self._wl_canvas.bind("<Configure>", lambda e:
+            self._wl_canvas.itemconfig(self._wl_cwin, width=e.width))
+
+        self._wl_cards_frame = tk.Frame(outer, bg=BG)
+        self._wl_cards_frame.pack(fill="x", pady=(0, 4))
+
+        # Pane 2 — scan log, pinned at the bottom and always visible.
+        log_frame = ttk.Frame(paned, padding=(28, 6, 28, 10))
+
+        tk.Frame(log_frame, height=1, bg=BORDER).pack(fill="x", pady=(0, 8))
+        tk.Label(log_frame, text="Scan Log", font=("Segoe UI", 10, "bold"),
                  fg=TEXT_DIM, bg=BG, anchor="w").pack(anchor="w", pady=(0, 4))
+
+        log_wrap = tk.Frame(log_frame, bg=BG)
+        log_wrap.pack(fill="both", expand=True)
+        log_sb = ttk.Scrollbar(log_wrap, orient="vertical")
+        log_sb.pack(side="right", fill="y")
         self._wl_log_txt = tk.Text(
-            outer, height=6, font=("Consolas", 9),
+            log_wrap, height=6, font=("Consolas", 9),
             bg="#0a0a0a", fg=TEXT_DIM, relief="flat",
             wrap="word", state="disabled",
             selectbackground=BORDER, selectforeground=TEXT,
             padx=8, pady=6,
-            highlightthickness=1, highlightbackground=BORDER)
-        self._wl_log_txt.pack(fill="x", pady=(0, 8))
+            highlightthickness=1, highlightbackground=BORDER,
+            yscrollcommand=log_sb.set)
+        self._wl_log_txt.pack(side="left", fill="both", expand=True)
+        log_sb.config(command=self._wl_log_txt.yview)
         self._wl_log_txt.tag_configure("ok", foreground=SUCCESS)
         self._wl_log_txt.tag_configure("err", foreground=YT_RED)
         self._wl_log_txt.tag_configure("info", foreground=WL_PURPLE)
 
+        # Assemble the split: cards stretch to fill, log keeps its size.
+        paned.add(cards_area, stretch="always", minsize=140)
+        paned.add(log_frame, stretch="never", minsize=90)
+        # Place the divider so the log starts ~150px tall once we know height.
+        self.after(120, self._wl_init_log_sash)
+
         # Populate on first load
         self._watchlist_refresh()
 
+    def _wl_init_log_sash(self):
+        """Position the cards/log divider so the pinned scan log starts about
+        150px tall. The user can drag it from there."""
+        try:
+            paned = self._wl_paned
+            paned.update_idletasks()
+            h = paned.winfo_height()
+            if h > 260:
+                paned.sash_place(0, 0, h - 150)
+        except Exception:
+            pass
+
     def _watchlist_log(self, msg, tag="info"):
-        """Append a timestamped line to the Watch List scan log."""
+        """Append a timestamped line to the Watch List scan log.
+        Auto-trims to the last ~500 lines so a long session can't grow it
+        without bound."""
         try:
             ts = datetime.now().strftime("%H:%M:%S")
             self._wl_log_txt.config(state="normal")
             self._wl_log_txt.insert("end", f"[{ts}]  {msg}\n", tag)
+            # Keep only the most recent 500 lines.
+            line_count = int(self._wl_log_txt.index("end-1c").split(".")[0])
+            if line_count > 500:
+                self._wl_log_txt.delete("1.0", f"{line_count - 500}.0")
             self._wl_log_txt.see("end")
             self._wl_log_txt.config(state="disabled")
         except Exception:
             pass
+
+    def _wl_dl_log(self, msg, tag="info"):
+        """Mirror a download-progress line into the Watch List scan log, but
+        only while a Watch List batch is running. Safe to call from the batch
+        worker thread (marshals onto the Tk main thread)."""
+        if getattr(self, "_wl_download_active", False):
+            self.after(0, lambda: self._watchlist_log(msg, tag))
 
     def _watchlist_refresh(self):
         """Rebuild all channel cards from the database."""
@@ -5594,6 +5875,9 @@ class MP3DownloaderApp(tk.Tk):
         elif status == "scanning":
             st_text = "⟳ scanning…"
             st_color = WL_PURPLE
+        elif status == "needs_resolve":
+            st_text = "⚠ needs channel ID"
+            st_color = "#f59e0b"   # amber
         elif status == "error":
             st_text = "✗ error"
             st_color = YT_RED
@@ -5628,17 +5912,34 @@ class MP3DownloaderApp(tk.Tk):
         btns = tk.Frame(card, bg=SURFACE)
         btns.pack(fill="x", pady=(6, 0))
 
-        for btn_text, btn_cmd in [
-            ("🔍 Scan",          lambda c=cid: self._watchlist_scan_channel(c)),
+        # Is this card busy right now? Scans set status "scanning"; downloads
+        # list their channel(s) in the active batch while _downloading is set.
+        batch = self._active_watchlist_batch or {}
+        is_scanning = ch.get("status") == "scanning"
+        is_downloading = bool(self._downloading) and \
+            cid in batch.get("channel_ids", [])
+
+        # (label, command, is_cancel)
+        card_buttons = []
+        if is_scanning or is_downloading:
+            # Per-card Cancel — stops just this channel's scan/download.
+            card_buttons.append(
+                ("✕ Cancel", lambda c=cid: self._watchlist_cancel_card(c), True))
+        card_buttons += [
+            ("🛠 Resolve", lambda c=cid: self._watchlist_resolve_dialog(c), False),
+            ("🔍 Scan",    lambda c=cid: self._watchlist_scan_channel(c), False),
             (f"⬇ Download New ({pending})",
-                                  lambda c=cid: self._watchlist_download_new(c)),
-            ("✏ Edit",           lambda c=cid: self._watchlist_edit_channel(c)),
-            ("✕ Remove",         lambda c=cid: self._watchlist_remove_channel(c)),
-        ]:
+                           lambda c=cid: self._watchlist_download_new(c), False),
+            ("✏ Edit",     lambda c=cid: self._watchlist_edit_channel(c), False),
+            ("✕ Remove",   lambda c=cid: self._watchlist_remove_channel(c), False),
+        ]
+        for btn_text, btn_cmd, is_cancel in card_buttons:
             b = tk.Button(btns, text=btn_text,
                           font=("Segoe UI", 9),
-                          bg=SURFACE2, fg=TEXT_DIM,
-                          activebackground=BORDER, activeforeground=TEXT,
+                          bg=(YT_DARK if is_cancel else SURFACE2),
+                          fg=(TEXT if is_cancel else TEXT_DIM),
+                          activebackground=(YT_RED if is_cancel else BORDER),
+                          activeforeground=TEXT,
                           relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
                           command=btn_cmd)
             b.pack(side="left", padx=(0, 4))
@@ -5648,6 +5949,352 @@ class MP3DownloaderApp(tk.Tk):
             tk.Label(btns, text=f"  {ch['last_error'][:60]}",
                      font=("Segoe UI", 8), fg=YT_RED, bg=SURFACE,
                      anchor="w").pack(side="left", padx=(8, 0))
+
+    # ── Channel resolution (heal legacy folders) ───────────────────────────────
+    @staticmethod
+    def _is_unresolved_channel(ch):
+        """True if a watchlist row has no usable YouTube identifier yet —
+        either explicitly flagged needs_resolve, left in error by a prior
+        failed scan, or carrying a folder-name URL that can't resolve (a
+        space, or our unresolved:// sentinel)."""
+        url = (ch.get("url") or "")
+        return (ch.get("status") in ("needs_resolve", "error")
+                or url.startswith("unresolved://")
+                or " " in url)
+
+    def _resolve_channel_via_search(self, name, max_results=3):
+        """Search YouTube for a channel by display name. Returns up to
+        max_results candidate dicts {title, channel_id, url, handle,
+        followers}. Raises on network/extractor failure."""
+        import urllib.parse
+        import yt_dlp
+        q = urllib.parse.quote(name)
+        # sp=EgIQAg%3D%3D  →  YouTube's "Channel" search-results filter.
+        search_url = (f"https://www.youtube.com/results?search_query={q}"
+                      f"&sp=EgIQAg%3D%3D")
+        opts = {
+            "quiet": True, "no_warnings": True,
+            "extract_flat": True, "skip_download": True,
+            "playlist_items": f"1-{max_results}",
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(search_url, download=False)
+        out = []
+        for e in (info.get("entries") or []):
+            cid = e.get("channel_id") or e.get("id") or ""
+            if not str(cid).startswith("UC"):
+                continue  # skip non-channel rows
+            out.append({
+                "title": e.get("title") or e.get("channel") or name,
+                "channel_id": cid,
+                "url": channel_url_from_id(cid),
+                "handle": e.get("uploader_id") or "",
+                "followers": e.get("channel_follower_count"),
+            })
+            if len(out) >= max_results:
+                break
+        return out
+
+    @staticmethod
+    def _channel_id_from_url(url):
+        """Pull a UC… channel id straight out of a /channel/ URL, if present."""
+        m = re.search(r"/channel/(UC[\w-]+)", url or "")
+        return m.group(1) if m else None
+
+    def _persist_resolved_channel(self, ch, channel_id, handle="", url=None):
+        """Commit a resolved identity: update the watchlist row to a usable URL
+        + channel_id (status idle), and stamp the channel folder's
+        cratebuilder.json so it never needs resolving again.
+
+        `url` lets a caller keep a specific URL (e.g. a playlist the user
+        chose to track) instead of the canonical /channel/UC… form; when None
+        we derive the canonical channel URL from the id."""
+        store_url = url or channel_url_from_id(channel_id)
+        self._db.update_watchlist_channel_fields(
+            ch["id"], url=store_url, channel_id=channel_id,
+            status="idle", last_error=None)
+        # Stamp the existing folder (genre+name round-trips to the same path).
+        try:
+            folder = self._resolve_save_dir(
+                ch.get("genre") or "(none)", ch.get("display_name"),
+                platform="YouTube")
+            write_channel_sidecar(
+                folder, channel_id=channel_id, channel_url=store_url,
+                handle=handle, display_name=ch.get("display_name"),
+                platform="YouTube", genre=ch.get("genre") or "(none)")
+        except Exception as e:
+            self._dbg.warning(f"WL RESOLVE | sidecar write failed: {e}")
+        self._dbg.info(
+            f"WL RESOLVE OK | {ch.get('display_name')!r} → {channel_id}")
+
+    def _watchlist_apply_url(self, cid, new_url):
+        """Point a watchlist row at a new channel/playlist URL (from Edit).
+        Canonicalises a /channel/UC… URL immediately; for a handle or playlist
+        URL, stores it as-is now and resolves the channel_id in the background
+        so the sidecar can still be written. Best-effort and non-blocking."""
+        ch = self._db.get_watchlist_channel(cid)
+        if not ch or not new_url:
+            return
+        direct = self._channel_id_from_url(new_url)
+        if direct:
+            self._persist_resolved_channel(ch, direct)
+            self._watchlist_log(f"Channel set: {ch['display_name']}", "ok")
+            self._watchlist_refresh()
+            return
+        # Store the URL as typed (works for @handles and playlists), then try
+        # to look up the underlying channel_id without blocking the UI.
+        self._db.update_watchlist_channel_fields(
+            cid, url=new_url, status="idle", last_error=None)
+        self._watchlist_log(
+            f"URL updated for {ch['display_name']} — resolving channel id…",
+            "info")
+        self._watchlist_refresh()
+
+        def _bg():
+            try:
+                import yt_dlp
+                opts = {"quiet": True, "no_warnings": True,
+                        "extract_flat": "in_playlist", "skip_download": True,
+                        "playlist_items": "0"}
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(new_url, download=False)
+                ucid = info.get("channel_id") or \
+                    self._channel_id_from_url(info.get("channel_url", ""))
+                handle = info.get("uploader_id") or ""
+                if ucid:
+                    # Keep the user's URL (may be a playlist) but record the
+                    # channel_id and write the folder sidecar.
+                    self.after(0, lambda: (
+                        self._persist_resolved_channel(
+                            ch, ucid, handle, url=new_url),
+                        self._watchlist_log(
+                            f"Resolved channel id for {ch['display_name']}.",
+                            "ok"),
+                        self._watchlist_refresh()))
+            except Exception as ex:
+                msg = str(ex)[:80]
+                self.after(0, lambda: self._watchlist_log(
+                    f"Couldn't resolve id for {ch['display_name']}: {msg}",
+                    "err"))
+
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _watchlist_resolve_dialog(self, cid, on_done=None):
+        """Show the top-3 YouTube matches for a channel so the user can pick
+        the right one (or paste a URL manually). on_done(resolved: bool) is
+        called when the dialog closes — used to chain the batch 'Fix' flow."""
+        ch = self._db.get_watchlist_channel(cid)
+        if not ch:
+            if on_done:
+                on_done(False)
+            return
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Fix Channel")
+        dlg.geometry("600x520")
+        dlg.configure(bg=BG)
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        dlg.grab_set()
+        dlg.update_idletasks()
+        px = self.winfo_x() + (self.winfo_width() - 600) // 2
+        py = self.winfo_y() + (self.winfo_height() - 520) // 2
+        dlg.geometry(f"+{max(0, px)}+{max(0, py)}")
+
+        outer = tk.Frame(dlg, bg=BG, padx=24, pady=18)
+        outer.pack(fill="both", expand=True)
+
+        tk.Label(outer, text="Find the right YouTube channel",
+                 font=("Segoe UI", 14, "bold"), fg=TEXT, bg=BG
+                 ).pack(anchor="w")
+        tk.Label(outer,
+                 text=f"Matching the folder “{ch['display_name']}”. "
+                      f"Pick the correct channel below.",
+                 font=("Segoe UI", 9), fg=TEXT_DIM, bg=BG, wraplength=540,
+                 justify="left").pack(anchor="w", pady=(2, 12))
+
+        status_lbl = tk.Label(outer, text="🔍  Searching YouTube…",
+                              font=("Segoe UI", 10), fg=WL_PURPLE, bg=BG)
+        status_lbl.pack(anchor="w", pady=(0, 8))
+
+        results_frame = tk.Frame(outer, bg=BG)
+        results_frame.pack(fill="both", expand=True)
+
+        choice_var = tk.StringVar(value="")
+        manual_var = tk.StringVar()
+        cand_by_id = {}   # channel_id -> candidate dict (for handle lookup)
+
+        # Outcome bookkeeping so the chained batch flow knows what happened.
+        state = {"resolved": False, "cancel_all": False}
+
+        def _close(resolved):
+            state["resolved"] = resolved
+            try:
+                dlg.grab_release()
+                dlg.destroy()
+            except Exception:
+                pass
+            self._watchlist_refresh()
+            if on_done:
+                on_done(resolved)
+
+        def _render(candidates):
+            for w in results_frame.winfo_children():
+                w.destroy()
+            if candidates:
+                status_lbl.config(
+                    text=f"Found {len(candidates)} match(es) — choose one:",
+                    fg=TEXT)
+                choice_var.set(candidates[0]["channel_id"])
+                for c in candidates:
+                    cand_by_id[c["channel_id"]] = c
+                    subs = (f"{c['followers']:,} subscribers"
+                            if c.get("followers") else "subscriber count n/a")
+                    label = f"{c['title']}"
+                    if c.get("handle"):
+                        label += f"   ({c['handle']})"
+                    row = tk.Frame(results_frame, bg=SURFACE, padx=10, pady=6,
+                                   highlightthickness=1,
+                                   highlightbackground=BORDER)
+                    row.pack(fill="x", pady=(0, 5))
+                    tk.Radiobutton(
+                        row, text=label, value=c["channel_id"],
+                        variable=choice_var, bg=SURFACE, fg=TEXT,
+                        selectcolor=SURFACE, activebackground=SURFACE,
+                        activeforeground=TEXT, font=("Segoe UI", 10, "bold"),
+                        anchor="w", highlightthickness=0, bd=0
+                    ).pack(anchor="w", fill="x")
+                    tk.Label(row, text=f"    {subs}  •  {c['url']}",
+                             font=("Segoe UI", 8), fg=TEXT_DIM, bg=SURFACE,
+                             anchor="w").pack(anchor="w")
+            else:
+                status_lbl.config(
+                    text="No channel matches found — paste the URL manually.",
+                    fg=YT_RED)
+
+            # Always offer a manual-paste option.
+            man_row = tk.Frame(results_frame, bg=SURFACE, padx=10, pady=6,
+                               highlightthickness=1, highlightbackground=BORDER)
+            man_row.pack(fill="x", pady=(6, 0))
+            tk.Radiobutton(
+                man_row, text="Paste a channel URL manually:",
+                value="__manual__", variable=choice_var,
+                bg=SURFACE, fg=TEXT, selectcolor=SURFACE,
+                activebackground=SURFACE, activeforeground=TEXT,
+                font=("Segoe UI", 10), anchor="w", highlightthickness=0, bd=0
+            ).pack(anchor="w")
+            tk.Entry(man_row, textvariable=manual_var, font=("Segoe UI", 9),
+                     bg=BG, fg=TEXT, insertbackground=TEXT, relief="flat",
+                     highlightthickness=1, highlightbackground=BORDER
+                     ).pack(fill="x", ipady=3, pady=(4, 0))
+            if not candidates:
+                choice_var.set("__manual__")
+
+        def _search():
+            try:
+                cands = self._resolve_channel_via_search(ch["display_name"])
+                dlg.after(0, lambda: _render(cands))
+            except Exception as ex:
+                msg = str(ex)[:120]
+                dlg.after(0, lambda: (status_lbl.config(
+                    text=f"Search failed: {msg}", fg=YT_RED), _render([])))
+
+        threading.Thread(target=_search, daemon=True).start()
+
+        # ── Buttons ──────────────────────────────────────────────────────────
+        btn_row = tk.Frame(outer, bg=BG)
+        btn_row.pack(fill="x", pady=(12, 0))
+
+        def _confirm():
+            sel = choice_var.get()
+            if not sel:
+                return
+            if sel == "__manual__":
+                raw = manual_var.get().strip()
+                if not raw:
+                    status_lbl.config(text="Enter a URL or pick a match.",
+                                      fg=YT_RED)
+                    return
+                cid_direct = self._channel_id_from_url(raw)
+                if cid_direct:
+                    self._persist_resolved_channel(ch, cid_direct)
+                    self._watchlist_log(
+                        f"Resolved (manual): {ch['display_name']}", "ok")
+                    _close(True)
+                    return
+                # Need to look the URL up to get its channel_id.
+                status_lbl.config(text="Resolving pasted URL…", fg=WL_PURPLE)
+
+                def _lookup():
+                    try:
+                        import yt_dlp
+                        opts = {"quiet": True, "no_warnings": True,
+                                "extract_flat": "in_playlist",
+                                "skip_download": True, "playlist_items": "0"}
+                        with yt_dlp.YoutubeDL(opts) as ydl:
+                            info = ydl.extract_info(raw, download=False)
+                        cid2 = info.get("channel_id") or \
+                            self._channel_id_from_url(info.get("channel_url", ""))
+                        handle = info.get("uploader_id") or ""
+                        if cid2:
+                            dlg.after(0, lambda: (
+                                self._persist_resolved_channel(ch, cid2, handle),
+                                self._watchlist_log(
+                                    f"Resolved (manual): {ch['display_name']}",
+                                    "ok"),
+                                _close(True)))
+                        else:
+                            dlg.after(0, lambda: status_lbl.config(
+                                text="Couldn't read a channel_id from that URL.",
+                                fg=YT_RED))
+                    except Exception as ex:
+                        m = str(ex)[:120]
+                        dlg.after(0, lambda: status_lbl.config(
+                            text=f"Lookup failed: {m}", fg=YT_RED))
+
+                threading.Thread(target=_lookup, daemon=True).start()
+                return
+            # A search candidate was chosen.
+            handle = (cand_by_id.get(sel) or {}).get("handle", "")
+            self._persist_resolved_channel(ch, sel, handle)
+            self._watchlist_log(f"Resolved: {ch['display_name']}", "ok")
+            _close(True)
+
+        tk.Button(btn_row, text="  ✓ Use This Channel  ",
+                  font=("Segoe UI", 10, "bold"), bg=WL_DARK, fg=TEXT,
+                  activebackground=WL_PURPLE, activeforeground=TEXT,
+                  relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
+                  command=_confirm).pack(side="left")
+        tk.Button(btn_row, text="  Skip  ",
+                  font=("Segoe UI", 10), bg=SURFACE2, fg=TEXT_DIM,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
+                  command=lambda: _close(False)).pack(side="left", padx=(8, 0))
+
+    def _watchlist_fix_broken(self):
+        """Walk every unresolved channel through the resolve dialog, one at a
+        time, so the user can heal all legacy folders in one pass."""
+        broken = [c for c in self._db.get_all_watchlist_channels()
+                  if self._is_unresolved_channel(c)]
+        if not broken:
+            messagebox.showinfo(
+                "Nothing to fix",
+                "All Watch List channels already have a valid YouTube ID.",
+                parent=self)
+            return
+        self._watchlist_log(
+            f"Fixing {len(broken)} channel(s) needing resolution…", "info")
+
+        order = [c["id"] for c in broken]
+
+        def _next(i):
+            if i >= len(order):
+                self._watchlist_log("Channel fix pass complete.", "ok")
+                self._watchlist_refresh()
+                return
+            self._watchlist_resolve_dialog(order[i], on_done=lambda _r: _next(i + 1))
+
+        _next(0)
 
     # ── Add Channel dialog ────────────────────────────────────────────────────
     def _watchlist_open_add_dialog(self):
@@ -5840,15 +6487,15 @@ class MP3DownloaderApp(tk.Tk):
 
         dlg = tk.Toplevel(self)
         dlg.title(f"Edit — {ch['display_name']}")
-        dlg.geometry("440x280")
+        dlg.geometry("460x420")
         dlg.configure(bg=BG)
         dlg.resizable(False, False)
         dlg.transient(self)
         dlg.grab_set()
 
         dlg.update_idletasks()
-        px = self.winfo_x() + (self.winfo_width() - 440) // 2
-        py = self.winfo_y() + (self.winfo_height() - 280) // 2
+        px = self.winfo_x() + (self.winfo_width() - 460) // 2
+        py = self.winfo_y() + (self.winfo_height() - 420) // 2
         dlg.geometry(f"+{max(0,px)}+{max(0,py)}")
 
         outer = tk.Frame(dlg, bg=BG, padx=24, pady=18)
@@ -5857,6 +6504,26 @@ class MP3DownloaderApp(tk.Tk):
         tk.Label(outer, text=f"Edit: {ch['display_name']}",
                  font=("Segoe UI", 13, "bold"), fg=TEXT, bg=BG
                  ).pack(anchor="w", pady=(0, 16))
+
+        # Channel / Playlist URL
+        tk.Label(outer, text="Channel / Playlist URL",
+                 font=("Segoe UI", 10, "bold"), fg=TEXT, bg=BG
+                 ).pack(anchor="w", pady=(0, 4))
+        # Don't surface the internal unresolved:// sentinel as an editable URL.
+        existing_url = ch.get("url") or ""
+        if existing_url.startswith("unresolved://"):
+            existing_url = ""
+        url_var = tk.StringVar(value=existing_url)
+        tk.Entry(outer, textvariable=url_var,
+                 font=("Segoe UI", 10), bg=SURFACE, fg=TEXT,
+                 insertbackground=TEXT, relief="flat",
+                 highlightthickness=1, highlightbackground=BORDER
+                 ).pack(fill="x", ipady=5, pady=(0, 4))
+        tk.Label(outer,
+                 text="Paste the channel (…/@handle or …/channel/UC…) or a "
+                      "playlist URL. Leave as-is to keep the current channel.",
+                 font=("Segoe UI", 8), fg=TEXT_DIM, bg=BG, wraplength=400,
+                 justify="left").pack(anchor="w", pady=(0, 12))
 
         # Genre
         tk.Label(outer, text="Genre",
@@ -5899,6 +6566,10 @@ class MP3DownloaderApp(tk.Tk):
                 return
             self._db.update_watchlist_channel_fields(
                 cid, genre=new_genre, scan_cutoff_date=new_cutoff)
+            # If the URL changed, re-point (and re-resolve) the channel.
+            new_url = url_var.get().strip()
+            if new_url and new_url != (ch.get("url") or ""):
+                self._watchlist_apply_url(cid, new_url)
             dlg.destroy()
             self._watchlist_refresh()
 
@@ -5938,6 +6609,18 @@ class MP3DownloaderApp(tk.Tk):
         if not ch:
             return
 
+        # Guard: never hand yt-dlp a folder-name URL (a space or our
+        # unresolved:// sentinel). That is precisely the bug that produced the
+        # HTTP 404s. Route to resolution instead so the scan only ever runs on
+        # a canonical /channel/UC… URL.
+        if self._is_unresolved_channel(ch):
+            self._db.update_watchlist_status(cid, "needs_resolve")
+            self._watchlist_log(
+                f"“{ch['display_name']}” needs its YouTube channel resolved "
+                f"first — click Resolve (or “Fix Channels”).", "err")
+            self._watchlist_refresh()
+            return
+
         # If nothing else is in flight, this is a fresh user-initiated scan
         # — reset any leftover cancel flag from a prior aborted run.
         if not self._downloading and self._wl_scan_active == 0:
@@ -5945,6 +6628,9 @@ class MP3DownloaderApp(tk.Tk):
 
         if self._cancel_flag.is_set():
             return
+
+        # Fresh scan for this channel — drop any stale per-card cancel request.
+        self._wl_cancel_cids.discard(cid)
 
         self._db.update_watchlist_status(cid, "scanning")
         self._watchlist_refresh()
@@ -5955,7 +6641,8 @@ class MP3DownloaderApp(tk.Tk):
 
         def _do_scan():
             try:
-                if self._cancel_flag.is_set():
+                if self._cancel_flag.is_set() or cid in self._wl_cancel_cids:
+                    self._wl_cancel_cids.discard(cid)
                     self._db.update_watchlist_status(cid, "idle")
                     self.after(0, lambda: self._watchlist_log(
                         f"Scan cancelled: {ch['display_name']}", "info"))
@@ -5969,15 +6656,14 @@ class MP3DownloaderApp(tk.Tk):
                 buffered = subtract_days_from_yyyymmdd(
                     raw_cutoff, WATCHLIST_CUTOFF_BUFFER_DAYS)
 
+                # We decide "new" by whether the track is already on disk in
+                # the channel folder (see below) — NOT by upload date, which
+                # is unreliable in flat channel listings. So we enumerate the
+                # full channel and cross-reference, rather than date-filtering.
                 scan_opts = {
                     "extract_flat":   "in_playlist",
                     "skip_download":  True,
                     "lazy_playlist":  True,
-                    "dateafter":      buffered,
-                    "break_on_reject": True,
-                    "extractor_args": {
-                        "youtubetab": {"approximate_date": ["true"]}
-                    },
                     "quiet":          True,
                     "no_warnings":    True,
                 }
@@ -6016,26 +6702,79 @@ class MP3DownloaderApp(tk.Tk):
                 with yt_dlp.YoutubeDL(scan_opts) as ydl:
                     info = ydl.extract_info(url, download=False)
 
-                if self._cancel_flag.is_set():
+                if self._cancel_flag.is_set() or cid in self._wl_cancel_cids:
+                    self._wl_cancel_cids.discard(cid)
                     self._db.update_watchlist_status(cid, "idle")
                     self.after(0, lambda: self._watchlist_log(
                         f"Scan cancelled: {ch['display_name']}", "info"))
                     return
 
                 entries = list(info.get("entries") or [])
-                # Filter out entries already in the DB
+
+                # Build a lookup of tracks already on disk in this channel's
+                # folder. Legacy downloads predate the database and have NO
+                # video_id recorded anywhere, so their .mp3 filename (which is
+                # the sanitised video title) is the only evidence we have that
+                # the track is already owned.
+                folder_keys = {}
+                try:
+                    folder = self._resolve_save_dir(
+                        ch.get("genre") or "(none)", ch.get("display_name"),
+                        platform="YouTube")
+                    for fn in os.listdir(folder):
+                        if fn.lower().endswith(".mp3"):
+                            k = normalize_track_key(fn)
+                            if k:
+                                folder_keys.setdefault(
+                                    k, os.path.join(folder, fn))
+                except OSError:
+                    pass
+
+                # Cross-reference every channel video against (1) the DB by
+                # video_id (exact), then (2) the folder by normalised title.
+                # Already-owned tracks are hidden; their video_id is backfilled
+                # into the DB so the next scan is instant and exact.
                 new_entries = []
+                backfill_rows = []
+                now_ts = int(time.time())
                 for e in entries:
                     vid_id = e.get("id")
                     if vid_id and self._db.is_video_downloaded(vid_id):
                         continue
+                    title = e.get("title") or ""
+                    key = normalize_track_key(title)
+                    if key and key in folder_keys:
+                        # Already on disk (legacy). Record it so future scans
+                        # dedup exactly, then hide it from the "new" list.
+                        if vid_id:
+                            backfill_rows.append({
+                                "video_id":     vid_id,
+                                "title":        title,
+                                "channel_name": ch.get("display_name") or "",
+                                "channel_url":  ch.get("url") or "",
+                                "channel_id":   ch.get("channel_id"),
+                                "platform":     "YouTube",
+                                "genre":        ch.get("genre") or "(none)",
+                                "file_path":    folder_keys[key],
+                                "upload_date":  e.get("upload_date") or "",
+                                "ts":           now_ts,
+                                "bitrate":      "",
+                            })
+                        continue
                     new_entries.append({
                         "id":          vid_id or "",
-                        "title":       e.get("title") or "",
+                        "title":       title,
                         "url":         (e.get("url") or e.get("webpage_url")
                                         or f"https://www.youtube.com/watch?v={vid_id}"),
                         "upload_date": e.get("upload_date") or "",
                     })
+
+                if backfill_rows:
+                    n_bf = self._db.backfill_downloads(backfill_rows)
+                    self._dbg.info(
+                        f"WL SCAN BACKFILL | {ch['display_name']}  "
+                        f"recorded {n_bf} already-downloaded track(s) "
+                        f"from folder")
 
                 count = len(new_entries)
                 status = "found" if count > 0 else "idle"
@@ -6065,6 +6804,7 @@ class MP3DownloaderApp(tk.Tk):
                 self.after(0, lambda: self._watchlist_log(
                     f"Error scanning {ch['display_name']}: {err}", "err"))
             finally:
+                self._wl_cancel_cids.discard(cid)
                 self._wl_scan_active = max(0, self._wl_scan_active - 1)
                 self.after(0, self._wl_update_cancel_btn_state)
 
@@ -6085,7 +6825,28 @@ class MP3DownloaderApp(tk.Tk):
         self._wl_update_cancel_btn_state()
 
         def _do_all():
+            def _wait(deadline):
+                """Sleep until *deadline*, waking early on cancel. Returns
+                True if cancelled."""
+                while time.time() < deadline:
+                    if self._cancel_flag.is_set():
+                        return True
+                    time.sleep(0.25)
+                return self._cancel_flag.is_set()
+
             for i, ch in enumerate(channels):
+                if self._cancel_flag.is_set():
+                    self.after(0, lambda: self._watchlist_log(
+                        "Scan All cancelled.", "info"))
+                    break
+                # Throttle: never let more than WATCHLIST_MAX_CONCURRENT_SCANS
+                # scans run at once. Wait for an in-flight scan to finish before
+                # starting the next, so a big watch list can't fire dozens of
+                # simultaneous yt-dlp requests and time out.
+                while self._wl_scan_active >= WATCHLIST_MAX_CONCURRENT_SCANS:
+                    if self._cancel_flag.is_set():
+                        break
+                    time.sleep(0.25)
                 if self._cancel_flag.is_set():
                     self.after(0, lambda: self._watchlist_log(
                         "Scan All cancelled.", "info"))
@@ -6093,13 +6854,13 @@ class MP3DownloaderApp(tk.Tk):
                 # Use after(0,...) to call scan on main thread context
                 # but the actual scan is threaded inside _watchlist_scan_channel
                 self.after(0, lambda c=ch["id"]: self._watchlist_scan_channel(c))
-                # Small delay between scans to avoid hammering — wake early on cancel
-                delay = 3.0 + random.uniform(0.5, 2.0)
-                deadline = time.time() + delay
-                while time.time() < deadline:
-                    if self._cancel_flag.is_set():
-                        break
-                    time.sleep(0.25)
+                # Brief jittered pause: lets the scheduled scan register as
+                # active (so the cap is counted accurately on the next loop)
+                # and avoids firing requests in a tight burst.
+                if _wait(time.time() + 1.0 + random.uniform(0.5, 1.5)):
+                    self.after(0, lambda: self._watchlist_log(
+                        "Scan All cancelled.", "info"))
+                    break
         threading.Thread(target=_do_all, daemon=True).start()
 
     # ── Download new for one channel ──────────────────────────────────────────
@@ -6133,6 +6894,7 @@ class MP3DownloaderApp(tk.Tk):
                 "genre":        genre,
                 "platform":     platform,
                 "channel_name": ch["display_name"],
+                "title":        entry.get("title", ""),
             })
 
         # Set up the watchlist batch context for cleanup in _batch_worker
@@ -6145,7 +6907,10 @@ class MP3DownloaderApp(tk.Tk):
             f"from {ch['display_name']}…", "info")
 
         # Switch to Main tab and kick off the batch
-        self._notebook.select(0)
+        # Stay on the Watch List tab — the download runs as background activity
+        # and reports into the Watch List scan log (mirrored from the batch
+        # worker via _wl_dl_log) instead of switching to the Main tab.
+        self._wl_download_active = True
         self._downloading = True
         self._cancel_flag.clear()
         self._pause_flag.clear()
@@ -6172,6 +6937,8 @@ class MP3DownloaderApp(tk.Tk):
 
         threading.Thread(target=self._batch_worker,
                           args=(run_batch,), daemon=True).start()
+        # Rebuild cards so the downloading channel shows a Cancel button.
+        self._watchlist_refresh()
 
     # ── Download all new across all channels ──────────────────────────────────
     def _watchlist_download_all_new(self):
@@ -6197,6 +6964,7 @@ class MP3DownloaderApp(tk.Tk):
                     "genre":        genre,
                     "platform":     platform,
                     "channel_name": ch["display_name"],
+                    "title":        entry.get("title", ""),
                 })
             channel_ids.append(ch["id"])
 
@@ -6215,7 +6983,10 @@ class MP3DownloaderApp(tk.Tk):
             f"Downloading {len(run_batch)} new tracks across "
             f"{len(channel_ids)} channels…", "info")
 
-        self._notebook.select(0)
+        # Stay on the Watch List tab — the download runs as background activity
+        # and reports into the Watch List scan log (mirrored from the batch
+        # worker via _wl_dl_log) instead of switching to the Main tab.
+        self._wl_download_active = True
         self._downloading = True
         self._cancel_flag.clear()
         self._pause_flag.clear()
@@ -6242,6 +7013,8 @@ class MP3DownloaderApp(tk.Tk):
 
         threading.Thread(target=self._batch_worker,
                           args=(run_batch,), daemon=True).start()
+        # Rebuild cards so the downloading channel(s) show a Cancel button.
+        self._watchlist_refresh()
 
     # ── Auto-add after a normal channel download ──────────────────────────────
     def _watchlist_auto_add_if_enabled(self, url, display_name, genre,
@@ -6315,18 +7088,46 @@ class MP3DownloaderApp(tk.Tk):
                 else:
                     cutoff = today_yyyymmdd()
 
-                result = self._db.add_watchlist_channel(
-                    url=f"https://www.youtube.com/@{channel_dir}",
-                    display_name=channel_dir,
-                    platform="YouTube",
-                    genre=genre,
-                    scan_cutoff_date=cutoff,
-                    auto_added=True)
+                # Prefer the folder's own cratebuilder.json sidecar — it holds
+                # the canonical channel_id, so the URL is correct and the
+                # channel is immediately scannable. Folder name is only a
+                # display label, NOT a valid YouTube handle, so we never build
+                # a scan URL from it.
+                sc = read_channel_sidecar(channel_path)
+                if sc and sc.get("channel_id"):
+                    real_url = (sc.get("channel_url")
+                                or channel_url_from_id(sc["channel_id"]))
+                    result = self._db.add_watchlist_channel(
+                        url=real_url,
+                        channel_id=sc["channel_id"],
+                        display_name=sc.get("display_name") or channel_dir,
+                        platform="YouTube",
+                        genre=genre,
+                        scan_cutoff_date=cutoff,
+                        auto_added=True,
+                        status="idle")
+                    status_note = "from sidecar"
+                else:
+                    # No sidecar: we genuinely don't know the real handle.
+                    # Park it as needs_resolve with a unique sentinel URL so
+                    # the UNIQUE constraint holds and no bogus 404 URL is ever
+                    # scanned. The "Fix broken channels" pass resolves it.
+                    sentinel = f"unresolved://YouTube/{genre}/{channel_dir}"
+                    result = self._db.add_watchlist_channel(
+                        url=sentinel,
+                        display_name=channel_dir,
+                        platform="YouTube",
+                        genre=genre,
+                        scan_cutoff_date=cutoff,
+                        auto_added=True,
+                        status="needs_resolve")
+                    status_note = "needs_resolve"
+
                 if result is not None:
                     added += 1
                     self._dbg.info(
                         f"WL FOLDER-POPULATE | {channel_dir!r}  "
-                        f"genre={genre}  cutoff={cutoff}")
+                        f"genre={genre}  cutoff={cutoff}  ({status_note})")
 
         if added:
             self._watchlist_log(
