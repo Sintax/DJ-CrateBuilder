@@ -35,6 +35,8 @@ activity.log
 debug.log
 .dj_cratebuilder_config.json
 .yt_dj_cratebuilder_config.json
+cratebuilder.db
+cratebuilder.db.bak-*
 
 # Backups & archives
 _BACKUP/
