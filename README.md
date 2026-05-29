@@ -11,6 +11,7 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 
 ## Features
 
+- **Watch List** — Track your favourite YouTube channels and periodically scan for *only* genuinely-new uploads, so you never re-download tracks you already own. Channels are identified by their canonical channel ID (with a built-in search resolver to heal broken links), new uploads are cross-referenced against what's already in your folders, and per-channel cards let you Resolve, Scan, Download New, Edit, or Cancel at any time — all alongside a pinned, resizable scan log *(new in v1.3)*
 - **Batch Queue** — Add multiple URLs (channels, playlists, single videos) and process them in sequence
 - **Auto-Organization** — Downloads are sorted into folders by platform, genre, and channel name
 - **MP3 Conversion** — Converts all audio to MP3 at your chosen bitrate (128 / 192 / 256 / 320 kbps)
@@ -30,9 +31,16 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 
 ## Screenshots
 
+**Watch List** — track channels and surface only new uploads:
+
 <p align="left">
-  <img src="assets/DJ-CrateBuilder_Screenshot_1.png" width="400">
-  <img src="assets/DJ-CrateBuilder_Screenshot_2.png" width="400">
+  <img src="docs/screenshots/03-watchlist.png" width="640">
+</p>
+
+<p align="left">
+  <img src="docs/screenshots/01-main.png" width="320">
+  <img src="docs/screenshots/02-settings.png" width="320">
+  <img src="docs/screenshots/04-about.png" width="320">
 </p>
 
 ---
@@ -143,6 +151,7 @@ For faster downloads and fewer "login required" errors, you can authenticate wit
 | Rotate User-Agent | On | Randomize browser fingerprint per session |
 | Throttle Requests | On / Light | Random delay between downloads |
 | Browser Cookies | Off | Authenticate with a YouTube account |
+| Auto-add to Watch List | On | Add channels to the Watch List after downloading |
 
 All settings auto-save and persist between sessions.
 
@@ -219,7 +228,7 @@ This project is in active development. Bug reports, feature requests, and pull r
 
 | Version | Date | Highlights |
 |---------|------|------------|
-| 1.3 | 2026-04 | Debug log with full yt-dlp/cookie diagnostics, renamed DJ-CrateBuilder.log → activity.log, "Downloads Log" rename, native Linux installer improvements (targeting cookie-auth formatting bug) |
+| 1.3 | 2026-05 | **Watch List** — channel tracking with new-upload detection, canonical channel-ID resolution + search-based healing, folder cross-reference dedup, per-card Resolve/Scan/Download/Cancel, pinned resizable scan log; debug log with full yt-dlp/cookie diagnostics, renamed DJ-CrateBuilder.log → activity.log, "Downloads Log" rename, native Linux installer improvements |
 | 1.2 | 2026-03 | Browser cookie auth, cookie file support, age-gate retry, format diagnostics, _No Genre folder, URL history, genre confirmation, renamed from YouTube DJ-CrateBuilder |
 | 1.1 | 2026-03 | Queue rewrite (Text widget), batch system, throttle presets, geo-bypass, UA rotation, log viewer, Settings tab overhaul |
 | 1.0 | 2026-03 | Initial release — single/batch download, genre folders, skip-existing, time limiter, dark UI |
