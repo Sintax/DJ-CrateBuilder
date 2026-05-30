@@ -2,7 +2,9 @@
 
 **Read this in full before resuming. It is the single source of truth for an in-progress, multi-phase, subagent-driven rework.**
 
-Last updated at: Phase 2e COMPLETE, Phase 3 NOT STARTED. HEAD = `3c8652c`. Tests: **22 passed**. Branch: `v1.3`.
+Last updated at: **ALL PHASES COMPLETE (0–4). HEAD = `3cdb725`.** Tests: **22 passed**. Branch: `v1.3` (local only — user chose "don't push yet"; NEVER touch `main` without explicit go-ahead).
+
+> **STATUS: DONE.** Phases 0–4 are all complete and verified (automated suite + headless wiring + a live computer-use walkthrough of tab order, the Settings automation UI, interval persistence, Fix Link conditional visibility, on-startup scan, and hide-to-tray). Remaining optional items the user deferred: (a) the two side-effecting live checks — run-at-startup registry toggle + a real short-interval auto-download — were SKIPPED by user choice (covered by the test suite); (b) `_anjuna.py`/`_uitest2.py` still need deletion by the user (harness can't delete — `Remove-Item _anjuna.py, _uitest2.py`); (c) the user's config has `minimize_to_tray=True` left on from the tray test (default is Off — untick in Settings if undesired). If the user later says "push it", per their standing rule push **`v1.3` only** (`git push -u origin v1.3`) and do NOT merge to `main` or open a PR unless they explicitly ask.
 
 ---
 
