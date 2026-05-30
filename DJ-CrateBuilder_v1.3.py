@@ -6388,7 +6388,7 @@ class MP3DownloaderApp(tk.Tk):
             self._db.update_watchlist_status(cid, "needs_resolve")
             self._watchlist_log(
                 f"“{ch['display_name']}” needs its YouTube channel resolved "
-                f"first — click Resolve (or “Fix Channels”).", "err")
+                f"first — click Fix Link (or “Fix Channels”).", "err")
             self._watchlist_refresh()
             return
 
