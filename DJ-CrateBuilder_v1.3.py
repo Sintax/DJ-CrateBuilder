@@ -3602,26 +3602,35 @@ class MP3DownloaderApp(tk.Tk):
             self._auto_check_after_id = self.after(60_000, self._auto_check_tick)
             return
         self._watchlist_log("⏰ Scheduled auto-check starting…", "info")
-        self._auto_check_pending = True
+        self._auto_check_poll_count = 0
         self._watchlist_scan_all()
         # Poll for scan completion, then download + notify.
         self.after(2000, self._auto_check_after_scan)
 
+    # Cap the post-scan wait so a stuck scan can't poll forever (~5 min @ 2s).
+    _AUTO_CHECK_MAX_POLLS = 150
+
     def _auto_check_after_scan(self):
-        """Once scans settle, download any new tracks and notify."""
+        """Once scans settle (or we give up waiting), download new tracks + notify."""
         if self._wl_scan_active > 0:
-            self.after(2000, self._auto_check_after_scan)
-            return
-        channels = self._db.get_all_watchlist_channels()
-        total_new = sum(int(c.get("pending_new_count", 0)) for c in channels)
-        if total_new > 0:
-            n_ch = sum(1 for c in channels if int(c.get("pending_new_count", 0)) > 0)
-            self._watchlist_download_all_new()
-            self._notify_tray(
-                "Watch List",
-                f"{total_new} new track(s) downloading across {n_ch} channel(s)")
+            self._auto_check_poll_count += 1
+            if self._auto_check_poll_count <= self._AUTO_CHECK_MAX_POLLS:
+                self.after(2000, self._auto_check_after_scan)
+                return
+            # Timed out waiting — record the attempt and reschedule next cycle.
+            self._watchlist_log(
+                "⏰ Auto-check gave up waiting for scans to finish.", "info")
         else:
-            self._watchlist_log("⏰ Auto-check complete — no new tracks.", "info")
+            channels = self._db.get_all_watchlist_channels()
+            total_new = sum(int(c.get("pending_new_count", 0)) for c in channels)
+            if total_new > 0:
+                n_ch = sum(1 for c in channels if int(c.get("pending_new_count", 0)) > 0)
+                self._watchlist_download_all_new()
+                self._notify_tray(
+                    "Watch List",
+                    f"{total_new} new track(s) downloading across {n_ch} channel(s)")
+            else:
+                self._watchlist_log("⏰ Auto-check complete — no new tracks.", "info")
         self._watchlist_last_check = int(time.time())
         self._autosave_automation_settings()  # persists last_check + reschedules
 

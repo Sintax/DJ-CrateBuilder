@@ -13,3 +13,6 @@ def test_auto_check_hours_to_seconds():
     assert f("6 hours") == 6 * 3600
     assert f("24 hours") == 24 * 3600
     assert f("nonsense") is None
+    # Real runtime inputs from an unset/blank StringVar must be safe.
+    assert f("") is None
+    assert f(None) is None
