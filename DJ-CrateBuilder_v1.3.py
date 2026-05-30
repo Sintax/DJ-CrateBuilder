@@ -2434,15 +2434,15 @@ class MP3DownloaderApp(tk.Tk):
         self._notebook.add(main_frame, text="     ▶  Main     ")
         self._build_main_tab(main_frame)
 
-        # ── Settings tab ──────────────────────────────────────────────────────
-        settings_frame = ttk.Frame(self._notebook)
-        self._notebook.add(settings_frame, text="   ⚙  Settings   ")
-        self._build_settings_tab(settings_frame)
-
         # ── Watch List tab ────────────────────────────────────────────────────
         watchlist_frame = ttk.Frame(self._notebook)
         self._notebook.add(watchlist_frame, text="   👁  Watch List   ")
         self._build_watchlist_tab(watchlist_frame)
+
+        # ── Settings tab ──────────────────────────────────────────────────────
+        settings_frame = ttk.Frame(self._notebook)
+        self._notebook.add(settings_frame, text="   ⚙  Settings   ")
+        self._build_settings_tab(settings_frame)
 
         # ── About tab ────────────────────────────────────────────────────────
         about_frame = ttk.Frame(self._notebook)
@@ -2506,10 +2506,10 @@ class MP3DownloaderApp(tk.Tk):
                 self._main_canvas.yview_scroll(
                     int(-1 * (event.delta / 120)), "units")
             elif tab_idx == 1:
-                self._settings_canvas.yview_scroll(
+                self._wl_canvas.yview_scroll(
                     int(-1 * (event.delta / 120)), "units")
             elif tab_idx == 2:
-                self._wl_canvas.yview_scroll(
+                self._settings_canvas.yview_scroll(
                     int(-1 * (event.delta / 120)), "units")
             elif tab_idx == 3:
                 self._about_canvas.yview_scroll(
