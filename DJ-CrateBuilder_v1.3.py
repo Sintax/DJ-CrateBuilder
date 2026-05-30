@@ -3648,6 +3648,8 @@ class MP3DownloaderApp(tk.Tk):
             self._run_at_startup.set(False)  # revert if the write failed
             messagebox.showwarning(
                 "Startup", "Could not register the app to run at startup.")
+        # Persisted here (not in _autosave_automation_settings) because the
+        # registry is the source of truth for this flag; keep them in sync.
         cfg = load_config()
         cfg["run_at_startup"] = self._run_at_startup.get()
         save_config(cfg)
