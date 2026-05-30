@@ -1,18 +1,21 @@
-def _new_db(cb, tmp_path):
+from cratebuilder.db import DownloadsDatabase
+
+
+def _new_db(tmp_path):
     # DownloadsDatabase takes a db path (db_path, debug_logger=None).
-    return cb.DownloadsDatabase(str(tmp_path / "test.db"))
+    return DownloadsDatabase(str(tmp_path / "test.db"))
 
 
-def test_schema_init_idempotent(cb, tmp_path):
-    db = _new_db(cb, tmp_path)
+def test_schema_init_idempotent(tmp_path):
+    db = _new_db(tmp_path)
     # Re-initialising the same DB file must not raise (idempotent CREATE/ALTER)
     # and the schema must be usable afterward.
-    db2 = cb.DownloadsDatabase(str(tmp_path / "test.db"))
+    db2 = DownloadsDatabase(str(tmp_path / "test.db"))
     assert db2.get_all_watchlist_channels() == []
 
 
-def test_watchlist_insert_and_dedup(cb, tmp_path):
-    db = _new_db(cb, tmp_path)
+def test_watchlist_insert_and_dedup(tmp_path):
+    db = _new_db(tmp_path)
     row = dict(url="https://www.youtube.com/channel/UC1/videos",
                channel_id="UC1", display_name="One", platform="YouTube",
                genre="DnB", scan_cutoff_date="2026-01-01")
