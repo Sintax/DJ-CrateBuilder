@@ -11,7 +11,9 @@ app can run unattended — periodically checking watched channels for new upload
 auto-downloading them — with the option to launch at Windows startup and live in the
 system tray.
 
-## Scope (7 changes)
+## Scope
+
+**Feature work (7 changes):**
 
 1. Swap the **Watch List** and **Settings** tab positions.
 2. Add a **Settings → Automation** section with an auto-check interval dropdown,
@@ -24,7 +26,15 @@ system tray.
 6. Update the **About-tab FAQ** with Watch List usage entries.
 7. Persist the new settings.
 
-Out of scope: per-folder (staggered) intervals, cloud sync, non-Windows tray support.
+**Code-quality work (final build):**
+
+8. **Hybrid refactor** — extract cleanly-separable logic into modules, tidy the main file
+   in place (Section 8).
+9. **Lightweight test harness** — characterization/regression tests around the riskiest
+   pure logic, added *before* the refactor so it guards the moves (Section 9).
+
+Out of scope: per-folder (staggered) intervals, cloud sync, non-Windows tray support,
+a full multi-module UI split (UI + App stay in the main entry file).
 
 ---
 
@@ -168,10 +178,86 @@ established pattern.
 
 ---
 
+## 8. Hybrid refactor (final-build cleanup)
+
+Goal: kill spaghetti, improve readability, follow Python best practices — **without**
+changing app behaviour and **without** a risky full package split. The App class and all
+UI-build methods stay in the main entry file; only cleanly-separable, low-coupling logic
+moves out.
+
+### 8a. Extract pure-logic modules into a `cratebuilder/` package
+A package directory beside the main script, imported by it:
+
+- `cratebuilder/util.py` — path/config helpers (`_config_path`, `load_config`,
+  `save_config`, `today_yyyymmdd`), filename/title normalisation (`normalize_track_key`),
+  and folder helpers (`scan_folder_newest_mp3`).
+- `cratebuilder/sidecar.py` — `cratebuilder.json` helpers (`read_channel_sidecar`,
+  `write_channel_sidecar`, `channel_url_from_id`) and the `is_unresolved_channel(ch)`
+  predicate (moved off the `App` static method so it's unit-testable in isolation; the
+  App keeps a thin delegating wrapper).
+- `cratebuilder/db.py` — the `DownloadsDatabase` class + schema constants.
+- `cratebuilder/startup.py` *(new)* — `startup_is_enabled()`, `set_startup()` (winreg).
+- `cratebuilder/tray.py` *(new)* — tray-icon lifecycle + `notify()` wrapper (pystray).
+
+Each module has a focused responsibility, a docstring, and no Tk imports (except `tray.py`
+which is UI-adjacent but still Tk-free — it marshals back via a callback). The main file
+imports what it needs; no behaviour changes.
+
+### 8b. In-file tidy of the main entry file
+- Consistent **section banners** and logical grouping (styles → init → tab builders →
+  Main logic → Watch List logic → scheduler/tray → helpers).
+- Remove **dead code** and leftover commented blocks; delete the temp scripts
+  `_anjuna.py` / `_uitest2.py` (ask the user — harness can't delete).
+- **Naming/consistency:** fix inconsistent names, add docstrings to public methods,
+  replace magic numbers/strings with module-level constants (e.g. interval option
+  strings, registry value name).
+- **De-duplicate** repeated patterns (e.g. the daemon-thread-start boilerplate, repeated
+  card-status mapping) into small helpers.
+- Keep edits **behaviour-preserving**; run the test harness + `py_compile` after each
+  extraction.
+
+### 8c. Build/packaging follow-through
+- Update the PyInstaller command (it auto-collects the local `cratebuilder` package;
+  add `--hidden-import` only if a dynamic import needs it).
+- Inno Setup already bundles the `dist` output, so no `.iss` change beyond confirming the
+  package files are present.
+- Update README "Run from Source" note (the repo now has the package alongside the script
+  — `python DJ-CrateBuilder_v1.3.py` still works unchanged).
+
+## 9. Test harness (added before the refactor)
+
+- `tests/` directory using **pytest** (dev-only; not bundled with the app).
+- Characterisation tests written against current behaviour *first*, then kept green
+  through the extraction:
+  - `util`: `normalize_track_key` (extensions, unicode, punctuation), `load_config` /
+    `save_config` round-trip + missing-file + legacy-migration, `today_yyyymmdd` format.
+  - `sidecar`: `read`/`write_channel_sidecar` round-trip, `channel_url_from_id`,
+    `is_unresolved_channel` truth table (needs_resolve / error / `unresolved://` / space /
+    resolved).
+  - `db`: schema init is idempotent, insert + `UNIQUE(url)` dedup, `backfill_downloads`,
+    `get_all_watchlist_channels`. Run against a **temp copy / temp path**, never the real
+    `cratebuilder.db`.
+- A `requirements-dev.txt` (or a `[dev]` extra) listing `pytest`.
+- CI is out of scope; tests are run locally (`pytest -q`).
+
+## Delivery order (phased, each phase verified)
+
+1. **Phase 0 — Tests:** add the harness against current code (red/green baseline).
+2. **Phase 1 — Extract modules:** move `util` / `sidecar` / `db` into `cratebuilder/`;
+   keep tests green; `py_compile` + headless UI build.
+3. **Phase 2 — Features:** tab swap, Automation settings, scheduler, tray, startup,
+   folder-discovery, Fix Link, FAQ — built into the clean structure (new `startup.py` /
+   `tray.py` modules). New pure logic gets tests too.
+4. **Phase 3 — In-file tidy:** section banners, dead-code removal, naming, de-dup,
+   docstrings on the main file.
+5. **Phase 4 — Build/docs:** PyInstaller/Inno verification, README + requirements update,
+   final full verification pass.
+
 ## Dependencies
 
-- **New:** `pystray`, `Pillow` (tray icon + notifications). Add to `requirements`,
+- **New (app):** `pystray`, `Pillow` (tray icon + notifications). Add to `requirements`,
   the PyInstaller build (`--hidden-import` if needed), and the Inno Setup bundle.
+- **New (dev only):** `pytest` (test harness; not shipped).
 - **Stdlib:** `winreg` (Windows-only; guarded by `sys.platform == "win32"`).
 - Tray + startup features are Windows-only; on other platforms the checkboxes are hidden
   or disabled (the app currently targets Windows + Linux — Linux simply won't show tray /
