@@ -25,10 +25,3 @@ def _load_main():
 @pytest.fixture(scope="session")
 def cb():
     return _load_main()
-
-
-@pytest.fixture()
-def tmp_config(tmp_path, monkeypatch):
-    """Redirect the config file to a temp path for load/save tests."""
-    cfg = tmp_path / "config.json"
-    return cfg

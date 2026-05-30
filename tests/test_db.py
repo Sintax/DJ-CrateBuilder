@@ -5,9 +5,10 @@ def _new_db(cb, tmp_path):
 
 def test_schema_init_idempotent(cb, tmp_path):
     db = _new_db(cb, tmp_path)
-    # Re-initialising must not raise (idempotent CREATE/ALTER).
+    # Re-initialising the same DB file must not raise (idempotent CREATE/ALTER)
+    # and the schema must be usable afterward.
     db2 = cb.DownloadsDatabase(str(tmp_path / "test.db"))
-    assert db2 is not None
+    assert db2.get_all_watchlist_channels() == []
 
 
 def test_watchlist_insert_and_dedup(cb, tmp_path):
@@ -18,6 +19,9 @@ def test_watchlist_insert_and_dedup(cb, tmp_path):
     # Real insert method is `add_watchlist_channel` (keyword-only args).
     first = db.add_watchlist_channel(**row)   # confirmed method name in source
     second = db.add_watchlist_channel(**row)  # duplicate url
+    # Insert returns a row id; the duplicate is swallowed (IntegrityError) -> None.
+    assert first is not None
+    assert second is None
     chans = db.get_all_watchlist_channels()
     urls = [c["url"] for c in chans]
     assert urls.count(row["url"]) == 1  # UNIQUE(url) prevented a duplicate
