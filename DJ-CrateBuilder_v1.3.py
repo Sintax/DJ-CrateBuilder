@@ -25,7 +25,7 @@ from cratebuilder.db import DownloadsDatabase
 from cratebuilder import startup as cb_startup
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ██  VERSION & ABOUT  ██  ── Edit these values to update the app info ──────
+# Version & About — edit these values to update the app info
 # ══════════════════════════════════════════════════════════════════════════════
 APP_NAME    = "DJ-CrateBuilder"
 APP_VERSION = "1.3"
@@ -6978,7 +6978,7 @@ class MP3DownloaderApp(tk.Tk):
             self._watchlist_refresh()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # ██  REBUILD  ██
+    # Rebuild — rebuild the downloads table from the activity log
     # ══════════════════════════════════════════════════════════════════════════
 
     def _rebuild_db_from_log(self):
