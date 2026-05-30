@@ -5674,8 +5674,11 @@ class MP3DownloaderApp(tk.Tk):
             # Per-card Cancel — stops just this channel's scan/download.
             card_buttons.append(
                 ("✕ Cancel", lambda c=cid: self._watchlist_cancel_card(c), True))
+        if is_unresolved_channel(ch):
+            # Only unresolved channels need their link healed.
+            card_buttons.append(
+                ("🛠 Fix Link", lambda c=cid: self._watchlist_resolve_dialog(c), False))
         card_buttons += [
-            ("🛠 Resolve", lambda c=cid: self._watchlist_resolve_dialog(c), False),
             ("🔍 Scan",    lambda c=cid: self._watchlist_scan_channel(c), False),
             (f"⬇ Download New ({pending})",
                            lambda c=cid: self._watchlist_download_new(c), False),
