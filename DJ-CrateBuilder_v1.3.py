@@ -1635,6 +1635,12 @@ class CookieHowToWindow(tk.Toplevel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# MP3DownloaderApp — main application window (Tk root)
+#   __init__ / lifecycle, the four notebook tabs, the download engine, and the
+#   Watch List automation all live on this class. Sections below are marked with
+#   full-width ═ banners; method groups within a section use ── sub-banners.
+# ══════════════════════════════════════════════════════════════════════════════
 class MP3DownloaderApp(tk.Tk):
 
     def __init__(self):
@@ -1745,6 +1751,9 @@ class MP3DownloaderApp(tk.Tk):
                 and "--startup" in sys.argv):
             self.after(1700, self._hide_to_tray)
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # Filesystem & logging — paths, the activity/debug loggers, dedup helpers
+    # ══════════════════════════════════════════════════════════════════════════
     # ── Directory management ──────────────────────────────────────────────────
     def _ensure_dirs(self):
         """Create base + YouTube / SoundCloud sub-directories if missing."""
@@ -2120,6 +2129,9 @@ class MP3DownloaderApp(tk.Tk):
             result_holder.append(False)
             done_event.set()
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # Batch URL list — the multi-URL queue panel on the Main tab
+    # ══════════════════════════════════════════════════════════════════════════
     # ── Batch URL list ────────────────────────────────────────────────────────
     def _build_batch_panel(self, parent):
         """Build the compact batch-URL list panel."""
@@ -2282,6 +2294,9 @@ class MP3DownloaderApp(tk.Tk):
                    command=lambda i=idx: self._batch_remove(i)
                    ).pack(side="left", padx=(4, 2))
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # UI construction — ttk styles, the notebook, and the Main tab
+    # ══════════════════════════════════════════════════════════════════════════
     # ── Styles ────────────────────────────────────────────────────────────────
     def _build_styles(self):
         s = ttk.Style(self)
@@ -2742,6 +2757,9 @@ class MP3DownloaderApp(tk.Tk):
         self._qtxt.tag_configure("q_skipped",  foreground=SKIP_COL)
         self._qtxt.tag_configure("q_error",    foreground=YT_RED)
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # Settings tab — the form plus the autosave handlers that back each control
+    # ══════════════════════════════════════════════════════════════════════════
     # ── Settings tab ──────────────────────────────────────────────────────────
     def _build_settings_tab(self, parent):
         # ── Scrollable wrapper ────────────────────────────────────────────────
@@ -3586,6 +3604,9 @@ class MP3DownloaderApp(tk.Tk):
         # Reschedule the timer whenever the interval changes.
         self._reschedule_auto_check()
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # Watch List — automation scheduler (periodic scan + auto-download timer)
+    # ══════════════════════════════════════════════════════════════════════════
     def _reschedule_auto_check(self):
         """(Re)arm the periodic auto-check timer from the current interval."""
         if self._auto_check_after_id is not None:
@@ -3645,6 +3666,9 @@ class MP3DownloaderApp(tk.Tk):
         self._watchlist_last_check = int(time.time())
         self._autosave_automation_settings()  # persists last_check + reschedules
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # System tray & window lifecycle — hide/show, quit, run-at-startup toggle
+    # ══════════════════════════════════════════════════════════════════════════
     def _notify_tray(self, title, msg):
         """Show a tray notification if the tray is active; always log it."""
         self._watchlist_log(f"🔔 {title}: {msg}", "info")
@@ -3709,6 +3733,9 @@ class MP3DownloaderApp(tk.Tk):
         cfg["run_at_startup"] = self._run_at_startup.get()
         save_config(cfg)
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # About tab — version info, FAQ, and the log-viewer / folder launchers
+    # ══════════════════════════════════════════════════════════════════════════
     def _build_about_tab(self, parent):
         # ── Scrollable wrapper ────────────────────────────────────────────────
         wrapper = tk.Frame(parent, bg=BG)
@@ -4040,6 +4067,9 @@ class MP3DownloaderApp(tk.Tk):
             self._cookie_howto.destroy()
         self._cookie_howto = CookieHowToWindow(self, browser=browser)
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # Input handling — genre picker, platform switch, URL entry & history
+    # ══════════════════════════════════════════════════════════════════════════
     # ── Genre management ─────────────────────────────────────────────────────
     def _refresh_genre_list(self):
         """Rebuild the genre combobox values for the current platform."""
@@ -4278,6 +4308,9 @@ class MP3DownloaderApp(tk.Tk):
             url = url.rstrip("/") + "/videos"
         return url
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # Download engine — dependency check, queue UI, and the worker pipeline
+    # ══════════════════════════════════════════════════════════════════════════
     # ── Dep check ─────────────────────────────────────────────────────────────
     def _check_deps_async(self):
         def _run():
@@ -5356,9 +5389,8 @@ class MP3DownloaderApp(tk.Tk):
         self._wl_update_cancel_btn_state()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # ██  WATCH LIST TAB  ██
+    # Watch List tab — channel cards, scan/download, channel resolution, add/edit
     # ══════════════════════════════════════════════════════════════════════════
-
     def _cancel_all_updates(self):
         """Global cancel: stops in-progress downloads AND Watch List scans."""
         self._cancel_flag.set()
@@ -6822,6 +6854,9 @@ class MP3DownloaderApp(tk.Tk):
             self._dbg.info(
                 f"WL AUTO-ADD | {display_name!r}  cutoff={cutoff}")
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # Maintenance — first-run folder import and DB rebuild from the activity log
+    # ══════════════════════════════════════════════════════════════════════════
     def _watchlist_populate_from_folders(self):
         """On first run (empty Watch List), populate it by scanning the
         existing folder hierarchy:  base/YouTube/<Genre>/<Channel>/*.mp3
