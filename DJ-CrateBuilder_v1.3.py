@@ -2757,6 +2757,42 @@ class MP3DownloaderApp(tk.Tk):
 
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(0, 20))
 
+        # ── Automation ────────────────────────────────────────────────────
+        ttk.Label(outer, text="Automation",
+                  style="S.White.Section.TLabel").pack(anchor="w", pady=(0, 6))
+
+        auto_row = ttk.Frame(outer)
+        auto_row.pack(fill="x", pady=(0, 8))
+        ttk.Label(auto_row, text="Check watched channels every:",
+                  style="S.TLabel").pack(side="left", padx=(0, 10))
+        self._auto_check_combo = ttk.Combobox(
+            auto_row, textvariable=self._auto_check_hours,
+            values=["Off", "6 hours", "12 hours", "24 hours", "48 hours"],
+            state="readonly", width=10)
+        self._auto_check_combo.pack(side="left")
+        Tooltip(self._auto_check_combo,
+                "How often to scan watched channels for new uploads and "
+                "auto-download them. Default 24 hours.", wraplength=320)
+
+        if sys.platform == "win32":
+            startup_row = ttk.Frame(outer)
+            startup_row.pack(fill="x", pady=(2, 4))
+            ttk.Checkbutton(
+                startup_row, text="Run DJ-CrateBuilder when Windows starts",
+                variable=self._run_at_startup,
+                command=self._on_run_at_startup_toggle,
+                style="S.Bold.TCheckbutton").pack(side="left")
+
+            tray_row = ttk.Frame(outer)
+            tray_row.pack(fill="x", pady=(0, 4))
+            ttk.Checkbutton(
+                tray_row,
+                text="Minimize to system tray (keep Watch List running in background)",
+                variable=self._minimize_to_tray,
+                style="S.Bold.TCheckbutton").pack(side="left")
+
+        tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 18))
+
         # ── Time / Length Limiter ─────────────────────────────────────────────
         _lbl = ttk.Label(outer, text="Time / Length Limiter",
                   style="S.White.Section.TLabel")
@@ -3529,6 +3565,9 @@ class MP3DownloaderApp(tk.Tk):
 
     def _reschedule_auto_check(self):
         pass  # replaced in Task 2.4
+
+    def _on_run_at_startup_toggle(self):
+        pass  # replaced in Task 2.5
 
     def _build_about_tab(self, parent):
         # ── Scrollable wrapper ────────────────────────────────────────────────
