@@ -228,6 +228,16 @@ def format_timestamp_relative(ts):
         return "Unknown"
 
 
+# Auto-check interval choices for the Settings combobox. Each non-"Off" label
+# must start with an integer hour count (parsed by auto_check_hours_to_seconds).
+AUTO_CHECK_OPTIONS = ["Off", "6 hours", "12 hours", "24 hours", "48 hours"]
+
+# Sentinel URL prefix stored for Watch List channels whose canonical YouTube
+# /channel/UC… URL isn't known yet (e.g. imported from a folder name). Such
+# channels must be resolved via "Fix Link" before they can be scanned.
+UNRESOLVED_URL_PREFIX = "unresolved://"
+
+
 def auto_check_hours_to_seconds(value):
     """Map an interval dropdown label to seconds, or None for 'Off'/unknown."""
     try:
@@ -2808,7 +2818,7 @@ class MP3DownloaderApp(tk.Tk):
                   style="S.TLabel").pack(side="left", padx=(0, 10))
         self._auto_check_combo = ttk.Combobox(
             auto_row, textvariable=self._auto_check_hours,
-            values=["Off", "6 hours", "12 hours", "24 hours", "48 hours"],
+            values=AUTO_CHECK_OPTIONS,
             state="readonly", width=10)
         self._auto_check_combo.pack(side="left")
         Tooltip(self._auto_check_combo,
@@ -6314,7 +6324,7 @@ class MP3DownloaderApp(tk.Tk):
                  ).pack(anchor="w", pady=(0, 4))
         # Don't surface the internal unresolved:// sentinel as an editable URL.
         existing_url = ch.get("url") or ""
-        if existing_url.startswith("unresolved://"):
+        if existing_url.startswith(UNRESOLVED_URL_PREFIX):
             existing_url = ""
         url_var = tk.StringVar(value=existing_url)
         tk.Entry(outer, textvariable=url_var,
@@ -6918,7 +6928,7 @@ class MP3DownloaderApp(tk.Tk):
                     # Park it as needs_resolve with a unique sentinel URL so
                     # the UNIQUE constraint holds and no bogus 404 URL is ever
                     # scanned. The "Fix broken channels" pass resolves it.
-                    sentinel = f"unresolved://YouTube/{genre}/{channel_dir}"
+                    sentinel = f"{UNRESOLVED_URL_PREFIX}YouTube/{genre}/{channel_dir}"
                     result = self._db.add_watchlist_channel(
                         url=sentinel,
                         display_name=channel_dir,
