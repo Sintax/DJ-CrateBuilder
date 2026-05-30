@@ -37,6 +37,12 @@ class TrayIcon:
         return pystray is not None and self._image is not None
 
     def start(self):
+        """Create and run the tray icon on a daemon thread.
+
+        Returns True if started, False if unavailable or already running.
+        Not thread-safe: call from a single thread (the app calls it only
+        from the Tk main thread).
+        """
         if not self.available or self._icon is not None:
             return False
         menu = pystray.Menu(
