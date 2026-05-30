@@ -3868,6 +3868,32 @@ class MP3DownloaderApp(tk.Tk):
             ("Q: What does the bitrate display in the Queue mean?",
              "A: The format \"128k → 192k\" shows the source audio bitrate from YouTube followed by the bitrate your "
              "MP3 was saved at. This helps you see whether the source quality matched your output setting."),
+
+            ("Q: What is the Watch List?",
+             "A: It tracks YouTube channels you care about and surfaces only "
+             "genuinely-new uploads — tracks you haven't already downloaded — so "
+             "you never re-grab your whole library."),
+            ("Q: How do channels get added to the Watch List?",
+             "A: Three ways: manually with 'Add Channel'; automatically after you "
+             "download a channel (if 'Auto-add channels' is on in Settings); and "
+             "auto-discovered from your existing download folders each time the app "
+             "starts."),
+            ("Q: What does 'needs channel ID' / the 'Fix Link' button mean?",
+             "A: A channel whose link couldn't be resolved to YouTube's canonical "
+             "channel ID (often added from a folder name). Click 'Fix Link', pick the "
+             "right channel from the search results, and it's healed. Resolved "
+             "channels don't show the button."),
+            ("Q: How does automatic checking and downloading work?",
+             "A: In Settings → Automation, set 'Check watched channels every…' "
+             "(default 24 hours). On that interval the app scans every watched "
+             "channel and automatically downloads any new tracks into their folders, "
+             "using your bitrate/throttle/skip settings, and shows a tray "
+             "notification summarising what it grabbed."),
+            ("Q: What do 'Run at startup' and 'Minimize to system tray' do?",
+             "A: 'Run at startup' launches DJ-CrateBuilder when Windows starts. "
+             "'Minimize to system tray' keeps the app (and its scheduled checks) "
+             "running in the background when you close the window — find it in the "
+             "tray, right-click for Open / Scan Now / Quit."),
         ]
 
         for question, answer in faq:
