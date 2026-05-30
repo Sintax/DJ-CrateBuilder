@@ -1696,6 +1696,19 @@ class MP3DownloaderApp(tk.Tk):
         self._active_watchlist_batch = None   # set by _watchlist_download_*
         self._wl_download_active = False      # True while a Watch List batch runs
 
+        # Automation settings (auto-check / startup / tray)
+        self._auto_check_hours = tk.StringVar(
+            value=cfg.get("auto_check_hours", "24 hours"))
+        self._run_at_startup = tk.BooleanVar(
+            value=cfg.get("run_at_startup", False))
+        self._minimize_to_tray = tk.BooleanVar(
+            value=cfg.get("minimize_to_tray", False))
+        self._watchlist_last_check = int(cfg.get("watchlist_last_check", 0))
+        self._auto_check_after_id = None
+        self._tray_icon = None  # set when tray is active
+        self._auto_check_hours.trace_add("write", self._autosave_automation_settings)
+        self._minimize_to_tray.trace_add("write", self._autosave_automation_settings)
+
         # Ensure directory structure exists on startup
         self._url_history = cfg.get("url_history", [])[:6]
         self._ensure_dirs()
@@ -3294,6 +3307,10 @@ class MP3DownloaderApp(tk.Tk):
             "cookies_profile":  self._cookies_profile.get(),
             "cookie_file":      self._cookie_file.get(),
             "auto_add_to_watchlist": self._auto_add_to_watchlist.get(),
+            "auto_check_hours":   self._auto_check_hours.get(),
+            "run_at_startup":     self._run_at_startup.get(),
+            "minimize_to_tray":   self._minimize_to_tray.get(),
+            "watchlist_last_check": self._watchlist_last_check,
         })
         self._update_tree_preview()
         self._refresh_genre_list()
@@ -3499,6 +3516,19 @@ class MP3DownloaderApp(tk.Tk):
         cfg["cookie_file"]      = self._cookie_file.get()
         cfg["auto_add_to_watchlist"] = self._auto_add_to_watchlist.get()
         save_config(cfg)
+
+    def _autosave_automation_settings(self, *_):
+        """Persist auto-check interval, tray, and last-check time."""
+        cfg = load_config()
+        cfg["auto_check_hours"] = self._auto_check_hours.get()
+        cfg["minimize_to_tray"] = self._minimize_to_tray.get()
+        cfg["watchlist_last_check"] = self._watchlist_last_check
+        save_config(cfg)
+        # Reschedule the timer whenever the interval changes.
+        self._reschedule_auto_check()
+
+    def _reschedule_auto_check(self):
+        pass  # replaced in Task 2.4
 
     def _build_about_tab(self, parent):
         # ── Scrollable wrapper ────────────────────────────────────────────────
