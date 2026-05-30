@@ -11,7 +11,8 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 
 ## Features
 
-- **Watch List** — Track your favourite YouTube channels and periodically scan for *only* genuinely-new uploads, so you never re-download tracks you already own. Channels are identified by their canonical channel ID (with a built-in search resolver to heal broken links), new uploads are cross-referenced against what's already in your folders, and per-channel cards let you Resolve, Scan, Download New, Edit, or Cancel at any time — all alongside a pinned, resizable scan log *(new in v1.3)*
+- **Watch List** — Track your favourite YouTube channels and periodically scan for *only* genuinely-new uploads, so you never re-download tracks you already own. Channels are identified by their canonical channel ID (with a built-in search resolver to heal broken links), new uploads are cross-referenced against what's already in your folders, and per-channel cards let you Fix Link (shown only when a link needs healing), Scan, Download New, Edit, or Cancel at any time — all alongside a pinned, resizable scan log *(new in v1.3)*
+- **Background Automation** — Let the Watch List run on its own: pick a check interval (Off / 6 / 12 / 24 / 48 hours), and DJ-CrateBuilder will periodically scan every tracked channel and auto-download new tracks to their folders, notifying you when it does. Optionally launch at Windows startup and minimize to the system tray so it keeps watching while you work *(new in v1.3)*
 - **Batch Queue** — Add multiple URLs (channels, playlists, single videos) and process them in sequence
 - **Auto-Organization** — Downloads are sorted into folders by platform, genre, and channel name
 - **MP3 Conversion** — Converts all audio to MP3 at your chosen bitrate (128 / 192 / 256 / 320 kbps)
@@ -48,7 +49,7 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 ## Requirements
 
 - **Python 3.10+**
-- **yt-dlp** — `pip install yt-dlp`
+- **yt-dlp**, **pystray**, **Pillow** — `pip install -r requirements.txt` (pystray + Pillow power the system-tray icon)
 - **FFmpeg** — must be on PATH or in the same directory as the script
 - **tkinter** — included with standard Python installations on Windows
 
@@ -61,7 +62,7 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 ```bash
 git clone https://github.com/Sintax/DJ-CrateBuilder.git
 cd DJ-CrateBuilder
-pip install yt-dlp
+pip install -r requirements.txt
 python DJ-CrateBuilder_v1.3.py
 ```
 
@@ -152,6 +153,9 @@ For faster downloads and fewer "login required" errors, you can authenticate wit
 | Throttle Requests | On / Light | Random delay between downloads |
 | Browser Cookies | Off | Authenticate with a YouTube account |
 | Auto-add to Watch List | On | Add channels to the Watch List after downloading |
+| Check for new tracks every | 24 hours | Background auto-scan interval for the Watch List (Off / 6 / 12 / 24 / 48 hours) |
+| Run at Windows startup | Off | Launch DJ-CrateBuilder automatically when you log in |
+| Minimize to system tray | Off | Closing the window hides it to the tray and keeps the Watch List running |
 
 All settings auto-save and persist between sessions.
 
@@ -162,11 +166,16 @@ All settings auto-save and persist between sessions.
 ### Create Windows Executable
 
 ```bash
-pip install pyinstaller
-pyinstaller --noconfirm --clean --name "DJ-CrateBuilder" --windowed --onedir DJ-CrateBuilder_v1.3.py
+pip install pyinstaller -r requirements.txt
+pyinstaller --noconfirm --clean --name "DJ-CrateBuilder" --windowed --onedir ^
+  --collect-submodules cratebuilder ^
+  --hidden-import pystray._win32 --hidden-import PIL.ImageDraw ^
+  DJ-CrateBuilder_v1.3.py
 ```
 
-Copy `ffmpeg.exe` and `ffprobe.exe` into `dist\DJ-CrateBuilder\`.
+The `--collect-submodules`/`--hidden-import` flags bundle the local `cratebuilder/`
+package and the lazily-imported tray dependencies (pystray + Pillow). Copy
+`ffmpeg.exe` and `ffprobe.exe` into `dist\DJ-CrateBuilder\`.
 
 ### Create Installer
 
@@ -207,6 +216,7 @@ See the built-in FAQ in the app's About tab for answers to common questions abou
 - **Python 3** with tkinter (GUI)
 - **yt-dlp** (download engine)
 - **FFmpeg** (audio conversion)
+- **pystray + Pillow** (system-tray icon and notifications)
 - **PyInstaller** (packaging)
 - **Inno Setup** (Windows installer)
 
@@ -222,13 +232,20 @@ This tool is intended for downloading audio that you have the right to access. R
 
 This project is in active development. Bug reports, feature requests, and pull requests are welcome.
 
+The pure-logic core lives in the `cratebuilder/` package (config, channel sidecars, the downloads DB, Windows run-at-startup, and the tray wrapper) and is covered by a test suite. To run it:
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
 ---
 
 ## Version History
 
 | Version | Date | Highlights |
 |---------|------|------------|
-| 1.3 | 2026-05 | **Watch List** — channel tracking with new-upload detection, canonical channel-ID resolution + search-based healing, folder cross-reference dedup, per-card Resolve/Scan/Download/Cancel, pinned resizable scan log; debug log with full yt-dlp/cookie diagnostics, renamed DJ-CrateBuilder.log → activity.log, "Downloads Log" rename, native Linux installer improvements |
+| 1.3 | 2026-05 | **Watch List** — channel tracking with new-upload detection, canonical channel-ID resolution + search-based healing (Fix Link, shown only when needed), folder cross-reference dedup, per-card Scan/Download/Edit/Cancel, pinned resizable scan log; **Background Automation** — interval auto-scan (Off/6/12/24/48h, default 24h) with auto-download + tray notifications, run-at-Windows-startup, minimize-to-system-tray; extracted reusable `cratebuilder/` package with a pytest suite; debug log with full yt-dlp/cookie diagnostics, renamed DJ-CrateBuilder.log → activity.log, "Downloads Log" rename, native Linux installer improvements |
 | 1.2 | 2026-03 | Browser cookie auth, cookie file support, age-gate retry, format diagnostics, _No Genre folder, URL history, genre confirmation, renamed from YouTube DJ-CrateBuilder |
 | 1.1 | 2026-03 | Queue rewrite (Text widget), batch system, throttle presets, geo-bypass, UA rotation, log viewer, Settings tab overhaul |
 | 1.0 | 2026-03 | Initial release — single/batch download, genre folders, skip-existing, time limiter, dark UI |

@@ -17,8 +17,10 @@ The **native Linux path** is now the recommended flow on Linux — no Wine requi
 ## Prerequisites
 
 ```bash
-pip install pyinstaller yt-dlp
+pip install pyinstaller -r requirements.txt
 ```
+
+(`requirements.txt` pulls in yt-dlp, pystray, and Pillow — the last two power the system-tray icon.)
 
 - FFmpeg: https://www.gyan.dev/ffmpeg/builds/ (get `ffmpeg-release-essentials.zip`)
 - Inno Setup 6: https://jrsoftware.org/isinfo.php
@@ -28,10 +30,19 @@ pip install pyinstaller yt-dlp
 From the folder containing `DJ-CrateBuilder_v1.3.py`:
 
 ```bash
-pyinstaller --noconfirm --clean --name "DJ-CrateBuilder" --windowed --onedir --icon "icon.ico" DJ-CrateBuilder_v1.3.py
+pyinstaller --noconfirm --clean --name "DJ-CrateBuilder" --windowed --onedir --icon "icon.ico" ^
+  --collect-submodules cratebuilder ^
+  --hidden-import pystray._win32 --hidden-import PIL.ImageDraw ^
+  DJ-CrateBuilder_v1.3.py
 ```
 
 Output: `dist\DJ-CrateBuilder\`
+
+> The `--collect-submodules cratebuilder` flag bundles the local `cratebuilder/`
+> package (util, sidecar, db, startup, tray). The two `--hidden-import` flags pull
+> in pystray's Windows backend and Pillow's drawing module, which PyInstaller can't
+> detect automatically because they're imported lazily for the tray icon.
+> (`^` is the Windows line-continuation character — keep it as one command.)
 
 ## Step 2 — Bundle FFmpeg
 
