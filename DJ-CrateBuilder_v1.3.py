@@ -227,6 +227,17 @@ def format_timestamp_relative(ts):
         return "Unknown"
 
 
+def auto_check_hours_to_seconds(value):
+    """Map an interval dropdown label to seconds, or None for 'Off'/unknown."""
+    try:
+        if not value or value.strip().lower() == "off":
+            return None
+        hours = int(value.strip().split()[0])
+        return hours * 3600
+    except (ValueError, AttributeError, IndexError):
+        return None
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Tooltip — dark-themed hover tooltip for any tkinter widget.
 # Usage:     Tooltip(widget, "Short explanation of what this does.")
@@ -1721,6 +1732,7 @@ class MP3DownloaderApp(tk.Tk):
 
         # First-run: auto-populate the Watch List from existing channel folders
         self.after(1200, self._watchlist_populate_from_folders)
+        self.after(1600, self._reschedule_auto_check)
 
     # ── Directory management ──────────────────────────────────────────────────
     def _ensure_dirs(self):
@@ -3564,7 +3576,57 @@ class MP3DownloaderApp(tk.Tk):
         self._reschedule_auto_check()
 
     def _reschedule_auto_check(self):
-        pass  # replaced in Task 2.4
+        """(Re)arm the periodic auto-check timer from the current interval."""
+        if self._auto_check_after_id is not None:
+            try:
+                self.after_cancel(self._auto_check_after_id)
+            except Exception:
+                pass
+            self._auto_check_after_id = None
+        secs = auto_check_hours_to_seconds(self._auto_check_hours.get())
+        if secs is None:
+            return  # 'Off' — no timer
+        now = int(time.time())
+        elapsed = now - (self._watchlist_last_check or 0)
+        delay_ms = 1000 if elapsed >= secs else int((secs - elapsed) * 1000)
+        self._auto_check_after_id = self.after(delay_ms, self._auto_check_tick)
+
+    def _auto_check_tick(self):
+        """Fire one scheduled check: scan all, then auto-download new."""
+        self._auto_check_after_id = None
+        secs = auto_check_hours_to_seconds(self._auto_check_hours.get())
+        if secs is None:
+            return
+        # Skip (don't interrupt) if a manual scan/download is already running.
+        if self._downloading or self._wl_download_active or self._wl_scan_active:
+            self._auto_check_after_id = self.after(60_000, self._auto_check_tick)
+            return
+        self._watchlist_log("⏰ Scheduled auto-check starting…", "info")
+        self._auto_check_pending = True
+        self._watchlist_scan_all()
+        # Poll for scan completion, then download + notify.
+        self.after(2000, self._auto_check_after_scan)
+
+    def _auto_check_after_scan(self):
+        """Once scans settle, download any new tracks and notify."""
+        if self._wl_scan_active > 0:
+            self.after(2000, self._auto_check_after_scan)
+            return
+        channels = self._db.get_all_watchlist_channels()
+        total_new = sum(int(c.get("pending_new_count", 0)) for c in channels)
+        if total_new > 0:
+            n_ch = sum(1 for c in channels if int(c.get("pending_new_count", 0)) > 0)
+            self._watchlist_download_all_new()
+            self._notify_tray(
+                "Watch List",
+                f"{total_new} new track(s) downloading across {n_ch} channel(s)")
+        else:
+            self._watchlist_log("⏰ Auto-check complete — no new tracks.", "info")
+        self._watchlist_last_check = int(time.time())
+        self._autosave_automation_settings()  # persists last_check + reschedules
+
+    def _notify_tray(self, title, msg):
+        self._watchlist_log(f"🔔 {title}: {msg}", "info")  # temporary; real pystray in Task 2.6
 
     def _on_run_at_startup_toggle(self):
         pass  # replaced in Task 2.5
