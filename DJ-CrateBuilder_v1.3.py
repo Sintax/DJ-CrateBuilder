@@ -2309,6 +2309,7 @@ class MP3DownloaderApp(tk.Tk):
     # ══════════════════════════════════════════════════════════════════════════
     # ── Styles ────────────────────────────────────────────────────────────────
     def _build_styles(self):
+        """Configure the ttk 'clam' theme and all custom widget styles."""
         s = ttk.Style(self)
         s.theme_use("clam")
 
@@ -2486,6 +2487,7 @@ class MP3DownloaderApp(tk.Tk):
 
     # ── UI ────────────────────────────────────────────────────────────────────
     def _build_ui(self):
+        """Build the notebook and populate the Main / Watch List / Settings / About tabs."""
         # ── Notebook (tab bar / menu bar) ──────────────────────────────────────
         self._notebook = ttk.Notebook(self)
         self._notebook.pack(fill="both", expand=True)
@@ -2520,6 +2522,7 @@ class MP3DownloaderApp(tk.Tk):
 
     # ── Main tab ──────────────────────────────────────────────────────────────
     def _build_main_tab(self, parent):
+        """Build the Main tab: URL/genre input, batch list, and download queue."""
         # ── Scrollable wrapper ────────────────────────────────────────────────
         wrapper = tk.Frame(parent, bg=BG)
         wrapper.pack(fill="both", expand=True)
@@ -2772,6 +2775,7 @@ class MP3DownloaderApp(tk.Tk):
     # ══════════════════════════════════════════════════════════════════════════
     # ── Settings tab ──────────────────────────────────────────────────────────
     def _build_settings_tab(self, parent):
+        """Build the Settings tab: save folder, bitrate, behavior, and automation controls."""
         # ── Scrollable wrapper ────────────────────────────────────────────────
         wrapper = tk.Frame(parent, bg=BG)
         wrapper.pack(fill="both", expand=True)
@@ -3336,6 +3340,7 @@ class MP3DownloaderApp(tk.Tk):
         self._refresh_limit_label()
 
     def _settings_browse(self):
+        """Prompt for a new base save folder and apply it to the Settings field."""
         d = filedialog.askdirectory(title="Choose base save folder",
                                      initialdir=self._settings_dir_var.get())
         if d:
@@ -3343,6 +3348,7 @@ class MP3DownloaderApp(tk.Tk):
             self._save_settings()
 
     def _update_tree_preview(self):
+        """Refresh the folder-structure preview shown under the save-folder field."""
         base = self._settings_dir_var.get() if hasattr(self, '_settings_dir_var') \
                else self._base_dir
         short = base.replace(os.path.expanduser("~"), "~")
@@ -3364,6 +3370,7 @@ class MP3DownloaderApp(tk.Tk):
             self._tree_lbl.config(text="\n".join(lines))
 
     def _save_settings(self):
+        """Validate and persist the base save folder, re-init dirs and logger."""
         new_base = self._settings_dir_var.get().strip()
         if not new_base:
             messagebox.showwarning("Empty Path",
@@ -3707,6 +3714,7 @@ class MP3DownloaderApp(tk.Tk):
             self.iconify()  # tray unavailable — fall back to taskbar minimise
 
     def _show_from_tray(self):
+        """Restore and focus the window from the tray menu."""
         self.deiconify()
         self.lift()
         self.focus_force()
@@ -3747,6 +3755,7 @@ class MP3DownloaderApp(tk.Tk):
     # About tab — version info, FAQ, and the log-viewer / folder launchers
     # ══════════════════════════════════════════════════════════════════════════
     def _build_about_tab(self, parent):
+        """Build the About tab: version info, FAQ, and log/folder launchers."""
         # ── Scrollable wrapper ────────────────────────────────────────────────
         wrapper = tk.Frame(parent, bg=BG)
         wrapper.pack(fill="both", expand=True)
@@ -4323,15 +4332,17 @@ class MP3DownloaderApp(tk.Tk):
     # ══════════════════════════════════════════════════════════════════════════
     # ── Dep check ─────────────────────────────────────────────────────────────
     def _check_deps_async(self):
+        """Check for yt-dlp/ffmpeg on a background thread; prompt if missing."""
         def _run():
             missing = check_dependencies()
             if missing:
                 self.after(0, lambda: self._prompt_install(missing))
             else:
                 self.after(0, lambda: self._set_status("✓ Ready"))
-        threading.Thread(target=_run, daemon=True).start()
+        self._run_bg(_run)
 
     def _prompt_install(self, missing):
+        """Ask the user whether to pip-install the missing dependencies."""
         if messagebox.askyesno("Missing Dependencies",
                                f"Missing: {', '.join(missing)}\n\nInstall now?"):
             self._do_install(missing)
@@ -4339,6 +4350,7 @@ class MP3DownloaderApp(tk.Tk):
             self._set_status("⚠  yt-dlp not installed — run: pip install yt-dlp")
 
     def _do_install(self, pkgs):
+        """pip-install the given packages on a background thread."""
         self._set_status(f"Installing {', '.join(pkgs)}…")
         def _run():
             try:
@@ -4348,10 +4360,15 @@ class MP3DownloaderApp(tk.Tk):
                 self.after(0, lambda: self._set_status("✓ Installed. Ready."))
             except Exception as e:
                 self.after(0, lambda: self._set_status(f"✗ Install failed: {e}"))
-        threading.Thread(target=_run, daemon=True).start()
+        self._run_bg(_run)
 
     def _set_status(self, msg):
         self._status_var.set(msg)
+
+    @staticmethod
+    def _run_bg(target, *args):
+        """Run target(*args) on a daemon thread (fire-and-forget)."""
+        threading.Thread(target=target, args=args, daemon=True).start()
 
     # ── Queue UI ──────────────────────────────────────────────────────────────
     def _clear_queue(self):
@@ -4362,6 +4379,7 @@ class MP3DownloaderApp(tk.Tk):
         self._qcount_lbl.config(text="")
 
     def _build_queue_ui(self, entries, item_word="item"):
+        """Populate the queue Text widget with one row per entry."""
         self._clear_queue()
         self._qtxt.config(state="normal")
         for i, e in enumerate(entries):
@@ -4381,6 +4399,7 @@ class MP3DownloaderApp(tk.Tk):
         return f"{num} {icon}  {trunc:<50}{brate}  {status}\n"
 
     def _add_row(self, idx, title):
+        """Append a pending row for one track to the queue widget."""
         line = self._format_queue_line(idx, "○", title)
         tag  = f"row_{idx}"
         # Insert without switching state (caller manages state)
@@ -4389,6 +4408,7 @@ class MP3DownloaderApp(tk.Tk):
                              "bitrate": "", "note": ""})
 
     def _set_row_state(self, idx, state, note=""):
+        """Update a queue row's icon/colour to reflect its download state."""
         if idx >= len(self._queue):
             return
         e = self._queue[idx]
@@ -4450,6 +4470,7 @@ class MP3DownloaderApp(tk.Tk):
 
     # ── Start / Cancel ────────────────────────────────────────────────────────
     def _start(self):
+        """Collect URLs from the input/batch list and launch the download worker."""
         if self._downloading:
             return
 
@@ -4503,11 +4524,10 @@ class MP3DownloaderApp(tk.Tk):
         self._clear_queue()
         self._set_status(f"Starting batch of {len(run_batch)} URL(s)…")
 
-        threading.Thread(target=self._batch_worker,
-                          args=(run_batch,),
-                          daemon=True).start()
+        self._run_bg(self._batch_worker, run_batch)
 
     def _cancel(self):
+        """Signal the download worker to stop after the current track."""
         self._cancel_flag.set()
         self._pause_flag.clear()   # unblock worker so it can see the cancel
         self._cancel_btn.config(state="disabled", style="Cancel.TButton")
@@ -4515,6 +4535,7 @@ class MP3DownloaderApp(tk.Tk):
         self._set_status("Cancelling after current track…")
 
     def _toggle_pause(self):
+        """Toggle the download worker between paused and running."""
         if self._pause_flag.is_set():
             # Currently paused — resume
             self._pause_flag.clear()
@@ -5388,6 +5409,7 @@ class MP3DownloaderApp(tk.Tk):
         self._ov_stats_lbl.config(text="    ".join(parts) if parts else "")
 
     def _finish(self):
+        """Reset controls and status when a download run completes or is cancelled."""
         self._downloading = False
         self._pause_flag.clear()
         self._dl_btn.config(state="normal")
@@ -5773,6 +5795,7 @@ class MP3DownloaderApp(tk.Tk):
     # ── Channel resolution (heal legacy folders) ───────────────────────────────
     @staticmethod
     def _is_unresolved_channel(ch):
+        """True if the channel has no canonical YouTube URL yet (needs Fix Link)."""
         return is_unresolved_channel(ch)
 
     def _resolve_channel_via_search(self, name, max_results=3):
@@ -5890,7 +5913,7 @@ class MP3DownloaderApp(tk.Tk):
                     f"Couldn't resolve id for {ch['display_name']}: {msg}",
                     "err"))
 
-        threading.Thread(target=_bg, daemon=True).start()
+        self._run_bg(_bg)
 
     def _watchlist_resolve_dialog(self, cid, on_done=None):
         """Show the top-3 YouTube matches for a channel so the user can pick
@@ -6012,7 +6035,7 @@ class MP3DownloaderApp(tk.Tk):
                 dlg.after(0, lambda: (status_lbl.config(
                     text=f"Search failed: {msg}", fg=YT_RED), _render([])))
 
-        threading.Thread(target=_search, daemon=True).start()
+        self._run_bg(_search)
 
         # ── Buttons ──────────────────────────────────────────────────────────
         btn_row = tk.Frame(outer, bg=BG)
@@ -6065,7 +6088,7 @@ class MP3DownloaderApp(tk.Tk):
                         dlg.after(0, lambda: status_lbl.config(
                             text=f"Lookup failed: {m}", fg=YT_RED))
 
-                threading.Thread(target=_lookup, daemon=True).start()
+                self._run_bg(_lookup)
                 return
             # A search candidate was chosen.
             handle = (cand_by_id.get(sel) or {}).get("handle", "")
@@ -6111,6 +6134,7 @@ class MP3DownloaderApp(tk.Tk):
 
     # ── Add Channel dialog ────────────────────────────────────────────────────
     def _watchlist_open_add_dialog(self):
+        """Open the dialog to add a new channel to the Watch List."""
         dlg = tk.Toplevel(self)
         dlg.title("Add Channel to Watch List")
         dlg.geometry("540x500")
@@ -6180,7 +6204,7 @@ class MP3DownloaderApp(tk.Tk):
                     dlg.after(0, lambda: name_var.set(title or raw_url))
                 except Exception:
                     dlg.after(0, lambda: name_var.set(""))
-            threading.Thread(target=_do, daemon=True).start()
+            self._run_bg(_do)
 
         fetch_btn = tk.Button(
             outer, text="Auto-fetch name",
@@ -6294,6 +6318,7 @@ class MP3DownloaderApp(tk.Tk):
 
     # ── Edit Channel dialog ───────────────────────────────────────────────────
     def _watchlist_edit_channel(self, cid):
+        """Open the dialog to edit an existing Watch List channel."""
         ch = self._db.get_watchlist_channel(cid)
         if not ch:
             return
@@ -6401,6 +6426,7 @@ class MP3DownloaderApp(tk.Tk):
 
     # ── Remove channel ────────────────────────────────────────────────────────
     def _watchlist_remove_channel(self, cid):
+        """Confirm and remove a channel from the Watch List."""
         ch = self._db.get_watchlist_channel(cid)
         if not ch:
             return
@@ -6623,10 +6649,11 @@ class MP3DownloaderApp(tk.Tk):
 
             self.after(0, self._watchlist_refresh)
 
-        threading.Thread(target=_do_scan, daemon=True).start()
+        self._run_bg(_do_scan)
 
     # ── Scan all channels ─────────────────────────────────────────────────────
     def _watchlist_scan_all(self):
+        """Scan every watched channel for new uploads (sequentially)."""
         channels = self._db.get_all_watchlist_channels()
         if not channels:
             self._watchlist_log("No channels to scan.", "info")
@@ -6674,10 +6701,11 @@ class MP3DownloaderApp(tk.Tk):
                     self.after(0, lambda: self._watchlist_log(
                         "Scan All cancelled.", "info"))
                     break
-        threading.Thread(target=_do_all, daemon=True).start()
+        self._run_bg(_do_all)
 
     # ── Download new for one channel ──────────────────────────────────────────
     def _watchlist_download_new(self, cid):
+        """Download the pending new tracks for one watched channel."""
         if self._downloading:
             messagebox.showinfo(
                 "Download in Progress",
@@ -6748,13 +6776,13 @@ class MP3DownloaderApp(tk.Tk):
         self._clear_queue()
         self._set_status(f"Watch List: downloading {len(run_batch)} new tracks…")
 
-        threading.Thread(target=self._batch_worker,
-                          args=(run_batch,), daemon=True).start()
+        self._run_bg(self._batch_worker, run_batch)
         # Rebuild cards so the downloading channel shows a Cancel button.
         self._watchlist_refresh()
 
     # ── Download all new across all channels ──────────────────────────────────
     def _watchlist_download_all_new(self):
+        """Download the pending new tracks across all watched channels."""
         if self._downloading:
             messagebox.showinfo(
                 "Download in Progress",
@@ -6824,8 +6852,7 @@ class MP3DownloaderApp(tk.Tk):
         self._clear_queue()
         self._set_status(f"Watch List: downloading {len(run_batch)} new tracks…")
 
-        threading.Thread(target=self._batch_worker,
-                          args=(run_batch,), daemon=True).start()
+        self._run_bg(self._batch_worker, run_batch)
         # Rebuild cards so the downloading channel(s) show a Cancel button.
         self._watchlist_refresh()
 
