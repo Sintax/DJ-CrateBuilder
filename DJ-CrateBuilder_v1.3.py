@@ -22,6 +22,7 @@ from cratebuilder.sidecar import (
     read_channel_sidecar, write_channel_sidecar, is_unresolved_channel,
 )
 from cratebuilder.db import DownloadsDatabase
+from cratebuilder import startup as cb_startup
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ██  VERSION & ABOUT  ██  ── Edit these values to update the app info ──────
@@ -1712,6 +1713,8 @@ class MP3DownloaderApp(tk.Tk):
             value=cfg.get("auto_check_hours", "24 hours"))
         self._run_at_startup = tk.BooleanVar(
             value=cfg.get("run_at_startup", False))
+        if sys.platform == "win32":
+            self._run_at_startup.set(cb_startup.startup_is_enabled())
         self._minimize_to_tray = tk.BooleanVar(
             value=cfg.get("minimize_to_tray", False))
         self._watchlist_last_check = int(cfg.get("watchlist_last_check", 0))
@@ -3638,7 +3641,16 @@ class MP3DownloaderApp(tk.Tk):
         self._watchlist_log(f"🔔 {title}: {msg}", "info")  # temporary; real pystray in Task 2.6
 
     def _on_run_at_startup_toggle(self):
-        pass  # replaced in Task 2.5
+        """Add/remove the Windows Run entry to match the checkbox."""
+        want = self._run_at_startup.get()
+        ok = cb_startup.set_startup(want)
+        if not ok and want:
+            self._run_at_startup.set(False)  # revert if the write failed
+            messagebox.showwarning(
+                "Startup", "Could not register the app to run at startup.")
+        cfg = load_config()
+        cfg["run_at_startup"] = self._run_at_startup.get()
+        save_config(cfg)
 
     def _build_about_tab(self, parent):
         # ── Scrollable wrapper ────────────────────────────────────────────────
