@@ -17,13 +17,13 @@ _VALUE_NAME = "DJ-CrateBuilder"
 def _startup_command():
     """Quoted command Windows should run at login."""
     if getattr(sys, "frozen", False):
-        return f'"{sys.executable}"'
+        return f'"{sys.executable}" --startup'
     # Running from source: prefer pythonw.exe (no console window).
     exe = sys.executable
     pyw = os.path.join(os.path.dirname(exe), "pythonw.exe")
     runner = pyw if os.path.exists(pyw) else exe
     script = os.path.abspath(sys.argv[0])
-    return f'"{runner}" "{script}"'
+    return f'"{runner}" "{script}" --startup'
 
 
 def startup_is_enabled():

@@ -1737,6 +1737,14 @@ class MP3DownloaderApp(tk.Tk):
         self.after(1200, self._watchlist_populate_from_folders)
         self.after(1600, self._reschedule_auto_check)
 
+        # Close button hides to tray (when enabled) instead of quitting.
+        self.protocol("WM_DELETE_WINDOW", self._on_window_close)
+
+        # If Windows auto-started us and tray mode is on, begin hidden.
+        if (sys.platform == "win32" and self._minimize_to_tray.get()
+                and "--startup" in sys.argv):
+            self.after(1700, self._hide_to_tray)
+
     # ── Directory management ──────────────────────────────────────────────────
     def _ensure_dirs(self):
         """Create base + YouTube / SoundCloud sub-directories if missing."""
@@ -3638,7 +3646,54 @@ class MP3DownloaderApp(tk.Tk):
         self._autosave_automation_settings()  # persists last_check + reschedules
 
     def _notify_tray(self, title, msg):
-        self._watchlist_log(f"🔔 {title}: {msg}", "info")  # temporary; real pystray in Task 2.6
+        """Show a tray notification if the tray is active; always log it."""
+        self._watchlist_log(f"🔔 {title}: {msg}", "info")
+        if self._tray_icon is not None:
+            self._tray_icon.notify(msg, title)
+
+    def _ensure_tray(self):
+        """Create and start the tray icon on first hide (lazy)."""
+        if self._tray_icon is not None:
+            return self._tray_icon
+        from cratebuilder.tray import TrayIcon
+        self._tray_icon = TrayIcon(
+            schedule=lambda fn: self.after(0, fn),
+            on_open=self._show_from_tray,
+            on_scan=self._watchlist_scan_all,
+            on_quit=self._quit_app)
+        if not self._tray_icon.available or not self._tray_icon.start():
+            self._tray_icon = None
+        return self._tray_icon
+
+    def _hide_to_tray(self):
+        """Withdraw the window; keep the app (and scheduler) running."""
+        if self._ensure_tray() is not None:
+            self.withdraw()
+        else:
+            self.iconify()  # tray unavailable — fall back to taskbar minimise
+
+    def _show_from_tray(self):
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def _quit_app(self):
+        """Real exit: stop tray, cancel timer, destroy."""
+        if self._auto_check_after_id is not None:
+            try:
+                self.after_cancel(self._auto_check_after_id)
+            except Exception:
+                pass
+        if self._tray_icon is not None:
+            self._tray_icon.stop()
+        self.destroy()
+
+    def _on_window_close(self):
+        """WM_DELETE handler: to tray if enabled, else real quit."""
+        if self._minimize_to_tray.get() and sys.platform == "win32":
+            self._hide_to_tray()
+        else:
+            self._quit_app()
 
     def _on_run_at_startup_toggle(self):
         """Add/remove the Windows Run entry to match the checkbox."""
