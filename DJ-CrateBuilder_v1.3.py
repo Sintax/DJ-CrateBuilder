@@ -8,19 +8,17 @@ import re
 import json
 import random
 import logging
-import sqlite3
 import time
 import webbrowser
 import urllib.parse
 from datetime import datetime, timedelta, date
-from contextlib import contextmanager
 
 from cratebuilder.util import (
-    _config_path, load_config, save_config, today_yyyymmdd,
+    load_config, save_config, today_yyyymmdd,
     normalize_track_key, scan_folder_newest_mp3,
 )
 from cratebuilder.sidecar import (
-    CHANNEL_SIDECAR_NAME, channel_url_from_id,
+    channel_url_from_id,
     read_channel_sidecar, write_channel_sidecar, is_unresolved_channel,
 )
 from cratebuilder.db import DownloadsDatabase
