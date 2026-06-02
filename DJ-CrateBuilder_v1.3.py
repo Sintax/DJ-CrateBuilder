@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, date
 from cratebuilder.util import (
     load_config, save_config, today_yyyymmdd,
     normalize_track_key, scan_folder_newest_mp3,
+    detect_platform,
 )
 from cratebuilder.sidecar import (
     channel_url_from_id,
@@ -4314,9 +4315,7 @@ class MP3DownloaderApp(tk.Tk):
     @staticmethod
     def _detect_platform(url):
         """Return 'SoundCloud' or 'YouTube' based on the URL."""
-        if re.search(r'soundcloud\.com', url, re.IGNORECASE):
-            return "SoundCloud"
-        return "YouTube"
+        return detect_platform(url)
 
     @staticmethod
     def _normalize_url(url):

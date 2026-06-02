@@ -27,3 +27,11 @@ def test_today_yyyymmdd_format():
     assert re.fullmatch(r"\d{8}", val)
     # parses as a real date
     _dt.datetime.strptime(val, "%Y%m%d")
+
+
+def test_detect_platform():
+    from cratebuilder.util import detect_platform
+    assert detect_platform("https://soundcloud.com/artist") == "SoundCloud"
+    assert detect_platform("https://www.youtube.com/@chan") == "YouTube"
+    assert detect_platform("") == "YouTube"  # default
+    assert detect_platform(None) == "YouTube"
