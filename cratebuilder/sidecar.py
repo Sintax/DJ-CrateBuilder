@@ -59,11 +59,40 @@ def write_channel_sidecar(folder, *, channel_id, channel_url=None, handle=None,
 
 
 def is_unresolved_channel(ch):
-    """True if a watchlist row has no usable YouTube identifier yet —
-    either explicitly flagged needs_resolve, left in error by a prior
-    failed scan, or carrying a folder-name URL that can't resolve (a
-    space, or our unresolved:// sentinel)."""
+    """True if a watchlist row has no usable scan identifier yet.
+
+    All platforms: explicit needs_resolve/error status, the unresolved://
+    sentinel, or a space in the URL (a folder-name URL) is unresolved.
+    SoundCloud additionally requires a soundcloud.com URL (usernames are
+    stable; there is no channel-id resolution). YouTube keeps the historical
+    permissive rule — any clean, space-free, non-sentinel URL is resolved —
+    so legacy /c/ and /user/ channel URLs are not falsely flagged."""
     url = (ch.get("url") or "")
-    return (ch.get("status") in ("needs_resolve", "error")
+    if (ch.get("status") in ("needs_resolve", "error")
             or url.startswith("unresolved://")
-            or " " in url)
+            or " " in url):
+        return True
+    platform = (ch.get("platform") or "YouTube")
+    if platform == "SoundCloud":
+        return "soundcloud.com" not in url.lower()
+    return False
+
+
+def watch_scan_url(platform, url):
+    """Return the URL to hand yt-dlp for a *listing* scan of this entry.
+
+    YouTube: ensure the /videos tab for an @handle or /channel. SoundCloud:
+    ensure the /tracks tab for a user. Idempotent — never double-appends, and
+    leaves playlist/other URLs untouched."""
+    url = (url or "").rstrip("/")
+    if not url:
+        return url
+    if platform == "SoundCloud":
+        return url if url.endswith("/tracks") else url + "/tracks"
+    # YouTube
+    if "/videos" in url:
+        return url
+    last = url.split("/")[-1]
+    if last.startswith("@") or "/channel/" in url:
+        return url + "/videos"
+    return url

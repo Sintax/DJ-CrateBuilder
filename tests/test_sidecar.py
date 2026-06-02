@@ -39,3 +39,42 @@ def test_delegator_still_works(cb):
     assert App._is_unresolved_channel({"status": "needs_resolve", "url": "x"}) is True
     assert App._is_unresolved_channel(
         {"status": "idle", "url": "https://www.youtube.com/channel/UC/videos"}) is False
+
+
+def test_is_unresolved_platform_aware():
+    from cratebuilder.sidecar import is_unresolved_channel
+    # YouTube: clean canonical URL resolved; spaced one unresolved.
+    assert is_unresolved_channel(
+        {"platform": "YouTube", "status": "idle",
+         "url": "https://www.youtube.com/channel/UCx/videos"}) is False
+    assert is_unresolved_channel(
+        {"platform": "YouTube", "status": "idle",
+         "url": "https://www.youtube.com/@A B"}) is True
+    # SoundCloud: a soundcloud.com URL is resolved (no channel-id needed)…
+    assert is_unresolved_channel(
+        {"platform": "SoundCloud", "status": "idle",
+         "url": "https://soundcloud.com/artist"}) is False
+    # …but a non-soundcloud / sentinel / bad-status one is unresolved.
+    assert is_unresolved_channel(
+        {"platform": "SoundCloud", "status": "needs_resolve",
+         "url": "unresolved://SoundCloud/x"}) is True
+    assert is_unresolved_channel(
+        {"platform": "SoundCloud", "status": "idle",
+         "url": "https://example.com/not-sc"}) is True
+
+
+def test_watch_scan_url():
+    from cratebuilder.sidecar import watch_scan_url
+    assert watch_scan_url(
+        "YouTube", "https://www.youtube.com/@chan"
+        ) == "https://www.youtube.com/@chan/videos"
+    assert watch_scan_url(
+        "YouTube", "https://www.youtube.com/channel/UCx/videos"
+        ) == "https://www.youtube.com/channel/UCx/videos"
+    assert watch_scan_url(
+        "SoundCloud", "https://soundcloud.com/artist"
+        ) == "https://soundcloud.com/artist/tracks"
+    assert watch_scan_url(
+        "SoundCloud", "https://soundcloud.com/artist/tracks"
+        ) == "https://soundcloud.com/artist/tracks"
+    assert watch_scan_url("YouTube", "") == ""
