@@ -78,3 +78,21 @@ def test_watch_scan_url():
         "SoundCloud", "https://soundcloud.com/artist/tracks"
         ) == "https://soundcloud.com/artist/tracks"
     assert watch_scan_url("YouTube", "") == ""
+
+
+def test_watch_fetch_url():
+    from cratebuilder.sidecar import watch_fetch_url
+    # Canonical/spaceless URLs pass straight through (just the /videos tab).
+    assert watch_fetch_url(
+        "YouTube", "https://www.youtube.com/channel/UCx"
+        ) == "https://www.youtube.com/channel/UCx/videos"
+    assert watch_fetch_url(
+        "SoundCloud", "https://soundcloud.com/artist"
+        ) == "https://soundcloud.com/artist/tracks"
+    # A handle containing a space is percent-encoded so yt-dlp doesn't
+    # truncate it at the whitespace (the bug that produced 404s).
+    assert watch_fetch_url(
+        "YouTube", "https://www.youtube.com/@BASS ENTITY"
+        ) == "https://www.youtube.com/@BASS%20ENTITY/videos"
+    # Empty stays empty.
+    assert watch_fetch_url("YouTube", "") == ""

@@ -21,7 +21,7 @@ from cratebuilder.util import (
 from cratebuilder.sidecar import (
     channel_url_from_id,
     read_channel_sidecar, write_channel_sidecar, is_unresolved_channel,
-    watch_scan_url,
+    watch_fetch_url,
 )
 from cratebuilder.db import DownloadsDatabase
 from cratebuilder import startup as cb_startup
@@ -4950,7 +4950,12 @@ class MP3DownloaderApp(tk.Tk):
                 expected_path = os.path.join(save_dir, safe + ".mp3")
 
                 # ── Skip / re-download logic ──────────────────────────────────
-                if self._skip_existing.get():
+                # Watch List "Download New" always skips tracks already on disk
+                # in the channel folder — regardless of the global Skip-Existing
+                # setting — so it blows through the catalogue like a Main-tab
+                # channel download and never re-grabs what you already own.
+                wl_dl = getattr(self, "_wl_download_active", False)
+                if self._skip_existing.get() or wl_dl:
                     mode        = self._skip_mode.get()
                     found_path  = self._file_exists_on_disk(save_dir, item_title)
                     file_exists = found_path is not None
@@ -4961,16 +4966,20 @@ class MP3DownloaderApp(tk.Tk):
                     if found_path:
                         expected_path = found_path
 
-                    should_skip = False
-                    if mode == "In Database ~ In Folder":
-                        should_skip = file_exists or in_db
-                    elif mode == "In Folder Only":
+                    if wl_dl:
+                        # On-disk presence is the sole, definitive signal for a
+                        # Watch List download, and we never prompt mid-batch.
                         should_skip = file_exists
-                    elif mode == "In Database Only":
-                        should_skip = in_db
+                    else:
+                        should_skip = False
+                        if mode == "In Database ~ In Folder":
+                            should_skip = file_exists or in_db
+                        elif mode == "In Folder Only":
+                            should_skip = file_exists
+                        elif mode == "In Database Only":
+                            should_skip = in_db
 
-                    if should_skip:
-                        if in_db and not file_exists and mode in (
+                        if should_skip and in_db and not file_exists and mode in (
                                 "In Database ~ In Folder", "In Database Only"):
                             result = []
                             evt    = threading.Event()
@@ -6647,14 +6656,9 @@ class MP3DownloaderApp(tk.Tk):
                             else (browser,))
 
                 platform = ch.get("platform") or "YouTube"
-                url = watch_scan_url(platform, ch["url"])
-
-                # URL-encode the path so handles containing spaces (e.g.
-                # "@BASS ENTITY") aren't truncated by yt-dlp at the first
-                # whitespace, which otherwise produces a 404.
-                parsed = urllib.parse.urlsplit(url)
-                url = urllib.parse.urlunsplit(parsed._replace(
-                    path=urllib.parse.quote(parsed.path, safe="/@&")))
+                # Same encoded listing URL a Watch List "Download New" feeds
+                # yt-dlp, so scan and download crawl the channel identically.
+                url = watch_fetch_url(platform, ch["url"])
 
                 self._dbg.info(
                     f"WL SCAN | {ch['display_name']}  url={url}  "
@@ -6847,19 +6851,22 @@ class MP3DownloaderApp(tk.Tk):
         pending = json.loads(ch.get("pending_entries_json", "[]"))
         if not pending:
             return
+        pending_count = ch.get("pending_new_count", len(pending))
 
-        # Build batch items that will be processed by the existing pipeline
+        # Feed the channel as ONE listing URL — exactly like pasting it into the
+        # Main tab — instead of one yt-dlp job per track. The shared engine
+        # extracts the catalogue once and the Watch List on-disk skip blows
+        # through everything already in the folder, downloading only the new
+        # tracks. Fast, not one-by-one.
         platform = ch.get("platform", "YouTube")
         genre = ch.get("genre", "(none)")
-        run_batch = []
-        for entry in pending:
-            run_batch.append({
-                "url":          entry.get("url", ""),
-                "genre":        genre,
-                "platform":     platform,
-                "channel_name": ch["display_name"],
-                "title":        entry.get("title", ""),
-            })
+        run_batch = [{
+            "url":          watch_fetch_url(platform, ch["url"]),
+            "genre":        genre,
+            "platform":     platform,
+            "channel_name": ch["display_name"],
+            "title":        ch["display_name"],
+        }]
 
         # Set up the watchlist batch context for cleanup in _batch_worker
         self._active_watchlist_batch = {
@@ -6867,10 +6874,9 @@ class MP3DownloaderApp(tk.Tk):
         }
 
         self._watchlist_log(
-            f"Downloading {len(run_batch)} new track{'s' if len(run_batch) != 1 else ''} "
+            f"Downloading {pending_count} new track{'s' if pending_count != 1 else ''} "
             f"from {ch['display_name']}…", "info")
 
-        # Switch to Main tab and kick off the batch
         # Stay on the Watch List tab — the download runs as background activity
         # and reports into the Watch List scan log (mirrored from the batch
         # worker via _wl_dl_log) instead of switching to the Main tab.
@@ -6897,7 +6903,7 @@ class MP3DownloaderApp(tk.Tk):
         self._last_fatal_error = None
         self._batch_start = time.time()
         self._clear_queue()
-        self._set_status(f"Watch List: downloading {len(run_batch)} new tracks…")
+        self._set_status(f"Watch List: downloading {pending_count} new tracks…")
 
         self._run_bg(self._batch_worker, run_batch)
         # Rebuild cards so the downloading channel shows a Cancel button.
@@ -6913,24 +6919,29 @@ class MP3DownloaderApp(tk.Tk):
                 parent=self)
             return
 
+        # One listing URL per channel (like the Main tab), NOT one job per
+        # track. Each channel's catalogue is extracted once and the Watch List
+        # on-disk skip blows through everything already in the folder, so only
+        # genuinely-new tracks download. Fast, not one-by-one.
         channels = self._db.get_all_watchlist_channels()
         run_batch = []
         channel_ids = []
+        pending_total = 0
         for ch in channels:
-            if ch.get("pending_new_count", 0) == 0:
+            pending_count = ch.get("pending_new_count", 0)
+            if pending_count == 0:
                 continue
-            pending = json.loads(ch.get("pending_entries_json", "[]"))
             platform = ch.get("platform", "YouTube")
             genre = ch.get("genre", "(none)")
-            for entry in pending:
-                run_batch.append({
-                    "url":          entry.get("url", ""),
-                    "genre":        genre,
-                    "platform":     platform,
-                    "channel_name": ch["display_name"],
-                    "title":        entry.get("title", ""),
-                })
+            run_batch.append({
+                "url":          watch_fetch_url(platform, ch["url"]),
+                "genre":        genre,
+                "platform":     platform,
+                "channel_name": ch["display_name"],
+                "title":        ch["display_name"],
+            })
             channel_ids.append(ch["id"])
+            pending_total += pending_count
 
         if not run_batch:
             messagebox.showinfo(
@@ -6944,7 +6955,7 @@ class MP3DownloaderApp(tk.Tk):
         }
 
         self._watchlist_log(
-            f"Downloading {len(run_batch)} new tracks across "
+            f"Downloading {pending_total} new tracks across "
             f"{len(channel_ids)} channels…", "info")
 
         # Stay on the Watch List tab — the download runs as background activity
@@ -6973,7 +6984,7 @@ class MP3DownloaderApp(tk.Tk):
         self._last_fatal_error = None
         self._batch_start = time.time()
         self._clear_queue()
-        self._set_status(f"Watch List: downloading {len(run_batch)} new tracks…")
+        self._set_status(f"Watch List: downloading {pending_total} new tracks…")
 
         self._run_bg(self._batch_worker, run_batch)
         # Rebuild cards so the downloading channel(s) show a Cancel button.
