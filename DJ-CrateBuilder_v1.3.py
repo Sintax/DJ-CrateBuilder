@@ -6563,9 +6563,13 @@ class MP3DownloaderApp(tk.Tk):
         # a canonical /channel/UC… URL.
         if self._is_unresolved_channel(ch):
             self._db.update_watchlist_status(cid, "needs_resolve")
-            self._watchlist_log(
-                f"“{ch['display_name']}” needs its YouTube channel resolved "
-                f"first — click Fix Link (or “Fix Channels”).", "err")
+            if (ch.get("platform") or "YouTube") == "SoundCloud":
+                need = ("needs its SoundCloud profile URL first — click "
+                        "Fix Link and paste the soundcloud.com link.")
+            else:
+                need = ("needs its YouTube channel resolved first — click "
+                        "Fix Link (or “Fix Channels”).")
+            self._watchlist_log(f"“{ch['display_name']}” {need}", "err")
             self._watchlist_refresh()
             return
 
