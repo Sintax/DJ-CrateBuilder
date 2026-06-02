@@ -21,6 +21,7 @@ from cratebuilder.util import (
 from cratebuilder.sidecar import (
     channel_url_from_id,
     read_channel_sidecar, write_channel_sidecar, is_unresolved_channel,
+    watch_scan_url,
 )
 from cratebuilder.db import DownloadsDatabase
 from cratebuilder import startup as cb_startup
@@ -6575,15 +6576,12 @@ class MP3DownloaderApp(tk.Tk):
                             (browser, profile) if profile
                             else (browser,))
 
-                url = ch["url"]
-                # Ensure we're hitting the /videos tab for channels
-                if "youtube.com" in url and "/videos" not in url:
-                    if url.rstrip("/").split("/")[-1].startswith("@"):
-                        url = url.rstrip("/") + "/videos"
+                platform = ch.get("platform") or "YouTube"
+                url = watch_scan_url(platform, ch["url"])
 
                 # URL-encode the path so handles containing spaces (e.g.
                 # "@BASS ENTITY") aren't truncated by yt-dlp at the first
-                # whitespace, which otherwise produces a 404 from YouTube.
+                # whitespace, which otherwise produces a 404.
                 parsed = urllib.parse.urlsplit(url)
                 url = urllib.parse.urlunsplit(parsed._replace(
                     path=urllib.parse.quote(parsed.path, safe="/@&")))
@@ -6613,7 +6611,7 @@ class MP3DownloaderApp(tk.Tk):
                 try:
                     folder = self._resolve_save_dir(
                         ch.get("genre") or "(none)", ch.get("display_name"),
-                        platform="YouTube")
+                        platform=platform)
                     for fn in os.listdir(folder):
                         if fn.lower().endswith(".mp3"):
                             k = normalize_track_key(fn)
@@ -6646,7 +6644,7 @@ class MP3DownloaderApp(tk.Tk):
                                 "channel_name": ch.get("display_name") or "",
                                 "channel_url":  ch.get("url") or "",
                                 "channel_id":   ch.get("channel_id"),
-                                "platform":     "YouTube",
+                                "platform":     platform,
                                 "genre":        ch.get("genre") or "(none)",
                                 "file_path":    folder_keys[key],
                                 "upload_date":  e.get("upload_date") or "",
@@ -6658,7 +6656,8 @@ class MP3DownloaderApp(tk.Tk):
                         "id":          vid_id or "",
                         "title":       title,
                         "url":         (e.get("url") or e.get("webpage_url")
-                                        or f"https://www.youtube.com/watch?v={vid_id}"),
+                                        or (f"https://www.youtube.com/watch?v={vid_id}"
+                                            if platform == "YouTube" else "")),
                         "upload_date": e.get("upload_date") or "",
                     })
 
