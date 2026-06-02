@@ -28,3 +28,31 @@ def test_watchlist_insert_and_dedup(tmp_path):
     chans = db.get_all_watchlist_channels()
     urls = [c["url"] for c in chans]
     assert urls.count(row["url"]) == 1  # UNIQUE(url) prevented a duplicate
+
+
+def test_update_fields_returns_true_on_success(tmp_path):
+    db = _new_db(tmp_path)
+    wid = db.add_watchlist_channel(
+        url="https://www.youtube.com/channel/UCaaa/videos",
+        display_name="A", platform="YouTube", genre="(none)",
+        scan_cutoff_date="20260101")
+    assert db.update_watchlist_channel_fields(
+        wid, channel_id="UCaaa", status="idle") is True
+
+
+def test_update_fields_returns_false_on_unique_collision(tmp_path):
+    db = _new_db(tmp_path)
+    db.add_watchlist_channel(
+        url="https://www.youtube.com/channel/UCdup/videos",
+        display_name="Existing", platform="YouTube", genre="(none)",
+        scan_cutoff_date="20260101")
+    other = db.add_watchlist_channel(
+        url="https://www.youtube.com/@Some Name", display_name="Dup",
+        platform="YouTube", genre="(none)", scan_cutoff_date="20260101")
+    ok = db.update_watchlist_channel_fields(
+        other, url="https://www.youtube.com/channel/UCdup/videos",
+        channel_id="UCdup", status="idle")
+    assert ok is False
+    row = db.get_watchlist_channel(other)
+    assert row["channel_id"] in (None, "")
+    assert " " in row["url"]

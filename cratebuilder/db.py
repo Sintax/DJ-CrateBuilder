@@ -263,18 +263,30 @@ class DownloadsDatabase:
             self._log("error", f"update_watchlist_status failed: {e}")
 
     def update_watchlist_channel_fields(self, wl_id, **fields):
+        """Update allowed watchlist columns for one row.
+
+        Returns True on success, False on failure (including a UNIQUE(url)
+        collision, which means the target url already belongs to another row).
+        Never raises — callers branch on the bool instead of getting a silent
+        no-op."""
         allowed = {"display_name", "genre", "scan_cutoff_date",
                    "channel_id", "url", "status", "last_error"}
         fields = {k: v for k, v in fields.items() if k in allowed}
         if not fields:
-            return
+            return False
         try:
             sets = ", ".join(f"{k} = ?" for k in fields)
             vals = list(fields.values()) + [wl_id]
             with self._conn() as conn:
                 conn.execute(f"UPDATE watchlist SET {sets} WHERE id = ?", vals)
+            return True
+        except sqlite3.IntegrityError as e:
+            self._log("info",
+                      f"update_watchlist_channel_fields collision: {e}")
+            return False
         except Exception as e:
             self._log("error", f"update_watchlist_channel_fields failed: {e}")
+            return False
 
     def remove_watchlist_channel(self, channel_id):
         try:
