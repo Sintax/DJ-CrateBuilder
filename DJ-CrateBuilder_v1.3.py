@@ -5838,30 +5838,75 @@ class MP3DownloaderApp(tk.Tk):
         return m.group(1) if m else None
 
     def _persist_resolved_channel(self, ch, channel_id, handle="", url=None):
-        """Commit a resolved identity: update the watchlist row to a usable URL
-        + channel_id (status idle), and stamp the channel folder's
-        cratebuilder.json so it never needs resolving again.
+        """Commit a resolved identity. Returns True if the row was updated.
 
-        `url` lets a caller keep a specific URL (e.g. a playlist the user
-        chose to track) instead of the canonical /channel/UC… form; when None
-        we derive the canonical channel URL from the id."""
+        If the resolved URL already belongs to ANOTHER watchlist row, this is a
+        duplicate: we don't fake success — we tell the user which entry it
+        duplicates and offer to remove this redundant row."""
+        platform = ch.get("platform") or "YouTube"
         store_url = url or channel_url_from_id(channel_id)
-        self._db.update_watchlist_channel_fields(
+
+        # Pre-check for a collision so we can give a meaningful message instead
+        # of a silent UNIQUE failure.
+        owner = self._db.get_watchlist_channel_by_url(store_url)
+        if owner and owner.get("id") != ch.get("id"):
+            self._dbg.info(
+                f"WL RESOLVE DUPLICATE | {ch.get('display_name')!r} → "
+                f"{channel_id} already tracked as {owner.get('display_name')!r}")
+            self._watchlist_offer_remove_duplicate(ch, owner)
+            return False
+
+        ok = self._db.update_watchlist_channel_fields(
             ch["id"], url=store_url, channel_id=channel_id,
             status="idle", last_error=None)
-        # Stamp the existing folder (genre+name round-trips to the same path).
+        if not ok:
+            # Lost a race or another constraint — surface honestly.
+            self._db.update_watchlist_status(
+                ch["id"], "error", last_error="Could not save resolved link")
+            self._watchlist_log(
+                f"Couldn't save link for {ch.get('display_name')} "
+                f"— it may duplicate another entry.", "err")
+            self._watchlist_refresh()
+            return False
+
+        # DB update succeeded — now (and only now) stamp the folder sidecar.
         try:
             folder = self._resolve_save_dir(
                 ch.get("genre") or "(none)", ch.get("display_name"),
-                platform="YouTube")
+                platform=platform)
             write_channel_sidecar(
                 folder, channel_id=channel_id, channel_url=store_url,
                 handle=handle, display_name=ch.get("display_name"),
-                platform="YouTube", genre=ch.get("genre") or "(none)")
+                platform=platform, genre=ch.get("genre") or "(none)")
         except Exception as e:
             self._dbg.warning(f"WL RESOLVE | sidecar write failed: {e}")
         self._dbg.info(
             f"WL RESOLVE OK | {ch.get('display_name')!r} → {channel_id}")
+        return True
+
+    def _watchlist_offer_remove_duplicate(self, dup, owner):
+        """A Fix Link resolved to a channel already tracked by `owner`.
+        Offer to delete the redundant `dup` row."""
+        keep = owner.get("display_name") or "another entry"
+        remove = dup.get("display_name") or "this entry"
+        msg = (f"“{remove}” is the same channel you already track as "
+               f"“{keep}”.\n\nRemove the duplicate “{remove}”? "
+               f"Its folder on disk is left untouched.")
+        if messagebox.askyesno("Duplicate channel", msg, parent=self):
+            self._db.remove_watchlist_channel(dup["id"])
+            self._watchlist_log(
+                f"Removed duplicate “{remove}” (already tracked as "
+                f"“{keep}”).", "ok")
+        else:
+            # User kept it: park it clearly rather than leaving a phantom
+            # unresolved row that keeps offering a Fix Link that can't succeed.
+            self._db.update_watchlist_status(
+                dup["id"], "error",
+                last_error=f"Duplicate of “{keep}”")
+            self._watchlist_log(
+                f"Kept “{remove}”. It duplicates “{keep}” and can't be "
+                f"resolved separately.", "info")
+        self._watchlist_refresh()
 
     def _watchlist_apply_url(self, cid, new_url):
         """Point a watchlist row at a new channel/playlist URL (from Edit).
