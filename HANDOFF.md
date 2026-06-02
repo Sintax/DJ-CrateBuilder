@@ -1,5 +1,39 @@
 # HANDOFF — DJ-CrateBuilder v1.3 Final Build (Automation + Refactor)
 
+> ════════════════════════════════════════════════════════════════════════
+> # ⏩ CURRENT EFFORT (2026-06-02): Fix Link repair + SoundCloud + startup scan
+> ════════════════════════════════════════════════════════════════════════
+>
+> **Read THIS section first — it is the active work. The older "ALL PHASES COMPLETE (0–4)" section below is a finished prior effort, kept for reference.**
+>
+> **STATUS: ALL CODE DONE & COMMITTED on `v1.3`. 27 tests pass, compile clean. Remaining = (1) live computer-use walkthrough incl. repairing 2 broken Watch List entries [A3], then (2) finishing-a-development-branch (ASK user push/PR/local).**
+>
+> **Plan file (full task detail):** `docs/superpowers/plans/2026-06-02-watchlist-soundcloud-fixlink-startup.md`
+>
+> **What was built (3 goals), 12 commits `3dc012f`..`bb18bf6` (HEAD=`bb18bf6`):**
+> - **Issue 1 — Fix Link silent failure FIXED.** Root cause: resolved channel URL collided with `UNIQUE(url)`; `db.update_watchlist_channel_fields` swallowed the IntegrityError and the app logged false "OK". Now: that db method returns `bool` + catches `IntegrityError` (`3dc012f`); `_persist_resolved_channel` pre-checks `get_watchlist_channel_by_url`, and on a duplicate calls `_watchlist_offer_remove_duplicate` (askyesno → remove the redundant row, or park it as `error`), writes sidecar only on DB success, returns bool (`115b81f`); all 5 resolve call sites routed through a new `_finish_resolve(ch, channel_id, handle, url, success_msg, close_fn)` helper so success is announced only when it sticks (`a7b76bd`).
+> - **Issue 2a — SoundCloud is now first-class.** `util.detect_platform(url)` pure + `_detect_platform` delegates (`a48c921`); `sidecar.is_unresolved_channel` is platform-aware (SoundCloud needs `soundcloud.com` in url; YouTube kept PERMISSIVE to avoid regressing legacy `/c/`,`/user/` URLs) + new `sidecar.watch_scan_url(platform,url)` (YouTube→`/videos`, SoundCloud→`/tracks`) (`3e42938`); `_watchlist_scan_channel` honors `ch["platform"]` (scan url, save dir, backfill, new-entry url fallback) (`f87d913`); Add dialog / auto-add / folder-import store real platform + import walks `base/SoundCloud` too (`4a54106`); SoundCloud Fix Link = `_watchlist_soundcloud_link_dialog` (paste soundcloud.com URL via simpledialog) (`671c6c7`); platform-aware "needs resolve" scan message (`f4d1bf2`).
+> - **Issue 2b — Startup scan.** `_watchlist_startup_scan` scheduled `self.after(2200, ...)` in `__init__`; scans all entries in background via `_watchlist_scan_all`, stamps `_watchlist_last_check` + `_autosave_automation_settings()` (which reschedules, cancelling the constructor's 1600ms timer → no double-scan) (`c949073`).
+> - Docs (`bb18bf6`): README + About FAQ updated for SoundCloud + startup scan + dup detection.
+>
+> **All tasks reviewed** (spec + quality two-stage). Final whole-impl review = **READY-FOR-WALKTHROUGH, no blockers**. The one fixed NIT = platform-aware scan message.
+>
+> **>>> RESUME HERE after compaction <<<**
+> 1. Re-verify: `cd` repo, `set PYTHONIOENCODING=utf-8`, `python -m py_compile DJ-CrateBuilder_v1.3.py cratebuilder/*.py` + `python -m pytest -q` (expect **27 passed**). Confirm HEAD=`bb18bf6`.
+> 2. **Live walkthrough — USER CHOSE: "I drive via computer-use" (option 1).** Steps:
+>    - Launch the DEV app (NOT the installed exe). The installed Start-menu "DJ-CrateBuilder" is the OLD v1.2 — `open_application` launches that, WRONG. Launch dev via PowerShell: `Start-Process -FilePath 'C:\Python314\python.exe' -ArgumentList 'DJ-CrateBuilder_v1.3.py' -WorkingDirectory '<repo>' -PassThru`, capture PID, then focus it with a `[Win]::SetForegroundWindow($p.MainWindowHandle)` + `ShowWindow(...,9)` Add-Type helper (pattern already used this session). request_access for "DJ-CrateBuilder" AND "Python 3.14 (64-bit)" (python.exe is the dev process, granted full tier).
+>    - Confirm **startup scan** ran (scan log shows "🚀 Startup check: scanning all channels…" and counts refresh).
+>    - **A3 repair (2 entries, both `needs_resolve`):** **Deep-Tech Station (db id 16)** is a duplicate of an already-resolved "Deep-Tech Station" (db id 18) → Fix Link → expect "Duplicate channel… already tracked as Deep-Tech Station" → click **Yes** to remove id 16. **Drum & Bass (db id 3)** — **USER CONFIRMED it's the SAME as their "UKF Drum & Bass" channel → Fix Link → on the duplicate prompt click Yes to REMOVE the redundant 'Drum & Bass' row.** (No further question needed.)
+>    - **SoundCloud test:** Add a `soundcloud.com/<artist>` entry via Add Channel → confirm it's created as SoundCloud, NO Fix Link button, Scan returns a real new-track count (network read only, no download). PAUSE before any real "Download New" (downloads files — get user OK).
+>    - NOTE: Explorer is DENIED for computer-use (can't drive the Windows tray menu); that's fine, not needed here.
+> 3. After walkthrough: **finishing-a-development-branch** — ASK the user: push `v1.3` only / open PR / leave local. NEVER push or touch `main` without explicit approval. (User's standing rule: v1.3 only.)
+>
+> **Env/gotchas (this effort):** Tests read the REAL user config `~/.dj_cratebuilder_config.json`; `test_settings_vars.py::test_new_settings_defaults` expects `minimize_to_tray=False` — it was restored to False this session (don't re-enable and leave it). `test_tabs.py` self-skips with no display (so "26 passed, 1 skipped" == fine). Smart quotes/emoji are used in UI strings (keep UTF-8). `cratebuilder.db` = live user data: read-only (`file:...?mode=ro`) for diagnosis, NEVER commit. Two untracked scratch files `_anjuna.py`/`_uitest2.py` still need USER deletion (`Remove-Item _anjuna.py, _uitest2.py`). The dev app may be relaunched several times; kill stale instances via PID before relaunch.
+>
+> **Task state (TaskList):** #15-#16,#18-#23 completed; **#17 (A3 live repair) pending → do in walkthrough**; #24 (D: verify/docs/walkthrough/finish) in_progress (verify+docs done; walkthrough+finish remain).
+
+---
+
 **Read this in full before resuming. It is the single source of truth for an in-progress, multi-phase, subagent-driven rework.**
 
 Last updated at: **ALL PHASES COMPLETE (0–4). HEAD = `3cdb725`.** Tests: **22 passed**. Branch: `v1.3` (local only — user chose "don't push yet"; NEVER touch `main` without explicit go-ahead).
