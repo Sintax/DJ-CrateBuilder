@@ -7,6 +7,13 @@ import os
 import re
 from datetime import datetime, date
 
+def detect_platform(url):
+    """Return 'SoundCloud' for a soundcloud.com URL, else 'YouTube' (default)."""
+    if url and re.search(r"soundcloud\.com", url, re.IGNORECASE):
+        return "SoundCloud"
+    return "YouTube"
+
+
 # ── Config persistence ────────────────────────────────────────────────────────
 CONFIG_NAME = ".dj_cratebuilder_config.json"
 
