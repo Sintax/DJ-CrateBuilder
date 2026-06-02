@@ -6,7 +6,15 @@
 >
 > **Read THIS section first — it is the active work. The older "ALL PHASES COMPLETE (0–4)" section below is a finished prior effort, kept for reference.**
 >
-> **STATUS: ALL CODE DONE & COMMITTED on `v1.3`. 27 tests pass, compile clean. Remaining = (1) live computer-use walkthrough incl. repairing 2 broken Watch List entries [A3], then (2) finishing-a-development-branch (ASK user push/PR/local).**
+> **STATUS: ALL CODE DONE & COMMITTED on `v1.3`. 27 tests pass, compile clean. Remaining = (1) finishing-a-development-branch (ASK user push/PR/local) — THE ONLY blocking item; (2) optional re-test of SoundCloud on the user's normal network; (3) user housekeeping (delete scratch files).**
+>
+> ─────────────────────────────────────────────────────────────────────
+> **🌙 AUTONOMOUS RUN RESULTS (2026-06-02, while user asleep) — READ THIS:**
+> - **A3 repair DONE via DB (not GUI).** GUI computer-use was impossible with the user asleep, so I repaired the 2 broken entries directly: backed up `cratebuilder.db` → **`cratebuilder.db.bak-pre-a3-repair`** first, then `db.remove_watchlist_channel()` removed the two confirmed-duplicate rows — **id 16 "Deep-Tech Station"** (dup of resolved id 18) and **id 3 "Drum & Bass"** (user-confirmed same as "UKF Drum & Bass" id 6). Result: **broken count = 0**, watchlist now **16 rows**. No code touched; user data backup is on disk (gitignored). If the user wants the entries back, restore from the `.bak-pre-a3-repair` copy.
+> - **SoundCloud helpers VERIFIED, but live scan hit a 403 (ENVIRONMENTAL, not a bug).** For `soundcloud.com/nocopyrightsounds`: `detect_platform`→`SoundCloud` ✅, `is_unresolved_channel`→`False` ✅, `watch_scan_url`→`https://soundcloud.com/nocopyrightsounds/tracks` ✅. The live `yt_dlp.extract_info` raised `HTTP 403 Forbidden` (SoundCloud anti-bot blocking yt-dlp's client_id bootstrap in this sandbox). **Isolation proof:** a YouTube scan through the *same* code path returned 5 entries fine, and yt-dlp is current (`2026.03.17`) — so network + yt-dlp work; only SoundCloud's extractor is refused *here*. The same yt-dlp powers the app's existing SoundCloud downloads, so if those work on the user's normal network/cookies, the Watch List scan will too. **Action for user: do one real SoundCloud add+Scan on your normal connection to confirm.**
+> - **Baseline still green:** 27 passed, `py_compile` OK, tree clean. HEAD was `e7b213e` before this HANDOFF commit.
+> - **NOT pushed. finishing-a-development-branch was deliberately left for the user** (push v1.3 / PR / leave local — NEVER push or touch `main` without explicit OK).
+> ─────────────────────────────────────────────────────────────────────
 >
 > **Plan file (full task detail):** `docs/superpowers/plans/2026-06-02-watchlist-soundcloud-fixlink-startup.md`
 >
@@ -30,7 +38,7 @@
 >
 > **Env/gotchas (this effort):** Tests read the REAL user config `~/.dj_cratebuilder_config.json`; `test_settings_vars.py::test_new_settings_defaults` expects `minimize_to_tray=False` — it was restored to False this session (don't re-enable and leave it). `test_tabs.py` self-skips with no display (so "26 passed, 1 skipped" == fine). Smart quotes/emoji are used in UI strings (keep UTF-8). `cratebuilder.db` = live user data: read-only (`file:...?mode=ro`) for diagnosis, NEVER commit. Two untracked scratch files `_anjuna.py`/`_uitest2.py` still need USER deletion (`Remove-Item _anjuna.py, _uitest2.py`). The dev app may be relaunched several times; kill stale instances via PID before relaunch.
 >
-> **Task state (TaskList):** #15-#16,#18-#23 completed; **#17 (A3 live repair) pending → do in walkthrough**; #24 (D: verify/docs/walkthrough/finish) in_progress (verify+docs done; walkthrough+finish remain).
+> **Task state (TaskList):** #15-#16,#18-#23 completed; **#17 (A3 repair) DONE autonomously via DB (rows 16 & 3 removed, backup `cratebuilder.db.bak-pre-a3-repair`, 0 broken remain)**; #24 (D) — verify+docs+A3 done; **only finish-branch remains (USER decision).** The optional live GUI walkthrough is no longer needed for repair (A3 done); user may still want to eyeball the SoundCloud add+Scan on their own network per the 403 note above.
 
 ---
 
