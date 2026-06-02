@@ -6773,8 +6773,12 @@ class MP3DownloaderApp(tk.Tk):
                 self._wl_cancel_cids.discard(cid)
                 self._wl_scan_active = max(0, self._wl_scan_active - 1)
                 self.after(0, self._wl_update_cancel_btn_state)
-
-            self.after(0, self._watchlist_refresh)
+                # Re-render the cards from the final DB status on EVERY exit —
+                # including the cancel-return paths above. Previously this ran
+                # after the try/finally, so a cancelled scan returned early and
+                # left its card stuck showing "scanning" even though the DB row
+                # was already reset to "idle".
+                self.after(0, self._watchlist_refresh)
 
         self._run_bg(_do_scan)
 
