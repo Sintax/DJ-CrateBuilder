@@ -6333,7 +6333,7 @@ class MP3DownloaderApp(tk.Tk):
                     return
             elif since.startswith("Scan my"):
                 # Scan music folder for newest mp3
-                plat = "YouTube"
+                plat = self._detect_platform(raw_url)
                 folder = os.path.join(self._base_dir, plat, genre or "_No Genre", name)
                 count, newest = scan_folder_newest_mp3(folder)
                 if newest:
@@ -6346,7 +6346,7 @@ class MP3DownloaderApp(tk.Tk):
 
             result = self._db.add_watchlist_channel(
                 url=raw_url, display_name=name,
-                platform="YouTube", genre=genre,
+                platform=self._detect_platform(raw_url), genre=genre,
                 scan_cutoff_date=cutoff, auto_added=False)
             if result is None:
                 messagebox.showinfo(
@@ -6929,7 +6929,7 @@ class MP3DownloaderApp(tk.Tk):
         # Try to add; if duplicate, just update the cutoff
         result = self._db.add_watchlist_channel(
             url=url, display_name=display_name,
-            platform="YouTube", genre=genre or "(none)",
+            platform=self._detect_platform(url), genre=genre or "(none)",
             scan_cutoff_date=cutoff, auto_added=True)
 
         if result is None:
@@ -6961,69 +6961,64 @@ class MP3DownloaderApp(tk.Tk):
         except Exception:
             return
 
-        yt_dir = self._platform_dir("YouTube")
-        if not os.path.isdir(yt_dir):
-            return
-
         added = 0
-        for genre_dir in sorted(os.listdir(yt_dir)):
-            genre_path = os.path.join(yt_dir, genre_dir)
-            if not os.path.isdir(genre_path):
+        for platform in ("YouTube", "SoundCloud"):
+            proot = self._platform_dir(platform)
+            if not os.path.isdir(proot):
                 continue
-            genre = "(none)" if genre_dir == "_No Genre" else genre_dir
-
-            for channel_dir in sorted(os.listdir(genre_path)):
-                channel_path = os.path.join(genre_path, channel_dir)
-                if not os.path.isdir(channel_path):
+            for genre_dir in sorted(os.listdir(proot)):
+                genre_path = os.path.join(proot, genre_dir)
+                if not os.path.isdir(genre_path):
                     continue
+                genre = "(none)" if genre_dir == "_No Genre" else genre_dir
 
-                count, newest = scan_folder_newest_mp3(channel_path)
-                if newest:
-                    cutoff = subtract_days_from_yyyymmdd(
-                        newest, WATCHLIST_CUTOFF_BUFFER_DAYS)
-                else:
-                    cutoff = today_yyyymmdd()
+                for channel_dir in sorted(os.listdir(genre_path)):
+                    channel_path = os.path.join(genre_path, channel_dir)
+                    if not os.path.isdir(channel_path):
+                        continue
 
-                # Prefer the folder's own cratebuilder.json sidecar — it holds
-                # the canonical channel_id, so the URL is correct and the
-                # channel is immediately scannable. Folder name is only a
-                # display label, NOT a valid YouTube handle, so we never build
-                # a scan URL from it.
-                sc = read_channel_sidecar(channel_path)
-                if sc and sc.get("channel_id"):
-                    real_url = (sc.get("channel_url")
-                                or channel_url_from_id(sc["channel_id"]))
-                    result = self._db.add_watchlist_channel(
-                        url=real_url,
-                        channel_id=sc["channel_id"],
-                        display_name=sc.get("display_name") or channel_dir,
-                        platform="YouTube",
-                        genre=genre,
-                        scan_cutoff_date=cutoff,
-                        auto_added=True,
-                        status="idle")
-                    status_note = "from sidecar"
-                else:
-                    # No sidecar: we genuinely don't know the real handle.
-                    # Park it as needs_resolve with a unique sentinel URL so
-                    # the UNIQUE constraint holds and no bogus 404 URL is ever
-                    # scanned. The "Fix broken channels" pass resolves it.
-                    sentinel = f"{UNRESOLVED_URL_PREFIX}YouTube/{genre}/{channel_dir}"
-                    result = self._db.add_watchlist_channel(
-                        url=sentinel,
-                        display_name=channel_dir,
-                        platform="YouTube",
-                        genre=genre,
-                        scan_cutoff_date=cutoff,
-                        auto_added=True,
-                        status="needs_resolve")
-                    status_note = "needs_resolve"
+                    count, newest = scan_folder_newest_mp3(channel_path)
+                    cutoff = (subtract_days_from_yyyymmdd(
+                                  newest, WATCHLIST_CUTOFF_BUFFER_DAYS)
+                              if newest else today_yyyymmdd())
 
-                if result is not None:
-                    added += 1
-                    self._dbg.info(
-                        f"WL FOLDER-POPULATE | {channel_dir!r}  "
-                        f"genre={genre}  cutoff={cutoff}  ({status_note})")
+                    sc = read_channel_sidecar(channel_path)
+                    if sc and (sc.get("channel_url") or sc.get("channel_id")):
+                        real_url = (sc.get("channel_url")
+                                    or channel_url_from_id(sc.get("channel_id")))
+                        result = self._db.add_watchlist_channel(
+                            url=real_url,
+                            channel_id=sc.get("channel_id"),
+                            display_name=sc.get("display_name") or channel_dir,
+                            platform=platform,
+                            genre=genre,
+                            scan_cutoff_date=cutoff,
+                            auto_added=True,
+                            status="idle")
+                        status_note = "from sidecar"
+                    else:
+                        # No sidecar: park as needs_resolve with a unique
+                        # sentinel so UNIQUE(url) holds and nothing bogus is
+                        # scanned. YouTube can auto-resolve via Fix Link search;
+                        # SoundCloud is fixed by pasting the soundcloud.com URL.
+                        sentinel = (f"{UNRESOLVED_URL_PREFIX}{platform}/"
+                                    f"{genre}/{channel_dir}")
+                        result = self._db.add_watchlist_channel(
+                            url=sentinel,
+                            display_name=channel_dir,
+                            platform=platform,
+                            genre=genre,
+                            scan_cutoff_date=cutoff,
+                            auto_added=True,
+                            status="needs_resolve")
+                        status_note = "needs_resolve"
+
+                    if result is not None:
+                        added += 1
+                        self._dbg.info(
+                            f"WL FOLDER-POPULATE | {channel_dir!r}  "
+                            f"platform={platform}  genre={genre}  "
+                            f"cutoff={cutoff}  ({status_note})")
 
         if added:
             self._watchlist_log(
