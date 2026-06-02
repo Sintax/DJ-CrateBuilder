@@ -5908,6 +5908,21 @@ class MP3DownloaderApp(tk.Tk):
                 f"resolved separately.", "info")
         self._watchlist_refresh()
 
+    def _finish_resolve(self, ch, channel_id, handle="", url=None,
+                        success_msg=None, close_fn=None):
+        """after()-safe finisher for every resolve path: persist the identity,
+        announce success ONLY if it actually stuck (a duplicate is handled
+        inside the persist call, which returns False), then either close the
+        resolve dialog with the real outcome or just refresh the list."""
+        ok = self._persist_resolved_channel(ch, channel_id, handle, url=url)
+        if ok and success_msg:
+            self._watchlist_log(success_msg, "ok")
+        if close_fn is not None:
+            close_fn(ok)
+        else:
+            self._watchlist_refresh()
+        return ok
+
     def _watchlist_apply_url(self, cid, new_url):
         """Point a watchlist row at a new channel/playlist URL (from Edit).
         Canonicalises a /channel/UC… URL immediately; for a handle or playlist
@@ -5918,9 +5933,8 @@ class MP3DownloaderApp(tk.Tk):
             return
         direct = self._channel_id_from_url(new_url)
         if direct:
-            self._persist_resolved_channel(ch, direct)
-            self._watchlist_log(f"Channel set: {ch['display_name']}", "ok")
-            self._watchlist_refresh()
+            self._finish_resolve(
+                ch, direct, success_msg=f"Channel set: {ch['display_name']}")
             return
         # Store the URL as typed (works for @handles and playlists), then try
         # to look up the underlying channel_id without blocking the UI.
@@ -5945,13 +5959,10 @@ class MP3DownloaderApp(tk.Tk):
                 if ucid:
                     # Keep the user's URL (may be a playlist) but record the
                     # channel_id and write the folder sidecar.
-                    self.after(0, lambda: (
-                        self._persist_resolved_channel(
-                            ch, ucid, handle, url=new_url),
-                        self._watchlist_log(
-                            f"Resolved channel id for {ch['display_name']}.",
-                            "ok"),
-                        self._watchlist_refresh()))
+                    self.after(0, lambda: self._finish_resolve(
+                        ch, ucid, handle, url=new_url,
+                        success_msg=f"Resolved channel id for "
+                                    f"{ch['display_name']}."))
             except Exception as ex:
                 msg = str(ex)[:80]
                 self.after(0, lambda: self._watchlist_log(
@@ -6098,10 +6109,10 @@ class MP3DownloaderApp(tk.Tk):
                     return
                 cid_direct = self._channel_id_from_url(raw)
                 if cid_direct:
-                    self._persist_resolved_channel(ch, cid_direct)
-                    self._watchlist_log(
-                        f"Resolved (manual): {ch['display_name']}", "ok")
-                    _close(True)
+                    self._finish_resolve(
+                        ch, cid_direct,
+                        success_msg=f"Resolved (manual): {ch['display_name']}",
+                        close_fn=_close)
                     return
                 # Need to look the URL up to get its channel_id.
                 status_lbl.config(text="Resolving pasted URL…", fg=WL_PURPLE)
@@ -6118,12 +6129,11 @@ class MP3DownloaderApp(tk.Tk):
                             self._channel_id_from_url(info.get("channel_url", ""))
                         handle = info.get("uploader_id") or ""
                         if cid2:
-                            dlg.after(0, lambda: (
-                                self._persist_resolved_channel(ch, cid2, handle),
-                                self._watchlist_log(
-                                    f"Resolved (manual): {ch['display_name']}",
-                                    "ok"),
-                                _close(True)))
+                            dlg.after(0, lambda: self._finish_resolve(
+                                ch, cid2, handle,
+                                success_msg=f"Resolved (manual): "
+                                            f"{ch['display_name']}",
+                                close_fn=_close))
                         else:
                             dlg.after(0, lambda: status_lbl.config(
                                 text="Couldn't read a channel_id from that URL.",
@@ -6137,9 +6147,9 @@ class MP3DownloaderApp(tk.Tk):
                 return
             # A search candidate was chosen.
             handle = (cand_by_id.get(sel) or {}).get("handle", "")
-            self._persist_resolved_channel(ch, sel, handle)
-            self._watchlist_log(f"Resolved: {ch['display_name']}", "ok")
-            _close(True)
+            self._finish_resolve(
+                ch, sel, handle,
+                success_msg=f"Resolved: {ch['display_name']}", close_fn=_close)
 
         tk.Button(btn_row, text="  ✓ Use This Channel  ",
                   font=("Segoe UI", 10, "bold"), bg=WL_DARK, fg=TEXT,
