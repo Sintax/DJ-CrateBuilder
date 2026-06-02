@@ -3939,19 +3939,31 @@ class MP3DownloaderApp(tk.Tk):
              "MP3 was saved at. This helps you see whether the source quality matched your output setting."),
 
             ("Q: What is the Watch List?",
-             "A: It tracks YouTube channels you care about and surfaces only "
-             "genuinely-new uploads — tracks you haven't already downloaded — so "
-             "you never re-grab your whole library."),
+             "A: It tracks YouTube and SoundCloud channels you care about and "
+             "surfaces only genuinely-new uploads — tracks you haven't already "
+             "downloaded — so you never re-grab your whole library. Every entry is "
+             "re-scanned in the background when the app starts, so the new-track "
+             "counts are always up to date."),
             ("Q: How do channels get added to the Watch List?",
-             "A: Three ways: manually with 'Add Channel'; automatically after you "
-             "download a channel (if 'Auto-add channels' is on in Settings); and "
-             "auto-discovered from your existing download folders each time the app "
-             "starts."),
+             "A: Three ways: manually with 'Add Channel' (paste a youtube.com or "
+             "soundcloud.com channel/artist URL); automatically after you download "
+             "from a channel or SoundCloud artist (if 'Auto-add channels' is on in "
+             "Settings); and auto-discovered from your existing download folders each "
+             "time the app starts."),
+            ("Q: Can I watch SoundCloud artists too?",
+             "A: Yes. SoundCloud artists are first-class Watch List entries. Add one "
+             "via 'Add Channel' with a soundcloud.com profile URL, or let it be "
+             "auto-added after you download from a SoundCloud artist. Each entry "
+             "scans the artist's /tracks page and downloads new tracks into your "
+             "SoundCloud folder."),
             ("Q: What does 'needs channel ID' / the 'Fix Link' button mean?",
-             "A: A channel whose link couldn't be resolved to YouTube's canonical "
-             "channel ID (often added from a folder name). Click 'Fix Link', pick the "
-             "right channel from the search results, and it's healed. Resolved "
-             "channels don't show the button."),
+             "A: An entry whose link couldn't be resolved to a usable target (often "
+             "added from a folder name). For YouTube, click 'Fix Link', pick the "
+             "right channel from the search results, and it's healed; for SoundCloud "
+             "it simply asks you to paste the soundcloud.com URL. If the fix resolves "
+             "to a channel you already track, the app detects the duplicate and "
+             "offers to remove the redundant entry. Resolved entries don't show the "
+             "button."),
             ("Q: How does automatic checking and downloading work?",
              "A: In Settings → Automation, set 'Check watched channels every…' "
              "(default 24 hours). On that interval the app scans every watched "
