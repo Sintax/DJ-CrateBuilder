@@ -1754,6 +1754,8 @@ class MP3DownloaderApp(tk.Tk):
         # First-run: auto-populate the Watch List from existing channel folders
         self.after(1200, self._watchlist_populate_from_folders)
         self.after(1600, self._reschedule_auto_check)
+        # Actively refresh new-track counts for every entry on each launch.
+        self.after(2200, self._watchlist_startup_scan)
 
         # Close button hides to tray (when enabled) instead of quitting.
         self.protocol("WM_DELETE_WINDOW", self._on_window_close)
@@ -3626,6 +3628,25 @@ class MP3DownloaderApp(tk.Tk):
     # ══════════════════════════════════════════════════════════════════════════
     # Watch List — automation scheduler (periodic scan + auto-download timer)
     # ══════════════════════════════════════════════════════════════════════════
+    def _watchlist_startup_scan(self):
+        """On launch, scan every watched channel (all platforms) so the cards
+        show current new-track counts. Runs in the background via
+        _watchlist_scan_all; skipped if a scan/download is already underway."""
+        try:
+            channels = self._db.get_all_watchlist_channels()
+        except Exception:
+            return
+        if not channels:
+            return
+        if self._downloading or self._wl_download_active or self._wl_scan_active:
+            return
+        self._watchlist_log("🚀 Startup check: scanning all channels…", "info")
+        self._watchlist_scan_all()
+        # Stamp last-check so the interval timer counts from now, not from a
+        # stale value (prevents an immediate second auto-check).
+        self._watchlist_last_check = int(time.time())
+        self._autosave_automation_settings()
+
     def _reschedule_auto_check(self):
         """(Re)arm the periodic auto-check timer from the current interval."""
         if self._auto_check_after_id is not None:
