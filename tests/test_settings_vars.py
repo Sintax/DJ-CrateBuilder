@@ -10,7 +10,12 @@ def _app():
     except Exception as e:
         pytest.skip(f"no display: {e}")
 
-def test_new_settings_defaults():
+def test_new_settings_defaults(tmp_path, monkeypatch):
+    # Isolate from the developer's real ~/.dj_cratebuilder_config.json so this
+    # asserts the shipped DEFAULTS, not whatever the user has toggled locally.
+    # _config_path() resolves via os.path.expanduser("~"), which honors these.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     app = _app(); app.update()
     assert app._auto_check_hours.get() == "24 hours"
     assert app._run_at_startup.get() is False

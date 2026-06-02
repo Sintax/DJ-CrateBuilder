@@ -1,6 +1,7 @@
 """Channel-folder sidecar (cratebuilder.json) helpers + resolution predicate."""
 import json
 import os
+import urllib.parse
 
 from cratebuilder.util import today_yyyymmdd
 
@@ -96,3 +97,17 @@ def watch_scan_url(platform, url):
     if last.startswith("@") or "/channel/" in url:
         return url + "/videos"
     return url
+
+
+def watch_fetch_url(platform, url):
+    """The listing URL to hand yt-dlp, URL-encoded so a handle containing
+    spaces (e.g. "@BASS ENTITY") isn't truncated at the first whitespace
+    (which otherwise yields a 404). This is the exact URL both the Watch List
+    scan and a Watch List "Download New" feed to yt-dlp, so each blows through
+    the channel's catalogue in a single extraction. Returns "" for empty url."""
+    scan = watch_scan_url(platform, url)
+    if not scan:
+        return scan
+    parsed = urllib.parse.urlsplit(scan)
+    return urllib.parse.urlunsplit(parsed._replace(
+        path=urllib.parse.quote(parsed.path, safe="/@&")))
