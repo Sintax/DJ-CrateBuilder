@@ -4897,6 +4897,25 @@ class MP3DownloaderApp(tk.Tk):
 
             done = skipped = errors = 0
 
+            # Watch List downloads decide "already owned" with the SAME test the
+            # scan used (DB video_id + EXACT normalized-title key), so they never
+            # skip a track the scan just surfaced as new. Build the channel
+            # folder's key set once here. This deliberately avoids
+            # _file_exists_on_disk's 40-char prefix fallback, which false-matches
+            # different versions sharing a long title prefix — e.g. an original
+            # "… - Cascade" against an existing "… - Cascade (Cutline Remix)".
+            wl_dl = getattr(self, "_wl_download_active", False)
+            wl_folder_keys = {}
+            if wl_dl:
+                try:
+                    for _fn in os.listdir(save_dir):
+                        if _fn.lower().endswith(".mp3"):
+                            _k = normalize_track_key(_fn)
+                            if _k:
+                                wl_folder_keys.setdefault(_k, _fn)
+                except OSError:
+                    pass
+
             for idx, entry in enumerate(entries):
                 if self._cancel_flag.is_set():
                     break
@@ -4950,27 +4969,34 @@ class MP3DownloaderApp(tk.Tk):
                 expected_path = os.path.join(save_dir, safe + ".mp3")
 
                 # ── Skip / re-download logic ──────────────────────────────────
-                # Watch List "Download New" always skips tracks already on disk
-                # in the channel folder — regardless of the global Skip-Existing
-                # setting — so it blows through the catalogue like a Main-tab
-                # channel download and never re-grabs what you already own.
-                wl_dl = getattr(self, "_wl_download_active", False)
+                # Watch List "Download New" always skips tracks the scan would
+                # call "owned" — regardless of the global Skip-Existing setting —
+                # so it blows through the catalogue like a Main-tab download and
+                # never re-grabs what you already own.
                 if self._skip_existing.get() or wl_dl:
                     mode        = self._skip_mode.get()
-                    found_path  = self._file_exists_on_disk(save_dir, item_title)
-                    file_exists = found_path is not None
                     video_id    = entry.get("id")
                     in_db       = self._db.is_video_downloaded(video_id)
 
-                    # Use the actual found path for log/display if available
-                    if found_path:
-                        expected_path = found_path
-
                     if wl_dl:
-                        # On-disk presence is the sole, definitive signal for a
-                        # Watch List download, and we never prompt mid-batch.
-                        should_skip = file_exists
+                        # Mirror the scan EXACTLY: owned = DB video_id OR an
+                        # EXACT normalized-title key in the channel folder. No
+                        # prefix fallback (which false-matched remixes/VIPs) and
+                        # no mid-batch prompt — so a track the scan surfaced as
+                        # new is never skipped here.
+                        wkey        = normalize_track_key(item_title)
+                        found_name  = wl_folder_keys.get(wkey) if wkey else None
+                        file_exists = found_name is not None
+                        if found_name:
+                            expected_path = os.path.join(save_dir, found_name)
+                        should_skip = bool(in_db) or file_exists
                     else:
+                        found_path  = self._file_exists_on_disk(save_dir, item_title)
+                        file_exists = found_path is not None
+                        # Use the actual found path for log/display if available
+                        if found_path:
+                            expected_path = found_path
+
                         should_skip = False
                         if mode == "In Database ~ In Folder":
                             should_skip = file_exists or in_db
