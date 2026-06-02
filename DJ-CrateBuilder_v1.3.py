@@ -5971,6 +5971,35 @@ class MP3DownloaderApp(tk.Tk):
 
         self._run_bg(_bg)
 
+    def _watchlist_soundcloud_link_dialog(self, cid, on_done=None):
+        """Minimal Fix Link for SoundCloud: paste the soundcloud.com/<user> URL.
+        SoundCloud usernames are stable, so there is no channel-id search —
+        applying the URL is all that's needed to make the entry scannable."""
+        ch = self._db.get_watchlist_channel(cid)
+        if not ch:
+            if on_done:
+                on_done(False)
+            return
+        url = simpledialog.askstring(
+            "Fix Link — SoundCloud",
+            f"Paste the SoundCloud profile URL for “{ch['display_name']}”\n"
+            f"(e.g. https://soundcloud.com/artist-name):",
+            parent=self)
+        if url and "soundcloud.com" in url.lower():
+            self._watchlist_apply_url(cid, url.strip())
+            if on_done:
+                on_done(True)
+        elif url is not None:
+            messagebox.showwarning(
+                "Not a SoundCloud URL",
+                "That doesn't look like a soundcloud.com URL.", parent=self)
+            if on_done:
+                on_done(False)
+        else:
+            # User cancelled the prompt.
+            if on_done:
+                on_done(False)
+
     def _watchlist_resolve_dialog(self, cid, on_done=None):
         """Show the top-3 YouTube matches for a channel so the user can pick
         the right one (or paste a URL manually). on_done(resolved: bool) is
@@ -5980,6 +6009,10 @@ class MP3DownloaderApp(tk.Tk):
             if on_done:
                 on_done(False)
             return
+
+        if (ch.get("platform") or "YouTube") == "SoundCloud":
+            # SoundCloud has no channel-id search; just collect the URL.
+            return self._watchlist_soundcloud_link_dialog(cid, on_done)
 
         dlg = tk.Toplevel(self)
         dlg.title("Fix Channel")
