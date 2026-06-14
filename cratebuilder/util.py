@@ -170,3 +170,27 @@ def push_mru(items, value, limit):
     de-duplicated and capped at *limit*. Does not mutate *items*."""
     rest = [x for x in (items or []) if x != value]
     return ([value] + rest)[:limit]
+
+
+# Keys in a yt-dlp options dict whose values carry authentication material
+# (a cookie file path leaks the user's home directory; the browser-cookie
+# source names the profile) and must never be written to debug.log.
+SENSITIVE_YDL_KEYS = ("cookiefile", "cookiesfrombrowser")
+
+
+def redact_ydl_opts(opts):
+    """Return a shallow copy of a yt-dlp options dict made safe for debug
+    logging. Auth-bearing values (cookie file path, browser-cookie source)
+    are replaced with '<redacted>' when set; the progress-hook callback list
+    is summarised by count; every other key passes through unchanged. Falsy
+    auth values are left as-is so the log still shows whether cookies were
+    configured. Returns {} for None/empty input."""
+    safe = {}
+    for k, v in (opts or {}).items():
+        if k in SENSITIVE_YDL_KEYS:
+            safe[k] = "<redacted>" if v else v
+        elif k == "progress_hooks":
+            safe[k] = f"[{len(v)} hook(s)]"
+        else:
+            safe[k] = v
+    return safe

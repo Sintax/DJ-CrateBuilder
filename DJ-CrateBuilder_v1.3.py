@@ -19,7 +19,7 @@ from cratebuilder.util import (
     format_yyyymmdd_readable, format_timestamp_relative,
     auto_check_hours_to_seconds,
     normalize_track_key, scan_folder_newest_mp3, safe_filename, push_mru,
-    detect_platform,
+    detect_platform, redact_ydl_opts,
 )
 from cratebuilder.sidecar import (
     channel_url_from_id, channel_id_from_url,
@@ -2468,16 +2468,9 @@ class MP3DownloaderApp(tk.Tk):
         return opts
 
     def _dbg_ydl_opts(self, label, opts):
-        """Log yt-dlp options dict to debug.log (redact large values)."""
-        safe = {}
-        for k, v in opts.items():
-            if k == "progress_hooks":
-                safe[k] = f"[{len(v)} hook(s)]"
-            elif k == "postprocessors":
-                safe[k] = v
-            else:
-                safe[k] = v
-        self._dbg.info(f"YDL OPTS ({label}) | {safe}")
+        """Log yt-dlp options to debug.log with auth-bearing values redacted
+        (delegates to cratebuilder.util.redact_ydl_opts)."""
+        self._dbg.info(f"YDL OPTS ({label}) | {redact_ydl_opts(opts)}")
 
     def _log_download(self, title, filepath, url, platform, genre,
                       quality="192 kbps MP3"):
