@@ -77,14 +77,28 @@ This is the "just as easy as Windows" path you tested on the Linux Mint VM. No W
 
 ## What you ship
 
-A single archive (zip or tar.gz) containing three files:
+A single archive (zip or tar.gz) containing the launcher script, the
+`cratebuilder/` package it imports, the install/uninstall scripts, and the
+requirements file:
 
 ```
 DJ-CrateBuilder-v1.3-linux/
 ├── DJ-CrateBuilder_v1.3.py
+├── cratebuilder/            # required — the .py imports from this package
+│   ├── __init__.py
+│   ├── db.py
+│   ├── sidecar.py
+│   ├── startup.py
+│   ├── tray.py
+│   └── util.py
+├── requirements.txt         # yt-dlp, pystray, Pillow
+├── icon.ico                 # optional — used by the .desktop entry
 ├── install-linux.sh
 └── uninstall-linux.sh
 ```
+
+`install-linux.sh` refuses to run if `cratebuilder/` is missing — v1.3 will not
+launch without it.
 
 ## Build the release archive
 
@@ -93,9 +107,15 @@ From the repo root:
 ```bash
 mkdir -p release/DJ-CrateBuilder-v1.3-linux
 cp DJ-CrateBuilder_v1.3.py    release/DJ-CrateBuilder-v1.3-linux/
+cp -r cratebuilder            release/DJ-CrateBuilder-v1.3-linux/
+cp requirements.txt           release/DJ-CrateBuilder-v1.3-linux/
+cp icon.ico                   release/DJ-CrateBuilder-v1.3-linux/ 2>/dev/null || true
 cp install-linux.sh           release/DJ-CrateBuilder-v1.3-linux/
 cp uninstall-linux.sh         release/DJ-CrateBuilder-v1.3-linux/
 chmod +x release/DJ-CrateBuilder-v1.3-linux/*.sh
+
+# Strip any local __pycache__ so it doesn't ship
+find release/DJ-CrateBuilder-v1.3-linux -name __pycache__ -type d -exec rm -rf {} +
 
 cd release
 tar -czf DJ-CrateBuilder-v1.3-linux.tar.gz DJ-CrateBuilder-v1.3-linux/
@@ -115,8 +135,8 @@ zip -r DJ-CrateBuilder-v1.3-linux.zip DJ-CrateBuilder-v1.3-linux/
 The script:
 - Verifies Python 3.10+ and `tkinter`
 - Verifies `ffmpeg` is on PATH
-- Installs `yt-dlp` to user pip if missing
-- Copies the `.py` into `~/.local/share/DJ-CrateBuilder/`
+- Installs `yt-dlp`, `pystray`, and `Pillow` from `requirements.txt` (user pip)
+- Copies the `.py` and the `cratebuilder/` package into `~/.local/share/DJ-CrateBuilder/`
 - Creates the `dj-cratebuilder` command in `~/.local/bin/`
 - Creates a `.desktop` entry so it shows in the app menu
 
@@ -170,8 +190,11 @@ The **debug log** is new — it captures yt-dlp options, cookie config, and full
 # RELEASE CHECKLIST
 
 - [ ] `APP_VERSION = "1.3"` in `DJ-CrateBuilder_v1.3.py`
+- [ ] `pytest -q` passes (`requirements-dev.txt` installed)
 - [ ] Windows installer built and smoke-tested
-- [ ] Linux `.tar.gz` archive built
+- [ ] Linux `.tar.gz` archive built — contains `cratebuilder/` + `requirements.txt`
 - [ ] Tested `install-linux.sh` on Linux Mint VM
 - [ ] Tested `uninstall-linux.sh` (leaves MP3s intact)
 - [ ] Debug log viewer opens and displays data after a download
+- [ ] Watch List startup auto-scan refreshes new-track counts on launch
+- [ ] Tray icon appears when "Minimize to system tray" is enabled
