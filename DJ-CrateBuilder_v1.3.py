@@ -5084,6 +5084,8 @@ class MP3DownloaderApp(tk.Tk):
         """Check for yt-dlp/ffmpeg on a background thread; prompt if missing."""
         def _run():
             missing = check_dependencies()
+            if not self.winfo_exists():   # root torn down (e.g. test teardown)
+                return
             if missing:
                 self.after(0, lambda: self._prompt_install(missing))
             else:
