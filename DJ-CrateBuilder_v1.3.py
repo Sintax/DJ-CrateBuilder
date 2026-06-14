@@ -6382,7 +6382,7 @@ class MP3DownloaderApp(tk.Tk):
                 "Check every channel for new uploads since the last scan.")
 
         self._wl_fix_btn = tk.Button(
-            toolbar, text="  🛠  Fix Channels  ",
+            toolbar, text="  🛠  Check Links  ",
             font=("Segoe UI", 10, "bold"),
             bg=SURFACE2, fg=TEXT_MED,
             activebackground=BORDER, activeforeground=TEXT,
@@ -6620,14 +6620,17 @@ class MP3DownloaderApp(tk.Tk):
             # Per-card Cancel — stops just this channel's scan/download.
             card_buttons.append(
                 ("✕ Cancel", lambda c=cid: self._watchlist_cancel_card(c), True))
-        if is_unresolved_channel(ch):
-            # Only unresolved channels need their link healed.
-            card_buttons.append(
-                ("🛠 Fix Link", lambda c=cid: self._watchlist_resolve_dialog(c), False))
         card_buttons += [
             ("🔍 Scan",    lambda c=cid: self._watchlist_scan_channel(c), False),
             (f"⬇ Download New ({pending})",
                            lambda c=cid: self._watchlist_download_new(c), False),
+        ]
+        if is_unresolved_channel(ch):
+            # Only unresolved channels need their link healed. Sits just left of
+            # Edit so it reads as a per-channel link action.
+            card_buttons.append(
+                ("🛠 Fix Link", lambda c=cid: self._watchlist_resolve_dialog(c), False))
+        card_buttons += [
             ("✏ Edit",     lambda c=cid: self._watchlist_edit_channel(c), False),
             ("✕ Remove",   lambda c=cid: self._watchlist_remove_channel(c), False),
         ]
@@ -6857,7 +6860,7 @@ class MP3DownloaderApp(tk.Tk):
                 on_done(False)
 
     def _watchlist_resolve_dialog(self, cid, on_done=None):
-        """Show the top-3 YouTube matches for a channel so the user can pick
+        """Show the top-4 YouTube matches for a channel so the user can pick
         the right one (or paste a URL manually). on_done(resolved: bool) is
         called when the dialog closes — used to chain the batch 'Fix' flow."""
         ch = self._db.get_watchlist_channel(cid)
@@ -6945,9 +6948,20 @@ class MP3DownloaderApp(tk.Tk):
                         activeforeground=TEXT, font=("Segoe UI", 10, "bold"),
                         anchor="w", highlightthickness=0, bd=0
                     ).pack(anchor="w", fill="x")
-                    tk.Label(row, text=f"    {subs}  •  {c['url']}",
+                    info_row = tk.Frame(row, bg=SURFACE)
+                    info_row.pack(anchor="w", fill="x")
+                    tk.Label(info_row, text=f"    {subs}  •  ",
                              font=("Segoe UI", 8), fg=TEXT_DIM, bg=SURFACE,
-                             anchor="w").pack(anchor="w")
+                             anchor="w").pack(side="left")
+                    # Clickable URL — open in the browser to double-check the
+                    # channel before committing.
+                    link = tk.Label(
+                        info_row, text=c["url"],
+                        font=("Segoe UI", 8, "underline"),
+                        fg=LINK_COL, bg=SURFACE, cursor="hand2", anchor="w")
+                    link.pack(side="left")
+                    link.bind("<Button-1>",
+                              lambda e, u=c["url"]: webbrowser.open(u))
             else:
                 status_lbl.config(
                     text="No channel matches found — paste the URL manually.",
@@ -6973,7 +6987,8 @@ class MP3DownloaderApp(tk.Tk):
 
         def _search():
             try:
-                cands = self._resolve_channel_via_search(ch["display_name"])
+                cands = self._resolve_channel_via_search(
+                    ch["display_name"], max_results=4)
                 dlg.after(0, lambda: _render(cands))
             except Exception as ex:
                 msg = str(ex)[:120]
@@ -7269,7 +7284,7 @@ class MP3DownloaderApp(tk.Tk):
 
         dlg = tk.Toplevel(self)
         dlg.title(f"Edit — {ch['display_name']}")
-        dlg.geometry("460x420")
+        dlg.geometry("460x470")
         dlg.configure(bg=BG)
         dlg.resizable(False, False)
         dlg.transient(self)
@@ -7277,7 +7292,7 @@ class MP3DownloaderApp(tk.Tk):
 
         dlg.update_idletasks()
         px = self.winfo_x() + (self.winfo_width() - 460) // 2
-        py = self.winfo_y() + (self.winfo_height() - 420) // 2
+        py = self.winfo_y() + (self.winfo_height() - 470) // 2
         dlg.geometry(f"+{max(0,px)}+{max(0,py)}")
 
         outer = tk.Frame(dlg, bg=BG, padx=24, pady=18)
@@ -7305,7 +7320,36 @@ class MP3DownloaderApp(tk.Tk):
                  text="Paste the channel (…/@handle or …/channel/UC…) or a "
                       "playlist URL. Leave as-is to keep the current channel.",
                  font=("Segoe UI", 8), fg=TEXT_DIM, bg=BG, wraplength=400,
-                 justify="left").pack(anchor="w", pady=(0, 12))
+                 justify="left").pack(anchor="w", pady=(0, 6))
+
+        # Open / Edit the link directly from here.
+        def _open_link():
+            u = url_var.get().strip()
+            if u and not u.startswith(UNRESOLVED_URL_PREFIX):
+                webbrowser.open(u)
+            else:
+                messagebox.showinfo(
+                    "No Link", "This channel has no link to open yet — use "
+                    "Edit Link to find it.", parent=dlg)
+
+        def _edit_link():
+            # Hand off to the Fix Link window (closes this edit dialog first to
+            # avoid two modal grabs fighting over focus).
+            dlg.destroy()
+            self._watchlist_resolve_dialog(cid)
+
+        link_btn_row = tk.Frame(outer, bg=BG)
+        link_btn_row.pack(fill="x", pady=(0, 12))
+        tk.Button(link_btn_row, text="  🌐 Open Link  ",
+                  font=("Segoe UI", 9), bg=SURFACE2, fg=TEXT_DIM,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
+                  command=_open_link).pack(side="left", padx=(0, 8))
+        tk.Button(link_btn_row, text="  🛠 Edit Link  ",
+                  font=("Segoe UI", 9), bg=SURFACE2, fg=TEXT_DIM,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
+                  command=_edit_link).pack(side="left")
 
         # Genre
         tk.Label(outer, text="Genre",
