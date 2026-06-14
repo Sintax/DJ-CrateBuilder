@@ -24,7 +24,7 @@ from cratebuilder.util import (
 from cratebuilder.sidecar import (
     channel_url_from_id, channel_id_from_url,
     read_channel_sidecar, write_channel_sidecar, is_unresolved_channel,
-    watch_fetch_url,
+    watch_fetch_url, classify_scan_entries,
 )
 from cratebuilder.db import DownloadsDatabase
 from cratebuilder import startup as cb_startup
@@ -7368,47 +7368,35 @@ class MP3DownloaderApp(tk.Tk):
                 # limit so the "+ N new" badge matches what would actually
                 # download. Entries with no duration (live, premiere, missing)
                 # are kept — the download step filters them again as a backstop.
-                new_entries = []
-                backfill_rows = []
                 now_ts = int(time.time())
                 limit_on  = bool(self._limit_enabled.get())
-                limit_sec = self._limit_minutes.get() * 60 if limit_on else 0
-                for e in entries:
-                    vid_id = e.get("id")
-                    if vid_id and self._db.is_video_downloaded(vid_id):
-                        continue
-                    if limit_on:
-                        dur = e.get("duration")
-                        if dur and dur > limit_sec:
-                            continue
-                    title = e.get("title") or ""
-                    key = normalize_track_key(title)
-                    if key and key in folder_keys:
-                        # Already on disk (legacy). Record it so future scans
-                        # dedup exactly, then hide it from the "new" list.
-                        if vid_id:
-                            backfill_rows.append({
-                                "video_id":     vid_id,
-                                "title":        title,
-                                "channel_name": ch.get("display_name") or "",
-                                "channel_url":  ch.get("url") or "",
-                                "channel_id":   ch.get("channel_id"),
-                                "platform":     platform,
-                                "genre":        ch.get("genre") or "(none)",
-                                "file_path":    folder_keys[key],
-                                "upload_date":  e.get("upload_date") or "",
-                                "ts":           now_ts,
-                                "bitrate":      "",
-                            })
-                        continue
-                    new_entries.append({
-                        "id":          vid_id or "",
-                        "title":       title,
-                        "url":         (e.get("url") or e.get("webpage_url")
-                                        or (f"https://www.youtube.com/watch?v={vid_id}"
-                                            if platform == "YouTube" else "")),
-                        "upload_date": e.get("upload_date") or "",
-                    })
+                limit_sec = self._limit_minutes.get() * 60 if limit_on else None
+                classified = classify_scan_entries(
+                    entries,
+                    is_downloaded=self._db.is_video_downloaded,
+                    folder_keys=folder_keys,
+                    limit_sec=limit_sec,
+                    platform=platform)
+                new_entries = classified["new"]
+                # Backfill already-on-disk (legacy) tracks so future scans dedup
+                # exactly by video_id; entries without an id can't be keyed, so
+                # they are simply hidden (matching the original `if vid_id`).
+                backfill_rows = [
+                    {
+                        "video_id":     od["id"],
+                        "title":        od["title"],
+                        "channel_name": ch.get("display_name") or "",
+                        "channel_url":  ch.get("url") or "",
+                        "channel_id":   ch.get("channel_id"),
+                        "platform":     platform,
+                        "genre":        ch.get("genre") or "(none)",
+                        "file_path":    od["file_path"],
+                        "upload_date":  od["upload_date"],
+                        "ts":           now_ts,
+                        "bitrate":      "",
+                    }
+                    for od in classified["on_disk"] if od["id"]
+                ]
 
                 if backfill_rows:
                     n_bf = self._db.backfill_downloads(backfill_rows)

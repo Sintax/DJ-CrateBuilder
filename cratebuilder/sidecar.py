@@ -4,7 +4,7 @@ import os
 import re
 import urllib.parse
 
-from cratebuilder.util import today_yyyymmdd
+from cratebuilder.util import today_yyyymmdd, normalize_track_key
 
 CHANNEL_SIDECAR_NAME = "cratebuilder.json"
 
@@ -105,6 +105,57 @@ def watch_scan_url(platform, url):
     if last.startswith("@") or "/channel/" in url:
         return url + "/videos"
     return url
+
+
+def classify_scan_entries(entries, *, is_downloaded, folder_keys, limit_sec,
+                          platform):
+    """Bucket yt-dlp flat-playlist *entries* into new vs already-owned tracks.
+
+    Pure (no DB / tkinter / filesystem): the DB membership check is injected as
+    *is_downloaded(video_id) -> bool*, and *folder_keys* maps a normalised track
+    key (see normalize_track_key) to the path of the matching .mp3 already on
+    disk. *limit_sec* is the Time-Limiter ceiling in seconds, or None to disable
+    duration filtering (a value of 0 preserves the original loop's degenerate
+    behaviour of dropping every video with a positive duration).
+
+    Drop rules (entry ends up in neither bucket): its video_id is already in the
+    DB, or — when filtering is on — its duration exceeds *limit_sec*. Entries
+    with no/zero duration are kept (the download step re-filters as a backstop).
+    A surviving entry whose normalised title matches a folder key is 'on_disk'
+    (a legacy file to backfill then hide); otherwise it is 'new'.
+
+    Returns {"new": [...], "on_disk": [...]} where each new item is
+    {id, title, url, upload_date} and each on_disk item is
+    {id, title, upload_date, file_path}. The id is "" when the entry has none."""
+    new_entries = []
+    on_disk = []
+    for e in entries:
+        vid_id = e.get("id")
+        if vid_id and is_downloaded(vid_id):
+            continue
+        if limit_sec is not None:
+            dur = e.get("duration")
+            if dur and dur > limit_sec:
+                continue
+        title = e.get("title") or ""
+        key = normalize_track_key(title)
+        if key and key in folder_keys:
+            on_disk.append({
+                "id":          vid_id or "",
+                "title":       title,
+                "upload_date": e.get("upload_date") or "",
+                "file_path":   folder_keys[key],
+            })
+            continue
+        new_entries.append({
+            "id":          vid_id or "",
+            "title":       title,
+            "url":         (e.get("url") or e.get("webpage_url")
+                            or (f"https://www.youtube.com/watch?v={vid_id}"
+                                if platform == "YouTube" else "")),
+            "upload_date": e.get("upload_date") or "",
+        })
+    return {"new": new_entries, "on_disk": on_disk}
 
 
 def watch_fetch_url(platform, url):
