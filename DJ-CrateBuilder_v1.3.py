@@ -3140,6 +3140,20 @@ class MP3DownloaderApp(tk.Tk):
             foreground=[("readonly", TEXT)],
             bordercolor=[("focus", BORDER)],
             lightcolor=[("focus", BORDER)])
+        # URL entry on the Main tab — same as TCombobox but a red border so it
+        # reads as the primary input.
+        s.configure("URL.TCombobox",
+            fieldbackground=SURFACE2, foreground=TEXT,
+            background=SURFACE2, bordercolor=YT_RED,
+            lightcolor=YT_RED, darkcolor=YT_RED,
+            arrowcolor=TEXT_DIM,
+            font=("Segoe UI", 11), padding=(8, 6))
+        s.map("URL.TCombobox",
+            fieldbackground=[("readonly", SURFACE2)],
+            foreground=[("readonly", TEXT)],
+            bordercolor=[("focus", YT_RED), ("active", YT_RED)],
+            lightcolor=[("focus", YT_RED), ("active", YT_RED)],
+            darkcolor=[("focus", YT_RED), ("active", YT_RED)])
         # Dropdown list colours
         self.option_add("*TCombobox*Listbox.background", SURFACE2)
         self.option_add("*TCombobox*Listbox.foreground", TEXT)
@@ -3296,7 +3310,8 @@ class MP3DownloaderApp(tk.Tk):
 
         self._url_var   = tk.StringVar()
         self._url_entry = ttk.Combobox(url_row, textvariable=self._url_var,
-                                        values=self._url_history)
+                                        values=self._url_history,
+                                        style="URL.TCombobox")
         self._url_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
         self._url_entry.bind("<Return>",   lambda e: self._batch_add())
         self._url_entry.bind("<FocusIn>",  self._url_focus_in)
