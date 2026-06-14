@@ -152,3 +152,14 @@ def normalize_track_key(name):
     s = re.sub(r"\.(mp3|m4a|opus|webm|wav|flac|aac)$", "", str(name),
                flags=re.IGNORECASE)
     return re.sub(r"[^a-z0-9]+", "", s.lower())
+
+
+def safe_filename(name, strip=False):
+    """Replace characters illegal in a filename ( \\ / * ? : " < > | ) with '_'.
+
+    The default raw form mirrors the actual on-disk filename. With strip=True it
+    also trims surrounding whitespace — used for folder names and for matching
+    'legacy' files saved before yt-dlp's own sanitiser was adopted. Returns ''
+    for empty/None input."""
+    safe = re.sub(r'[\\/*?:"<>|]', "_", name or "")
+    return safe.strip() if strip else safe

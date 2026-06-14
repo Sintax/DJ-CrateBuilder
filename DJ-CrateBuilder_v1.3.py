@@ -18,7 +18,7 @@ from cratebuilder.util import (
     days_ago_yyyymmdd, subtract_days_from_yyyymmdd,
     format_yyyymmdd_readable, format_timestamp_relative,
     auto_check_hours_to_seconds,
-    normalize_track_key, scan_folder_newest_mp3,
+    normalize_track_key, scan_folder_newest_mp3, safe_filename,
     detect_platform,
 )
 from cratebuilder.sidecar import (
@@ -2361,7 +2361,7 @@ class MP3DownloaderApp(tk.Tk):
         else:
             parts.append("_No Genre")
         if channel_name:
-            safe = re.sub(r'[\\/*?:"<>|]', "_", channel_name).strip()
+            safe = safe_filename(channel_name, strip=True)
             if safe:
                 parts.append(safe)
         path = os.path.join(*parts)
@@ -2530,7 +2530,7 @@ class MP3DownloaderApp(tk.Tk):
             from yt_dlp.utils import sanitize_filename as ytdl_sanitize
             ytdl_safe = ytdl_sanitize(title, restricted=False)
         except ImportError:
-            ytdl_safe = re.sub(r'[\\/*?:"<>|]', "_", title)
+            ytdl_safe = safe_filename(title)
 
         # Exact match using yt-dlp's sanitization
         exact = os.path.join(save_dir, ytdl_safe + ".mp3")
@@ -2539,7 +2539,7 @@ class MP3DownloaderApp(tk.Tk):
 
         # Also try our own regex sanitization (for files we downloaded before
         # the fix, which used the old naming)
-        regex_safe = re.sub(r'[\\/*?:"<>|]', "_", title).strip()
+        regex_safe = safe_filename(title, strip=True)
         legacy = os.path.join(save_dir, regex_safe + ".mp3")
         if legacy != exact and os.path.exists(legacy):
             return legacy
@@ -4838,7 +4838,7 @@ class MP3DownloaderApp(tk.Tk):
         name = result[0]
         if not name:
             return
-        safe = re.sub(r'[\\/*?:"<>|]', "_", name).strip()
+        safe = safe_filename(name, strip=True)
         if not safe:
             messagebox.showwarning("Invalid Name",
                                     "That name isn't usable as a folder.")
@@ -5599,7 +5599,7 @@ class MP3DownloaderApp(tk.Tk):
                     self._vid_progress.config(value=0),
                 ))
 
-                safe          = re.sub(r'[\\/*?:"<>|]', "_", item_title)
+                safe          = safe_filename(item_title)
                 expected_path = os.path.join(save_dir, safe + ".mp3")
 
                 # ── Skip / re-download logic ──────────────────────────────────
