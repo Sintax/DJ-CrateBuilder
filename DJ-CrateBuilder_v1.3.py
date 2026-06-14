@@ -18,7 +18,7 @@ from cratebuilder.util import (
     days_ago_yyyymmdd, subtract_days_from_yyyymmdd,
     format_yyyymmdd_readable, format_timestamp_relative,
     auto_check_hours_to_seconds,
-    normalize_track_key, scan_folder_newest_mp3, safe_filename,
+    normalize_track_key, scan_folder_newest_mp3, safe_filename, push_mru,
     detect_platform,
 )
 from cratebuilder.sidecar import (
@@ -4953,10 +4953,7 @@ class MP3DownloaderApp(tk.Tk):
         url = url.strip()
         if not url:
             return
-        # Remove if already present, then prepend
-        self._url_history = [u for u in self._url_history if u != url]
-        self._url_history.insert(0, url)
-        self._url_history = self._url_history[:6]
+        self._url_history = push_mru(self._url_history, url, 6)
         # Update the combobox dropdown values
         self._url_entry["values"] = self._url_history
         # Persist to config
