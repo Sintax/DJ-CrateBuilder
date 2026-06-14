@@ -1647,6 +1647,626 @@ class CookieHowToWindow(tk.Toplevel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# DatabaseViewerWindow — browse the downloads history + watch list
+#   A dark-themed Toplevel (sibling to the log viewers) that presents the
+#   downloads database as a file-explorer-style tree and the watch list as a
+#   sortable table. Read-only: organize, filter, sort, and export — never edit.
+# ─────────────────────────────────────────────────────────────────────────────
+class DatabaseViewerWindow(tk.Toplevel):
+    """Standalone dark-themed database browser window."""
+
+    # Group-by presets for the Downloads tree: label -> ordered hierarchy keys.
+    GROUP_PRESETS = {
+        "Platform › Genre › Channel": ["platform", "genre", "channel_name"],
+        "Genre › Channel":            ["genre", "channel_name"],
+        "Channel":                    ["channel_name"],
+        "Platform › Channel":         ["platform", "channel_name"],
+    }
+
+    # Downloads detail columns: id -> (heading, width, anchor)
+    _DL_COLS = {
+        "channel":    ("Channel",    160, "w"),
+        "genre":      ("Genre",      110, "w"),
+        "platform":   ("Platform",    80, "w"),
+        "upload":     ("Upload",     110, "w"),
+        "downloaded": ("Downloaded", 140, "w"),
+        "bitrate":    ("Bitrate",     70, "e"),
+    }
+
+    # Watch List columns: id -> (heading, width, anchor)
+    _WL_COLS = {
+        "channel":    ("Channel",      180, "w"),
+        "platform":   ("Platform",      80, "w"),
+        "genre":      ("Genre",        110, "w"),
+        "cutoff":     ("Cutoff",       130, "w"),
+        "last_scan":  ("Last scan",    120, "w"),
+        "pending":    ("Pending new",   90, "e"),
+        "total":      ("Total dl'd",    80, "e"),
+        "status":     ("Status",        90, "w"),
+    }
+
+    def __init__(self, parent, db):
+        super().__init__(parent)
+        self._db        = db
+        self._parent    = parent
+        self._downloads = []   # list of dicts, loaded from the DB
+        self._channels  = []   # watch list rows
+        self._row_data  = {}   # downloads tree: item_id -> download dict (leaves)
+
+        # Downloads view state
+        self._group_var  = tk.StringVar(value=list(self.GROUP_PRESETS)[0])
+        self._plat_var   = tk.StringVar(value="All platforms")
+        self._genre_var  = tk.StringVar(value="All genres")
+        self._search_var = tk.StringVar()
+        self._dl_sort_col  = "downloaded"
+        self._dl_sort_desc = True
+
+        # Watch List view state
+        self._wl_sort_col  = "channel"
+        self._wl_sort_desc = False
+
+        self.title("🗂  Database  —  DJ CrateBuilder")
+        self.geometry("1100x680")
+        self.minsize(820, 460)
+        self.configure(bg=BG)
+        self.resizable(True, True)
+
+        # Centre over parent
+        self.update_idletasks()
+        px = parent.winfo_x() + (parent.winfo_width()  - 1100) // 2
+        py = parent.winfo_y() + (parent.winfo_height() - 680)  // 2
+        self.geometry(f"+{max(0, px)}+{max(0, py)}")
+
+        self._configure_styles()
+        self._build_ui()
+        self.load_data()
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.focus_force()
+
+    # ── Theming ───────────────────────────────────────────────────────────────
+    def _configure_styles(self):
+        """Dark-theme the ttk.Treeview widgets used in this window."""
+        s = ttk.Style(self)
+        s.configure("DB.Treeview",
+                    background="#0a0a0a", fieldbackground="#0a0a0a",
+                    foreground=TEXT_MED, rowheight=24, borderwidth=0,
+                    font=("Segoe UI", 10))
+        s.configure("DB.Treeview.Heading",
+                    background=SURFACE2, foreground=TEXT, relief="flat",
+                    font=("Segoe UI", 10, "bold"), padding=(6, 4))
+        s.map("DB.Treeview",
+              background=[("selected", YT_DARK)],
+              foreground=[("selected", "#ffffff")])
+        s.map("DB.Treeview.Heading",
+              background=[("active", BORDER)])
+
+    # ── Build UI ──────────────────────────────────────────────────────────────
+    def _build_ui(self):
+        self._notebook = ttk.Notebook(self)
+        self._notebook.pack(fill="both", expand=True)
+
+        dl_tab = tk.Frame(self._notebook, bg=BG)
+        wl_tab = tk.Frame(self._notebook, bg=BG)
+        self._notebook.add(dl_tab, text="   ⬇  Downloads   ")
+        self._notebook.add(wl_tab, text="   👁  Watch List   ")
+
+        self._build_downloads_tab(dl_tab)
+        self._build_watchlist_tab(wl_tab)
+
+    def _tb_btn(self, parent, label, cmd, side="left", padx=(2, 2)):
+        """Small flat toolbar button matching the app palette."""
+        b = tk.Button(parent, text=label, font=("Segoe UI", 9),
+                      relief="flat", bd=0, bg=SURFACE2, fg=TEXT_DIM,
+                      activebackground=BORDER, activeforeground=TEXT,
+                      padx=8, pady=4, cursor="hand2", command=cmd)
+        b.pack(side=side, padx=padx, pady=6)
+        return b
+
+    def _mk_combo(self, parent, var, width):
+        c = ttk.Combobox(parent, textvariable=var, state="readonly",
+                         width=width)
+        c.pack(side="left", padx=(0, 10), pady=6)
+        return c
+
+    # ── Downloads tab ───────────────────────────────────────────────────────
+    def _build_downloads_tab(self, parent):
+        toolbar = tk.Frame(parent, bg=SURFACE2,
+                           highlightthickness=1, highlightbackground=BORDER)
+        toolbar.pack(fill="x", side="top")
+
+        tk.Label(toolbar, text="Group by:", font=("Segoe UI", 9),
+                 fg=TEXT_DIM, bg=SURFACE2).pack(side="left", padx=(12, 6))
+        self._group_combo = self._mk_combo(toolbar, self._group_var, 22)
+        self._group_combo["values"] = list(self.GROUP_PRESETS)
+        self._group_combo.bind("<<ComboboxSelected>>",
+                               lambda e: self._rebuild_downloads_tree())
+
+        tk.Frame(toolbar, width=1, bg=BORDER).pack(side="left", fill="y",
+                                                   padx=8, pady=6)
+
+        tk.Label(toolbar, text="Platform:", font=("Segoe UI", 9),
+                 fg=TEXT_DIM, bg=SURFACE2).pack(side="left", padx=(0, 6))
+        self._plat_combo = self._mk_combo(toolbar, self._plat_var, 12)
+        self._plat_combo.bind("<<ComboboxSelected>>",
+                              lambda e: self._rebuild_downloads_tree())
+
+        tk.Label(toolbar, text="Genre:", font=("Segoe UI", 9),
+                 fg=TEXT_DIM, bg=SURFACE2).pack(side="left", padx=(0, 6))
+        self._genre_combo = self._mk_combo(toolbar, self._genre_var, 16)
+        self._genre_combo.bind("<<ComboboxSelected>>",
+                               lambda e: self._rebuild_downloads_tree())
+
+        tk.Label(toolbar, text="Search:", font=("Segoe UI", 9),
+                 fg=TEXT_DIM, bg=SURFACE2).pack(side="left", padx=(0, 6))
+        self._search_entry = tk.Entry(
+            toolbar, textvariable=self._search_var, font=("Segoe UI", 9),
+            bg=SURFACE, fg=TEXT, insertbackground=TEXT, relief="flat",
+            highlightthickness=1, highlightbackground=BORDER,
+            highlightcolor=YT_RED, width=22)
+        self._search_entry.pack(side="left", ipady=3, pady=6)
+        self._search_var.trace_add("write",
+                                   lambda *_: self._rebuild_downloads_tree())
+
+        # Right cluster: actions
+        self._tb_btn(toolbar, "⤓  Export CSV", self._export_csv, side="right",
+                     padx=(0, 10))
+        tk.Frame(toolbar, width=1, bg=BORDER).pack(side="right", fill="y",
+                                                   padx=4, pady=6)
+        self._tb_btn(toolbar, "⟳  Refresh",     self.refresh,        side="right")
+        self._tb_btn(toolbar, "⊟  Collapse All", self._collapse_all, side="right")
+        self._tb_btn(toolbar, "⊞  Expand All",   self._expand_all,   side="right")
+
+        # ── Stats bar (bottom) ────────────────────────────────────────────────
+        self._dl_stats = tk.Label(parent, text="", font=("Segoe UI", 8),
+                                  fg=TEXT_DIM, bg=SURFACE2, anchor="w",
+                                  padx=12, pady=3, highlightthickness=1,
+                                  highlightbackground=BORDER)
+        self._dl_stats.pack(fill="x", side="bottom")
+
+        # ── Tree ──────────────────────────────────────────────────────────────
+        tree_frame = tk.Frame(parent, bg=BG)
+        tree_frame.pack(fill="both", expand=True)
+
+        col_ids = list(self._DL_COLS)
+        self._dl_tree = ttk.Treeview(
+            tree_frame, columns=col_ids, show="tree headings",
+            style="DB.Treeview", selectmode="browse")
+        self._dl_tree.heading("#0", text="Title  /  Group",
+                              command=lambda: self._sort_downloads("title"))
+        self._dl_tree.column("#0", width=340, minwidth=180, anchor="w",
+                             stretch=True)
+        for cid, (head, width, anchor) in self._DL_COLS.items():
+            self._dl_tree.heading(
+                cid, text=head, command=lambda c=cid: self._sort_downloads(c))
+            self._dl_tree.column(cid, width=width, minwidth=50, anchor=anchor,
+                                 stretch=False)
+
+        self._dl_tree.tag_configure("group", foreground=TEXT,
+                                    font=("Segoe UI", 10, "bold"))
+        self._dl_tree.tag_configure("leaf", foreground=TEXT_MED)
+
+        vs = ttk.Scrollbar(tree_frame, orient="vertical",
+                           command=self._dl_tree.yview)
+        hs = ttk.Scrollbar(tree_frame, orient="horizontal",
+                           command=self._dl_tree.xview)
+        self._dl_tree.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
+        hs.pack(side="bottom", fill="x")
+        vs.pack(side="right", fill="y")
+        self._dl_tree.pack(side="left", fill="both", expand=True)
+
+        self._dl_tree.bind("<Double-1>", self._on_dl_double_click)
+        self._dl_tree.bind("<Button-3>", self._on_dl_right_click)
+
+        # Context menu for leaf rows
+        self._dl_menu = tk.Menu(self, tearoff=0, bg=SURFACE2, fg=TEXT,
+                                activebackground=YT_DARK,
+                                activeforeground="#ffffff", bd=0)
+        self._dl_menu.add_command(label="Open File",
+                                  command=lambda: self._ctx_action("file"))
+        self._dl_menu.add_command(label="Open Containing Folder",
+                                  command=lambda: self._ctx_action("folder"))
+        self._dl_menu.add_command(label="Copy Path",
+                                  command=lambda: self._ctx_action("copy"))
+        self._ctx_item = None
+
+    # ── Watch List tab ────────────────────────────────────────────────────────
+    def _build_watchlist_tab(self, parent):
+        bar = tk.Frame(parent, bg=SURFACE2, highlightthickness=1,
+                       highlightbackground=BORDER)
+        bar.pack(fill="x", side="top")
+        tk.Label(bar, text="Watched channels — click a column to sort",
+                 font=("Segoe UI", 9), fg=TEXT_DIM, bg=SURFACE2
+                 ).pack(side="left", padx=12, pady=8)
+        self._tb_btn(bar, "⟳  Refresh", self.refresh, side="right")
+
+        self._wl_stats = tk.Label(parent, text="", font=("Segoe UI", 8),
+                                  fg=TEXT_DIM, bg=SURFACE2, anchor="w",
+                                  padx=12, pady=3, highlightthickness=1,
+                                  highlightbackground=BORDER)
+        self._wl_stats.pack(fill="x", side="bottom")
+
+        frame = tk.Frame(parent, bg=BG)
+        frame.pack(fill="both", expand=True)
+
+        col_ids = list(self._WL_COLS)
+        self._wl_tree = ttk.Treeview(
+            frame, columns=col_ids, show="headings",
+            style="DB.Treeview", selectmode="browse")
+        for cid, (head, width, anchor) in self._WL_COLS.items():
+            self._wl_tree.heading(
+                cid, text=head, command=lambda c=cid: self._sort_watchlist(c))
+            self._wl_tree.column(cid, width=width, minwidth=50, anchor=anchor)
+
+        vs = ttk.Scrollbar(frame, orient="vertical",
+                           command=self._wl_tree.yview)
+        self._wl_tree.configure(yscrollcommand=vs.set)
+        vs.pack(side="right", fill="y")
+        self._wl_tree.pack(side="left", fill="both", expand=True)
+
+    # ── Data loading ────────────────────────────────────────────────────────
+    def load_data(self):
+        """Load both datasets from the DB and (re)populate the views."""
+        try:
+            self._downloads = self._db.get_all_downloads()
+        except Exception:
+            self._downloads = []
+        try:
+            self._channels = self._db.get_all_watchlist_channels()
+        except Exception:
+            self._channels = []
+
+        # Refresh filter dropdowns from the data
+        plats  = sorted({(d.get("platform") or "").strip()
+                         for d in self._downloads if d.get("platform")})
+        genres = sorted({self._genre_value(d) for d in self._downloads})
+        self._plat_combo["values"]  = ["All platforms"] + plats
+        self._genre_combo["values"] = ["All genres"] + genres
+        if self._plat_var.get() not in self._plat_combo["values"]:
+            self._plat_var.set("All platforms")
+        if self._genre_var.get() not in self._genre_combo["values"]:
+            self._genre_var.set("All genres")
+
+        self._rebuild_downloads_tree()
+        self._rebuild_watchlist_tree()
+
+    def refresh(self):
+        self.load_data()
+
+    # ── Grouping helpers ──────────────────────────────────────────────────────
+    @staticmethod
+    def _genre_value(row):
+        g = (row.get("genre") or "").strip()
+        return g if g and g != "(none)" else "(none)"
+
+    def _group_value(self, row, key):
+        if key == "platform":
+            return (row.get("platform") or "").strip() or "(unknown)"
+        if key == "genre":
+            return self._genre_value(row)
+        if key == "channel_name":
+            return (row.get("channel_name") or "").strip() or "(unknown)"
+        return "(unknown)"
+
+    def _leaf_sort_key(self, row):
+        """Return the sort key for one download row under the active column."""
+        col = self._dl_sort_col
+        if col == "title":
+            return (row.get("title") or "").lower()
+        if col == "channel":
+            return (row.get("channel_name") or "").lower()
+        if col == "genre":
+            return self._genre_value(row).lower()
+        if col == "platform":
+            return (row.get("platform") or "").lower()
+        if col == "upload":
+            return row.get("upload_date") or ""
+        if col == "downloaded":
+            return int(row.get("download_timestamp") or 0)
+        if col == "bitrate":
+            digits = re.sub(r"\D", "", str(row.get("bitrate") or ""))
+            return int(digits) if digits else 0
+        return (row.get("title") or "").lower()
+
+    # ── Filtering ─────────────────────────────────────────────────────────────
+    def _filtered_downloads(self):
+        plat   = self._plat_var.get()
+        genre  = self._genre_var.get()
+        needle = self._search_var.get().strip().lower()
+        out = []
+        for d in self._downloads:
+            if plat != "All platforms" and (d.get("platform") or "") != plat:
+                continue
+            if genre != "All genres" and self._genre_value(d) != genre:
+                continue
+            if needle:
+                hay = f"{d.get('title','')} {d.get('channel_name','')}".lower()
+                if needle not in hay:
+                    continue
+            out.append(d)
+        return out
+
+    # ── Downloads tree build ──────────────────────────────────────────────────
+    def _rebuild_downloads_tree(self):
+        tree = self._dl_tree
+        tree.delete(*tree.get_children())
+        self._row_data.clear()
+
+        rows     = self._filtered_downloads()
+        hierarchy = self.GROUP_PRESETS[self._group_var.get()]
+        self._insert_group(parent="", rows=rows, keys=hierarchy)
+
+        # Stats
+        n_shown = len(rows)
+        n_total = len(self._downloads)
+        chans   = len({(d.get("channel_name") or "") for d in rows})
+        gens    = len({self._genre_value(d) for d in rows})
+        plats   = len({(d.get("platform") or "") for d in rows})
+        self._dl_stats.config(
+            text=f"  Showing {n_shown} of {n_total} tracks   •   "
+                 f"{chans} channel{'s' if chans != 1 else ''}   •   "
+                 f"{gens} genre{'s' if gens != 1 else ''}   •   "
+                 f"{plats} platform{'s' if plats != 1 else ''}")
+        self._update_dl_heading_arrows()
+
+    def _insert_group(self, parent, rows, keys):
+        """Recursively insert grouped nodes; leaves at the deepest level."""
+        if not keys:
+            for row in sorted(rows, key=self._leaf_sort_key,
+                              reverse=self._dl_sort_desc):
+                self._insert_leaf(parent, row)
+            return
+
+        key, rest = keys[0], keys[1:]
+        buckets = {}
+        for row in rows:
+            buckets.setdefault(self._group_value(row, key), []).append(row)
+
+        for label in sorted(buckets, key=str.lower):
+            members = buckets[label]
+            node = self._dl_tree.insert(
+                parent, "end", text=f"{label}  ({len(members)})",
+                values=("", "", "", "", "", ""), tags=("group",), open=False)
+            self._insert_group(node, members, rest)
+
+    def _insert_leaf(self, parent, row):
+        ts = row.get("download_timestamp")
+        try:
+            dl_str = datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M") \
+                     if ts else ""
+        except Exception:
+            dl_str = ""
+        up = row.get("upload_date") or ""
+        up_str = format_yyyymmdd_readable(up) if up else ""
+        values = (
+            row.get("channel_name") or "",
+            self._genre_value(row),
+            row.get("platform") or "",
+            up_str,
+            dl_str,
+            row.get("bitrate") or "",
+        )
+        item = self._dl_tree.insert(
+            parent, "end", text=row.get("title") or "(untitled)",
+            values=values, tags=("leaf",))
+        self._row_data[item] = row
+
+    # ── Sorting ───────────────────────────────────────────────────────────────
+    def _sort_downloads(self, col):
+        if self._dl_sort_col == col:
+            self._dl_sort_desc = not self._dl_sort_desc
+        else:
+            self._dl_sort_col = col
+            # Sensible default direction: newest/largest first for time/number.
+            self._dl_sort_desc = col in ("downloaded", "upload", "bitrate")
+        self._rebuild_downloads_tree()
+
+    def _update_dl_heading_arrows(self):
+        arrow = " ▼" if self._dl_sort_desc else " ▲"
+        self._dl_tree.heading(
+            "#0", text="Title  /  Group" +
+            (arrow if self._dl_sort_col == "title" else ""))
+        for cid, (head, _w, _a) in self._DL_COLS.items():
+            self._dl_tree.heading(
+                cid, text=head + (arrow if self._dl_sort_col == cid else ""))
+
+    # ── Open file / folder ────────────────────────────────────────────────────
+    def _on_dl_double_click(self, event):
+        item = self._dl_tree.identify_row(event.y)
+        if item and item in self._row_data:
+            self._reveal_path(self._row_data[item].get("file_path") or "")
+
+    def _on_dl_right_click(self, event):
+        item = self._dl_tree.identify_row(event.y)
+        if item and item in self._row_data:
+            self._dl_tree.selection_set(item)
+            self._ctx_item = item
+            try:
+                self._dl_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                self._dl_menu.grab_release()
+
+    def _ctx_action(self, what):
+        row = self._row_data.get(self._ctx_item)
+        if not row:
+            return
+        path = row.get("file_path") or ""
+        if what == "copy":
+            self.clipboard_clear()
+            self.clipboard_append(path)
+        elif what == "file":
+            self._open_path(path)
+        elif what == "folder":
+            self._reveal_path(path)
+
+    def _open_path(self, path):
+        """Open the file itself with the OS default application."""
+        if not path or not os.path.exists(path):
+            messagebox.showinfo(
+                "File Not Found",
+                f"This file is no longer on disk:\n{path or '(no path recorded)'}",
+                parent=self)
+            return
+        try:
+            if sys.platform == "win32":
+                os.startfile(path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception as exc:
+            messagebox.showerror("Could Not Open File", str(exc), parent=self)
+
+    def _reveal_path(self, path):
+        """Open (and on Windows, select) the file in its containing folder.
+        Falls back to the nearest existing parent directory."""
+        if not path:
+            messagebox.showinfo("No Path",
+                                "No file path is recorded for this track.",
+                                parent=self)
+            return
+        try:
+            if sys.platform == "win32" and os.path.exists(path):
+                subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+                return
+            folder = path if os.path.isdir(path) else os.path.dirname(path)
+            while folder and not os.path.isdir(folder):
+                parent = os.path.dirname(folder)
+                if parent == folder:
+                    break
+                folder = parent
+            if not folder or not os.path.isdir(folder):
+                messagebox.showinfo(
+                    "Folder Not Found",
+                    f"The containing folder no longer exists:\n{path}",
+                    parent=self)
+                return
+            if sys.platform == "win32":
+                os.startfile(folder)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", folder])
+            else:
+                subprocess.Popen(["xdg-open", folder])
+        except Exception as exc:
+            messagebox.showerror("Could Not Open Folder", str(exc), parent=self)
+
+    # ── Expand / collapse ─────────────────────────────────────────────────────
+    def _set_open_recursive(self, item, is_open):
+        for child in self._dl_tree.get_children(item):
+            self._dl_tree.item(child, open=is_open)
+            self._set_open_recursive(child, is_open)
+
+    def _expand_all(self):
+        self._set_open_recursive("", True)
+
+    def _collapse_all(self):
+        self._set_open_recursive("", False)
+
+    # ── Export ────────────────────────────────────────────────────────────────
+    def _export_csv(self):
+        rows = self._filtered_downloads()
+        if not rows:
+            messagebox.showinfo("Nothing to Export",
+                                "No tracks match the current filters.",
+                                parent=self)
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self, title="Export downloads to CSV",
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            initialfile="cratebuilder_downloads.csv")
+        if not path:
+            return
+        import csv
+        try:
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(["Title", "Channel", "Genre", "Platform",
+                            "Upload date", "Downloaded", "Bitrate", "File path"])
+                for d in rows:
+                    ts = d.get("download_timestamp")
+                    try:
+                        dl_str = datetime.fromtimestamp(
+                            int(ts)).strftime("%Y-%m-%d %H:%M") if ts else ""
+                    except Exception:
+                        dl_str = ""
+                    w.writerow([
+                        d.get("title") or "", d.get("channel_name") or "",
+                        self._genre_value(d), d.get("platform") or "",
+                        d.get("upload_date") or "", dl_str,
+                        d.get("bitrate") or "", d.get("file_path") or "",
+                    ])
+            messagebox.showinfo(
+                "Export Complete",
+                f"Exported {len(rows)} track{'s' if len(rows) != 1 else ''} to:\n{path}",
+                parent=self)
+        except Exception as exc:
+            messagebox.showerror("Export Failed", str(exc), parent=self)
+
+    # ── Watch List tree build ──────────────────────────────────────────────────
+    def _wl_sort_key(self, ch):
+        col = self._wl_sort_col
+        if col == "channel":
+            return (ch.get("display_name") or "").lower()
+        if col == "platform":
+            return (ch.get("platform") or "").lower()
+        if col == "genre":
+            return (ch.get("genre") or "").lower()
+        if col == "cutoff":
+            return ch.get("scan_cutoff_date") or ""
+        if col == "last_scan":
+            return int(ch.get("last_scanned_timestamp") or 0)
+        if col == "pending":
+            return int(ch.get("pending_new_count") or 0)
+        if col == "total":
+            return int(ch.get("total_downloaded") or 0)
+        if col == "status":
+            return (ch.get("status") or "").lower()
+        return (ch.get("display_name") or "").lower()
+
+    def _rebuild_watchlist_tree(self):
+        tree = self._wl_tree
+        tree.delete(*tree.get_children())
+        rows = sorted(self._channels, key=self._wl_sort_key,
+                      reverse=self._wl_sort_desc)
+        for ch in rows:
+            cutoff = format_yyyymmdd_readable(ch.get("scan_cutoff_date", "")) \
+                     if ch.get("scan_cutoff_date") else ""
+            last = format_timestamp_relative(ch.get("last_scanned_timestamp"))
+            tree.insert("", "end", values=(
+                ch.get("display_name") or "",
+                ch.get("platform") or "",
+                ch.get("genre") or "",
+                cutoff,
+                last,
+                ch.get("pending_new_count") or 0,
+                ch.get("total_downloaded") or 0,
+                ch.get("status") or "",
+            ))
+        total_pending = sum(int(c.get("pending_new_count") or 0)
+                            for c in self._channels)
+        self._wl_stats.config(
+            text=f"  {len(self._channels)} watched channel"
+                 f"{'s' if len(self._channels) != 1 else ''}   •   "
+                 f"{total_pending} pending new track"
+                 f"{'s' if total_pending != 1 else ''}")
+        self._update_wl_heading_arrows()
+
+    def _sort_watchlist(self, col):
+        if self._wl_sort_col == col:
+            self._wl_sort_desc = not self._wl_sort_desc
+        else:
+            self._wl_sort_col = col
+            self._wl_sort_desc = col in ("pending", "total", "last_scan")
+        self._rebuild_watchlist_tree()
+
+    def _update_wl_heading_arrows(self):
+        arrow = " ▼" if self._wl_sort_desc else " ▲"
+        for cid, (head, _w, _a) in self._WL_COLS.items():
+            self._wl_tree.heading(
+                cid, text=head + (arrow if self._wl_sort_col == cid else ""))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ══════════════════════════════════════════════════════════════════════════════
 # MP3DownloaderApp — main application window (Tk root)
 #   __init__ / lifecycle, the four notebook tabs, the download engine, and the
@@ -1725,6 +2345,10 @@ class MP3DownloaderApp(tk.Tk):
             "write", self._autosave_behavior_settings)
         self._active_watchlist_batch = None   # set by _watchlist_download_*
         self._wl_download_active = False      # True while a Watch List batch runs
+        # While a Watch List batch runs, the Main tab's Batch Queue container
+        # shows these channels with the active one highlighted.
+        self._wl_batch_channels = []          # ordered display names in the batch
+        self._wl_batch_active_idx = -1        # index currently downloading
 
         # Automation settings (auto-check / startup / tray)
         self._auto_check_hours = tk.StringVar(
@@ -1735,11 +2359,16 @@ class MP3DownloaderApp(tk.Tk):
             self._run_at_startup.set(cb_startup.startup_is_enabled())
         self._minimize_to_tray = tk.BooleanVar(
             value=cfg.get("minimize_to_tray", False))
+        # Scan the Watch List for new uploads as soon as the app launches.
+        self._watchlist_scan_on_startup = tk.BooleanVar(
+            value=cfg.get("watchlist_scan_on_startup", True))
         self._watchlist_last_check = int(cfg.get("watchlist_last_check", 0))
         self._auto_check_after_id = None
         self._tray_icon = None  # set when tray is active
         self._auto_check_hours.trace_add("write", self._autosave_automation_settings)
         self._minimize_to_tray.trace_add("write", self._autosave_automation_settings)
+        self._watchlist_scan_on_startup.trace_add(
+            "write", self._autosave_automation_settings)
 
         # Ensure directory structure exists on startup
         self._url_history = cfg.get("url_history", [])[:6]
@@ -2249,6 +2878,15 @@ class MP3DownloaderApp(tk.Tk):
         for w in self._batch_frame.winfo_children():
             w.destroy()
 
+        # While a Watch List batch is downloading, repurpose this otherwise-idle
+        # panel to show that batch's channels with the active one highlighted.
+        if getattr(self, "_wl_download_active", False) and self._wl_batch_channels:
+            self._wl_batch_render_rows()
+            self._batch_canvas.update_idletasks()
+            self._batch_canvas.configure(
+                scrollregion=self._batch_canvas.bbox("all"))
+            return
+
         n = len(self._batch_urls)
         self._batch_count_lbl.config(
             text=f"Batch Queue  ({n} URL{'s' if n != 1 else ''})")
@@ -2307,6 +2945,42 @@ class MP3DownloaderApp(tk.Tk):
                    cursor="hand2", padx=4,
                    command=lambda i=idx: self._batch_remove(i)
                    ).pack(side="left", padx=(4, 2))
+
+    def _wl_batch_render_rows(self):
+        """Render the running Watch List batch's channels in the Batch Queue
+        panel, marking finished channels, the one currently downloading, and
+        those still pending. Display-only — driven by _wl_batch_active_idx."""
+        chans  = self._wl_batch_channels
+        n      = len(chans)
+        active = self._wl_batch_active_idx
+        pos    = (active + 1) if active >= 0 else 1
+        self._batch_count_lbl.config(
+            text=f"⬇  Watch List — downloading {min(pos, n)} of {n} "
+                 f"channel{'s' if n != 1 else ''}")
+
+        for i, name in enumerate(chans):
+            if i < active:                       # finished
+                sym, sym_col, name_col, bg = "✓", SUCCESS, TEXT_DIM, SURFACE2
+            elif i == active:                    # currently downloading
+                sym, sym_col, name_col, bg = "⬇", "#ffffff", "#ffffff", YT_DARK
+            else:                                # pending
+                sym, sym_col, name_col, bg = "○", TEXT_DIM, TEXT_DIM, SURFACE2
+
+            row = tk.Frame(self._batch_frame, bg=bg)
+            row.pack(fill="x", padx=4, pady=1)
+
+            tk.Label(row, text=f"{i+1:>2}.", font=("Consolas", 10),
+                     fg=TEXT_DIM, bg=bg, width=3, anchor="e"
+                     ).pack(side="left", padx=(2, 4))
+            tk.Label(row, text=sym, font=("Segoe UI", 10, "bold"),
+                     fg=sym_col, bg=bg, width=2
+                     ).pack(side="left", padx=(0, 4))
+
+            disp = name if len(name) <= 60 else name[:57] + "…"
+            tk.Label(row, text=disp,
+                     font=("Segoe UI", 10, "bold" if i == active else "normal"),
+                     fg=name_col, bg=bg, anchor="w"
+                     ).pack(side="left", fill="x", expand=True)
 
     # ══════════════════════════════════════════════════════════════════════════
     # UI construction — ttk styles, the notebook, and the Main tab
@@ -2833,6 +3507,20 @@ class MP3DownloaderApp(tk.Tk):
                 "How often to scan watched channels for new uploads and "
                 "auto-download them. Default 24 hours.", wraplength=320)
 
+        startup_scan_row = ttk.Frame(outer)
+        startup_scan_row.pack(fill="x", pady=(2, 4))
+        self._startup_scan_cb = ttk.Checkbutton(
+            startup_scan_row,
+            text="Scan Watch List for new uploads when the app starts",
+            variable=self._watchlist_scan_on_startup,
+            style="S.Bold.TCheckbutton")
+        self._startup_scan_cb.pack(side="left")
+        Tooltip(self._startup_scan_cb,
+                "When enabled, scans every watched channel for new uploads the "
+                "moment the app starts, so cards show current new-track counts. "
+                "Turn off to skip the startup scan and check manually.",
+                wraplength=320)
+
         if sys.platform == "win32":
             startup_row = ttk.Frame(outer)
             startup_row.pack(fill="x", pady=(2, 4))
@@ -3324,6 +4012,16 @@ class MP3DownloaderApp(tk.Tk):
         db_row = ttk.Frame(outer)
         db_row.pack(fill="x", pady=(0, 4))
 
+        self._open_db_btn = ttk.Button(
+            db_row, text="🗂  Open Database",
+            style="Save.TButton",
+            command=self._open_database_viewer)
+        self._open_db_btn.pack(side="left", padx=(0, 8))
+        Tooltip(self._open_db_btn,
+                "Browse your download history as a file-explorer-style tree — "
+                "group, filter, search, sort, and export — plus a sortable view "
+                "of your watched channels.", wraplength=360)
+
         self._rebuild_db_btn = ttk.Button(
             db_row, text="🔄  Rebuild Database from Log",
             style="Save.TButton",
@@ -3408,6 +4106,7 @@ class MP3DownloaderApp(tk.Tk):
             "auto_check_hours":   self._auto_check_hours.get(),
             "run_at_startup":     self._run_at_startup.get(),
             "minimize_to_tray":   self._minimize_to_tray.get(),
+            "watchlist_scan_on_startup": self._watchlist_scan_on_startup.get(),
             "watchlist_last_check": self._watchlist_last_check,
         })
         self._update_tree_preview()
@@ -3620,6 +4319,7 @@ class MP3DownloaderApp(tk.Tk):
         cfg = load_config()
         cfg["auto_check_hours"] = self._auto_check_hours.get()
         cfg["minimize_to_tray"] = self._minimize_to_tray.get()
+        cfg["watchlist_scan_on_startup"] = self._watchlist_scan_on_startup.get()
         cfg["watchlist_last_check"] = self._watchlist_last_check
         save_config(cfg)
         # Reschedule the timer whenever the interval changes.
@@ -3632,6 +4332,8 @@ class MP3DownloaderApp(tk.Tk):
         """On launch, scan every watched channel (all platforms) so the cards
         show current new-track counts. Runs in the background via
         _watchlist_scan_all; skipped if a scan/download is already underway."""
+        if not self._watchlist_scan_on_startup.get():
+            return
         try:
             channels = self._db.get_all_watchlist_channels()
         except Exception:
@@ -4016,6 +4718,16 @@ class MP3DownloaderApp(tk.Tk):
             self._log_viewer.refresh()
             return
         self._log_viewer = LogViewerWindow(self, self._log_path)
+
+    def _open_database_viewer(self):
+        """Open the dark-themed database browser window."""
+        # Re-use an existing viewer if it's already open; otherwise refresh data.
+        if hasattr(self, "_db_viewer") and self._db_viewer.winfo_exists():
+            self._db_viewer.lift()
+            self._db_viewer.focus_force()
+            self._db_viewer.refresh()
+            return
+        self._db_viewer = DatabaseViewerWindow(self, self._db)
 
     def _open_log_external(self):
         """Open activity.log in the OS default text viewer."""
@@ -4614,8 +5326,9 @@ class MP3DownloaderApp(tk.Tk):
                     self._cur_lbl.config(text=l),
                 ))
 
-                # Highlight the active batch row
-                self.after(0, lambda i=url_idx: self._batch_highlight(i))
+                # Highlight the active batch row (manual batch) or advance the
+                # Watch List channel highlight in the Batch Queue panel.
+                self.after(0, lambda i=url_idx: self._batch_set_active(i))
 
                 dl, sk, er = self._process_one_url(
                     url, genre, platform, cfg, session_ua,
@@ -4718,7 +5431,21 @@ class MP3DownloaderApp(tk.Tk):
                 # Refresh the Watch List UI if it exists
                 self.after(200, self._watchlist_refresh)
             self._wl_download_active = False
+            # Restore the Batch Queue panel to the user's manual batch view.
+            self._wl_batch_channels = []
+            self._wl_batch_active_idx = -1
+            self.after(0, self._batch_rebuild_rows)
             self.after(0, self._finish)
+
+    def _batch_set_active(self, idx):
+        """Mark batch item `idx` as the one currently processing. During a Watch
+        List batch this advances the channel highlight in the Batch Queue panel;
+        otherwise it dims all but the active manual-batch row."""
+        if getattr(self, "_wl_download_active", False) and self._wl_batch_channels:
+            self._wl_batch_active_idx = idx
+            self._batch_rebuild_rows()
+        else:
+            self._batch_highlight(idx)
 
     def _batch_highlight(self, active_idx):
         """Dim all batch rows except the currently-processing one."""
@@ -6902,6 +7629,9 @@ class MP3DownloaderApp(tk.Tk):
         self._active_watchlist_batch = {
             "channel_ids": [cid],
         }
+        # Show this channel in the Main tab's Batch Queue panel.
+        self._wl_batch_channels = [ch["display_name"]]
+        self._wl_batch_active_idx = 0
 
         self._watchlist_log(
             f"Downloading {pending_count} new track{'s' if pending_count != 1 else ''} "
@@ -6934,6 +7664,7 @@ class MP3DownloaderApp(tk.Tk):
         self._batch_start = time.time()
         self._clear_queue()
         self._set_status(f"Watch List: downloading {pending_count} new tracks…")
+        self._batch_rebuild_rows()   # show the channel in the Batch Queue panel
 
         self._run_bg(self._batch_worker, run_batch)
         # Rebuild cards so the downloading channel shows a Cancel button.
@@ -6983,6 +7714,10 @@ class MP3DownloaderApp(tk.Tk):
         self._active_watchlist_batch = {
             "channel_ids": channel_ids,
         }
+        # Show every channel in this batch in the Main tab's Batch Queue panel,
+        # in the same order the worker processes them.
+        self._wl_batch_channels = [item["channel_name"] for item in run_batch]
+        self._wl_batch_active_idx = 0
 
         self._watchlist_log(
             f"Downloading {pending_total} new tracks across "
@@ -7015,6 +7750,7 @@ class MP3DownloaderApp(tk.Tk):
         self._batch_start = time.time()
         self._clear_queue()
         self._set_status(f"Watch List: downloading {pending_total} new tracks…")
+        self._batch_rebuild_rows()   # show the channels in the Batch Queue panel
 
         self._run_bg(self._batch_worker, run_batch)
         # Rebuild cards so the downloading channel(s) show a Cancel button.

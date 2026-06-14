@@ -10,6 +10,16 @@ def test_save_then_load_roundtrip(tmp_path, monkeypatch):
     assert loaded["auto_add_to_watchlist"] is False
 
 
+def test_watchlist_scan_on_startup_roundtrip(tmp_path, monkeypatch):
+    cfg_file = tmp_path / "cfg.json"
+    monkeypatch.setattr(util, "_config_path", lambda: str(cfg_file))
+    # Missing key falls back to the True default at the call site.
+    assert util.load_config().get("watchlist_scan_on_startup", True) is True
+    # An explicit False round-trips faithfully.
+    util.save_config({"watchlist_scan_on_startup": False})
+    assert util.load_config()["watchlist_scan_on_startup"] is False
+
+
 def test_load_missing_returns_empty(tmp_path, monkeypatch):
     cfg_file = tmp_path / "does-not-exist.json"
     monkeypatch.setattr(util, "_config_path", lambda: str(cfg_file))

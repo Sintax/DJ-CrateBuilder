@@ -40,6 +40,35 @@ def test_update_fields_returns_true_on_success(tmp_path):
         wid, channel_id="UCaaa", status="idle") is True
 
 
+def test_get_all_downloads_empty(tmp_path):
+    db = _new_db(tmp_path)
+    assert db.get_all_downloads() == []
+
+
+def test_get_all_downloads_newest_first(tmp_path):
+    db = _new_db(tmp_path)
+
+    def _add(title, ts):
+        db.add_download(video_id=title, title=title, channel_name="Chan",
+                        channel_url="https://yt/c", platform="YouTube",
+                        genre="House", file_path=f"/x/{title}.mp3",
+                        upload_date="20260101", bitrate="320")
+        # add_download stamps download_timestamp=now(); override for ordering.
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE downloads SET download_timestamp = ? WHERE video_id = ?",
+                (ts, title))
+
+    _add("older", 1000)
+    _add("newer", 2000)
+
+    rows = db.get_all_downloads()
+    assert [r["title"] for r in rows] == ["newer", "older"]
+    # Rows come back as plain dicts carrying the expected columns.
+    assert rows[0]["channel_name"] == "Chan"
+    assert rows[0]["genre"] == "House"
+
+
 def test_update_fields_returns_false_on_unique_collision(tmp_path):
     db = _new_db(tmp_path)
     db.add_watchlist_channel(
