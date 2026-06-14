@@ -1802,7 +1802,7 @@ class DatabaseViewerWindow(tk.Toplevel):
             toolbar, textvariable=self._search_var, font=("Segoe UI", 9),
             bg=SURFACE, fg=TEXT, insertbackground=TEXT, relief="flat",
             highlightthickness=1, highlightbackground=BORDER,
-            highlightcolor=YT_RED, width=22)
+            highlightcolor=YT_RED, width=18)
         self._search_entry.pack(side="left", ipady=3, pady=6)
         self._search_var.trace_add("write",
                                    lambda *_: self._rebuild_downloads_tree())
@@ -1812,9 +1812,13 @@ class DatabaseViewerWindow(tk.Toplevel):
                      padx=(0, 10))
         tk.Frame(toolbar, width=1, bg=BORDER).pack(side="right", fill="y",
                                                    padx=4, pady=6)
-        self._tb_btn(toolbar, "⟳  Refresh",     self.refresh,        side="right")
-        self._tb_btn(toolbar, "⊟  Collapse All", self._collapse_all, side="right")
-        self._tb_btn(toolbar, "⊞  Expand All",   self._expand_all,   side="right")
+        self._tb_btn(toolbar, "⟳  Refresh", self.refresh, side="right")
+        _collapse_btn = self._tb_btn(toolbar, "⊟", self._collapse_all,
+                                     side="right")
+        _expand_btn = self._tb_btn(toolbar, "⊞", self._expand_all,
+                                   side="right")
+        Tooltip(_collapse_btn, "Collapse all groups")
+        Tooltip(_expand_btn, "Expand all groups")
 
         # ── Stats bar (bottom) ────────────────────────────────────────────────
         self._dl_stats = tk.Label(parent, text="", font=("Segoe UI", 8),
