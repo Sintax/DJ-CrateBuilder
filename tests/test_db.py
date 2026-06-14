@@ -69,6 +69,31 @@ def test_get_all_downloads_newest_first(tmp_path):
     assert rows[0]["genre"] == "House"
 
 
+def test_backfill_downloads_roundtrip(tmp_path):
+    # Rebuild-from-files relies on backfill_downloads to bulk-insert rows
+    # discovered on disk, carrying an explicit timestamp for ordering.
+    db = _new_db(tmp_path)
+    rows = [
+        dict(video_id=None, title="Track Two", channel_name="Chan",
+             channel_url="https://yt/c", channel_id="UC1", platform="YouTube",
+             genre="DnB", file_path="/x/Track Two.mp3", upload_date="20260102",
+             ts=2000, bitrate=""),
+        dict(video_id=None, title="Track One", channel_name="Chan",
+             channel_url="https://yt/c", channel_id="UC1", platform="YouTube",
+             genre="DnB", file_path="/x/Track One.mp3", upload_date="20260101",
+             ts=1000, bitrate=""),
+    ]
+    n = db.backfill_downloads(rows)
+    assert n == 2
+    got = db.get_all_downloads()
+    # get_all_downloads orders by download_timestamp DESC -> ts 2000 first.
+    assert [r["title"] for r in got] == ["Track Two", "Track One"]
+    assert got[0]["genre"] == "DnB"
+    assert got[0]["file_path"] == "/x/Track Two.mp3"
+    # Empty list is a no-op that inserts nothing.
+    assert db.backfill_downloads([]) == 0
+
+
 def test_update_fields_returns_false_on_unique_collision(tmp_path):
     db = _new_db(tmp_path)
     db.add_watchlist_channel(
