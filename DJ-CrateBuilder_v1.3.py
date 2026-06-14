@@ -1676,6 +1676,7 @@ class DatabaseViewerWindow(tk.Toplevel):
     # Watch List columns: id -> (heading, width, anchor)
     _WL_COLS = {
         "channel":    ("Channel",      180, "w"),
+        "link":       ("Link",         220, "w"),
         "platform":   ("Platform",      80, "w"),
         "genre":      ("Genre",        110, "w"),
         "cutoff":     ("Cutoff",       130, "w"),
@@ -1906,6 +1907,42 @@ class DatabaseViewerWindow(tk.Toplevel):
         self._wl_tree.configure(yscrollcommand=vs.set)
         vs.pack(side="right", fill="y")
         self._wl_tree.pack(side="left", fill="both", expand=True)
+
+        # Right-click the Link column to open or copy a channel's URL.
+        self._wl_menu = tk.Menu(self._wl_tree, tearoff=0)
+        self._wl_tree.bind("<Button-3>", self._on_wl_right_click)
+
+    # ── Link column helpers ───────────────────────────────────────────────────
+    @staticmethod
+    def _wl_display_url(ch):
+        """The channel's real URL, or '' for unresolved/sentinel placeholders."""
+        url = (ch.get("url") or "").strip()
+        if not url or url.startswith(UNRESOLVED_URL_PREFIX):
+            return ""
+        return url
+
+    def _on_wl_right_click(self, event):
+        row = self._wl_tree.identify_row(event.y)
+        if not row:
+            return
+        self._wl_tree.selection_set(row)
+        url = self._wl_tree.set(row, "link").strip()
+        self._wl_menu.delete(0, "end")
+        if url:
+            self._wl_menu.add_command(
+                label="Open link in browser",
+                command=lambda u=url: webbrowser.open(u))
+            self._wl_menu.add_command(
+                label="Copy link",
+                command=lambda u=url: self._wl_copy_link(u))
+        else:
+            self._wl_menu.add_command(
+                label="(no link for this channel)", state="disabled")
+        self._wl_menu.tk_popup(event.x_root, event.y_root)
+
+    def _wl_copy_link(self, url):
+        self.clipboard_clear()
+        self.clipboard_append(url)
 
     # ── Data loading ────────────────────────────────────────────────────────
     def load_data(self):
@@ -2211,6 +2248,8 @@ class DatabaseViewerWindow(tk.Toplevel):
         col = self._wl_sort_col
         if col == "channel":
             return (ch.get("display_name") or "").lower()
+        if col == "link":
+            return self._wl_display_url(ch).lower()
         if col == "platform":
             return (ch.get("platform") or "").lower()
         if col == "genre":
@@ -2238,6 +2277,7 @@ class DatabaseViewerWindow(tk.Toplevel):
             last = format_timestamp_relative(ch.get("last_scanned_timestamp"))
             tree.insert("", "end", values=(
                 ch.get("display_name") or "",
+                self._wl_display_url(ch),
                 ch.get("platform") or "",
                 ch.get("genre") or "",
                 cutoff,
