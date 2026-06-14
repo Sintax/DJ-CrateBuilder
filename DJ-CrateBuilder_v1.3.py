@@ -4011,7 +4011,7 @@ class MP3DownloaderApp(tk.Tk):
         _lbl.pack(anchor="w", pady=(0, 6))
         Tooltip(_lbl, "The SQLite database tracks every download for fast "
                       "lookups and Watch List history. If it gets corrupted "
-                      "or deleted, rebuild it from the activity log.", wraplength=360)
+                      "or deleted, rebuild it from the files on disk.", wraplength=360)
 
         db_row = ttk.Frame(outer)
         db_row.pack(fill="x", pady=(0, 4))
@@ -4027,14 +4027,14 @@ class MP3DownloaderApp(tk.Tk):
                 "of your watched channels.", wraplength=360)
 
         self._rebuild_db_btn = ttk.Button(
-            db_row, text="🔄  Rebuild Database from Log",
+            db_row, text="🔄  Rebuild Database from Files",
             style="Save.TButton",
-            command=self._rebuild_db_from_log)
+            command=self._rebuild_db_from_files)
         self._rebuild_db_btn.pack(side="left", padx=(0, 16))
         Tooltip(self._rebuild_db_btn,
-                "Re-reads every DOWNLOADED entry from the activity log "
-                "and re-inserts them into the database. This is safe to "
-                "run at any time — it clears and rebuilds from scratch.")
+                "Scans the .mp3 files already in your library folders and "
+                "rebuilds the database from them. This is safe to run at any "
+                "time — it clears and rebuilds from scratch.")
 
         self._db_path_lbl = ttk.Label(db_row, text="", style="S.Dim.TLabel")
         self._db_path_lbl.pack(side="left", fill="x", expand=True)
@@ -7879,44 +7879,77 @@ class MP3DownloaderApp(tk.Tk):
             self._watchlist_refresh()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # Rebuild — rebuild the downloads table from the activity log
+    # Rebuild — rebuild the downloads table from the files already on disk
     # ══════════════════════════════════════════════════════════════════════════
 
-    def _rebuild_db_from_log(self):
-        """Rebuild the downloads table from the activity log."""
-        ok = messagebox.askyesno(
+    def _rebuild_db_from_files(self):
+        """Rebuild the downloads table by scanning the actual .mp3 files in the
+        folder hierarchy (base/<Platform>/<Genre>/<Channel>/*.mp3), rather than
+        re-reading the activity log. The files on disk are the source of truth."""
+        ok = messagebox.askokcancel(
             "Rebuild Database",
-            "This will clear the downloads index and rebuild it by\n"
-            "re-reading every DOWNLOADED entry from the activity log.\n\n"
-            "Your Watch List channels will NOT be affected.\n"
-            "Your actual downloaded files will NOT be touched.\n\n"
-            "Continue?",
+            "This action cannot be undone. Is it ok to continue?",
             parent=self)
         if not ok:
             return
 
-        entries = parse_activity_log_entries(self._log_path)
-        self._db.clear_all_downloads()
-        count = 0
-        for e in entries:
-            self._db.add_download(
-                video_id=None,
-                title=e.get("title", ""),
-                channel_name=e.get("channel_name", ""),
-                channel_url="",
-                platform=e.get("platform", "YouTube"),
-                genre=e.get("genre", "(none)"),
-                file_path=e.get("file_path", ""),
-                upload_date=e.get("log_date", ""),
-                bitrate=e.get("quality", ""))
-            count += 1
+        rows = []
+        for platform in ("YouTube", "SoundCloud"):
+            proot = self._platform_dir(platform)
+            if not os.path.isdir(proot):
+                continue
+            for genre_dir in sorted(os.listdir(proot)):
+                genre_path = os.path.join(proot, genre_dir)
+                if not os.path.isdir(genre_path):
+                    continue
+                genre = "(none)" if genre_dir == "_No Genre" else genre_dir
 
+                for channel_dir in sorted(os.listdir(genre_path)):
+                    channel_path = os.path.join(genre_path, channel_dir)
+                    if not os.path.isdir(channel_path):
+                        continue
+
+                    # Prefer the channel's canonical identity from its sidecar.
+                    sc = read_channel_sidecar(channel_path) or {}
+                    channel_name = sc.get("display_name") or channel_dir
+                    channel_id   = sc.get("channel_id")
+                    channel_url  = (sc.get("channel_url")
+                                    or channel_url_from_id(channel_id) or "")
+
+                    for name in sorted(os.listdir(channel_path)):
+                        if not name.lower().endswith(".mp3"):
+                            continue
+                        full = os.path.join(channel_path, name)
+                        try:
+                            mtime = int(os.path.getmtime(full))
+                        except OSError:
+                            continue
+                        # Upload date / downloaded time aren't recorded in the
+                        # file itself, so fall back to the file's mtime.
+                        date_str = datetime.fromtimestamp(mtime).strftime("%Y%m%d")
+                        rows.append({
+                            "video_id":     None,
+                            "title":        os.path.splitext(name)[0],
+                            "channel_name": channel_name,
+                            "channel_url":  channel_url,
+                            "channel_id":   channel_id,
+                            "platform":     platform,
+                            "genre":        genre,
+                            "file_path":    full,
+                            "upload_date":  date_str,
+                            "ts":           mtime,
+                            "bitrate":      "",
+                        })
+
+        self._db.clear_all_downloads()
+        count = self._db.backfill_downloads(rows)
         self._db.refresh_watchlist_totals()
         messagebox.showinfo(
             "Rebuild Complete",
-            f"Imported {count} download records from the activity log.",
+            f"Indexed {count} track{'s' if count != 1 else ''} from the "
+            "files on disk.",
             parent=self)
-        self._dbg.info(f"DB REBUILD | imported {count} entries from log")
+        self._dbg.info(f"DB REBUILD | indexed {count} files from disk")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
