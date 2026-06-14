@@ -32,16 +32,28 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 
 ## Screenshots
 
+**Main** — paste URLs, queue a batch, download MP3s:
+
+<p align="left">
+  <img src="docs/screenshots/01-main.png" width="640">
+</p>
+
 **Watch List** — track channels and surface only new uploads:
 
 <p align="left">
-  <img src="docs/screenshots/03-watchlist.png" width="640">
+  <img src="docs/screenshots/02-watchlist.png" width="640">
 </p>
 
+**Settings** — automation, quality, throttle, and cookies:
+
 <p align="left">
-  <img src="docs/screenshots/01-main.png" width="320">
-  <img src="docs/screenshots/02-settings.png" width="320">
-  <img src="docs/screenshots/04-about.png" width="320">
+  <img src="docs/screenshots/03-settings.png" width="640">
+</p>
+
+**About** — version, links, and built-in FAQ:
+
+<p align="left">
+  <img src="docs/screenshots/04-about.png" width="640">
 </p>
 
 ---
@@ -179,9 +191,9 @@ package and the lazily-imported tray dependencies (pystray + Pillow). Copy
 
 ### Create Installer
 
-Use [Inno Setup 6](https://jrsoftware.org/isinfo.php) with the included `DJ-CrateBuilder_Installer.iss` file. Generate a unique GUID for the `AppId` field before compiling.
+Use [Inno Setup 6](https://jrsoftware.org/isinfo.php) with the included `docs/DJ-CrateBuilder_Installer_Windows.iss` file. Generate a unique GUID for the `AppId` field before compiling.
 
-See `Packaging_Guide.md` for detailed instructions.
+See [docs/Packaging_Guide.md](docs/Packaging_Guide.md) for detailed instructions.
 
 ---
 
