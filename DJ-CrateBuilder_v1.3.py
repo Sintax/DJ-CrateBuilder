@@ -15,6 +15,9 @@ from datetime import datetime, timedelta, date
 
 from cratebuilder.util import (
     load_config, save_config, today_yyyymmdd,
+    days_ago_yyyymmdd, subtract_days_from_yyyymmdd,
+    format_yyyymmdd_readable, format_timestamp_relative,
+    auto_check_hours_to_seconds,
     normalize_track_key, scan_folder_newest_mp3,
     detect_platform,
 )
@@ -181,52 +184,7 @@ DEFAULT_BASE = os.path.join(os.path.expanduser("~"), "Music", "DJ-CrateBuilder")
 # ══════════════════════════════════════════════════════════════════════════════
 # Date utilities (YYYYMMDD string format used throughout yt-dlp + this app)
 # ══════════════════════════════════════════════════════════════════════════════
-# today_yyyymmdd moved to cratebuilder.util (imported above)
-
-def days_ago_yyyymmdd(days):
-    d = date.today() - timedelta(days=int(days))
-    return d.strftime("%Y%m%d")
-
-def subtract_days_from_yyyymmdd(yyyymmdd, days):
-    """Safely subtract *days* from a YYYYMMDD string, returning a new
-    YYYYMMDD string. Returns the input unchanged if parsing fails."""
-    try:
-        dt = datetime.strptime(yyyymmdd, "%Y%m%d").date()
-        return (dt - timedelta(days=int(days))).strftime("%Y%m%d")
-    except (ValueError, TypeError):
-        return yyyymmdd
-
-def format_yyyymmdd_readable(yyyymmdd):
-    """Convert '20260310' to 'March 10, 2026' (or return input if invalid)."""
-    try:
-        dt = datetime.strptime(yyyymmdd, "%Y%m%d").date()
-        return dt.strftime("%B %d, %Y")
-    except (ValueError, TypeError):
-        return str(yyyymmdd)
-
-def format_timestamp_relative(ts):
-    """Convert a unix timestamp into a short 'X days ago' / 'Never' string."""
-    if not ts:
-        return "Never"
-    try:
-        diff = int(time.time() - float(ts))
-        if diff < 60:          return "Just now"
-        if diff < 3600:
-            m = diff // 60
-            return f"{m} minute{'s' if m != 1 else ''} ago"
-        if diff < 86400:
-            h = diff // 3600
-            return f"{h} hour{'s' if h != 1 else ''} ago"
-        if diff < 86400 * 30:
-            d = diff // 86400
-            return f"{d} day{'s' if d != 1 else ''} ago"
-        if diff < 86400 * 365:
-            mo = diff // (86400 * 30)
-            return f"{mo} month{'s' if mo != 1 else ''} ago"
-        y = diff // (86400 * 365)
-        return f"{y} year{'s' if y != 1 else ''} ago"
-    except Exception:
-        return "Unknown"
+# date/interval helpers moved to cratebuilder.util (imported above)
 
 
 # Auto-check interval choices for the Settings combobox. Each non-"Off" label
@@ -239,15 +197,7 @@ AUTO_CHECK_OPTIONS = ["Off", "6 hours", "12 hours", "24 hours", "48 hours"]
 UNRESOLVED_URL_PREFIX = "unresolved://"
 
 
-def auto_check_hours_to_seconds(value):
-    """Map an interval dropdown label to seconds, or None for 'Off'/unknown."""
-    try:
-        if not value or value.strip().lower() == "off":
-            return None
-        hours = int(value.strip().split()[0])
-        return hours * 3600
-    except (ValueError, AttributeError, IndexError):
-        return None
+# auto_check_hours_to_seconds moved to cratebuilder.util (imported above)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

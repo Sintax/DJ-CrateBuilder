@@ -5,7 +5,8 @@ No tkinter imports — safe to unit-test in isolation.
 import json
 import os
 import re
-from datetime import datetime, date
+import time
+from datetime import datetime, date, timedelta
 
 def detect_platform(url):
     """Return 'SoundCloud' for a soundcloud.com URL, else 'YouTube' (default)."""
@@ -50,6 +51,66 @@ def save_config(data):
 
 def today_yyyymmdd():
     return date.today().strftime("%Y%m%d")
+
+
+def days_ago_yyyymmdd(days):
+    d = date.today() - timedelta(days=int(days))
+    return d.strftime("%Y%m%d")
+
+
+def subtract_days_from_yyyymmdd(yyyymmdd, days):
+    """Safely subtract *days* from a YYYYMMDD string, returning a new
+    YYYYMMDD string. Returns the input unchanged if parsing fails."""
+    try:
+        dt = datetime.strptime(yyyymmdd, "%Y%m%d").date()
+        return (dt - timedelta(days=int(days))).strftime("%Y%m%d")
+    except (ValueError, TypeError):
+        return yyyymmdd
+
+
+def format_yyyymmdd_readable(yyyymmdd):
+    """Convert '20260310' to 'March 10, 2026' (or return input if invalid)."""
+    try:
+        dt = datetime.strptime(yyyymmdd, "%Y%m%d").date()
+        return dt.strftime("%B %d, %Y")
+    except (ValueError, TypeError):
+        return str(yyyymmdd)
+
+
+def format_timestamp_relative(ts):
+    """Convert a unix timestamp into a short 'X days ago' / 'Never' string."""
+    if not ts:
+        return "Never"
+    try:
+        diff = int(time.time() - float(ts))
+        if diff < 60:          return "Just now"
+        if diff < 3600:
+            m = diff // 60
+            return f"{m} minute{'s' if m != 1 else ''} ago"
+        if diff < 86400:
+            h = diff // 3600
+            return f"{h} hour{'s' if h != 1 else ''} ago"
+        if diff < 86400 * 30:
+            d = diff // 86400
+            return f"{d} day{'s' if d != 1 else ''} ago"
+        if diff < 86400 * 365:
+            mo = diff // (86400 * 30)
+            return f"{mo} month{'s' if mo != 1 else ''} ago"
+        y = diff // (86400 * 365)
+        return f"{y} year{'s' if y != 1 else ''} ago"
+    except Exception:
+        return "Unknown"
+
+
+def auto_check_hours_to_seconds(value):
+    """Map an interval dropdown label to seconds, or None for 'Off'/unknown."""
+    try:
+        if not value or value.strip().lower() == "off":
+            return None
+        hours = int(value.strip().split()[0])
+        return hours * 3600
+    except (ValueError, AttributeError, IndexError):
+        return None
 
 
 def scan_folder_newest_mp3(folder):
