@@ -42,7 +42,6 @@ ABOUT_FIELDS = [
     ("Application",  f"{APP_NAME}  v{APP_VERSION}"),
     ("Created by",   ABOUT_CREATED_BY),
     ("Built with",   ABOUT_DESCRIPTION),
-    ("GitHub",       GITHUB_URL),
 ]
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -3044,7 +3043,7 @@ class MP3DownloaderApp(tk.Tk):
         s.configure("White.Section.TLabel", background=BG, foreground=TEXT,    font=("Segoe UI", 11, "bold"))
 
         # Settings tab — 1pt larger for readability
-        s.configure("S.TLabel",              background=BG, foreground=TEXT,     font=("Segoe UI", 12))
+        s.configure("S.TLabel",              background=BG, foreground=TEXT_MED, font=("Segoe UI", 11))
         s.configure("S.Dim.TLabel",          background=BG, foreground=TEXT_DIM, font=("Segoe UI", 11))
         s.configure("S.Title.TLabel",        background=BG, foreground=TEXT,     font=("Segoe UI", 19, "bold"))
         s.configure("S.White.Section.TLabel", background=BG, foreground=TEXT,   font=("Segoe UI", 12, "bold"))
@@ -3052,6 +3051,13 @@ class MP3DownloaderApp(tk.Tk):
             background=BG, foreground=TEXT, font=("Segoe UI", 11, "bold"))
         s.map("S.Bold.TCheckbutton",
             background=[("active", BG)], foreground=[("active", TEXT)])
+        # Settings-tab option captions — dimmed + one size smaller so the white
+        # bold section headers clearly outrank them. (Settings-only; the Main /
+        # Watch List tabs keep S.Bold.TCheckbutton.)
+        s.configure("S.Opt.TCheckbutton",
+            background=BG, foreground=TEXT_MED, font=("Segoe UI", 10, "bold"))
+        s.map("S.Opt.TCheckbutton",
+            background=[("active", BG)], foreground=[("active", TEXT_MED)])
 
         # ── Notebook / tab styling ────────────────────────────────────────────
         TAB_BLACK = "#000000"
@@ -3572,7 +3578,7 @@ class MP3DownloaderApp(tk.Tk):
             startup_scan_row,
             text="Scan Watch List for new uploads when the app starts",
             variable=self._watchlist_scan_on_startup,
-            style="S.Bold.TCheckbutton")
+            style="S.Opt.TCheckbutton")
         self._startup_scan_cb.pack(side="left")
         Tooltip(self._startup_scan_cb,
                 "When enabled, scans every watched channel for new uploads the "
@@ -3587,7 +3593,7 @@ class MP3DownloaderApp(tk.Tk):
                 startup_row, text="Run DJ-CrateBuilder when Windows starts",
                 variable=self._run_at_startup,
                 command=self._on_run_at_startup_toggle,
-                style="S.Bold.TCheckbutton").pack(side="left")
+                style="S.Opt.TCheckbutton").pack(side="left")
 
             tray_row = ttk.Frame(outer)
             tray_row.pack(fill="x", pady=(0, 4))
@@ -3595,7 +3601,7 @@ class MP3DownloaderApp(tk.Tk):
                 tray_row,
                 text="Minimize to system tray (keep Watch List running in background)",
                 variable=self._minimize_to_tray,
-                style="S.Bold.TCheckbutton").pack(side="left")
+                style="S.Opt.TCheckbutton").pack(side="left")
 
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 18))
 
@@ -3613,11 +3619,11 @@ class MP3DownloaderApp(tk.Tk):
                         text="Enable",
                         variable=self._limit_enabled,
                         command=self._on_limiter_toggle,
-                        style="S.Bold.TCheckbutton"
+                        style="S.Opt.TCheckbutton"
                         ).pack(side="left", padx=(0, 20))
 
         tk.Label(limit_enable_row, text="Max Length:",
-                 font=("Segoe UI", 11, "bold"), fg=TEXT, bg=BG
+                 font=("Segoe UI", 10, "bold"), fg=TEXT_MED, bg=BG
                  ).pack(side="left", padx=(0, 10))
 
         self._limit_minus_btn = tk.Button(
@@ -3672,7 +3678,7 @@ class MP3DownloaderApp(tk.Tk):
         bitrate_row.pack(fill="x", pady=(0, 10))
 
         tk.Label(bitrate_row, text="Output Quality:",
-                 font=("Segoe UI", 11, "bold"), fg=TEXT, bg=BG
+                 font=("Segoe UI", 10, "bold"), fg=TEXT_MED, bg=BG
                  ).pack(side="left", padx=(0, 12))
 
         self._bitrate_combo = ttk.Combobox(
@@ -3690,7 +3696,7 @@ class MP3DownloaderApp(tk.Tk):
                         text="Keep original format (no conversion)",
                         variable=self._no_conversion,
                         command=self._on_no_conversion_toggle,
-                        style="S.Bold.TCheckbutton")
+                        style="S.Opt.TCheckbutton")
         self._no_conv_cb.pack(side="left")
         Tooltip(self._no_conv_cb,
                 "When enabled, files are saved in their original format "
@@ -3716,7 +3722,7 @@ class MP3DownloaderApp(tk.Tk):
         self._auto_add_cb = ttk.Checkbutton(
             wl_row, text="Auto-add channels to Watch List after downloading",
             variable=self._auto_add_to_watchlist,
-            style="S.Bold.TCheckbutton")
+            style="S.Opt.TCheckbutton")
         self._auto_add_cb.pack(side="left")
         Tooltip(self._auto_add_cb,
                 "When enabled, any channel or playlist you download is "
@@ -3744,7 +3750,7 @@ class MP3DownloaderApp(tk.Tk):
         _cb = ttk.Checkbutton(geo_row,
                         text="Enable geo-bypass",
                         variable=self._geo_bypass,
-                        style="S.Bold.TCheckbutton")
+                        style="S.Opt.TCheckbutton")
         _cb.pack(side="left")
         Tooltip(_cb, "Bypass geographic IP-based restrictions using a fake X-Forwarded-For header", wraplength=360)
 
@@ -3754,7 +3760,7 @@ class MP3DownloaderApp(tk.Tk):
         _cb = ttk.Checkbutton(ua_row,
                         text="Rotate User-Agent",
                         variable=self._rotate_ua,
-                        style="S.Bold.TCheckbutton")
+                        style="S.Opt.TCheckbutton")
         _cb.pack(side="left")
         Tooltip(_cb, "Send a randomized browser User-Agent string (consistent within each session)", wraplength=360)
 
@@ -3765,7 +3771,7 @@ class MP3DownloaderApp(tk.Tk):
                         text="Throttle Requests",
                         variable=self._sleep_enabled,
                         command=self._on_sleep_toggle,
-                        style="S.Bold.TCheckbutton"
+                        style="S.Opt.TCheckbutton"
                         ).pack(side="left")
 
         self._sleep_labels = []
@@ -3859,7 +3865,7 @@ class MP3DownloaderApp(tk.Tk):
                         text="Use browser cookies",
                         variable=self._use_cookies,
                         command=self._on_cookies_toggle,
-                        style="S.Bold.TCheckbutton")
+                        style="S.Opt.TCheckbutton")
         self._use_cookies_cb.pack(side="left")
         Tooltip(self._use_cookies_cb,
                 "Authenticate downloads using a browser login session (increases speed).\n\n"
@@ -4580,20 +4586,18 @@ class MP3DownloaderApp(tk.Tk):
                       fg=TEXT, bg=BG, anchor="w")
             val_lbl.pack(side="left", padx=(8, 0))
 
-            # Make the GitHub row clickable
-            if label == "GitHub":
-                val_lbl.config(fg=LINK_COL, cursor="hand2")
-                val_lbl.bind("<Button-1>",
-                    lambda _e: webbrowser.open(GITHUB_URL))
-                val_lbl.bind("<Enter>",
-                    lambda _e, w=val_lbl: w.config(
-                        font=("Segoe UI", 11, "underline")))
-                val_lbl.bind("<Leave>",
-                    lambda _e, w=val_lbl: w.config(
-                        font=("Segoe UI", 11)))
-                Tooltip(val_lbl,
-                        "Click to open the DJ-CrateBuilder GitHub page — "
-                        "check here for updates and releases.")
+        # ── GitHub link (button replaces the old plain-text URL row) ──────────
+        self._github_btn = tk.Button(
+            outer, text="  ↗  View on GitHub — Updates & Releases  ",
+            font=("Segoe UI", 10, "bold"),
+            bg=SURFACE2, fg=LINK_COL,
+            activebackground=BORDER, activeforeground=TEXT,
+            relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
+            command=lambda: webbrowser.open(GITHUB_URL))
+        self._github_btn.pack(anchor="w", pady=(4, 0))
+        Tooltip(self._github_btn,
+                "Opens the DJ-CrateBuilder GitHub page in your browser. "
+                "Check here for the latest releases and update notes.")
 
         # ── FAQ ───────────────────────────────────────────────────────────────
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(20, 20))
@@ -4602,18 +4606,6 @@ class MP3DownloaderApp(tk.Tk):
         faq_hdr.pack(fill="x", pady=(0, 16))
         ttk.Label(faq_hdr, text="Frequently Asked Questions",
                   style="White.Section.TLabel").pack(side="left")
-
-        self._github_btn = tk.Button(
-            faq_hdr, text="  ↗  View on GitHub — Updates & Releases  ",
-            font=("Segoe UI", 10, "bold"),
-            bg=SURFACE2, fg=LINK_COL,
-            activebackground=BORDER, activeforeground=TEXT,
-            relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
-            command=lambda: webbrowser.open(GITHUB_URL))
-        self._github_btn.pack(side="right")
-        Tooltip(self._github_btn,
-                "Opens the DJ-CrateBuilder GitHub page in your browser. "
-                "Check here for the latest releases and update notes.")
 
         faq = [
             ("Q: What is DJ-CrateBuilder?",
