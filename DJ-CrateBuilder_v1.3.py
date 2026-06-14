@@ -316,70 +316,8 @@ class Tooltip:
                 pass
             self._tip = None
 
-    def update_text(self, new_text):
-        self.text = new_text
-
 
 # DownloadsDatabase moved to cratebuilder.db (imported above)
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# Log parser — extract DOWNLOADED entries from activity.log for import/rebuild
-# ═════════════════════════════════════════════════════════════════════════════
-def parse_activity_log_entries(log_path):
-    entries = []
-    if not os.path.exists(log_path):
-        return entries
-    ts_re = re.compile(r'^(\d{4})-(\d{2})-(\d{2}) \d{2}:\d{2}:\d{2}')
-    try:
-        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                if "DOWNLOADED" not in line:
-                    continue
-                ts_m = ts_re.match(line)
-                if not ts_m:
-                    continue
-                log_date = f"{ts_m.group(1)}{ts_m.group(2)}{ts_m.group(3)}"
-                plat_m = re.search(r'Platform:\s*(\S+)', line)
-                if not plat_m:
-                    continue
-                platform = plat_m.group(1).strip()
-                genre_m = re.search(r'Genre:\s*([^|]+?)\s*\|', line)
-                genre = genre_m.group(1).strip() if genre_m else "(none)"
-                if genre == "—":
-                    genre = "(none)"
-                title_m = re.search(r'Title:\s*(.+?)\s*\|\s*File:', line)
-                title = title_m.group(1).strip() if title_m else ""
-                file_m = re.search(r'File:\s*(.+?)\s*\|\s*URL:', line)
-                file_path = file_m.group(1).strip() if file_m else ""
-                url_m = re.search(r'URL:\s*(\S+)', line)
-                url = url_m.group(1).strip() if url_m else ""
-                qual_m = re.search(r'Quality:\s*(.+?)$', line)
-                quality = qual_m.group(1).strip() if qual_m else ""
-                channel_name = _infer_channel_from_path(file_path, platform)
-                entries.append({
-                    "timestamp": line[:19], "log_date": log_date,
-                    "platform": platform, "genre": genre,
-                    "title": title, "file_path": file_path,
-                    "channel_name": channel_name, "url": url,
-                    "quality": quality,
-                })
-    except Exception:
-        pass
-    return entries
-
-
-def _infer_channel_from_path(file_path, platform):
-    if not file_path:
-        return ""
-    parts = file_path.replace("\\", "/").split("/")
-    try:
-        idx = parts.index(platform)
-    except ValueError:
-        return ""
-    if idx + 3 >= len(parts):
-        return ""
-    return parts[idx + 2]
 
 
 # scan_folder_newest_mp3 moved to cratebuilder.util (imported above)
@@ -441,6 +379,8 @@ class LogViewerWindow(tk.Toplevel):
 
         self._build_ui()
         self.load_log()
+        # Open scrolled to the bottom so the most-recent entries are visible.
+        self.after_idle(lambda: self._txt.yview_moveto(1.0))
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.focus_force()
 
@@ -761,9 +701,6 @@ class LogViewerWindow(tk.Toplevel):
         content = self._txt.get("1.0", "end").strip()
         self.clipboard_clear()
         self.clipboard_append(content)
-        # Brief visual confirmation on the button
-        for b in self._filter_btns.values():
-            pass   # no-op; confirmation via stats bar instead
         self._stats_bar.config(text="  ✓  Copied to clipboard.")
         self.after(2000, lambda: self._update_stats(
             *self._count_stats()))
@@ -825,6 +762,8 @@ class DebugLogViewerWindow(tk.Toplevel):
 
         self._build_ui()
         self.load_log()
+        # Open scrolled to the bottom so the most-recent entries are visible.
+        self.after_idle(lambda: self._txt.yview_moveto(1.0))
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.focus_force()
 
@@ -2633,23 +2572,6 @@ class MP3DownloaderApp(tk.Tk):
             line = "═" * 80
         self._logger.info(line)
 
-    def _was_logged(self, filepath, title=None):
-        """Return True if *filepath* or *title* appears in the log as a
-        DOWNLOADED entry.  Checks the full path first, then falls back to
-        a title-based search for resilience against path changes."""
-        try:
-            with open(self._log_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    if "DOWNLOADED" not in line:
-                        continue
-                    if filepath and filepath in line:
-                        return True
-                    if title and f"Title: {title} |" in line:
-                        return True
-        except FileNotFoundError:
-            pass
-        return False
-
     def _file_exists_on_disk(self, save_dir, title):
         """Check if a file matching *title* already exists in *save_dir*.
         Uses yt-dlp's sanitize_filename for an exact match first, then
@@ -3046,6 +2968,7 @@ class MP3DownloaderApp(tk.Tk):
         s.configure("S.TLabel",              background=BG, foreground=TEXT_MED, font=("Segoe UI", 11))
         s.configure("S.Dim.TLabel",          background=BG, foreground=TEXT_DIM, font=("Segoe UI", 11))
         s.configure("S.Title.TLabel",        background=BG, foreground=TEXT,     font=("Segoe UI", 19, "bold"))
+        s.configure("S.TitleIcon.TLabel",    background=BG, foreground=LINK_COL, font=("Segoe UI", 19, "bold"))
         s.configure("S.White.Section.TLabel", background=BG, foreground=TEXT,   font=("Segoe UI", 12, "bold"))
         s.configure("S.Bold.TCheckbutton",
             background=BG, foreground=TEXT, font=("Segoe UI", 11, "bold"))
@@ -3163,6 +3086,13 @@ class MP3DownloaderApp(tk.Tk):
         s.map("LightBlue.TButton",
             background=[("active", "#7dd3fc")],
             foreground=[("active", "#0c2340")])
+
+        s.configure("Orange.TButton",
+            background="#ff7a00", foreground="#1a0f00",
+            font=("Segoe UI", 10), relief="flat", borderwidth=0, padding=(10, 8))
+        s.map("Orange.TButton",
+            background=[("active", "#ff9633")],
+            foreground=[("active", "#1a0f00")])
 
         s.configure("TCheckbutton",
             background=BG, foreground=TEXT_DIM, font=("Segoe UI", 10))
@@ -3330,7 +3260,7 @@ class MP3DownloaderApp(tk.Tk):
                                    fg=YT_RED, bg=BG)
         self._logo_lbl.pack(side="left", padx=(0, 10))
 
-        self._title_lbl = ttk.Label(hdr, text="DJ-CrateBuilder → MP3",
+        self._title_lbl = ttk.Label(hdr, text="DJ-CrateBuilder",
                                      style="Title.TLabel")
         self._title_lbl.pack(side="left", pady=(2, 0))
 
@@ -3549,9 +3479,11 @@ class MP3DownloaderApp(tk.Tk):
 
         # ── Content (all original settings widgets go into outer) ─────────────
 
-        # Title
-        ttk.Label(outer, text="⚙  Settings", style="S.Title.TLabel").pack(
-            anchor="w", pady=(0, 16))
+        # Title — gear icon tinted blue, "Settings" in the default title colour
+        title_row = ttk.Frame(outer)
+        title_row.pack(anchor="w", pady=(0, 16))
+        ttk.Label(title_row, text="⚙", style="S.TitleIcon.TLabel").pack(side="left")
+        ttk.Label(title_row, text="  Settings", style="S.Title.TLabel").pack(side="left")
 
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(0, 20))
 
@@ -4006,17 +3938,6 @@ class MP3DownloaderApp(tk.Tk):
         self._settings_msg = ttk.Label(outer, text="", style="S.Dim.TLabel")
         self._settings_msg.pack(anchor="w", pady=(0, 4))
 
-        # ── Folder structure preview (directly under directory) ───────────────
-        ttk.Label(outer, text="Folder Structure Preview",
-                  style="S.White.Section.TLabel").pack(anchor="w", pady=(0, 10))
-
-        self._tree_lbl = tk.Label(outer, text="", font=("Consolas", 11),
-                                    fg=TEXT_DIM, bg=SURFACE2, anchor="nw",
-                                    justify="left", padx=16, pady=12,
-                                    highlightthickness=1,
-                                    highlightbackground=BORDER)
-        self._tree_lbl.pack(fill="x", pady=(0, 4))
-
         # ── Downloads log ─────────────────────────────────────────────────────
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(8, 20))
 
@@ -4089,7 +4010,7 @@ class MP3DownloaderApp(tk.Tk):
 
         self._rebuild_db_btn = ttk.Button(
             db_row, text="🔄  Rebuild Database from Files",
-            style="Save.TButton",
+            style="Orange.TButton",
             command=self._rebuild_db_from_files)
         self._rebuild_db_btn.pack(side="left", padx=(0, 16))
         Tooltip(self._rebuild_db_btn,
@@ -4151,7 +4072,7 @@ class MP3DownloaderApp(tk.Tk):
             "base_dir":       self._base_dir,
             "limit_enabled":  self._limit_enabled.get(),
             "limit_minutes":  self._limit_minutes.get(),
-            "bitrate_quality": self._bitrate_quality.get(),
+            "bitrate_quality": self._bitrate_quality.get().split()[0],
             "no_conversion":  self._no_conversion.get(),
             "skip_existing":  self._skip_existing.get(),
             "skip_mode":      self._skip_mode.get(),
@@ -4282,7 +4203,6 @@ class MP3DownloaderApp(tk.Tk):
             self._preset_lbl.config(fg=TEXT_DIM if enabled else GREY)
             self._sleep_preset_combo.config(
                 state="readonly" if enabled else "disabled")
-            pass  # auto description labels replaced by tooltip
         else:
             # Hide preset from main row, hide auto descriptions, show manual
             self._preset_lbl.pack_forget()
@@ -4992,11 +4912,6 @@ class MP3DownloaderApp(tk.Tk):
         if hasattr(self, "_save_dir_preview"):
             self._save_dir_preview.config(text=f"→  {short}")
 
-    # ── Platform switching ────────────────────────────────────────────────────
-    def _switch_platform(self, name):
-        """No-op — platform is now auto-detected from the URL."""
-        pass
-
     def _apply_platform(self):
         """Set up initial app styling. Platform is auto-detected from URL."""
         s = ttk.Style(self)
@@ -5011,16 +4926,6 @@ class MP3DownloaderApp(tk.Tk):
             lightcolor=[("focus", YT_RED),  ("!focus", BORDER)])
         self.title(f"{APP_NAME}  v{APP_VERSION}")
         self._refresh_genre_list()
-
-    def _set_placeholder(self, text=None):
-        """Replace placeholder text without disturbing a real URL."""
-        ph = text or "https://www.youtube.com/  or  https://soundcloud.com/"
-        if self._ph_active:
-            self._url_entry.config(state="normal")
-            self._url_entry.delete(0, "end")
-            self._url_entry.insert(0, ph)
-            self._url_entry.config(foreground=TEXT_DIM)
-            self._ph_active = True
 
     # ── URL placeholder ───────────────────────────────────────────────────────
     def _url_focus_in(self, _e):
@@ -5318,7 +5223,7 @@ class MP3DownloaderApp(tk.Tk):
         self._grand_sk = 0
         self._grand_er = 0
         self._last_fatal_error = None
-        self._batch_start = __import__("time").time()
+        self._batch_start = time.time()
         self._clear_queue()
         self._set_status(f"Starting batch of {len(run_batch)} URL(s)…")
 
@@ -5348,7 +5253,6 @@ class MP3DownloaderApp(tk.Tk):
     # ── Batch worker ─────────────────────────────────────────────────────────
     def _batch_worker(self, run_batch):
         """Outer loop: iterate over all batch items, call _process_one_url for each."""
-        import time
         total_urls  = len(run_batch)
 
         # Pick a consistent User-Agent for this entire batch session
@@ -5995,7 +5899,6 @@ class MP3DownloaderApp(tk.Tk):
                     # attempts with exponential backoff (2s, 4s). Permanent
                     # errors (age-gate, unavailable, etc.) fall through on
                     # the first raise.
-                    import time as _t
                     _attempt = 0
                     _max_attempts = 3
                     while True:
@@ -6031,7 +5934,7 @@ class MP3DownloaderApp(tk.Tk):
                                     f"Attempt {_attempt}/{_max_attempts-1} "
                                     f"after network error, "
                                     f"retrying in {_delay}s")
-                                _t.sleep(_delay)
+                                time.sleep(_delay)
                                 if self._cancel_flag.is_set():
                                     raise
                                 continue
@@ -6630,7 +6533,7 @@ class MP3DownloaderApp(tk.Tk):
             b = tk.Button(btns, text=btn_text,
                           font=("Segoe UI", 9),
                           bg=(YT_DARK if is_cancel else SURFACE2),
-                          fg=(TEXT if is_cancel else TEXT_DIM),
+                          fg=(TEXT if is_cancel else TEXT_MED),
                           activebackground=(YT_RED if is_cancel else BORDER),
                           activeforeground=TEXT,
                           relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
@@ -6653,7 +6556,6 @@ class MP3DownloaderApp(tk.Tk):
         """Search YouTube for a channel by display name. Returns up to
         max_results candidate dicts {title, channel_id, url, handle,
         followers}. Raises on network/extractor failure."""
-        import urllib.parse
         import yt_dlp
         q = urllib.parse.quote(name)
         # sp=EgIQAg%3D%3D  →  YouTube's "Channel" search-results filter.
@@ -7549,13 +7451,23 @@ class MP3DownloaderApp(tk.Tk):
                 # video_id (exact), then (2) the folder by normalised title.
                 # Already-owned tracks are hidden; their video_id is backfilled
                 # into the DB so the next scan is instant and exact.
+                # When the Time Limiter is on, also skip videos longer than the
+                # limit so the "+ N new" badge matches what would actually
+                # download. Entries with no duration (live, premiere, missing)
+                # are kept — the download step filters them again as a backstop.
                 new_entries = []
                 backfill_rows = []
                 now_ts = int(time.time())
+                limit_on  = bool(self._limit_enabled.get())
+                limit_sec = self._limit_minutes.get() * 60 if limit_on else 0
                 for e in entries:
                     vid_id = e.get("id")
                     if vid_id and self._db.is_video_downloaded(vid_id):
                         continue
+                    if limit_on:
+                        dur = e.get("duration")
+                        if dur and dur > limit_sec:
+                            continue
                     title = e.get("title") or ""
                     key = normalize_track_key(title)
                     if key and key in folder_keys:
