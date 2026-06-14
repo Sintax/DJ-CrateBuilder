@@ -35,3 +35,28 @@ def test_detect_platform():
     assert detect_platform("https://www.youtube.com/@chan") == "YouTube"
     assert detect_platform("") == "YouTube"  # default
     assert detect_platform(None) == "YouTube"
+
+
+def test_push_mru_prepends_new_value():
+    assert util.push_mru(["a", "b", "c"], "d", 6) == ["d", "a", "b", "c"]
+    assert util.push_mru([], "a", 6) == ["a"]
+
+
+def test_push_mru_dedupes_and_moves_to_front():
+    assert util.push_mru(["a", "b", "c"], "b", 6) == ["b", "a", "c"]
+    assert util.push_mru(["a", "b"], "a", 6) == ["a", "b"]
+
+
+def test_push_mru_caps_at_limit():
+    assert util.push_mru(["a", "b", "c", "d", "e", "f"], "g", 6) == \
+        ["g", "a", "b", "c", "d", "e"]
+
+
+def test_push_mru_does_not_mutate_input():
+    items = ["a", "b"]
+    util.push_mru(items, "c", 6)
+    assert items == ["a", "b"]
+
+
+def test_push_mru_handles_none_list():
+    assert util.push_mru(None, "a", 6) == ["a"]

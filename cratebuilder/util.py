@@ -163,3 +163,10 @@ def safe_filename(name, strip=False):
     for empty/None input."""
     safe = re.sub(r'[\\/*?:"<>|]', "_", name or "")
     return safe.strip() if strip else safe
+
+
+def push_mru(items, value, limit):
+    """Return a new most-recently-used list with *value* at the front,
+    de-duplicated and capped at *limit*. Does not mutate *items*."""
+    rest = [x for x in (items or []) if x != value]
+    return ([value] + rest)[:limit]
