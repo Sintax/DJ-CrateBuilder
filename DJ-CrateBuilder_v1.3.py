@@ -3974,7 +3974,6 @@ class MP3DownloaderApp(tk.Tk):
             short = self._db_path.replace(os.path.expanduser("~"), "~")
             self._db_path_lbl.config(text=short)
 
-        self._update_tree_preview()
         self._refresh_limit_label()
 
     def _settings_browse(self):
@@ -3984,28 +3983,6 @@ class MP3DownloaderApp(tk.Tk):
         if d:
             self._settings_dir_var.set(d)
             self._save_settings()
-
-    def _update_tree_preview(self):
-        """Refresh the folder-structure preview shown under the save-folder field."""
-        base = self._settings_dir_var.get() if hasattr(self, '_settings_dir_var') \
-               else self._base_dir
-        short = base.replace(os.path.expanduser("~"), "~")
-        lines = [f"  {short}/"]
-        for plat_key in ("YouTube", "SoundCloud"):
-            subdir = PLATFORMS[plat_key]["subdir"]
-            pdir   = os.path.join(base, subdir)
-            lines.append(f"    ├── {subdir}/")
-            if os.path.isdir(pdir):
-                genres = sorted(d for d in os.listdir(pdir)
-                                if os.path.isdir(os.path.join(pdir, d)))
-                for i, g in enumerate(genres[:8]):
-                    is_last = (i == len(genres[:8]) - 1 and len(genres) <= 8)
-                    prefix  = "└──" if is_last else "├──"
-                    lines.append(f"    │       {prefix} {g}/")
-                if len(genres) > 8:
-                    lines.append(f"    │       └── … +{len(genres)-8} more")
-        if hasattr(self, '_tree_lbl'):
-            self._tree_lbl.config(text="\n".join(lines))
 
     def _save_settings(self):
         """Validate and persist the base save folder, re-init dirs and logger."""
@@ -4045,7 +4022,6 @@ class MP3DownloaderApp(tk.Tk):
             "watchlist_scan_on_startup": self._watchlist_scan_on_startup.get(),
             "watchlist_last_check": self._watchlist_last_check,
         })
-        self._update_tree_preview()
         self._refresh_genre_list()
         self._update_save_preview()
         self._refresh_log_path_label()
@@ -4852,7 +4828,6 @@ class MP3DownloaderApp(tk.Tk):
         self._refresh_genre_list()
         self._genre_var.set(safe)
         self._update_save_preview()
-        self._update_tree_preview()
 
     def _update_save_preview(self):
         """Show a short preview of where files will land."""
@@ -5302,7 +5277,6 @@ class MP3DownloaderApp(tk.Tk):
                 self._speed_lbl.config(text=""),
                 self._set_status(s),
             ))
-            self.after(0, self._update_tree_preview)
             self.after(0, self._refresh_genre_list)
 
         except Exception as exc:
