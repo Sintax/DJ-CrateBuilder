@@ -22,7 +22,7 @@ from cratebuilder.util import (
     detect_platform,
 )
 from cratebuilder.sidecar import (
-    channel_url_from_id,
+    channel_url_from_id, channel_id_from_url,
     read_channel_sidecar, write_channel_sidecar, is_unresolved_channel,
     watch_fetch_url,
 )
@@ -6537,8 +6537,7 @@ class MP3DownloaderApp(tk.Tk):
     @staticmethod
     def _channel_id_from_url(url):
         """Pull a UC… channel id straight out of a /channel/ URL, if present."""
-        m = re.search(r"/channel/(UC[\w-]+)", url or "")
-        return m.group(1) if m else None
+        return channel_id_from_url(url)
 
     def _persist_resolved_channel(self, ch, channel_id, handle="", url=None):
         """Commit a resolved identity. Returns True if the row was updated.

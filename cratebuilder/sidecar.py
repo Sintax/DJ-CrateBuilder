@@ -1,6 +1,7 @@
 """Channel-folder sidecar (cratebuilder.json) helpers + resolution predicate."""
 import json
 import os
+import re
 import urllib.parse
 
 from cratebuilder.util import today_yyyymmdd
@@ -13,6 +14,13 @@ def channel_url_from_id(channel_id):
     if not channel_id:
         return ""
     return f"https://www.youtube.com/channel/{channel_id}/videos"
+
+
+def channel_id_from_url(url):
+    """Pull a UC… channel id straight out of a /channel/ URL, if present.
+    Inverse of channel_url_from_id; returns None when no id is found."""
+    m = re.search(r"/channel/(UC[\w-]+)", url or "")
+    return m.group(1) if m else None
 
 
 def read_channel_sidecar(folder):
