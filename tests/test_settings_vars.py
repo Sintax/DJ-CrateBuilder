@@ -20,4 +20,6 @@ def test_new_settings_defaults(tmp_path, monkeypatch):
     assert app._auto_check_hours.get() == "24 hours"
     assert app._run_at_startup.get() is False
     assert app._minimize_to_tray.get() is False
+    # Watch List startup scan is on by default (preserves prior behavior).
+    assert app._watchlist_scan_on_startup.get() is True
     app.destroy()

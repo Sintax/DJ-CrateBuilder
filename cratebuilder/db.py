@@ -190,6 +190,19 @@ class DownloadsDatabase:
             self._log("error", f"get_channel_download_count failed: {e}")
             return 0
 
+    def get_all_downloads(self):
+        """Return every downloads row as a list of dicts, newest first.
+        Used by the Database window to present the full download history."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT * FROM downloads ORDER BY download_timestamp DESC"
+                ).fetchall()
+                return [dict(r) for r in rows]
+        except Exception as e:
+            self._log("error", f"get_all_downloads failed: {e}")
+            return []
+
     def get_download_count(self):
         try:
             with self._conn() as conn:
