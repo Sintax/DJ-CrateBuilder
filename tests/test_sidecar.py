@@ -96,3 +96,24 @@ def test_watch_fetch_url():
         ) == "https://www.youtube.com/@BASS%20ENTITY/videos"
     # Empty stays empty.
     assert watch_fetch_url("YouTube", "") == ""
+
+
+def test_channel_id_from_url():
+    from cratebuilder.sidecar import channel_id_from_url
+    # pulls the UC… id out of a /channel/ URL (word chars + hyphens)
+    assert channel_id_from_url(
+        "https://www.youtube.com/channel/UCabc123_-/videos") == "UCabc123_-"
+    # round-trips with the inverse builder
+    assert channel_id_from_url(sidecar.channel_url_from_id("UCxyz")) == "UCxyz"
+    # no /channel/ segment, or empty/None -> None
+    assert channel_id_from_url("https://www.youtube.com/@handle") is None
+    assert channel_id_from_url("") is None
+    assert channel_id_from_url(None) is None
+
+
+def test_channel_id_from_url_delegator(cb):
+    # The App staticmethod must keep delegating to the module function.
+    App = cb.MP3DownloaderApp
+    assert App._channel_id_from_url(
+        "https://www.youtube.com/channel/UCabc/videos") == "UCabc"
+    assert App._channel_id_from_url("https://www.youtube.com/@h") is None
