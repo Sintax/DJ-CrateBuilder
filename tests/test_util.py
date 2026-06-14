@@ -60,3 +60,44 @@ def test_push_mru_does_not_mutate_input():
 
 def test_push_mru_handles_none_list():
     assert util.push_mru(None, "a", 6) == ["a"]
+
+
+def test_redact_ydl_opts_redacts_cookiefile():
+    out = util.redact_ydl_opts({"cookiefile": r"C:\Users\djsin\cookies.txt"})
+    assert out["cookiefile"] == "<redacted>"
+
+
+def test_redact_ydl_opts_redacts_cookiesfrombrowser():
+    out = util.redact_ydl_opts({"cookiesfrombrowser": ("chrome", "Default", None, None)})
+    assert out["cookiesfrombrowser"] == "<redacted>"
+
+
+def test_redact_ydl_opts_keeps_falsy_auth_values():
+    # An unset cookie value must stay falsy so the log still shows cookies
+    # were NOT configured — redacting None/"" would imply they were.
+    out = util.redact_ydl_opts({"cookiefile": None, "cookiesfrombrowser": ""})
+    assert out["cookiefile"] is None
+    assert out["cookiesfrombrowser"] == ""
+
+
+def test_redact_ydl_opts_summarizes_progress_hooks():
+    out = util.redact_ydl_opts({"progress_hooks": [lambda d: None, lambda d: None]})
+    assert out["progress_hooks"] == "[2 hook(s)]"
+
+
+def test_redact_ydl_opts_passes_through_other_keys():
+    opts = {"format": "bestaudio", "outtmpl": "%(title)s.%(ext)s", "quiet": True}
+    out = util.redact_ydl_opts(opts)
+    assert out["format"] == "bestaudio"
+    assert out["outtmpl"] == "%(title)s.%(ext)s"
+    assert out["quiet"] is True
+
+
+def test_redact_ydl_opts_does_not_mutate_input():
+    opts = {"cookiefile": "secret.txt", "format": "bestaudio"}
+    util.redact_ydl_opts(opts)
+    assert opts == {"cookiefile": "secret.txt", "format": "bestaudio"}
+
+
+def test_redact_ydl_opts_handles_none():
+    assert util.redact_ydl_opts(None) == {}
