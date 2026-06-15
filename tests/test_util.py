@@ -101,3 +101,35 @@ def test_redact_ydl_opts_does_not_mutate_input():
 
 def test_redact_ydl_opts_handles_none():
     assert util.redact_ydl_opts(None) == {}
+
+
+def test_build_cookie_opts_file_method_existing(tmp_path):
+    f = tmp_path / "cookies.txt"
+    f.write_text("# Netscape HTTP Cookie File\n")
+    out = util.build_cookie_opts("Cookie File", str(f), "Firefox", "")
+    assert out == {"cookiefile": str(f)}
+
+
+def test_build_cookie_opts_file_method_missing_file():
+    out = util.build_cookie_opts("Cookie File", r"C:\nope\cookies.txt", "Firefox", "")
+    assert out == {}
+
+
+def test_build_cookie_opts_file_method_empty_path():
+    assert util.build_cookie_opts("Cookie File", "", "Firefox", "") == {}
+
+
+def test_build_cookie_opts_browser_with_profile():
+    out = util.build_cookie_opts("From Browser", "", "Chrome", "Default")
+    assert out == {"cookiesfrombrowser": ("chrome", "Default")}
+
+
+def test_build_cookie_opts_browser_without_profile():
+    out = util.build_cookie_opts("From Browser", "", "Firefox", "")
+    assert out == {"cookiesfrombrowser": ("firefox",)}
+
+
+def test_build_cookie_opts_delegator(cb):
+    # The monolith's _apply_cookie_opts uses the same extracted helper, so the
+    # metadata / probe / download / scan cookie blocks share one source.
+    assert cb.build_cookie_opts is util.build_cookie_opts

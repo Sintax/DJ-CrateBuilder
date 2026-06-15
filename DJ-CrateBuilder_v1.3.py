@@ -19,7 +19,7 @@ from cratebuilder.util import (
     format_yyyymmdd_readable, format_timestamp_relative,
     auto_check_hours_to_seconds,
     normalize_track_key, scan_folder_newest_mp3, safe_filename, push_mru,
-    detect_platform, redact_ydl_opts,
+    detect_platform, redact_ydl_opts, build_cookie_opts,
 )
 from cratebuilder.sidecar import (
     channel_url_from_id, channel_id_from_url,
@@ -2471,6 +2471,19 @@ class MP3DownloaderApp(tk.Tk):
         """Log yt-dlp options to debug.log with auth-bearing values redacted
         (delegates to cratebuilder.util.redact_ydl_opts)."""
         self._dbg.info(f"YDL OPTS ({label}) | {redact_ydl_opts(opts)}")
+
+    def _apply_cookie_opts(self, opts):
+        """Merge the user's cookie settings into a yt-dlp *opts* dict in place,
+        but only when cookies are enabled (no-op otherwise). Single source of
+        truth for the metadata / probe / download / scan cookie blocks."""
+        if not self._use_cookies.get():
+            return
+        opts.update(build_cookie_opts(
+            self._cookie_method.get(),
+            self._cookie_file.get().strip(),
+            self._cookies_browser.get(),
+            self._cookies_profile.get().strip(),
+        ))
 
     def _log_download(self, title, filepath, url, platform, genre,
                       quality="192 kbps MP3"):
@@ -5353,19 +5366,7 @@ class MP3DownloaderApp(tk.Tk):
                 "extract_flat":  "in_playlist",
                 "skip_download": True,
             }
-            if self._use_cookies.get():
-                method = self._cookie_method.get()
-                if method == "Cookie File":
-                    cfile = self._cookie_file.get().strip()
-                    if cfile and os.path.exists(cfile):
-                        meta_opts["cookiefile"] = cfile
-                else:
-                    browser = self._cookies_browser.get().lower()
-                    profile = self._cookies_profile.get().strip()
-                    meta_opts["cookiesfrombrowser"] = (
-                        (browser, profile) if profile
-                        else (browser,)
-                    )
+            self._apply_cookie_opts(meta_opts)
 
             self._apply_js_runtime(meta_opts)
             self._dbg.info(f"─── METADATA FETCH ─── URL: {url}")
@@ -5661,18 +5662,7 @@ class MP3DownloaderApp(tk.Tk):
                         }
                         # Mirror cookie settings so the probe sees the
                         # same authenticated format ladder as the download.
-                        method = self._cookie_method.get()
-                        if method == "Cookie File":
-                            cfile = self._cookie_file.get().strip()
-                            if cfile and os.path.exists(cfile):
-                                probe_opts["cookiefile"] = cfile
-                        else:
-                            browser = self._cookies_browser.get().lower()
-                            profile = self._cookies_profile.get().strip()
-                            probe_opts["cookiesfrombrowser"] = (
-                                (browser, profile) if profile
-                                else (browser,)
-                            )
+                        self._apply_cookie_opts(probe_opts)
                         self._apply_js_runtime(probe_opts)
                         with yt_dlp.YoutubeDL(probe_opts) as probe:
                             probe_info = probe.extract_info(
@@ -5788,19 +5778,7 @@ class MP3DownloaderApp(tk.Tk):
                     ydl_opts["max_sleep_interval"] = s_max
 
                 using_cookies = self._use_cookies.get()
-                if using_cookies:
-                    method = self._cookie_method.get()
-                    if method == "Cookie File":
-                        cfile = self._cookie_file.get().strip()
-                        if cfile and os.path.exists(cfile):
-                            ydl_opts["cookiefile"] = cfile
-                    else:
-                        browser = self._cookies_browser.get().lower()
-                        profile = self._cookies_profile.get().strip()
-                        ydl_opts["cookiesfrombrowser"] = (
-                            (browser, profile) if profile
-                            else (browser,)
-                        )
+                self._apply_cookie_opts(ydl_opts)
 
                 self._apply_js_runtime(ydl_opts)
                 self._dbg.info(f"─── DOWNLOAD ─── {item_title!r}  URL: {item_url}")
@@ -7307,18 +7285,7 @@ class MP3DownloaderApp(tk.Tk):
                 }
 
                 # Use cookies if configured
-                if self._use_cookies.get():
-                    method = self._cookie_method.get()
-                    if method == "Cookie File":
-                        cfile = self._cookie_file.get().strip()
-                        if cfile and os.path.exists(cfile):
-                            scan_opts["cookiefile"] = cfile
-                    else:
-                        browser = self._cookies_browser.get().lower()
-                        profile = self._cookies_profile.get().strip()
-                        scan_opts["cookiesfrombrowser"] = (
-                            (browser, profile) if profile
-                            else (browser,))
+                self._apply_cookie_opts(scan_opts)
 
                 platform = ch.get("platform") or "YouTube"
                 # Same encoded listing URL a Watch List "Download New" feeds
