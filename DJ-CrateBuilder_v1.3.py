@@ -300,31 +300,42 @@ LOG_COL = {
 FILTER_OPTIONS = ["All", "Downloaded", "Skipped", "Errors"]
 
 # ─────────────────────────────────────────────────────────────────────────────
-class LogViewerWindow(tk.Toplevel):
-    """Standalone dark-themed log viewer window."""
+class _BaseLogViewerWindow(tk.Toplevel):
+    """Shared machinery for the two dark-themed log-viewer windows.
+
+    Holds the search/navigation/clipboard logic and the common window
+    lifecycle that ``LogViewerWindow`` and ``DebugLogViewerWindow`` use
+    verbatim. Subclasses supply their own ``_build_ui`` / ``load_log`` /
+    filtering, and set ``WINDOW_TITLE`` / ``WINDOW_W`` / ``WINDOW_H``.
+    """
 
     _SEARCH_HL  = "#f59e0b"   # amber highlight for search matches
     _SEARCH_FG  = "#000000"
 
+    # Overridden per subclass.
+    WINDOW_TITLE = ""
+    WINDOW_W     = 1000
+    WINDOW_H     = 640
+
     def __init__(self, parent, log_path):
         super().__init__(parent)
-        self._log_path    = log_path
-        self._parent      = parent
-        self._filter_var  = tk.StringVar(value="All")
-        self._search_var  = tk.StringVar()
-        self._match_idx   = []   # list of (line, col_start, col_end) for search hits
-        self._match_pos   = -1   # currently-focused match index
+        self._log_path   = log_path
+        self._parent     = parent
+        self._search_var = tk.StringVar()
+        self._match_idx  = []   # list of (col_start, col_end) for search hits
+        self._match_pos  = -1   # currently-focused match index
+        self._init_state()
 
-        self.title("📋  Downloads Log  —  DJ CrateBuilder")
-        self.geometry("1000x640")
+        self.title(self.WINDOW_TITLE)
+        self.geometry(f"{self.WINDOW_W}x{self.WINDOW_H}")
         self.minsize(700, 400)
         self.configure(bg=BG)
         self.resizable(True, True)
 
         # Centre over parent
         self.update_idletasks()
-        px = parent.winfo_x() + (parent.winfo_width()  - 1000) // 2
-        py = parent.winfo_y() + (parent.winfo_height() - 640)  // 2
+        px = parent.winfo_x() + (parent.winfo_width()  - self.WINDOW_W) // 2
+        py = parent.winfo_y() + (parent.winfo_height() - self.WINDOW_H) // 2
         self.geometry(f"+{max(0,px)}+{max(0,py)}")
 
         self._build_ui()
@@ -333,6 +344,139 @@ class LogViewerWindow(tk.Toplevel):
         self.after_idle(lambda: self._txt.yview_moveto(1.0))
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.focus_force()
+
+    def _init_state(self):
+        """Hook for subclass-specific state created before ``_build_ui``."""
+        pass
+
+    def _tb_btn(self, parent, label, cmd, side="left", padx=(2,2)):
+        """Helper: small flat toolbar button matching the app palette."""
+        b = tk.Button(parent, text=label,
+                      font=("Segoe UI", 9), relief="flat", bd=0,
+                      bg=SURFACE2, fg=TEXT_DIM, activebackground=BORDER,
+                      activeforeground=TEXT, padx=8, pady=4,
+                      cursor="hand2", command=cmd)
+        b.pack(side=side, padx=padx, pady=6)
+        return b
+
+    # ── Search ────────────────────────────────────────────────────────────────
+    def _run_search(self):
+        self._txt.tag_remove("search_hl",  "1.0", "end")
+        self._txt.tag_remove("search_cur", "1.0", "end")
+        self._match_idx = []
+        self._match_pos = -1
+
+        query = self._search_var.get()
+        if not query:
+            self._match_lbl.config(text="")
+            return
+
+        start = "1.0"
+        while True:
+            pos = self._txt.search(query, start, stopindex="end",
+                                   nocase=True, regexp=False)
+            if not pos:
+                break
+            end = f"{pos}+{len(query)}c"
+            self._txt.tag_add("search_hl", pos, end)
+            self._match_idx.append((pos, end))
+            start = end
+
+        total = len(self._match_idx)
+        if total:
+            self._match_pos = 0
+            self._highlight_current()
+            self._match_lbl.config(text=f"1 / {total}")
+        else:
+            self._match_lbl.config(text="no match")
+
+    def _highlight_current(self):
+        self._txt.tag_remove("search_cur", "1.0", "end")
+        if not self._match_idx:
+            return
+        pos, end = self._match_idx[self._match_pos]
+        self._txt.tag_add("search_cur", pos, end)
+        self._txt.see(pos)
+        n = len(self._match_idx)
+        self._match_lbl.config(text=f"{self._match_pos+1} / {n}")
+
+    def _find_next(self):
+        if not self._match_idx:
+            self._run_search(); return
+        self._match_pos = (self._match_pos + 1) % len(self._match_idx)
+        self._highlight_current()
+
+    def _find_prev(self):
+        if not self._match_idx:
+            self._run_search(); return
+        self._match_pos = (self._match_pos - 1) % len(self._match_idx)
+        self._highlight_current()
+
+    def _clear_search(self, silent=False):
+        self._txt.tag_remove("search_hl",  "1.0", "end")
+        self._txt.tag_remove("search_cur", "1.0", "end")
+        self._match_idx = []
+        self._match_pos = -1
+        self._match_lbl.config(text="")
+        if not silent:
+            self._search_var.set("")
+
+    # ── Actions ───────────────────────────────────────────────────────────────
+    def _jump_top(self):
+        self._txt.yview_moveto(0.0)
+
+    def _jump_end(self):
+        self._txt.yview_moveto(1.0)
+
+    def _toggle_wrap(self):
+        """Toggle word-wrap on or off in the log text area."""
+        self._wrap_on = not self._wrap_on
+        if self._wrap_on:
+            self._txt.config(wrap="word")
+            self._wrap_btn.config(text="Wrap: On", bg="#14532d", fg=SUCCESS)
+        else:
+            self._txt.config(wrap="none")
+            self._wrap_btn.config(text="Wrap: Off", bg=SURFACE2, fg=TEXT_DIM)
+
+    def _copy_all(self):
+        content = self._txt.get("1.0", "end").strip()
+        self.clipboard_clear()
+        self.clipboard_append(content)
+        self._stats_bar.config(text="  ✓  Copied to clipboard.")
+        self._after_copy()
+
+    def _after_copy(self):
+        """Restore the stats bar a moment after a Copy All.
+
+        Subclasses differ in how they recompute the bar, so this hook is
+        overridden rather than shared.
+        """
+        self.after(2000, self.refresh)
+
+    def _open_external(self):
+        try:
+            if sys.platform == "win32":
+                os.startfile(self._log_path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", self._log_path])
+            else:
+                subprocess.Popen(["xdg-open", self._log_path])
+        except Exception as exc:
+            messagebox.showerror("Could Not Open",
+                                 f"Failed to open in system viewer:\n{exc}",
+                                 parent=self)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+class LogViewerWindow(_BaseLogViewerWindow):
+    """Standalone dark-themed log viewer window."""
+
+    WINDOW_TITLE = "📋  Downloads Log  —  DJ CrateBuilder"
+    WINDOW_W     = 1000
+    WINDOW_H     = 640
+
+    def _init_state(self):
+        self._filter_var = tk.StringVar(value="All")
 
     # ── Build UI ──────────────────────────────────────────────────────────────
     def _build_ui(self):
@@ -465,16 +609,6 @@ class LogViewerWindow(tk.Toplevel):
         self._txt.bind("<MouseWheel>", lambda e: self._txt.yview_scroll(
             int(-1*(e.delta/120)), "units"))
 
-    def _tb_btn(self, parent, label, cmd, side="left", padx=(2,2)):
-        """Helper: small flat toolbar button matching the app palette."""
-        b = tk.Button(parent, text=label,
-                      font=("Segoe UI", 9), relief="flat", bd=0,
-                      bg=SURFACE2, fg=TEXT_DIM, activebackground=BORDER,
-                      activeforeground=TEXT, padx=8, pady=4,
-                      cursor="hand2", command=cmd)
-        b.pack(side=side, padx=padx, pady=6)
-        return b
-
     # ── Log loading & rendering ───────────────────────────────────────────────
     def load_log(self):
         try:
@@ -568,92 +702,10 @@ class LogViewerWindow(tk.Toplevel):
                 btn.config(bg=SURFACE2, fg=TEXT_DIM,
                            relief="flat", bd=0)
 
-    # ── Search ────────────────────────────────────────────────────────────────
-    def _run_search(self):
-        self._txt.tag_remove("search_hl",  "1.0", "end")
-        self._txt.tag_remove("search_cur", "1.0", "end")
-        self._match_idx = []
-        self._match_pos = -1
-
-        query = self._search_var.get()
-        if not query:
-            self._match_lbl.config(text="")
-            return
-
-        start = "1.0"
-        while True:
-            pos = self._txt.search(query, start, stopindex="end",
-                                   nocase=True, regexp=False)
-            if not pos:
-                break
-            end = f"{pos}+{len(query)}c"
-            self._txt.tag_add("search_hl", pos, end)
-            self._match_idx.append((pos, end))
-            start = end
-
-        total = len(self._match_idx)
-        if total:
-            self._match_pos = 0
-            self._highlight_current()
-            self._match_lbl.config(text=f"1 / {total}")
-        else:
-            self._match_lbl.config(text="no match")
-
-    def _highlight_current(self):
-        self._txt.tag_remove("search_cur", "1.0", "end")
-        if not self._match_idx:
-            return
-        pos, end = self._match_idx[self._match_pos]
-        self._txt.tag_add("search_cur", pos, end)
-        self._txt.see(pos)
-        n = len(self._match_idx)
-        self._match_lbl.config(text=f"{self._match_pos+1} / {n}")
-
-    def _find_next(self):
-        if not self._match_idx:
-            self._run_search(); return
-        self._match_pos = (self._match_pos + 1) % len(self._match_idx)
-        self._highlight_current()
-
-    def _find_prev(self):
-        if not self._match_idx:
-            self._run_search(); return
-        self._match_pos = (self._match_pos - 1) % len(self._match_idx)
-        self._highlight_current()
-
-    def _clear_search(self, silent=False):
-        self._txt.tag_remove("search_hl",  "1.0", "end")
-        self._txt.tag_remove("search_cur", "1.0", "end")
-        self._match_idx = []
-        self._match_pos = -1
-        self._match_lbl.config(text="")
-        if not silent:
-            self._search_var.set("")
-
     # ── Actions ───────────────────────────────────────────────────────────────
-    def _jump_top(self):
-        self._txt.yview_moveto(0.0)
-
-    def _jump_end(self):
-        self._txt.yview_moveto(1.0)
-
-    def _toggle_wrap(self):
-        """Toggle word-wrap on or off in the log text area."""
-        self._wrap_on = not self._wrap_on
-        if self._wrap_on:
-            self._txt.config(wrap="word")
-            self._wrap_btn.config(text="Wrap: On", bg="#14532d", fg=SUCCESS)
-        else:
-            self._txt.config(wrap="none")
-            self._wrap_btn.config(text="Wrap: Off", bg=SURFACE2, fg=TEXT_DIM)
-
-    def _copy_all(self):
-        content = self._txt.get("1.0", "end").strip()
-        self.clipboard_clear()
-        self.clipboard_append(content)
-        self._stats_bar.config(text="  ✓  Copied to clipboard.")
-        self.after(2000, lambda: self._update_stats(
-            *self._count_stats()))
+    def _after_copy(self):
+        # Restore the coloured activity-log stats line after a Copy All.
+        self.after(2000, lambda: self._update_stats(*self._count_stats()))
 
     def _count_stats(self):
         content = self._txt.get("1.0", "end")
@@ -663,25 +715,13 @@ class LogViewerWindow(tk.Toplevel):
         er = sum(1 for l in lines if "ERROR"      in l)
         return dl, sk, er, len(lines)
 
-    def _open_external(self):
-        try:
-            if sys.platform == "win32":
-                os.startfile(self._log_path)
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", self._log_path])
-            else:
-                subprocess.Popen(["xdg-open", self._log_path])
-        except Exception as exc:
-            messagebox.showerror("Could Not Open",
-                                 f"Failed to open in system viewer:\n{exc}",
-                                 parent=self)
 
-
-class DebugLogViewerWindow(tk.Toplevel):
+class DebugLogViewerWindow(_BaseLogViewerWindow):
     """Standalone dark-themed debug log viewer window."""
 
-    _SEARCH_HL  = "#f59e0b"
-    _SEARCH_FG  = "#000000"
+    WINDOW_TITLE = "🔍  Debug Log  —  DJ CrateBuilder"
+    WINDOW_W     = 1100
+    WINDOW_H     = 680
 
     # Colour tags for log levels
     _LEVEL_COLORS = {
@@ -690,32 +730,6 @@ class DebugLogViewerWindow(tk.Toplevel):
         "WARNING": "#f59e0b",
         "ERROR":   "#ef4444",
     }
-
-    def __init__(self, parent, log_path):
-        super().__init__(parent)
-        self._log_path   = log_path
-        self._parent     = parent
-        self._search_var = tk.StringVar()
-        self._match_idx  = []
-        self._match_pos  = -1
-
-        self.title("🔍  Debug Log  —  DJ CrateBuilder")
-        self.geometry("1100x680")
-        self.minsize(700, 400)
-        self.configure(bg=BG)
-        self.resizable(True, True)
-
-        self.update_idletasks()
-        px = parent.winfo_x() + (parent.winfo_width()  - 1100) // 2
-        py = parent.winfo_y() + (parent.winfo_height() - 680)  // 2
-        self.geometry(f"+{max(0,px)}+{max(0,py)}")
-
-        self._build_ui()
-        self.load_log()
-        # Open scrolled to the bottom so the most-recent entries are visible.
-        self.after_idle(lambda: self._txt.yview_moveto(1.0))
-        self.protocol("WM_DELETE_WINDOW", self.destroy)
-        self.focus_force()
 
     def _build_ui(self):
         # ── Toolbar ───────────────────────────────────────────────────────────
@@ -903,98 +917,6 @@ class DebugLogViewerWindow(tk.Toplevel):
             else:
                 btn.config(bg=SURFACE2, fg=TEXT_DIM,
                            activebackground=BORDER, activeforeground=TEXT)
-
-    def _run_search(self):
-        self._txt.tag_remove("search_hl",  "1.0", "end")
-        self._txt.tag_remove("search_cur", "1.0", "end")
-        self._match_idx = []
-        self._match_pos = -1
-        query = self._search_var.get()
-        if not query:
-            self._match_lbl.config(text="")
-            return
-        start = "1.0"
-        while True:
-            pos = self._txt.search(query, start, stopindex="end", nocase=True)
-            if not pos:
-                break
-            end = f"{pos}+{len(query)}c"
-            self._txt.tag_add("search_hl", pos, end)
-            self._match_idx.append((pos, end))
-            start = end
-        total = len(self._match_idx)
-        if total:
-            self._match_pos = 0
-            self._highlight_current()
-            self._match_lbl.config(text=f"1 / {total}")
-        else:
-            self._match_lbl.config(text="no match")
-
-    def _highlight_current(self):
-        self._txt.tag_remove("search_cur", "1.0", "end")
-        if not self._match_idx:
-            return
-        pos, end = self._match_idx[self._match_pos]
-        self._txt.tag_add("search_cur", pos, end)
-        self._txt.see(pos)
-        n = len(self._match_idx)
-        self._match_lbl.config(text=f"{self._match_pos+1} / {n}")
-
-    def _find_next(self):
-        if not self._match_idx:
-            self._run_search(); return
-        self._match_pos = (self._match_pos + 1) % len(self._match_idx)
-        self._highlight_current()
-
-    def _find_prev(self):
-        if not self._match_idx:
-            self._run_search(); return
-        self._match_pos = (self._match_pos - 1) % len(self._match_idx)
-        self._highlight_current()
-
-    def _clear_search(self, silent=False):
-        self._txt.tag_remove("search_hl",  "1.0", "end")
-        self._txt.tag_remove("search_cur", "1.0", "end")
-        self._match_idx = []
-        self._match_pos = -1
-        self._match_lbl.config(text="")
-        if not silent:
-            self._search_var.set("")
-
-    def _jump_top(self):
-        self._txt.yview_moveto(0.0)
-
-    def _jump_end(self):
-        self._txt.yview_moveto(1.0)
-
-    def _toggle_wrap(self):
-        self._wrap_on = not self._wrap_on
-        if self._wrap_on:
-            self._txt.config(wrap="word")
-            self._wrap_btn.config(text="Wrap: On", bg="#14532d", fg=SUCCESS)
-        else:
-            self._txt.config(wrap="none")
-            self._wrap_btn.config(text="Wrap: Off", bg=SURFACE2, fg=TEXT_DIM)
-
-    def _copy_all(self):
-        content = self._txt.get("1.0", "end").strip()
-        self.clipboard_clear()
-        self.clipboard_append(content)
-        self._stats_bar.config(text="  ✓  Copied to clipboard.")
-        self.after(2000, self.refresh)
-
-    def _open_external(self):
-        try:
-            if sys.platform == "win32":
-                os.startfile(self._log_path)
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", self._log_path])
-            else:
-                subprocess.Popen(["xdg-open", self._log_path])
-        except Exception as exc:
-            messagebox.showerror("Could Not Open",
-                                 f"Failed to open in system viewer:\n{exc}",
-                                 parent=self)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
