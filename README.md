@@ -35,25 +35,25 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 **Main** — paste URLs, queue a batch, download MP3s:
 
 <p align="left">
-  <img src="docs/screenshots/01-main.png" width="640">
+  <img src="docs/screenshots/01-main.png" width="480">
 </p>
 
 **Watch List** — track channels and surface only new uploads:
 
 <p align="left">
-  <img src="docs/screenshots/02-watchlist.png" width="640">
+  <img src="docs/screenshots/02-watchlist.png" width="320">
 </p>
 
 **Settings** — automation, quality, throttle, and cookies:
 
 <p align="left">
-  <img src="docs/screenshots/03-settings.png" width="640">
+  <img src="docs/screenshots/03-settings.png" width="320">
 </p>
 
 **About** — version, links, and built-in FAQ:
 
 <p align="left">
-  <img src="docs/screenshots/04-about.png" width="640">
+  <img src="docs/screenshots/04-about.png" width="320">
 </p>
 
 ---
