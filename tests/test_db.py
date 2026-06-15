@@ -40,6 +40,21 @@ def test_update_fields_returns_true_on_success(tmp_path):
         wid, channel_id="UCaaa", status="idle") is True
 
 
+def test_set_watchlist_download_started(tmp_path):
+    db = _new_db(tmp_path)
+    wid = db.add_watchlist_channel(
+        url="https://www.youtube.com/channel/UCdl/videos",
+        display_name="DL", platform="YouTube", genre="(none)",
+        scan_cutoff_date="20260101")
+    # Brand-new channel has never downloaded.
+    assert db.get_watchlist_channel(wid).get("last_download_started") is None
+    db.set_watchlist_download_started([wid], 4242)
+    assert db.get_watchlist_channel(wid)["last_download_started"] == 4242
+    # Empty/iterable-of-nothing is a safe no-op.
+    db.set_watchlist_download_started([], 9999)
+    assert db.get_watchlist_channel(wid)["last_download_started"] == 4242
+
+
 def test_get_all_downloads_empty(tmp_path):
     db = _new_db(tmp_path)
     assert db.get_all_downloads() == []

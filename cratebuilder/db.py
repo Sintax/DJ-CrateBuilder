@@ -7,7 +7,7 @@ from contextlib import contextmanager
 
 
 class DownloadsDatabase:
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     def __init__(self, db_path, debug_logger=None):
         self.db_path = db_path
@@ -83,6 +83,7 @@ class DownloadsDatabase:
                         scan_cutoff_date         TEXT NOT NULL,
                         date_added               INTEGER NOT NULL,
                         last_scanned_timestamp   INTEGER,
+                        last_download_started    INTEGER,
                         pending_new_count        INTEGER DEFAULT 0,
                         pending_entries_json     TEXT    DEFAULT '[]',
                         total_downloaded         INTEGER DEFAULT 0,
@@ -103,6 +104,16 @@ class DownloadsDatabase:
                                   f"migration: added channel_id to {table}")
                     except sqlite3.OperationalError:
                         pass  # column already exists
+
+                # schema v3: per-channel "last download started" timestamp.
+                try:
+                    conn.execute(
+                        "ALTER TABLE watchlist "
+                        "ADD COLUMN last_download_started INTEGER")
+                    self._log("info",
+                              "migration: added last_download_started to watchlist")
+                except sqlite3.OperationalError:
+                    pass  # column already exists
 
                 conn.execute(
                     "INSERT OR REPLACE INTO schema_info (key, value) VALUES (?, ?)",
@@ -265,6 +276,22 @@ class DownloadsDatabase:
                       last_error, channel_id))
         except Exception as e:
             self._log("error", f"update_watchlist_scan_result failed: {e}")
+
+    def set_watchlist_download_started(self, channel_ids, timestamp):
+        """Stamp the moment a (re)download started for one or more channels.
+        `channel_ids` is an iterable of watchlist row ids."""
+        ids = [int(c) for c in (channel_ids or [])]
+        if not ids:
+            return
+        try:
+            placeholders = ",".join("?" for _ in ids)
+            with self._conn() as conn:
+                conn.execute(
+                    f"UPDATE watchlist SET last_download_started = ? "
+                    f"WHERE id IN ({placeholders})",
+                    [timestamp, *ids])
+        except Exception as e:
+            self._log("error", f"set_watchlist_download_started failed: {e}")
 
     def update_watchlist_status(self, channel_id, status, last_error=None):
         try:
