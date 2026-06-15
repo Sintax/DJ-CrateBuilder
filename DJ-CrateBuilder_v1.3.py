@@ -17,7 +17,7 @@ from cratebuilder.util import (
     load_config, save_config, today_yyyymmdd,
     days_ago_yyyymmdd, subtract_days_from_yyyymmdd,
     format_yyyymmdd_readable, format_timestamp_relative,
-    auto_check_hours_to_seconds,
+    interval_label_to_seconds,
     normalize_track_key, scan_folder_newest_mp3, safe_filename, push_mru,
     detect_platform, redact_ydl_opts, build_cookie_opts,
 )
@@ -76,8 +76,8 @@ SC_ORANGE = "#ff5500"
 SC_DARK   = "#cc4400"
 
 # Watch List accent
-WL_PURPLE = "#a78bfa"
-WL_DARK   = "#7c3aed"
+WL_BLUE      = "#60a5fa"   # light blue accent (icons, status, hover)
+WL_BLUE_DARK = "#2563eb"   # darker blue fill for buttons (carries white text)
 
 # ── Platform config ───────────────────────────────────────────────────────────
 PLATFORMS = {
@@ -187,9 +187,10 @@ DEFAULT_BASE = os.path.join(os.path.expanduser("~"), "Music", "DJ-CrateBuilder")
 # date/interval helpers moved to cratebuilder.util (imported above)
 
 
-# Auto-check interval choices for the Settings combobox. Each non-"Off" label
-# must start with an integer hour count (parsed by auto_check_hours_to_seconds).
-AUTO_CHECK_OPTIONS = ["Off", "6 hours", "12 hours", "24 hours", "48 hours"]
+# Auto-download interval choices for the Settings combobox. Each non-"Off" label
+# is '<integer> <unit>' (hours/days/week), parsed by interval_label_to_seconds.
+AUTO_DOWNLOAD_OPTIONS = ["Off", "6 hours", "12 hours", "1 day", "2 days",
+                         "3 days", "1 week"]
 
 # Sentinel URL prefix stored for Watch List channels whose canonical YouTube
 # /channel/UC… URL isn't known yet (e.g. imported from a folder name). Such
@@ -197,7 +198,7 @@ AUTO_CHECK_OPTIONS = ["Off", "6 hours", "12 hours", "24 hours", "48 hours"]
 UNRESOLVED_URL_PREFIX = "unresolved://"
 
 
-# auto_check_hours_to_seconds moved to cratebuilder.util (imported above)
+# interval_label_to_seconds moved to cratebuilder.util (imported above)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -2199,14 +2200,19 @@ class MP3DownloaderApp(tk.Tk):
             "write", self._autosave_behavior_settings)
         self._active_watchlist_batch = None   # set by _watchlist_download_*
         self._wl_download_active = False      # True while a Watch List batch runs
+        self._wl_card_widgets = {}            # cid -> card frame, for in-place updates
+        self._wl_fix_abort = False            # set by Cancel to stop a Fix-Channels pass
         # While a Watch List batch runs, the Main tab's Batch Queue container
         # shows these channels with the active one highlighted.
         self._wl_batch_channels = []          # ordered display names in the batch
         self._wl_batch_active_idx = -1        # index currently downloading
 
-        # Automation settings (auto-check / startup / tray)
-        self._auto_check_hours = tk.StringVar(
-            value=cfg.get("auto_check_hours", "24 hours"))
+        # Automation settings (auto-download / startup / tray)
+        # New keys, falling back to the older auto-check names so an existing
+        # config keeps its interval / schedule anchor across the upgrade.
+        self._auto_dl_interval = tk.StringVar(
+            value=cfg.get("auto_download_interval",
+                          cfg.get("auto_check_hours", "1 day")))
         self._run_at_startup = tk.BooleanVar(
             value=cfg.get("run_at_startup", False))
         if sys.platform == "win32":
@@ -2216,10 +2222,15 @@ class MP3DownloaderApp(tk.Tk):
         # Scan the Watch List for new uploads as soon as the app launches.
         self._watchlist_scan_on_startup = tk.BooleanVar(
             value=cfg.get("watchlist_scan_on_startup", True))
-        self._watchlist_last_check = int(cfg.get("watchlist_last_check", 0))
-        self._auto_check_after_id = None
+        # The auto-download schedule counts from when the app starts: the next
+        # run is always (this launch time + interval), regardless of any stored
+        # value from a previous session. A later Download All New re-anchors to
+        # that download, so subsequent runs stay one interval apart.
+        self._watchlist_last_download = int(time.time())
+        self._auto_dl_after_id = None
+        self._wl_next_dl_ts = None      # wall-clock of the next scheduled run
         self._tray_icon = None  # set when tray is active
-        self._auto_check_hours.trace_add("write", self._autosave_automation_settings)
+        self._auto_dl_interval.trace_add("write", self._autosave_automation_settings)
         self._minimize_to_tray.trace_add("write", self._autosave_automation_settings)
         self._watchlist_scan_on_startup.trace_add(
             "write", self._autosave_automation_settings)
@@ -2236,12 +2247,14 @@ class MP3DownloaderApp(tk.Tk):
 
         # First-run: auto-populate the Watch List from existing channel folders
         self.after(1200, self._watchlist_populate_from_folders)
-        self.after(1600, self._reschedule_auto_check)
+        self.after(1600, self._reschedule_auto_download)
         # Actively refresh new-track counts for every entry on each launch.
         self.after(2200, self._watchlist_startup_scan)
 
-        # Close button hides to tray (when enabled) instead of quitting.
+        # Close (X) always confirms quit; the Minimize button is what hides to
+        # tray (when the option is enabled).
         self.protocol("WM_DELETE_WINDOW", self._on_window_close)
+        self.bind("<Unmap>", self._on_minimize)
 
         # If Windows auto-started us and tray mode is on, begin hidden.
         if (sys.platform == "win32" and self._minimize_to_tray.get()
@@ -2972,6 +2985,22 @@ class MP3DownloaderApp(tk.Tk):
             background=[("active", "#ff9633")],
             foreground=[("active", "#1a0f00")])
 
+        # Grey action buttons for the Downloads/Debug log + Database rows.
+        # DlBtn = the primary "open/view" buttons; SysView = "open in system viewer".
+        s.configure("DlBtn.TButton",
+            background="#B3B3B3", foreground="#1a1a1a",
+            font=("Segoe UI", 10), relief="flat", borderwidth=0, padding=(10, 8))
+        s.map("DlBtn.TButton",
+            background=[("active", "#c6c6c6")],
+            foreground=[("active", "#1a1a1a")])
+
+        s.configure("SysView.TButton",
+            background="#7F7F7F", foreground="#ffffff",
+            font=("Segoe UI", 10), relief="flat", borderwidth=0, padding=(10, 8))
+        s.map("SysView.TButton",
+            background=[("active", "#949494")],
+            foreground=[("active", "#ffffff")])
+
         s.configure("TCheckbutton",
             background=BG, foreground=TEXT_DIM, font=("Segoe UI", 10))
         s.map("TCheckbutton",
@@ -3343,23 +3372,28 @@ class MP3DownloaderApp(tk.Tk):
 
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(0, 20))
 
-        # ── Automation ────────────────────────────────────────────────────
-        ttk.Label(outer, text="Automation",
+        # ── Automation / Startup ──────────────────────────────────────────
+        ttk.Label(outer, text="Automation/Startup",
                   style="S.White.Section.TLabel").pack(anchor="w", pady=(0, 6))
 
-        auto_row = ttk.Frame(outer)
-        auto_row.pack(fill="x", pady=(0, 8))
-        ttk.Label(auto_row, text="Check watched channels every:",
-                  style="S.TLabel").pack(side="left", padx=(0, 10))
-        self._auto_check_combo = ttk.Combobox(
-            auto_row, textvariable=self._auto_check_hours,
-            values=AUTO_CHECK_OPTIONS,
-            state="readonly", width=10)
-        self._auto_check_combo.pack(side="left")
-        Tooltip(self._auto_check_combo,
-                "How often to scan watched channels for new uploads and "
-                "auto-download them. Default 24 hours.", wraplength=320)
+        if sys.platform == "win32":
+            startup_row = ttk.Frame(outer)
+            startup_row.pack(fill="x", pady=(2, 4))
+            ttk.Checkbutton(
+                startup_row, text="Run DJ-CrateBuilder when Windows starts",
+                variable=self._run_at_startup,
+                command=self._on_run_at_startup_toggle,
+                style="S.Opt.TCheckbutton").pack(side="left")
 
+            tray_row = ttk.Frame(outer)
+            tray_row.pack(fill="x", pady=(2, 4))
+            ttk.Checkbutton(
+                tray_row,
+                text="Minimize to system tray (keep Watch List running in background)",
+                variable=self._minimize_to_tray,
+                style="S.Opt.TCheckbutton").pack(side="left")
+
+        # Scan Watch List on startup
         startup_scan_row = ttk.Frame(outer)
         startup_scan_row.pack(fill="x", pady=(2, 4))
         self._startup_scan_cb = ttk.Checkbutton(
@@ -3374,22 +3408,34 @@ class MP3DownloaderApp(tk.Tk):
                 "Turn off to skip the startup scan and check manually.",
                 wraplength=320)
 
-        if sys.platform == "win32":
-            startup_row = ttk.Frame(outer)
-            startup_row.pack(fill="x", pady=(2, 4))
-            ttk.Checkbutton(
-                startup_row, text="Run DJ-CrateBuilder when Windows starts",
-                variable=self._run_at_startup,
-                command=self._on_run_at_startup_toggle,
-                style="S.Opt.TCheckbutton").pack(side="left")
+        # Auto-add channels to Watch List (moved here from the Watch List section)
+        autoadd_row = ttk.Frame(outer)
+        autoadd_row.pack(fill="x", pady=(2, 4))
+        self._auto_add_cb = ttk.Checkbutton(
+            autoadd_row, text="Auto-add channels to Watch List after downloading",
+            variable=self._auto_add_to_watchlist,
+            style="S.Opt.TCheckbutton")
+        self._auto_add_cb.pack(side="left")
+        Tooltip(self._auto_add_cb,
+                "When enabled, any channel or playlist you download is "
+                "automatically added to the Watch List so you can scan "
+                "it for new uploads later.")
 
-            tray_row = ttk.Frame(outer)
-            tray_row.pack(fill="x", pady=(0, 4))
-            ttk.Checkbutton(
-                tray_row,
-                text="Minimize to system tray (keep Watch List running in background)",
-                variable=self._minimize_to_tray,
-                style="S.Opt.TCheckbutton").pack(side="left")
+        # Auto-download interval dropdown (moved to the bottom of the section)
+        auto_row = ttk.Frame(outer)
+        auto_row.pack(fill="x", pady=(4, 8))
+        ttk.Label(auto_row, text="Auto-download Watch-List channels every:",
+                  style="S.TLabel").pack(side="left", padx=(0, 10))
+        self._auto_dl_combo = ttk.Combobox(
+            auto_row, textvariable=self._auto_dl_interval,
+            values=AUTO_DOWNLOAD_OPTIONS,
+            state="readonly", width=10)
+        self._auto_dl_combo.pack(side="left")
+        Tooltip(self._auto_dl_combo,
+                "How often to automatically scan every watched channel for new "
+                "uploads and download them. Each run scans all channels first, "
+                "then downloads everything new. Default 1 day; 'Off' disables it.",
+                wraplength=320)
 
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 18))
 
@@ -3426,7 +3472,7 @@ class MP3DownloaderApp(tk.Tk):
             variable=self._limit_minutes,
             from_=1, to=180,
             orient="horizontal",
-            length=340,
+            length=227,
             resolution=1,
             width=18,
             sliderlength=18,
@@ -3497,28 +3543,6 @@ class MP3DownloaderApp(tk.Tk):
 
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 20))
 
-        # ── Watch List settings ────────────────────────────────────────────────
-        _lbl = ttk.Label(outer, text="Watch List",
-                  style="S.White.Section.TLabel")
-        _lbl.pack(anchor="w", pady=(0, 6))
-        Tooltip(_lbl, "Channels you download are automatically tracked so you "
-                      "can check for new uploads later from the Watch List tab.", wraplength=360)
-
-        wl_row = ttk.Frame(outer)
-        wl_row.pack(fill="x", pady=(0, 4))
-
-        self._auto_add_cb = ttk.Checkbutton(
-            wl_row, text="Auto-add channels to Watch List after downloading",
-            variable=self._auto_add_to_watchlist,
-            style="S.Opt.TCheckbutton")
-        self._auto_add_cb.pack(side="left")
-        Tooltip(self._auto_add_cb,
-                "When enabled, any channel or playlist you download is "
-                "automatically added to the Watch List so you can scan "
-                "it for new uploads later.")
-
-        tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 20))
-
         # ── Download Behavior ─────────────────────────────────────────────────
         beh_title_row = ttk.Frame(outer)
         beh_title_row.pack(fill="x", pady=(0, 8))
@@ -3555,12 +3579,17 @@ class MP3DownloaderApp(tk.Tk):
         # Sleep interval checkbox + mode selector
         sleep_row = ttk.Frame(outer)
         sleep_row.pack(fill="x", pady=(0, 4))
-        ttk.Checkbutton(sleep_row,
+        _throttle_cb = ttk.Checkbutton(sleep_row,
                         text="Throttle Requests",
                         variable=self._sleep_enabled,
                         command=self._on_sleep_toggle,
-                        style="S.Opt.TCheckbutton"
-                        ).pack(side="left")
+                        style="S.Opt.TCheckbutton")
+        _throttle_cb.pack(side="left")
+        Tooltip(_throttle_cb,
+                "Pause between requests to avoid rate-limiting or IP bans during "
+                "large channel / batch downloads. Auto picks delays from the "
+                "selected preset; Manual lets you set exact min/max seconds.",
+                wraplength=320)
 
         self._sleep_labels = []
 
@@ -3716,10 +3745,17 @@ class MP3DownloaderApp(tk.Tk):
             relief="flat", highlightthickness=1,
             highlightbackground=BORDER,
             highlightcolor=YT_RED)
-        self._cookies_profile_entry.pack(side="left", padx=(0, 8))
+        self._cookies_profile_entry.pack(side="left", padx=(0, 6))
         self._cookies_profile_entry.bind("<FocusOut>",
             lambda _: self._autosave_behavior_settings())
-        Tooltip(self._cookies_profile_entry, "(leave blank for default)")
+        # Light-grey warning triangle carrying the profile hint (replaces the
+        # tooltip that used to sit on the Profile entry itself).
+        self._profile_warn = tk.Label(
+            self._cookie_browser_row, text="⚠",
+            font=("Segoe UI", 11), fg="#B3B3B3", bg=BG, cursor="hand2")
+        self._profile_warn.pack(side="left", padx=(0, 8))
+        Tooltip(self._profile_warn,
+                "Leave blank to use the default browser profile!")
 
         # Cookie file row (inside container)
         self._cookie_file_row = ttk.Frame(self._cookie_detail)
@@ -3759,8 +3795,8 @@ class MP3DownloaderApp(tk.Tk):
                  font=("Segoe UI", 11, "bold"), fg=TEXT_DIM, bg=BG, anchor="w")
         self._howto_lbl.pack(side="left")
         self._howto_btn = tk.Button(howto_row, text="VIEW",
-                  font=("Segoe UI", 8), bg=SURFACE2, fg=TEXT_DIM,
-                  activebackground=BORDER, activeforeground=TEXT,
+                  font=("Segoe UI", 8), bg="#7F7F7F", fg="#ffffff",
+                  activebackground="#949494", activeforeground=TEXT,
                   relief="flat", bd=0, padx=8, pady=1, cursor="hand2",
                   command=self._open_cookie_howto)
         self._howto_btn.pack(side="left", padx=(10, 0))
@@ -3797,20 +3833,25 @@ class MP3DownloaderApp(tk.Tk):
         # ── Downloads log ─────────────────────────────────────────────────────
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(8, 20))
 
-        _lbl = ttk.Label(outer, text="Downloads Log",
-                  style="S.White.Section.TLabel")
-        _lbl.pack(anchor="w", pady=(0, 6))
-        Tooltip(_lbl, "A color-coded record of every downloaded, skipped, and failed "
-                      "file. View it here in the built-in viewer, or open it in your "
-                      "system's default text editor.", wraplength=360)
+        _hdr = ttk.Frame(outer)
+        _hdr.pack(anchor="w", pady=(0, 6))
+        ttk.Label(_hdr, text="Downloads Log",
+                  style="S.White.Section.TLabel").pack(side="left")
+        _help = tk.Label(_hdr, text="?", font=("Segoe UI", 8, "bold"),
+                         fg="#7F7F7F", bg=BG, padx=3,
+                         highlightthickness=1, highlightbackground="#7F7F7F")
+        _help.pack(side="left", padx=(8, 0))
+        Tooltip(_help, "A color-coded record of every downloaded, skipped, and failed "
+                       "file. View it here in the built-in viewer, or open it in your "
+                       "system's default text editor.", wraplength=360)
 
         log_row = ttk.Frame(outer)
         log_row.pack(fill="x", pady=(0, 4))
 
-        ttk.Button(log_row, text="📋  View Log", style="Save.TButton",
+        ttk.Button(log_row, text="📋  View Log", style="DlBtn.TButton",
                    command=self._open_log_viewer).pack(side="left", padx=(0, 8))
 
-        ttk.Button(log_row, text="↗  Open in System Viewer", style="LightBlue.TButton",
+        ttk.Button(log_row, text="↗  Open in System Viewer", style="SysView.TButton",
                    command=self._open_log_external).pack(side="left", padx=(0, 16))
 
         # Show the resolved log path so the user always knows where it lives
@@ -3821,20 +3862,25 @@ class MP3DownloaderApp(tk.Tk):
         # ── Debug log ─────────────────────────────────────────────────────────
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(8, 20))
 
-        _lbl = ttk.Label(outer, text="Debug Log",
-                  style="S.White.Section.TLabel")
-        _lbl.pack(anchor="w", pady=(0, 6))
-        Tooltip(_lbl, "Detailed diagnostic log capturing cookie configuration, "
-                      "yt-dlp options, request/response data, and full error "
-                      "tracebacks. Useful for troubleshooting download failures.", wraplength=360)
+        _hdr = ttk.Frame(outer)
+        _hdr.pack(anchor="w", pady=(0, 6))
+        ttk.Label(_hdr, text="Debug Log",
+                  style="S.White.Section.TLabel").pack(side="left")
+        _help = tk.Label(_hdr, text="?", font=("Segoe UI", 8, "bold"),
+                         fg="#7F7F7F", bg=BG, padx=3,
+                         highlightthickness=1, highlightbackground="#7F7F7F")
+        _help.pack(side="left", padx=(8, 0))
+        Tooltip(_help, "Detailed diagnostic log capturing cookie configuration, "
+                       "yt-dlp options, request/response data, and full error "
+                       "tracebacks. Useful for troubleshooting download failures.", wraplength=360)
 
         dbg_row = ttk.Frame(outer)
         dbg_row.pack(fill="x", pady=(0, 4))
 
-        ttk.Button(dbg_row, text="🔍  View Debug Log", style="Save.TButton",
+        ttk.Button(dbg_row, text="🔍  View Debug Log", style="DlBtn.TButton",
                    command=self._open_debug_log_viewer).pack(side="left", padx=(0, 8))
 
-        ttk.Button(dbg_row, text="↗  Open in System Viewer", style="LightBlue.TButton",
+        ttk.Button(dbg_row, text="↗  Open in System Viewer", style="SysView.TButton",
                    command=self._open_debug_log_external).pack(side="left", padx=(0, 16))
 
         self._debug_path_lbl = ttk.Label(dbg_row, text="", style="S.Dim.TLabel")
@@ -3844,19 +3890,24 @@ class MP3DownloaderApp(tk.Tk):
         # ── Database management ────────────────────────────────────────────────
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(8, 20))
 
-        _lbl = ttk.Label(outer, text="Downloads Database",
-                  style="S.White.Section.TLabel")
-        _lbl.pack(anchor="w", pady=(0, 6))
-        Tooltip(_lbl, "The SQLite database tracks every download for fast "
-                      "lookups and Watch List history. If it gets corrupted "
-                      "or deleted, rebuild it from the files on disk.", wraplength=360)
+        _hdr = ttk.Frame(outer)
+        _hdr.pack(anchor="w", pady=(0, 6))
+        ttk.Label(_hdr, text="Downloads Database",
+                  style="S.White.Section.TLabel").pack(side="left")
+        _help = tk.Label(_hdr, text="?", font=("Segoe UI", 8, "bold"),
+                         fg="#7F7F7F", bg=BG, padx=3,
+                         highlightthickness=1, highlightbackground="#7F7F7F")
+        _help.pack(side="left", padx=(8, 0))
+        Tooltip(_help, "The SQLite database tracks every download for fast "
+                       "lookups and Watch List history. If it gets corrupted "
+                       "or deleted, rebuild it from the files on disk.", wraplength=360)
 
         db_row = ttk.Frame(outer)
         db_row.pack(fill="x", pady=(0, 4))
 
         self._open_db_btn = ttk.Button(
             db_row, text="🗂  Open Database",
-            style="Save.TButton",
+            style="DlBtn.TButton",
             command=self._open_database_viewer)
         self._open_db_btn.pack(side="left", padx=(0, 8))
         Tooltip(self._open_db_btn,
@@ -3922,11 +3973,11 @@ class MP3DownloaderApp(tk.Tk):
             "cookies_profile":  self._cookies_profile.get(),
             "cookie_file":      self._cookie_file.get(),
             "auto_add_to_watchlist": self._auto_add_to_watchlist.get(),
-            "auto_check_hours":   self._auto_check_hours.get(),
+            "auto_download_interval": self._auto_dl_interval.get(),
             "run_at_startup":     self._run_at_startup.get(),
             "minimize_to_tray":   self._minimize_to_tray.get(),
             "watchlist_scan_on_startup": self._watchlist_scan_on_startup.get(),
-            "watchlist_last_check": self._watchlist_last_check,
+            "watchlist_last_download": self._watchlist_last_download,
         })
         self._refresh_genre_list()
         self._update_save_preview()
@@ -4096,9 +4147,11 @@ class MP3DownloaderApp(tk.Tk):
         if hasattr(self, "_howto_lbl"):
             self._howto_lbl.config(fg=TEXT_DIM if enabled else GREY)
         if hasattr(self, "_howto_btn"):
+            # Light text so it stays legible on the grey (#7F7F7F) button in
+            # both states; dimmer when the cookie section is disabled.
             self._howto_btn.config(
                 state="normal" if enabled else "disabled",
-                fg=TEXT_DIM if enabled else GREY)
+                fg="#ffffff" if enabled else "#cfcfcf")
 
     def _resolve_sleep_range(self):
         """Return (min, max) seconds based on the current throttle mode."""
@@ -4132,23 +4185,25 @@ class MP3DownloaderApp(tk.Tk):
         save_config(cfg)
 
     def _autosave_automation_settings(self, *_):
-        """Persist auto-check interval, tray, and last-check time."""
+        """Persist the auto-download interval, tray, startup-scan toggle, and the
+        last-download schedule anchor."""
         cfg = load_config()
-        cfg["auto_check_hours"] = self._auto_check_hours.get()
+        cfg["auto_download_interval"] = self._auto_dl_interval.get()
         cfg["minimize_to_tray"] = self._minimize_to_tray.get()
         cfg["watchlist_scan_on_startup"] = self._watchlist_scan_on_startup.get()
-        cfg["watchlist_last_check"] = self._watchlist_last_check
+        cfg["watchlist_last_download"] = self._watchlist_last_download
         save_config(cfg)
         # Reschedule the timer whenever the interval changes.
-        self._reschedule_auto_check()
+        self._reschedule_auto_download()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # Watch List — automation scheduler (periodic scan + auto-download timer)
+    # Watch List — automation scheduler (periodic scan-all + auto-download timer)
     # ══════════════════════════════════════════════════════════════════════════
     def _watchlist_startup_scan(self):
         """On launch, scan every watched channel (all platforms) so the cards
         show current new-track counts. Runs in the background via
-        _watchlist_scan_all; skipped if a scan/download is already underway."""
+        _watchlist_scan_all; skipped if a scan/download is already underway.
+        This only scans — it does not move the auto-download schedule anchor."""
         if not self._watchlist_scan_on_startup.get():
             return
         try:
@@ -4161,69 +4216,102 @@ class MP3DownloaderApp(tk.Tk):
             return
         self._watchlist_log("🚀 Startup check: scanning all channels…", "info")
         self._watchlist_scan_all()
-        # Stamp last-check so the interval timer counts from now, not from a
-        # stale value (prevents an immediate second auto-check).
-        self._watchlist_last_check = int(time.time())
-        self._autosave_automation_settings()
 
-    def _reschedule_auto_check(self):
-        """(Re)arm the periodic auto-check timer from the current interval."""
-        if self._auto_check_after_id is not None:
+    def _reschedule_auto_download(self):
+        """(Re)arm the periodic auto-download timer from the current interval and
+        refresh the 'Next auto-download' label in the Watch List tab. Runs on
+        startup, on interval change, and after each Download All New."""
+        if self._auto_dl_after_id is not None:
             try:
-                self.after_cancel(self._auto_check_after_id)
+                self.after_cancel(self._auto_dl_after_id)
             except Exception:
                 pass
-            self._auto_check_after_id = None
-        secs = auto_check_hours_to_seconds(self._auto_check_hours.get())
+            self._auto_dl_after_id = None
+        secs = interval_label_to_seconds(self._auto_dl_interval.get())
         if secs is None:
-            return  # 'Off' — no timer
+            self._wl_next_dl_ts = None      # 'Off' — no timer
+            self._wl_update_next_dl_label()
+            return
         now = int(time.time())
-        elapsed = now - (self._watchlist_last_check or 0)
+        elapsed = now - (self._watchlist_last_download or 0)
         delay_ms = 1000 if elapsed >= secs else int((secs - elapsed) * 1000)
-        self._auto_check_after_id = self.after(delay_ms, self._auto_check_tick)
+        self._wl_next_dl_ts = now + delay_ms // 1000
+        self._auto_dl_after_id = self.after(delay_ms, self._auto_download_tick)
+        self._wl_update_next_dl_label()
 
-    def _auto_check_tick(self):
-        """Fire one scheduled check: scan all, then auto-download new."""
-        self._auto_check_after_id = None
-        secs = auto_check_hours_to_seconds(self._auto_check_hours.get())
+    def _auto_download_tick(self):
+        """Fire one scheduled run: scan all, then auto-download new tracks."""
+        self._auto_dl_after_id = None
+        secs = interval_label_to_seconds(self._auto_dl_interval.get())
         if secs is None:
+            self._wl_next_dl_ts = None
+            self._wl_update_next_dl_label()
             return
-        # Skip (don't interrupt) if a manual scan/download is already running.
+        # Skip (don't interrupt) if a manual scan/download is already running;
+        # try again shortly.
         if self._downloading or self._wl_download_active or self._wl_scan_active:
-            self._auto_check_after_id = self.after(60_000, self._auto_check_tick)
+            self._auto_dl_after_id = self.after(60_000, self._auto_download_tick)
             return
-        self._watchlist_log("⏰ Scheduled auto-check starting…", "info")
-        self._auto_check_poll_count = 0
+        self._watchlist_log("⏰ Scheduled auto-download starting…", "info")
+        self._auto_dl_poll_count = 0
         self._watchlist_scan_all()
         # Poll for scan completion, then download + notify.
-        self.after(2000, self._auto_check_after_scan)
+        self.after(2000, self._auto_download_after_scan)
 
     # Cap the post-scan wait so a stuck scan can't poll forever (~5 min @ 2s).
-    _AUTO_CHECK_MAX_POLLS = 150
+    _AUTO_DOWNLOAD_MAX_POLLS = 150
 
-    def _auto_check_after_scan(self):
-        """Once scans settle (or we give up waiting), download new tracks + notify."""
+    def _auto_download_after_scan(self):
+        """Once scans settle (or we give up waiting), download new tracks + notify.
+        When a download starts, _watchlist_download_all_new owns the schedule
+        anchor; otherwise advance it here so the next run is a full interval away."""
         if self._wl_scan_active > 0:
-            self._auto_check_poll_count += 1
-            if self._auto_check_poll_count <= self._AUTO_CHECK_MAX_POLLS:
-                self.after(2000, self._auto_check_after_scan)
+            self._auto_dl_poll_count += 1
+            if self._auto_dl_poll_count <= self._AUTO_DOWNLOAD_MAX_POLLS:
+                self.after(2000, self._auto_download_after_scan)
                 return
             # Timed out waiting — record the attempt and reschedule next cycle.
             self._watchlist_log(
-                "⏰ Auto-check gave up waiting for scans to finish.", "info")
+                "⏰ Auto-download gave up waiting for scans to finish.", "info")
+            self._watchlist_last_download = int(time.time())
+            self._autosave_automation_settings()  # persist anchor + reschedule
+            return
+
+        channels = self._db.get_all_watchlist_channels()
+        total_new = sum(int(c.get("pending_new_count", 0)) for c in channels)
+        if total_new > 0:
+            n_ch = sum(1 for c in channels if int(c.get("pending_new_count", 0)) > 0)
+            # Download All New stamps the anchor + reschedules for us.
+            self._watchlist_download_all_new()
+            self._notify_tray(
+                "Watch List",
+                f"{total_new} new track(s) downloading across {n_ch} channel(s)")
         else:
-            channels = self._db.get_all_watchlist_channels()
-            total_new = sum(int(c.get("pending_new_count", 0)) for c in channels)
-            if total_new > 0:
-                n_ch = sum(1 for c in channels if int(c.get("pending_new_count", 0)) > 0)
-                self._watchlist_download_all_new()
-                self._notify_tray(
-                    "Watch List",
-                    f"{total_new} new track(s) downloading across {n_ch} channel(s)")
-            else:
-                self._watchlist_log("⏰ Auto-check complete — no new tracks.", "info")
-        self._watchlist_last_check = int(time.time())
-        self._autosave_automation_settings()  # persists last_check + reschedules
+            self._watchlist_log("⏰ Auto-download complete — no new tracks.", "info")
+            self._watchlist_last_download = int(time.time())
+            self._autosave_automation_settings()  # persist anchor + reschedule
+
+    def _wl_update_next_dl_label(self):
+        """Refresh the 'Next auto-download' line under the Watch List toolbar."""
+        lbl = getattr(self, "_wl_next_dl_lbl", None)
+        if lbl is None:
+            return
+        ts = self._wl_next_dl_ts
+        if not ts:
+            txt = "⏰  Next auto-download:  Off"
+        else:
+            try:
+                dt = datetime.fromtimestamp(ts)
+                hour = dt.strftime("%I").lstrip("0") or "12"
+                txt = (f"⏰  Next auto-download:  {dt.strftime('%a %b')} "
+                       f"{dt.day}, {dt.strftime('%Y')}  ·  "
+                       f"{hour}:{dt.strftime('%M %p')}")
+            except Exception:
+                txt = "⏰  Next auto-download:  —"
+        try:
+            lbl.config(text=txt)
+        except Exception:
+            pass
 
     # ══════════════════════════════════════════════════════════════════════════
     # System tray & window lifecycle — hide/show, quit, run-at-startup toggle
@@ -4263,9 +4351,9 @@ class MP3DownloaderApp(tk.Tk):
 
     def _quit_app(self):
         """Real exit: stop tray, cancel timer, destroy."""
-        if self._auto_check_after_id is not None:
+        if self._auto_dl_after_id is not None:
             try:
-                self.after_cancel(self._auto_check_after_id)
+                self.after_cancel(self._auto_dl_after_id)
             except Exception:
                 pass
         if self._tray_icon is not None:
@@ -4273,11 +4361,23 @@ class MP3DownloaderApp(tk.Tk):
         self.destroy()
 
     def _on_window_close(self):
-        """WM_DELETE handler: to tray if enabled, else real quit."""
-        if self._minimize_to_tray.get() and sys.platform == "win32":
-            self._hide_to_tray()
-        else:
+        """WM_DELETE handler: always confirm before really quitting."""
+        if messagebox.askyesno(
+                "Close DJ-CrateBuilder",
+                "Are you sure you want to close DJ-CrateBuilder?\n\n"
+                "Auto-downloads won't run while it's closed.",
+                parent=self):
             self._quit_app()
+        # 'No' — leave the window exactly as it was.
+
+    def _on_minimize(self, event):
+        """Minimize button → hide to the system tray when that option is on.
+        Only the toplevel's own iconify counts; child <Unmap> events and our
+        own withdraw()/deiconify() (states 'withdrawn'/'normal') are ignored."""
+        if (event.widget is self and self.state() == "iconic"
+                and self._minimize_to_tray.get() and sys.platform == "win32"):
+            # Defer so the iconify settles before we withdraw + show the tray.
+            self.after(10, self._hide_to_tray)
 
     def _on_run_at_startup_toggle(self):
         """Add/remove the Windows Run entry to match the checkbox."""
@@ -5207,8 +5307,10 @@ class MP3DownloaderApp(tk.Tk):
                         f"WL BATCH CLEANUP | error: {wle}")
                 finally:
                     self._active_watchlist_batch = None
-                # Refresh the Watch List UI if it exists
-                self.after(200, self._watchlist_refresh)
+                # Update just the batched cards (status back to idle, Cancel
+                # button gone) — per-card so the rest of the list isn't blanked.
+                done_cids = list(wl_batch.get("channel_ids", []))
+                self.after(200, lambda c=done_cids: self._watchlist_update_cards(c))
             self._wl_download_active = False
             # Restore the Batch Queue panel to the user's manual batch view.
             self._wl_batch_channels = []
@@ -6027,7 +6129,7 @@ class MP3DownloaderApp(tk.Tk):
         hdr.pack(fill="x", pady=(0, 4))
 
         tk.Label(hdr, text="👁", font=("Segoe UI", 20),
-                 fg=WL_PURPLE, bg=BG).pack(side="left", padx=(0, 10))
+                 fg=WL_BLUE, bg=BG).pack(side="left", padx=(0, 10))
         ttk.Label(hdr, text="Watch List",
                   style="Title.TLabel").pack(side="left", pady=(2, 0))
 
@@ -6046,8 +6148,8 @@ class MP3DownloaderApp(tk.Tk):
         self._wl_add_btn = tk.Button(
             toolbar, text="  +  Add Channel  ",
             font=("Segoe UI", 10, "bold"),
-            bg=WL_DARK, fg=TEXT,
-            activebackground=WL_PURPLE, activeforeground=TEXT,
+            bg=WL_BLUE_DARK, fg=TEXT,
+            activebackground=WL_BLUE, activeforeground=TEXT,
             relief="flat", bd=0, padx=10, pady=5, cursor="hand2",
             command=self._watchlist_open_add_dialog)
         self._wl_add_btn.pack(side="left", padx=(0, 6))
@@ -6100,6 +6202,13 @@ class MP3DownloaderApp(tk.Tk):
         Tooltip(self._wl_cancel_btn,
                 "Stop all in-progress Watch List scans and downloads.")
 
+        # Next scheduled auto-download, pinned just below the button row.
+        self._wl_next_dl_lbl = tk.Label(
+            top_fixed, text="", font=("Segoe UI", 11, "bold"),
+            fg=WL_BLUE, bg=BG, anchor="w")
+        self._wl_next_dl_lbl.pack(fill="x", pady=(8, 12))
+        self._wl_update_next_dl_label()
+
         # ── Resizable split:  scrollable cards (top)  /  pinned log (bottom) ──
         paned = tk.PanedWindow(
             parent, orient="vertical", bg=BORDER, sashwidth=6, sashpad=0,
@@ -6117,17 +6226,14 @@ class MP3DownloaderApp(tk.Tk):
 
         # Pane 2 — scan log, pinned at the bottom and always visible.
         log_frame = ttk.Frame(paned, padding=(28, 6, 28, 10))
-
-        tk.Frame(log_frame, height=1, bg=BORDER).pack(fill="x", pady=(0, 8))
-        tk.Label(log_frame, text="Scan Log", font=("Segoe UI", 10, "bold"),
-                 fg=TEXT_DIM, bg=BG, anchor="w").pack(anchor="w", pady=(0, 4))
+        self._wl_log_frame = log_frame
 
         log_wrap = tk.Frame(log_frame, bg=BG)
         log_wrap.pack(fill="both", expand=True)
         log_sb = ttk.Scrollbar(log_wrap, orient="vertical")
         log_sb.pack(side="right", fill="y")
         self._wl_log_txt = tk.Text(
-            log_wrap, height=6, font=("Consolas", 9),
+            log_wrap, height=10, font=("Consolas", 9),
             bg="#0a0a0a", fg=TEXT_DIM, relief="flat",
             wrap="word", state="disabled",
             selectbackground=BORDER, selectforeground=TEXT,
@@ -6138,7 +6244,7 @@ class MP3DownloaderApp(tk.Tk):
         log_sb.config(command=self._wl_log_txt.yview)
         self._wl_log_txt.tag_configure("ok", foreground=SUCCESS)
         self._wl_log_txt.tag_configure("err", foreground=YT_RED)
-        self._wl_log_txt.tag_configure("info", foreground=WL_PURPLE)
+        self._wl_log_txt.tag_configure("info", foreground=WL_BLUE)
 
         # Assemble the split: cards stretch to fill, log keeps its size.
         paned.add(cards_area, stretch="always", minsize=140)
@@ -6150,14 +6256,16 @@ class MP3DownloaderApp(tk.Tk):
         self._watchlist_refresh()
 
     def _wl_init_log_sash(self):
-        """Position the cards/log divider so the pinned scan log starts about
-        150px tall. The user can drag it from there."""
+        """Position the cards/log divider so the pinned scan log opens tall
+        enough to show its full ~10 lines. The user can drag it from there."""
         try:
             paned = self._wl_paned
             paned.update_idletasks()
             h = paned.winfo_height()
-            if h > 260:
-                paned.sash_place(0, 0, h - 150)
+            log_h = self._wl_log_frame.winfo_reqheight()
+            # Only resize when the cards pane keeps at least its minimum height.
+            if h - log_h > 140:
+                paned.sash_place(0, 0, h - log_h)
         except Exception:
             pass
 
@@ -6185,11 +6293,25 @@ class MP3DownloaderApp(tk.Tk):
         if getattr(self, "_wl_download_active", False):
             self.after(0, lambda: self._watchlist_log(msg, tag))
 
+    def _wl_update_dl_all_count(self):
+        """Refresh just the 'Download All New (N)' button count from the DB,
+        without rebuilding any cards."""
+        try:
+            total_pending = self._db.get_total_pending_count()
+            self._wl_dl_all_btn.config(
+                text=f"  ⬇  Download All New ({total_pending})  ")
+        except Exception:
+            pass
+
     def _watchlist_refresh(self):
-        """Rebuild all channel cards from the database."""
+        """Rebuild ALL channel cards from the database. Use this only for
+        structural changes (add / remove / import / edit-save); per-channel
+        status changes should call _watchlist_update_card so the rest of the
+        list isn't torn down and rebuilt (which visibly blanks every card)."""
         # Clear existing cards
         for w in self._wl_cards_frame.winfo_children():
             w.destroy()
+        self._wl_card_widgets = {}   # stale frames are gone; rebuild the index
 
         channels = self._db.get_all_watchlist_channels()
 
@@ -6204,18 +6326,45 @@ class MP3DownloaderApp(tk.Tk):
             for ch in channels:
                 self._watchlist_build_channel_card(self._wl_cards_frame, ch)
 
-        # Update the Download All button count
-        total_pending = self._db.get_total_pending_count()
-        self._wl_dl_all_btn.config(
-            text=f"  ⬇  Download All New ({total_pending})  ")
+        self._wl_update_dl_all_count()
+
+    def _watchlist_update_card(self, cid):
+        """Redraw a single channel card in place — its status, details and
+        action buttons — without disturbing the other cards. Falls back to a
+        full refresh if the card frame is gone or the channel no longer exists
+        (i.e. the card *set* changed)."""
+        card = self._wl_card_widgets.get(cid)
+        ch = self._db.get_watchlist_channel(cid)
+        if card is None or not card.winfo_exists() or ch is None:
+            self._watchlist_refresh()
+            return
+        for w in card.winfo_children():
+            w.destroy()
+        self._watchlist_fill_card(card, ch)
+        self._wl_update_dl_all_count()
+
+    def _watchlist_update_cards(self, cids):
+        """Redraw several cards in place (used by the multi-channel download
+        paths). Each is independent; the rest of the list is untouched."""
+        for cid in cids:
+            self._watchlist_update_card(cid)
 
     def _watchlist_build_channel_card(self, parent, ch):
-        """Build one dark card for a watchlist channel entry."""
+        """Create one dark card frame for a watchlist channel, register it for
+        in-place updates, and fill in its content."""
         cid = ch["id"]
 
         card = tk.Frame(parent, bg=SURFACE, padx=14, pady=10,
                         highlightthickness=1, highlightbackground=BORDER)
         card.pack(fill="x", pady=(0, 8))
+        self._wl_card_widgets[cid] = card
+        self._watchlist_fill_card(card, ch)
+
+    def _watchlist_fill_card(self, card, ch):
+        """Build the inner rows (name/status, details, action buttons) into a
+        card frame. Called on first build and on every in-place update, so the
+        card frame is reused while its contents are rebuilt from fresh DB data."""
+        cid = ch["id"]
 
         # ── Row 1: Name + platform/genre ──────────────────────────────────
         top = tk.Frame(card, bg=SURFACE)
@@ -6238,7 +6387,7 @@ class MP3DownloaderApp(tk.Tk):
             st_color = SUCCESS
         elif status == "scanning":
             st_text = "⟳ scanning…"
-            st_color = WL_PURPLE
+            st_color = WL_BLUE
         elif status == "needs_resolve":
             st_text = "⚠ needs channel ID"
             st_color = "#f59e0b"   # amber
@@ -6260,9 +6409,9 @@ class MP3DownloaderApp(tk.Tk):
         mid = tk.Frame(card, bg=SURFACE)
         mid.pack(fill="x", pady=(4, 0))
 
-        last_scan = format_timestamp_relative(ch.get("last_scanned_timestamp"))
+        last_dl = format_timestamp_relative(ch.get("last_download_started"))
         cutoff_readable = format_yyyymmdd_readable(ch.get("scan_cutoff_date", ""))
-        details = (f"Last scan: {last_scan}  •  "
+        details = (f"Last download: {last_dl}  •  "
                    f"Cutoff: {cutoff_readable}  •  "
                    f"Total downloaded: {ch.get('total_downloaded', 0)}")
         if ch.get("auto_added"):
@@ -6565,7 +6714,7 @@ class MP3DownloaderApp(tk.Tk):
                  justify="left").pack(anchor="w", pady=(2, 12))
 
         status_lbl = tk.Label(outer, text="🔍  Searching YouTube…",
-                              font=("Segoe UI", 10), fg=WL_PURPLE, bg=BG)
+                              font=("Segoe UI", 10), fg=WL_BLUE, bg=BG)
         status_lbl.pack(anchor="w", pady=(0, 8))
 
         results_frame = tk.Frame(outer, bg=BG)
@@ -6686,7 +6835,7 @@ class MP3DownloaderApp(tk.Tk):
                         close_fn=_close)
                     return
                 # Need to look the URL up to get its channel_id.
-                status_lbl.config(text="Resolving pasted URL…", fg=WL_PURPLE)
+                status_lbl.config(text="Resolving pasted URL…", fg=WL_BLUE)
 
                 def _lookup():
                     try:
@@ -6723,8 +6872,8 @@ class MP3DownloaderApp(tk.Tk):
                 success_msg=f"Resolved: {ch['display_name']}", close_fn=_close)
 
         tk.Button(btn_row, text="  ✓ Use This Channel  ",
-                  font=("Segoe UI", 10, "bold"), bg=WL_DARK, fg=TEXT,
-                  activebackground=WL_PURPLE, activeforeground=TEXT,
+                  font=("Segoe UI", 10, "bold"), bg=WL_BLUE_DARK, fg=TEXT,
+                  activebackground=WL_BLUE, activeforeground=TEXT,
                   relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
                   command=_confirm).pack(side="left")
         tk.Button(btn_row, text="  Skip  ",
@@ -6732,6 +6881,17 @@ class MP3DownloaderApp(tk.Tk):
                   activebackground=BORDER, activeforeground=TEXT,
                   relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
                   command=lambda: _close(False)).pack(side="left", padx=(8, 0))
+
+        def _cancel_all():
+            # Stop the whole Fix-Channels pass (this channel + all remaining).
+            self._wl_fix_abort = True
+            _close(False)
+
+        tk.Button(btn_row, text="  ✕ Cancel  ",
+                  font=("Segoe UI", 10), bg=YT_RED, fg=TEXT,
+                  activebackground=YT_RED, activeforeground=TEXT,
+                  relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
+                  command=_cancel_all).pack(side="left", padx=(8, 0))
 
     def _watchlist_fix_broken(self):
         """Walk every unresolved channel through the resolve dialog, one at a
@@ -6748,8 +6908,13 @@ class MP3DownloaderApp(tk.Tk):
             f"Fixing {len(broken)} channel(s) needing resolution…", "info")
 
         order = [c["id"] for c in broken]
+        self._wl_fix_abort = False   # reset; Cancel in the dialog sets this True
 
         def _next(i):
+            if self._wl_fix_abort:
+                self._watchlist_log("Channel fix pass cancelled.", "info")
+                self._watchlist_refresh()
+                return
             if i >= len(order):
                 self._watchlist_log("Channel fix pass complete.", "ok")
                 self._watchlist_refresh()
@@ -6931,8 +7096,8 @@ class MP3DownloaderApp(tk.Tk):
 
         tk.Button(btn_row, text="  Save  ",
                   font=("Segoe UI", 10, "bold"),
-                  bg=WL_DARK, fg=TEXT,
-                  activebackground=WL_PURPLE, activeforeground=TEXT,
+                  bg=WL_BLUE_DARK, fg=TEXT,
+                  activebackground=WL_BLUE, activeforeground=TEXT,
                   relief="flat", bd=0, padx=16, pady=6, cursor="hand2",
                   command=_save).pack(side="left", padx=(0, 8))
         tk.Button(btn_row, text="  Cancel  ",
@@ -7012,7 +7177,7 @@ class MP3DownloaderApp(tk.Tk):
                   activebackground=BORDER, activeforeground=TEXT,
                   relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
                   command=_open_link).pack(side="left", padx=(0, 8))
-        tk.Button(link_btn_row, text="  🛠 Edit Link  ",
+        tk.Button(link_btn_row, text="  🛠 Smart-Edit Link  ",
                   font=("Segoe UI", 9), bg=SURFACE2, fg=TEXT_DIM,
                   activebackground=BORDER, activeforeground=TEXT,
                   relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
@@ -7068,8 +7233,8 @@ class MP3DownloaderApp(tk.Tk):
 
         tk.Button(btn_row, text="  Save  ",
                   font=("Segoe UI", 10, "bold"),
-                  bg=WL_DARK, fg=TEXT,
-                  activebackground=WL_PURPLE, activeforeground=TEXT,
+                  bg=WL_BLUE_DARK, fg=TEXT,
+                  activebackground=WL_BLUE, activeforeground=TEXT,
                   relief="flat", bd=0, padx=16, pady=6, cursor="hand2",
                   command=_save).pack(side="left", padx=(0, 8))
         tk.Button(btn_row, text="  Cancel  ",
@@ -7116,7 +7281,7 @@ class MP3DownloaderApp(tk.Tk):
                 need = ("needs its YouTube channel resolved first — click "
                         "Fix Link (or “Fix Channels”).")
             self._watchlist_log(f"“{ch['display_name']}” {need}", "err")
-            self._watchlist_refresh()
+            self._watchlist_update_card(cid)
             return
 
         # If nothing else is in flight, this is a fresh user-initiated scan
@@ -7131,7 +7296,7 @@ class MP3DownloaderApp(tk.Tk):
         self._wl_cancel_cids.discard(cid)
 
         self._db.update_watchlist_status(cid, "scanning")
-        self._watchlist_refresh()
+        self._watchlist_update_card(cid)
         self._watchlist_log(f"Scanning: {ch['display_name']}…", "info")
 
         self._wl_scan_active += 1
@@ -7285,12 +7450,13 @@ class MP3DownloaderApp(tk.Tk):
                 self._wl_cancel_cids.discard(cid)
                 self._wl_scan_active = max(0, self._wl_scan_active - 1)
                 self.after(0, self._wl_update_cancel_btn_state)
-                # Re-render the cards from the final DB status on EVERY exit —
-                # including the cancel-return paths above. Previously this ran
-                # after the try/finally, so a cancelled scan returned early and
-                # left its card stuck showing "scanning" even though the DB row
-                # was already reset to "idle".
-                self.after(0, self._watchlist_refresh)
+                # Re-render just THIS card from the final DB status on EVERY
+                # exit — including the cancel-return paths above. Previously this
+                # ran after the try/finally, so a cancelled scan returned early
+                # and left its card stuck showing "scanning" even though the DB
+                # row was already reset to "idle". Per-card (not a full refresh)
+                # so a parallel Scan All doesn't blank every other card.
+                self.after(0, lambda c=cid: self._watchlist_update_card(c))
 
         self._run_bg(_do_scan)
 
@@ -7388,6 +7554,9 @@ class MP3DownloaderApp(tk.Tk):
         self._active_watchlist_batch = {
             "channel_ids": [cid],
         }
+        # Record when this channel last started updating (downloading). A single
+        # card download does not move the global auto-download schedule anchor.
+        self._db.set_watchlist_download_started([cid], int(time.time()))
         # Show this channel in the Main tab's Batch Queue panel.
         self._wl_batch_channels = [ch["display_name"]]
         self._wl_batch_active_idx = 0
@@ -7405,8 +7574,8 @@ class MP3DownloaderApp(tk.Tk):
         self._batch_rebuild_rows()   # show the channel in the Batch Queue panel
 
         self._run_bg(self._batch_worker, run_batch)
-        # Rebuild cards so the downloading channel shows a Cancel button.
-        self._watchlist_refresh()
+        # Update just this card so the downloading channel shows a Cancel button.
+        self._watchlist_update_card(cid)
 
     # ── Download all new across all channels ──────────────────────────────────
     def _watchlist_download_all_new(self):
@@ -7452,6 +7621,13 @@ class MP3DownloaderApp(tk.Tk):
         self._active_watchlist_batch = {
             "channel_ids": channel_ids,
         }
+        # Record when these channels last started updating (downloading), and
+        # anchor the auto-download schedule to now: any full Download All New
+        # (manual or scheduled) resets the countdown to the next auto run.
+        now = int(time.time())
+        self._db.set_watchlist_download_started(channel_ids, now)
+        self._watchlist_last_download = now
+        self._autosave_automation_settings()  # persist anchor + reschedule + label
         # Show every channel in this batch in the Main tab's Batch Queue panel,
         # in the same order the worker processes them.
         self._wl_batch_channels = [item["channel_name"] for item in run_batch]
@@ -7470,8 +7646,8 @@ class MP3DownloaderApp(tk.Tk):
         self._batch_rebuild_rows()   # show the channels in the Batch Queue panel
 
         self._run_bg(self._batch_worker, run_batch)
-        # Rebuild cards so the downloading channel(s) show a Cancel button.
-        self._watchlist_refresh()
+        # Update just the batched cards so they show a Cancel button.
+        self._watchlist_update_cards(channel_ids)
 
     # ── Auto-add after a normal channel download ──────────────────────────────
     def _watchlist_auto_add_if_enabled(self, url, display_name, genre,

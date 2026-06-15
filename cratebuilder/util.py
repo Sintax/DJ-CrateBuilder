@@ -102,13 +102,24 @@ def format_timestamp_relative(ts):
         return "Unknown"
 
 
-def auto_check_hours_to_seconds(value):
-    """Map an interval dropdown label to seconds, or None for 'Off'/unknown."""
+def interval_label_to_seconds(value):
+    """Map an interval dropdown label ('6 hours', '1 day', '2 days', '1 week',
+    'Off') to seconds, or None for 'Off'/blank/unknown.
+
+    The label is '<integer> <unit>' where unit is hour(s), day(s), or week(s)."""
     try:
         if not value or value.strip().lower() == "off":
             return None
-        hours = int(value.strip().split()[0])
-        return hours * 3600
+        parts = value.strip().split()
+        n = int(parts[0])
+        unit = parts[1].lower() if len(parts) > 1 else "hours"
+        if unit.startswith("week"):
+            return n * 7 * 86400
+        if unit.startswith("day"):
+            return n * 86400
+        if unit.startswith("hour"):
+            return n * 3600
+        return None
     except (ValueError, AttributeError, IndexError):
         return None
 

@@ -1,7 +1,55 @@
 # HANDOFF — DJ-CrateBuilder v1.3 Final Build (Automation + Refactor)
 
 > ════════════════════════════════════════════════════════════════════════
-> # ⏩ CURRENT EFFORT (2026-06-02): Fix Link repair + SoundCloud + startup scan
+> # ⏩ CURRENT EFFORT (2026-06-15): Watch List UX polish + schedule-from-launch + Settings layout
+> ════════════════════════════════════════════════════════════════════════
+>
+> **Read THIS first — most recent work. Every section below (including the 2026-06-15 auto-download one) is a finished prior effort kept for reference; some of their symbol names/defaults/behaviours are now stale where this section says so. §7 "Architecture map" tracks current names — trust §7 over historical prose.**
+>
+> **STATUS: CODE DONE & COMMITTED on `v1.3` (this commit). 86 tests pass, `py_compile` clean. NOT pushed. Remaining = finishing-a-development-branch (ASK user: push v1.3 / PR / local — NEVER push or touch `main` without explicit OK).**
+>
+> **All work is in the Watch List + Settings tabs of `DJ-CrateBuilder_v1.3.py` (plus `tests/test_settings_vars.py`). Three chunks:**
+>
+> **(1) Watch List UX fixes**
+> - **"Edit Link" → "Smart-Edit Link"** on the channel Edit dialog (it opens the smart search/resolve flow).
+> - **Red "Cancel" in the "Fix Channel" dialog** (`_watchlist_resolve_dialog`): new `self._wl_fix_abort` flag; `_watchlist_fix_broken._next()` checks it and stops the whole pass ("Channel fix pass cancelled."). "Skip" still skips one. The native SoundCloud `askstring` variant was left as-is (it already has its own Cancel).
+> - **Minimize → tray, Close → confirm.** `_on_window_close` now ALWAYS pops a Yes/No `messagebox.askyesno` quit confirm (only Yes quits — it no longer hides to tray). New `_on_minimize` bound to `<Unmap>` hides to tray when `minimize_to_tray` is on and the window actually iconified (guard: `event.widget is self and self.state()=="iconic"`); otherwise normal taskbar minimize.
+> - **Per-card in-place refresh (kills the full-list flicker).** Card builder split into `_watchlist_build_channel_card` (creates+registers the frame in `self._wl_card_widgets[cid]`) + `_watchlist_fill_card` (fills content). New `_watchlist_update_card(cid)` / `_watchlist_update_cards(cids)` redraw only the affected card(s); "Download All New (N)" count pulled into `_wl_update_dl_all_count()`. Scan-start, scan-finish, single + all download starts, and the batch-finish all now update only their own card(s); structural ops (add/remove/edit/import/resolve-close/initial) still call `_watchlist_refresh()`.
+> - **"Next auto-download" label**: bigger + bold (`("Segoe UI", 11, "bold")`); it already recalcs on interval change via the `_auto_dl_interval` trace → `_autosave_automation_settings` → `_reschedule_auto_download`.
+>
+> **(2) Auto-download schedule now counts from APP START (supersedes the 2026-06-15 "first-run anchor" note below).** `__init__` sets `self._watchlist_last_download = int(time.time())` on EVERY launch (no longer reads the stored/first-launch value for scheduling). So **Next = (this launch's time) + interval**. A later Download All New (manual or auto) still re-anchors to that download, keeping subsequent runs one interval apart. Test renamed: `test_legacy_auto_check_keys_carry_over` → `test_legacy_auto_check_interval_carries_over` (interval still carries over from an old config; the stale stored anchor is intentionally ignored in favor of launch time).
+>
+> **(3) Settings tab layout/cosmetics** (`_build_settings_tab`)
+> - Time Limiter slider `length` 340 → **227** (shortened ~1/3).
+> - Tooltip added to the **"Throttle Requests"** checkbox.
+> - How-To **"VIEW"** button recolored to `#7F7F7F` (white text; the cookie enable/disable handler now keeps it white/`#cfcfcf` so it stays legible on grey).
+> - Two new ttk styles: **`DlBtn.TButton`** (`#B3B3B3`) on the 3 ex-green buttons (View Log / View Debug Log / Open Database); **`SysView.TButton`** (`#7F7F7F`) on the 2 "Open in System Viewer" buttons. (Dedicated styles, so the shared `Save`/`LightBlue` styles are untouched. Orange "Rebuild Database" left alone.)
+> - Light-grey **⚠** icon right of the Profile entry with tooltip "Leave blank to use the default browser profile!" — replaces the old tooltip that was on the entry.
+> - Grey **boxed "?"** icon (a `?` with a thin grey outline) right of the **Downloads Log / Debug Log / Downloads Database** headers; each header's tooltip moved onto its icon.
+> - **"Automation" header → "Automation/Startup"**, and the section reordered so the bottom is **Scan-Watch-List-on-startup → Auto-add-channels-to-Watch-List → Auto-download interval dropdown** (Run-at-startup + Minimize-to-tray above them). "Auto-add" was pulled up from the standalone **"Watch List"** settings section, which was its only control — that now-empty section was removed (doubled divider collapsed).
+>
+> ════════════════════════════════════════════════════════════════════════
+> # ⏩ PRIOR EFFORT (2026-06-15a): Auto-download scheduler (replaces "Check watched channels")
+> ════════════════════════════════════════════════════════════════════════
+>
+> **Finished prior effort. NOTE: its "First-run anchor" bullet below is SUPERSEDED — the schedule now counts from app start each launch (see current effort above).**
+>
+> **STATUS: DONE & COMMITTED on `v1.3`. (Was 86 tests at the time.)**
+>
+> **What changed — a relabel + enhancement of the EXISTING scan→wait→download engine, not a new engine.** The old "Check watched channels every:" timer already did scan-all → wait for every scan → Download All New; this renames it, broadens the intervals, surfaces the next run time, and tracks per-channel download times.
+> - **Settings "Automation":** dropdown is now **"Auto-download Watch-List channels every:"**, options `Off, 6 hours, 12 hours, 1 day, 2 days, 3 days, 1 week`, **default `1 day`**.
+> - **Renames (grep-verified, code + tests):** module fn `auto_check_hours_to_seconds`→**`interval_label_to_seconds`** (now parses hours/days/weeks — was hours-only, so "1 day" used to mis-parse as 1 hour); StringVar `_auto_check_hours`→**`_auto_dl_interval`**; methods `_reschedule_auto_check`/`_auto_check_tick`/`_auto_check_after_scan`→**`_reschedule_auto_download`/`_auto_download_tick`/`_auto_download_after_scan`**; ids `_auto_check_after_id`→`_auto_dl_after_id`, `_auto_check_poll_count`→`_auto_dl_poll_count`, `_AUTO_CHECK_MAX_POLLS`→`_AUTO_DOWNLOAD_MAX_POLLS`; constant `AUTO_CHECK_OPTIONS`→**`AUTO_DOWNLOAD_OPTIONS`**.
+> - **Config keys:** `auto_check_hours`→`auto_download_interval`, `watchlist_last_check`→`watchlist_last_download`. Both READ the old key as a fallback so existing configs carry over on upgrade.
+> - **Next-scheduled line** in the Watch List tab under the toolbar: `self._wl_next_dl_lbl` / `_wl_update_next_dl_label()` formatted from `self._wl_next_dl_ts`. Refreshed on startup, on interval change, and after each Download All New (manual OR auto — a manual Download All New resets the countdown to the next auto run).
+> - **Per-channel "Last download" replaces "Last scan" on the cards** (the DB-window tree "Last scan" column is intentionally KEPT). New DB column `watchlist.last_download_started` (**SCHEMA_VERSION = 3**, idempotent ALTER migration) + `db.set_watchlist_download_started(channel_ids, timestamp)`. Stamped for all included channels when Download All New starts; for the one channel on a per-card download. The scan engine + `last_scanned_timestamp` write are unchanged.
+> - **First-run anchor:** ~~`__init__` seeds `watchlist_last_download` to "now" when unset~~ **— SUPERSEDED (see current effort):** `__init__` now sets `watchlist_last_download` to the launch time on EVERY start, so Next = app-start + interval (the stored value is no longer read for scheduling).
+> - **Startup-scan checkbox KEPT;** `_watchlist_startup_scan` now scans only and no longer moves the download anchor.
+> - Tests updated/added: `test_scheduler.py` (renamed fn + day/week labels), `test_dates.py` (same), `test_settings_vars.py` (default `1 day` + legacy-key carry-over), `test_db.py` (`set_watchlist_download_started`).
+>
+> **Plan file:** `C:\Users\djsin\.claude\plans\we-are-in-planning-twinkly-grove.md`.
+>
+> ════════════════════════════════════════════════════════════════════════
+> # ⏩ PRIOR EFFORT (2026-06-02): Fix Link repair + SoundCloud + startup scan
 > ════════════════════════════════════════════════════════════════════════
 >
 > **Read THIS section first — it is the active work. The older "ALL PHASES COMPLETE (0–4)" section below is a finished prior effort, kept for reference.**
@@ -127,15 +175,16 @@ Dispatch a Phase 3 implementer with those bounds, then spec + quality review. Re
 New package `cratebuilder/` (Tk-free, unit-tested) imported by the main file:
 - `cratebuilder/util.py` — `_config_path`, `load_config`, `save_config`, `today_yyyymmdd` (returns `YYYYMMDD` **no dashes**), `normalize_track_key`, `scan_folder_newest_mp3`, `CONFIG_NAME`.
 - `cratebuilder/sidecar.py` — `CHANNEL_SIDECAR_NAME`, `channel_url_from_id`, `read_channel_sidecar`, `write_channel_sidecar`, `is_unresolved_channel(ch)`. (App keeps a thin staticmethod `_is_unresolved_channel` delegating to this.)
-- `cratebuilder/db.py` — `DownloadsDatabase` class. KEY: `add_watchlist_channel(*, url, display_name, platform, genre, scan_cutoff_date, auto_added=False, channel_id=None, status="idle")` catches `sqlite3.IntegrityError` on `UNIQUE(url)` and returns `None` (this is what makes folder discovery dedup-safe). `get_all_watchlist_channels()`. Schema `SCHEMA_VERSION = 2`.
+- `cratebuilder/db.py` — `DownloadsDatabase` class. KEY: `add_watchlist_channel(*, url, display_name, platform, genre, scan_cutoff_date, auto_added=False, channel_id=None, status="idle")` catches `sqlite3.IntegrityError` on `UNIQUE(url)` and returns `None` (this is what makes folder discovery dedup-safe). `get_all_watchlist_channels()`. `set_watchlist_download_started(channel_ids, timestamp)` stamps the `last_download_started` column. Schema `SCHEMA_VERSION = 3` (v3 added `watchlist.last_download_started INTEGER` via idempotent ALTER).
 - `cratebuilder/startup.py` — `_startup_command()` (appends ` --startup`; frozen→`sys.executable`, source→pythonw.exe/python.exe + script), `startup_is_enabled()`, `set_startup(enabled)`. Guarded `winreg` import; degrades gracefully off-Windows.
 - `cratebuilder/tray.py` — `TrayIcon` class (pystray on daemon thread; `.available/.start()/.notify()/.stop()`; menu Open/Scan Now/Quit; runtime-drawn 64x64 Pillow icon; menu clicks marshalled via a `schedule` callback = `lambda fn: self.after(0, fn)`).
 
 Key App methods added (in `MP3DownloaderApp` in the main file):
-- Scheduler: `auto_check_hours_to_seconds(value)` (module fn), `_reschedule_auto_check`, `_auto_check_tick`, `_auto_check_after_scan` (bounded at `_AUTO_CHECK_MAX_POLLS = 150`), `_autosave_automation_settings`.
+- Scheduler (renamed 2026-06-15): `interval_label_to_seconds(value)` (module fn, parses hours/days/weeks), `_reschedule_auto_download`, `_auto_download_tick`, `_auto_download_after_scan` (bounded at `_AUTO_DOWNLOAD_MAX_POLLS = 150`), `_autosave_automation_settings`. Next-run UI: `_wl_update_next_dl_label` (from `self._wl_next_dl_ts`, shown in bold `self._wl_next_dl_lbl`). Schedule anchor `_watchlist_last_download` is set to the launch time in `__init__` every start → Next = app-start + interval; re-anchored on each Download All New.
+- Per-card Watch List refresh (2026-06-15): `_watchlist_build_channel_card` (creates+registers `self._wl_card_widgets[cid]`) + `_watchlist_fill_card` (content); `_watchlist_update_card(cid)` / `_watchlist_update_cards(cids)` redraw in place; `_wl_update_dl_all_count()`. Full `_watchlist_refresh()` only for structural changes. Fix-Channels abort flag: `self._wl_fix_abort`.
 - Startup: `_on_run_at_startup_toggle` (set registry + revert/warn on fail + persist).
-- Tray/lifecycle: `_notify_tray`, `_ensure_tray`, `_hide_to_tray` (iconify fallback if tray unavailable), `_show_from_tray`, `_quit_app` (cancel timer + stop tray + destroy), `_on_window_close` (→ tray if minimize_to_tray & win32 else quit). `WM_DELETE_WINDOW` bound to `_on_window_close` in `__init__` (App had NO prior binding; the 3 other `self.destroy` protocols belong to Toplevels LogViewerWindow/DebugLogViewerWindow/CookieHowToWindow — leave them).
-- New settings vars in `__init__`: `_auto_check_hours` ("24 hours"), `_run_at_startup` (False, overridden from registry on win32), `_minimize_to_tray` (False), `_watchlist_last_check` (int), `_auto_check_after_id`, `_tray_icon`, `_auto_check_poll_count`. Persisted keys: `auto_check_hours`, `run_at_startup`, `minimize_to_tray`, `watchlist_last_check`.
+- Tray/lifecycle: `_notify_tray`, `_ensure_tray`, `_hide_to_tray` (iconify fallback if tray unavailable), `_show_from_tray`, `_quit_app` (cancel timer + stop tray + destroy), `_on_window_close` (2026-06-15: ALWAYS `messagebox.askyesno` quit confirm — no longer hides to tray), `_on_minimize` (2026-06-15: `<Unmap>` → tray when `minimize_to_tray` & win32 & `state()=="iconic"`). `WM_DELETE_WINDOW`→`_on_window_close` and `<Unmap>`→`_on_minimize` bound in `__init__` (the 3 other `self.destroy` protocols belong to Toplevels LogViewerWindow/DebugLogViewerWindow/CookieHowToWindow — leave them).
+- New settings vars in `__init__` (renamed 2026-06-15): `_auto_dl_interval` ("1 day", reads `auto_download_interval` then falls back to legacy `auto_check_hours`), `_run_at_startup` (False, overridden from registry on win32), `_minimize_to_tray` (False), `_watchlist_last_download` (int; **set to the launch time every start** — see schedule-from-launch note), `_wl_next_dl_ts`, `_auto_dl_after_id`, `_tray_icon`, `_auto_dl_poll_count`, `_wl_card_widgets` (cid→card frame), `_wl_fix_abort`. Persisted keys: `auto_download_interval`, `run_at_startup`, `minimize_to_tray`, `watchlist_scan_on_startup`, `watchlist_last_download`.
 
 ## 8. Test suite (22 passing)
 
@@ -167,7 +216,9 @@ python -c "import importlib.util as u; s=u.spec_from_file_location('cb','DJ-Crat
 - **DB tests** must use a temp path; stub `_resolve_save_dir` for anything that could write into the real Music library; never touch the real `cratebuilder.db`.
 - `tk.PanedWindow` rejects `highlightthickness` (pre-existing).
 - Git emits harmless LF→CRLF warnings on Windows commits — ignore.
-- Default-on 24h auto-check means the app downloads unattended out of the box — INTENDED (user chose 24h default).
+- Default-on auto-download (now **`1 day`**, was 24h) means the app downloads unattended out of the box — INTENDED. The schedule counts from **app start** (`_watchlist_last_download` set to launch time every start), so each launch waits one full interval before the first auto-run; a Download All New re-anchors it. (This replaced the earlier "anchor to first launch / persist across restarts" behaviour.)
+- **Close (X) ≠ minimize-to-tray anymore.** Close always asks Yes/No to quit; the **Minimize** button is what hides to tray (when the option is on). Don't "fix" the X back to hiding silently — it's intentional.
+- **Per-card Watch List updates:** call `_watchlist_update_card(cid)` for per-channel status changes, NOT `_watchlist_refresh()` (the latter tears down + rebuilds every card → visible blanking during Scan All / Download All). Full refresh is only for add/remove/edit/import/resolve-close.
 
 ## 11. Commit log on v1.3 (this session, newest first, all LOCAL — not pushed)
 

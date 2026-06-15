@@ -71,18 +71,22 @@ def test_relative_unparseable_is_unknown():
     assert util.format_timestamp_relative("notanumber") == "Unknown"
 
 
-# ── auto_check_hours_to_seconds ───────────────────────────────────────────────
-def test_auto_check_off_and_blank_are_none():
-    assert util.auto_check_hours_to_seconds("Off") is None
-    assert util.auto_check_hours_to_seconds("  off ") is None
-    assert util.auto_check_hours_to_seconds("") is None
-    assert util.auto_check_hours_to_seconds(None) is None
+# ── interval_label_to_seconds ─────────────────────────────────────────────────
+def test_interval_off_and_blank_are_none():
+    assert util.interval_label_to_seconds("Off") is None
+    assert util.interval_label_to_seconds("  off ") is None
+    assert util.interval_label_to_seconds("") is None
+    assert util.interval_label_to_seconds(None) is None
 
 
-def test_auto_check_parses_hours():
-    assert util.auto_check_hours_to_seconds("6 hours") == 6 * 3600
-    assert util.auto_check_hours_to_seconds("24 hours") == 86400
+def test_interval_parses_hours_days_weeks():
+    assert util.interval_label_to_seconds("6 hours") == 6 * 3600
+    assert util.interval_label_to_seconds("12 hours") == 12 * 3600
+    assert util.interval_label_to_seconds("1 day") == 86400
+    assert util.interval_label_to_seconds("2 days") == 2 * 86400
+    assert util.interval_label_to_seconds("1 week") == 7 * 86400
 
 
-def test_auto_check_garbage_is_none():
-    assert util.auto_check_hours_to_seconds("garbage") is None
+def test_interval_garbage_is_none():
+    assert util.interval_label_to_seconds("garbage") is None
+    assert util.interval_label_to_seconds("5 fortnights") is None
