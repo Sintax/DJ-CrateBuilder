@@ -3148,6 +3148,25 @@ class MP3DownloaderApp(tk.Tk):
                   highlightthickness=1, highlightbackground=BORDER
                   ).pack(fill="x", side="bottom")
 
+    def _make_scrollable(self, parent, padding):
+        """Build a vertical-scrolling canvas in *parent*; return (canvas, inner).
+        The inner ttk.Frame (with *padding*) keeps the scrollregion in sync and
+        tracks the canvas width. Shared by the Main / Settings / About / Watch
+        List tab bodies; the caller stores the returned canvas because the
+        global mousewheel handler routes scroll events to it by active tab."""
+        sb = ttk.Scrollbar(parent, orient="vertical")
+        sb.pack(side="right", fill="y")
+        canvas = tk.Canvas(parent, bg=BG, bd=0, highlightthickness=0,
+                           yscrollcommand=sb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        sb.config(command=canvas.yview)
+        inner = ttk.Frame(canvas, padding=padding)
+        cwin = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda e:
+                   canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(cwin, width=e.width))
+        return canvas, inner
+
     # ── Main tab ──────────────────────────────────────────────────────────────
     def _build_main_tab(self, parent):
         """Build the Main tab: URL/genre input, batch list, and download queue."""
@@ -3155,28 +3174,8 @@ class MP3DownloaderApp(tk.Tk):
         wrapper = tk.Frame(parent, bg=BG)
         wrapper.pack(fill="both", expand=True)
 
-        self._main_scrollbar = ttk.Scrollbar(wrapper, orient="vertical")
-        self._main_scrollbar.pack(side="right", fill="y")
-
-        self._main_canvas = tk.Canvas(
-            wrapper, bg=BG, bd=0, highlightthickness=0,
-            yscrollcommand=self._main_scrollbar.set)
-        self._main_canvas.pack(side="left", fill="both", expand=True)
-
-        self._main_scrollbar.config(command=self._main_canvas.yview)
-
-        outer = ttk.Frame(self._main_canvas, padding=(28, 22, 28, 18))
-        self._main_cwin = self._main_canvas.create_window(
-            (0, 0), window=outer, anchor="nw")
-
-        def _on_main_frame_configure(e):
-            self._main_canvas.configure(
-                scrollregion=self._main_canvas.bbox("all"))
-        outer.bind("<Configure>", _on_main_frame_configure)
-
-        def _on_main_canvas_configure(e):
-            self._main_canvas.itemconfig(self._main_cwin, width=e.width)
-        self._main_canvas.bind("<Configure>", _on_main_canvas_configure)
+        self._main_canvas, outer = self._make_scrollable(
+            wrapper, (28, 22, 28, 18))
 
         # Global mousewheel handler — routes scroll to the active tab's canvas.
         # Widgets with their own scroll (queue Text, batch Canvas) handle
@@ -3409,29 +3408,8 @@ class MP3DownloaderApp(tk.Tk):
         wrapper = tk.Frame(parent, bg=BG)
         wrapper.pack(fill="both", expand=True)
 
-        self._settings_scrollbar = ttk.Scrollbar(wrapper, orient="vertical")
-        self._settings_scrollbar.pack(side="right", fill="y")
-
-        self._settings_canvas = tk.Canvas(
-            wrapper, bg=BG, bd=0, highlightthickness=0,
-            yscrollcommand=self._settings_scrollbar.set)
-        self._settings_canvas.pack(side="left", fill="both", expand=True)
-
-        self._settings_scrollbar.config(command=self._settings_canvas.yview)
-
-        outer = ttk.Frame(self._settings_canvas, padding=(28, 28, 28, 18))
-        self._settings_cwin = self._settings_canvas.create_window(
-            (0, 0), window=outer, anchor="nw")
-
-        def _on_frame_configure(e):
-            self._settings_canvas.configure(
-                scrollregion=self._settings_canvas.bbox("all"))
-        outer.bind("<Configure>", _on_frame_configure)
-
-        def _on_canvas_configure(e):
-            self._settings_canvas.itemconfig(
-                self._settings_cwin, width=e.width)
-        self._settings_canvas.bind("<Configure>", _on_canvas_configure)
+        self._settings_canvas, outer = self._make_scrollable(
+            wrapper, (28, 28, 28, 18))
 
         # ── Content (all original settings widgets go into outer) ─────────────
 
@@ -4402,23 +4380,8 @@ class MP3DownloaderApp(tk.Tk):
         wrapper = tk.Frame(parent, bg=BG)
         wrapper.pack(fill="both", expand=True)
 
-        about_sb = ttk.Scrollbar(wrapper, orient="vertical")
-        about_sb.pack(side="right", fill="y")
-
-        self._about_canvas = tk.Canvas(
-            wrapper, bg=BG, bd=0, highlightthickness=0,
-            yscrollcommand=about_sb.set)
-        self._about_canvas.pack(side="left", fill="both", expand=True)
-        about_sb.config(command=self._about_canvas.yview)
-
-        outer = ttk.Frame(self._about_canvas, padding=(28, 28, 28, 18))
-        self._about_cwin = self._about_canvas.create_window(
-            (0, 0), window=outer, anchor="nw")
-
-        outer.bind("<Configure>", lambda e:
-            self._about_canvas.configure(scrollregion=self._about_canvas.bbox("all")))
-        self._about_canvas.bind("<Configure>", lambda e:
-            self._about_canvas.itemconfig(self._about_cwin, width=e.width))
+        self._about_canvas, outer = self._make_scrollable(
+            wrapper, (28, 28, 28, 18))
 
         # ── App title + version ───────────────────────────────────────────────
         ttk.Label(outer,
@@ -6224,21 +6187,8 @@ class MP3DownloaderApp(tk.Tk):
 
         # Pane 1 — scrollable channel cards.
         cards_area = tk.Frame(paned, bg=BG)
-        wl_sb = ttk.Scrollbar(cards_area, orient="vertical")
-        wl_sb.pack(side="right", fill="y")
-        self._wl_canvas = tk.Canvas(
-            cards_area, bg=BG, bd=0, highlightthickness=0,
-            yscrollcommand=wl_sb.set)
-        self._wl_canvas.pack(side="left", fill="both", expand=True)
-        wl_sb.config(command=self._wl_canvas.yview)
-
-        outer = ttk.Frame(self._wl_canvas, padding=(28, 14, 28, 18))
-        self._wl_cwin = self._wl_canvas.create_window(
-            (0, 0), window=outer, anchor="nw")
-        outer.bind("<Configure>", lambda e:
-            self._wl_canvas.configure(scrollregion=self._wl_canvas.bbox("all")))
-        self._wl_canvas.bind("<Configure>", lambda e:
-            self._wl_canvas.itemconfig(self._wl_cwin, width=e.width))
+        self._wl_canvas, outer = self._make_scrollable(
+            cards_area, (28, 14, 28, 18))
 
         self._wl_cards_frame = tk.Frame(outer, bg=BG)
         self._wl_cards_frame.pack(fill="x", pady=(0, 4))
