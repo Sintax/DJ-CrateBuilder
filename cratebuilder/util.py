@@ -178,6 +178,21 @@ def push_mru(items, value, limit):
 SENSITIVE_YDL_KEYS = ("cookiefile", "cookiesfrombrowser")
 
 
+def build_cookie_opts(method, cookie_file, browser, profile):
+    """Return the yt-dlp cookie option(s) for the user's settings as a dict to
+    merge into an options dict. The 'Cookie File' method uses the file path
+    only when it exists on disk; any other method reads cookies from the named
+    browser (lower-cased), optionally scoped to a *profile*. Returns {} when no
+    cookie source applies (e.g. a missing/blank cookie file). Callers decide
+    whether cookies are enabled at all — this only formats the chosen source."""
+    if method == "Cookie File":
+        if cookie_file and os.path.exists(cookie_file):
+            return {"cookiefile": cookie_file}
+        return {}
+    b = (browser or "").lower()
+    return {"cookiesfrombrowser": (b, profile) if profile else (b,)}
+
+
 def redact_ydl_opts(opts):
     """Return a shallow copy of a yt-dlp options dict made safe for debug
     logging. Auth-bearing values (cookie file path, browser-cookie source)
