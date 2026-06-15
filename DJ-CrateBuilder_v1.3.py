@@ -5132,6 +5132,19 @@ class MP3DownloaderApp(tk.Tk):
                           "platform": platform}]
             self._record_url_history(url)
 
+        self._begin_download_session("Preparing batch…")
+        self._set_status(f"Starting batch of {len(run_batch)} URL(s)…")
+
+        self._run_bg(self._batch_worker, run_batch)
+
+    def _begin_download_session(self, preparing_text, *, watchlist=False):
+        """Arm the shared download UI for a new batch: disable inputs, reset the
+        progress bars and grand-total counters, clear the cancel/pause flags,
+        and start the batch timer. *preparing_text* fills the current-track
+        label. For a Watch List batch (*watchlist*=True) the Watch-List-active
+        flag is set first so worker output mirrors into the scan log."""
+        if watchlist:
+            self._wl_download_active = True
         self._downloading = True
         self._cancel_flag.clear()
         self._pause_flag.clear()
@@ -5143,7 +5156,7 @@ class MP3DownloaderApp(tk.Tk):
         self._wl_update_cancel_btn_state()
         self._vid_progress["value"]     = 0
         self._overall_progress["value"] = 0
-        self._cur_lbl.config(text="Preparing batch…")
+        self._cur_lbl.config(text=preparing_text)
         self._ov_lbl.config(text="")
         self._ov_stats_lbl.config(text="")
         self._speed_lbl.config(text="")
@@ -5153,9 +5166,6 @@ class MP3DownloaderApp(tk.Tk):
         self._last_fatal_error = None
         self._batch_start = time.time()
         self._clear_queue()
-        self._set_status(f"Starting batch of {len(run_batch)} URL(s)…")
-
-        self._run_bg(self._batch_worker, run_batch)
 
     def _cancel(self):
         """Signal the download worker to stop after the current track."""
@@ -7517,29 +7527,8 @@ class MP3DownloaderApp(tk.Tk):
         # Stay on the Watch List tab — the download runs as background activity
         # and reports into the Watch List scan log (mirrored from the batch
         # worker via _wl_dl_log) instead of switching to the Main tab.
-        self._wl_download_active = True
-        self._downloading = True
-        self._cancel_flag.clear()
-        self._pause_flag.clear()
-        self._dl_btn.config(state="disabled")
-        self._batch_add_btn.config(state="disabled")
-        self._url_entry.config(state="disabled")
-        self._cancel_btn.config(state="normal", style="CancelActive.TButton")
-        self._pause_btn.config(state="normal", text="⏸  Pause",
-                               style="Pause.TButton")
-        self._wl_update_cancel_btn_state()
-        self._vid_progress["value"]     = 0
-        self._overall_progress["value"] = 0
-        self._cur_lbl.config(text="Preparing Watch List batch…")
-        self._ov_lbl.config(text="")
-        self._ov_stats_lbl.config(text="")
-        self._speed_lbl.config(text="")
-        self._grand_dl = 0
-        self._grand_sk = 0
-        self._grand_er = 0
-        self._last_fatal_error = None
-        self._batch_start = time.time()
-        self._clear_queue()
+        self._begin_download_session("Preparing Watch List batch…",
+                                     watchlist=True)
         self._set_status(f"Watch List: downloading {pending_count} new tracks…")
         self._batch_rebuild_rows()   # show the channel in the Batch Queue panel
 
@@ -7603,29 +7592,8 @@ class MP3DownloaderApp(tk.Tk):
         # Stay on the Watch List tab — the download runs as background activity
         # and reports into the Watch List scan log (mirrored from the batch
         # worker via _wl_dl_log) instead of switching to the Main tab.
-        self._wl_download_active = True
-        self._downloading = True
-        self._cancel_flag.clear()
-        self._pause_flag.clear()
-        self._dl_btn.config(state="disabled")
-        self._batch_add_btn.config(state="disabled")
-        self._url_entry.config(state="disabled")
-        self._cancel_btn.config(state="normal", style="CancelActive.TButton")
-        self._pause_btn.config(state="normal", text="⏸  Pause",
-                               style="Pause.TButton")
-        self._wl_update_cancel_btn_state()
-        self._vid_progress["value"]     = 0
-        self._overall_progress["value"] = 0
-        self._cur_lbl.config(text="Preparing Watch List batch…")
-        self._ov_lbl.config(text="")
-        self._ov_stats_lbl.config(text="")
-        self._speed_lbl.config(text="")
-        self._grand_dl = 0
-        self._grand_sk = 0
-        self._grand_er = 0
-        self._last_fatal_error = None
-        self._batch_start = time.time()
-        self._clear_queue()
+        self._begin_download_session("Preparing Watch List batch…",
+                                     watchlist=True)
         self._set_status(f"Watch List: downloading {pending_total} new tracks…")
         self._batch_rebuild_rows()   # show the channels in the Batch Queue panel
 
