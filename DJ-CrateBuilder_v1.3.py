@@ -1635,15 +1635,34 @@ class DatabaseViewerWindow(tk.Toplevel):
             if src_name is None:
                 return                       # can't move the tree (#0) column
             tgt_name = name_at(tgt, order)
-            order.remove(src_name)
-            insert_at = order.index(tgt_name) if tgt_name in order else 0
-            order.insert(insert_at, src_name)
-            tree.configure(displaycolumns=order)
-            self._save_col_order(order_key, order)
+            new_order = self._reorder_columns(order, src_name, tgt_name)
+            if new_order == order:
+                return                       # nothing actually moved
+            tree.configure(displaycolumns=new_order)
+            self._save_col_order(order_key, new_order)
             return "break"                   # suppress the sort on a real drag
 
         tree.bind("<ButtonPress-1>", on_press, add="+")
         tree.bind("<ButtonRelease-1>", on_release, add="+")
+
+    @staticmethod
+    def _reorder_columns(order, src_name, tgt_name):
+        """Return a new column order with *src_name* moved onto *tgt_name*'s
+        visual slot. *tgt_name* may be None (a drop on the non-reorderable tree
+        column) — the source then goes to the front.
+
+        INVARIANT (load-bearing): the target index is read from the ORIGINAL
+        order BEFORE src is removed. Reading it after the remove shifts it left
+        by one whenever src sat to the target's left, which makes rightward
+        drags land one column short while leftward drags stay correct."""
+        order = list(order)
+        if src_name not in order:
+            return order
+        insert_at = (order.index(tgt_name)
+                     if (tgt_name and tgt_name in order) else 0)
+        order.remove(src_name)
+        order.insert(insert_at, src_name)
+        return order
 
     # ── Theming ───────────────────────────────────────────────────────────────
     def _configure_styles(self):

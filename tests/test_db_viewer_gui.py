@@ -55,6 +55,56 @@ def test_viewer_backfills_missing_timestamps(tmp_path, monkeypatch):
         root.destroy()
 
 
+def test_reorder_columns_truth_table():
+    # Pure logic (static method) — no display needed. Dropping src onto tgt must
+    # land src on tgt's ORIGINAL visual slot, symmetric in both directions. This
+    # locks down the rightward-drag off-by-one: reading the target index after
+    # removing src used to make rightward drags land one column short.
+    reorder = _module().DatabaseViewerWindow._reorder_columns
+    base = ["a", "b", "c", "d"]
+    expected = {
+        ("a", "b"): ["b", "a", "c", "d"],
+        ("a", "c"): ["b", "c", "a", "d"],
+        ("a", "d"): ["b", "c", "d", "a"],
+        ("b", "a"): ["b", "a", "c", "d"],
+        ("b", "c"): ["a", "c", "b", "d"],
+        ("b", "d"): ["a", "c", "d", "b"],
+        ("c", "a"): ["c", "a", "b", "d"],
+        ("c", "b"): ["a", "c", "b", "d"],
+        ("c", "d"): ["a", "b", "d", "c"],
+        ("d", "a"): ["d", "a", "b", "c"],
+        ("d", "b"): ["a", "d", "b", "c"],
+        ("d", "c"): ["a", "b", "d", "c"],
+    }
+    for (src, tgt), want in expected.items():
+        got = reorder(base, src, tgt)
+        assert got == want, f"{src}->{tgt}: got {got}, want {want}"
+        # src always ends up exactly where tgt started (the visual drop slot).
+        assert got.index(src) == base.index(tgt)
+        # Result is always a permutation of the input — no columns lost/dupes.
+        assert sorted(got) == sorted(base)
+
+
+def test_reorder_columns_single_step_is_one_column():
+    # The reported bug: a one-column rightward drag must advance exactly one
+    # slot (previously it took two drags to move one column).
+    reorder = _module().DatabaseViewerWindow._reorder_columns
+    base = ["a", "b", "c", "d"]
+    assert reorder(base, "a", "b").index("a") == 1   # right by one
+    assert reorder(base, "b", "a").index("b") == 0   # left by one
+
+
+def test_reorder_columns_edge_cases():
+    reorder = _module().DatabaseViewerWindow._reorder_columns
+    base = ["a", "b", "c", "d"]
+    # Drop onto the non-reorderable tree column (tgt_name None) -> src to front.
+    assert reorder(base, "c", None) == ["c", "a", "b", "d"]
+    # Unknown src is a safe no-op (returns an unchanged copy).
+    assert reorder(base, "zzz", "a") == base
+    # The returned list is a copy, never the same object (caller compares them).
+    assert reorder(base, "a", "b") is not base
+
+
 def test_viewer_column_order_persists(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
