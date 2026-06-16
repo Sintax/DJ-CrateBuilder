@@ -153,6 +153,27 @@ def test_expand_all_restripes_leaf_rows(tmp_path, monkeypatch):
         root.destroy()
 
 
+def test_viewer_trees_own_mousewheel_binding(tmp_path, monkeypatch):
+    # Each viewer tree binds <MouseWheel> itself and returns "break", so wheel
+    # scrolling stays inside the viewer instead of bubbling up to the main
+    # app's application-wide bind_all handler and scrolling the primary window.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    m = _module()
+    db = m.DownloadsDatabase(str(tmp_path / "t.db"))
+
+    root = _root()
+    try:
+        v = m.DatabaseViewerWindow(root, db)
+        v.update()
+        # A non-empty bind script means the handler is installed on the widget.
+        assert v._dl_tree.bind("<MouseWheel>")
+        assert v._wl_tree.bind("<MouseWheel>")
+        v.destroy()
+    finally:
+        root.destroy()
+
+
 def test_viewer_column_order_persists(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))

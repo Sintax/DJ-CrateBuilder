@@ -1827,6 +1827,7 @@ class DatabaseViewerWindow(tk.Toplevel):
 
         self._dl_tree.bind("<Double-1>", self._on_dl_double_click)
         self._dl_tree.bind("<Button-3>", self._on_dl_right_click)
+        self._bind_tree_wheel(self._dl_tree)
 
         # Context menu for leaf rows
         self._dl_menu = tk.Menu(self, tearoff=0, bg=SURFACE2, fg=TEXT,
@@ -1889,6 +1890,8 @@ class DatabaseViewerWindow(tk.Toplevel):
         # Drag a header to reorder columns; restore any saved order.
         self._apply_saved_order(self._wl_tree, col_ids, self._WL_ORDER_KEY)
         self._enable_col_reorder(self._wl_tree, col_ids, self._WL_ORDER_KEY)
+
+        self._bind_tree_wheel(self._wl_tree)
 
         # Right-click the Link column to open or copy a channel's URL.
         self._wl_menu = tk.Menu(self._wl_tree, tearoff=0)
@@ -2083,6 +2086,17 @@ class DatabaseViewerWindow(tk.Toplevel):
                     walk(item)
 
         walk("")
+
+    def _bind_tree_wheel(self, tree):
+        """Scroll *tree* with the mouse wheel and STOP the event here ("break").
+        The main window installs an application-wide <MouseWheel> binding (Tk's
+        'all' bindtag reaches every window in the process); without this, wheel
+        scrolling inside this viewer would also scroll the primary app behind
+        it. We do the scroll ourselves so breaking the chain costs nothing."""
+        def _on_wheel(e):
+            tree.yview_scroll(int(-1 * (e.delta / 120)), "units")
+            return "break"
+        tree.bind("<MouseWheel>", _on_wheel)
 
     def _insert_group(self, parent, rows, keys):
         """Recursively insert grouped nodes; leaves at the deepest level."""
@@ -3365,6 +3379,14 @@ class MP3DownloaderApp(tk.Tk):
         # their own events and return "break" to prevent double-scrolling.
         def _on_global_mousewheel(event):
             w = event.widget
+            # bind_all reaches every window in the process. Ignore wheel events
+            # that originate in another Toplevel (e.g. the Database / Log viewer
+            # windows) so they don't scroll the main app underneath them.
+            try:
+                if w.winfo_toplevel() is not self:
+                    return
+            except Exception:
+                return
             # Let Text widgets handle their own scrolling
             if isinstance(w, tk.Text):
                 return
