@@ -164,6 +164,25 @@ class DownloadsDatabase:
             self._log("error", f"backfill_downloads failed: {e}")
             return 0
 
+    def backfill_missing_download_timestamps(self, updates):
+        """Persist download timestamps for rows that never had one (e.g. tracks
+        imported before the database existed). `updates` is a list of
+        (timestamp, row_id) tuples. Returns the count written."""
+        if not updates:
+            return 0
+        try:
+            with self._conn() as conn:
+                conn.executemany(
+                    "UPDATE downloads SET download_timestamp = ? "
+                    "WHERE id = ? AND "
+                    "(download_timestamp IS NULL OR download_timestamp <= 0)",
+                    updates)
+            return len(updates)
+        except Exception as e:
+            self._log("error",
+                      f"backfill_missing_download_timestamps failed: {e}")
+            return 0
+
     def is_video_downloaded(self, video_id):
         if not video_id:
             return False
