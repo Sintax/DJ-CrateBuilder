@@ -2434,8 +2434,8 @@ class DatabaseViewerWindow(tk.Toplevel):
 class MP3DownloaderApp(tk.Tk):
 
     # Log-size-limit dropdown choices (label order). 0 MB = Unlimited.
-    _LOG_LIMIT_CHOICES = ("Unlimited", "2MB", "4MB", "6MB",
-                          "8MB", "9MB", "10MB", "15MB")
+    _LOG_LIMIT_CHOICES = ("1MB", "2MB", "3MB", "4MB",
+                          "5MB", "8MB", "10MB", "Unlimited")
 
     @staticmethod
     def _log_limit_label(mb):
@@ -2475,7 +2475,7 @@ class MP3DownloaderApp(tk.Tk):
         self._wl_cancel_cids = set()  # channel ids the user asked to cancel
         self._queue         = []
         self._skip_existing   = tk.BooleanVar(value=cfg.get("skip_existing", True))
-        _raw_skip = cfg.get("skip_mode", "In Database ~ In Folder")
+        _raw_skip = cfg.get("skip_mode", "In Folder Only")
         _migrated = {"In Logs ~ In Folder": "In Database ~ In Folder",
                      "In Logs Only": "In Database Only"}
         self._skip_mode       = tk.StringVar(value=_migrated.get(_raw_skip, _raw_skip))
@@ -2494,15 +2494,15 @@ class MP3DownloaderApp(tk.Tk):
         self._no_conversion.trace_add("write", self._autosave_bitrate_setting)
 
         # Log size limit — caps activity.log and debug.log (each) by trimming the
-        # oldest lines; 0 = Unlimited. Default 4 MB keeps the logs from growing
+        # oldest lines; 0 = Unlimited. Default 2 MB keeps the logs from growing
         # without bound while preserving plenty of recent history.
-        self._log_max_mb = int(cfg.get("log_max_mb", 4) or 0)
+        self._log_max_mb = int(cfg.get("log_max_mb", 2) or 0)
         self._log_max_bytes = self._log_max_mb * 1024 * 1024
         self._log_limit_var = tk.StringVar(
             value=self._log_limit_label(self._log_max_mb))
 
         # Download behavior settings
-        self._geo_bypass      = tk.BooleanVar(value=cfg.get("geo_bypass", False))
+        self._geo_bypass      = tk.BooleanVar(value=cfg.get("geo_bypass", True))
         self._rotate_ua       = tk.BooleanVar(value=cfg.get("rotate_ua", True))
         self._sleep_enabled   = tk.BooleanVar(value=cfg.get("sleep_enabled", True))
         self._sleep_mode      = tk.StringVar(value=cfg.get("sleep_mode", "Auto"))
@@ -2548,12 +2548,13 @@ class MP3DownloaderApp(tk.Tk):
         if sys.platform == "win32":
             self._run_at_startup.set(cb_startup.startup_is_enabled())
         self._minimize_to_tray = tk.BooleanVar(
-            value=cfg.get("minimize_to_tray", False))
-        # Optionally scan the Watch List for new uploads as soon as the app
-        # launches. Off by default — automatic scans are owned by the
-        # auto-download scheduler; the user can opt in via Settings.
+            value=cfg.get("minimize_to_tray", True))
+        self._start_minimized = tk.BooleanVar(
+            value=cfg.get("start_minimized", False))
+        # Scan the Watch List for new uploads as soon as the app launches.
+        # On by default; the user can opt out via Settings.
         self._watchlist_scan_on_startup = tk.BooleanVar(
-            value=cfg.get("watchlist_scan_on_startup", False))
+            value=cfg.get("watchlist_scan_on_startup", True))
         # The auto-download schedule counts from when the app starts: the next
         # run is always (this launch time + interval), regardless of any stored
         # value from a previous session. A later Download All New re-anchors to
@@ -2562,8 +2563,11 @@ class MP3DownloaderApp(tk.Tk):
         self._auto_dl_after_id = None
         self._wl_next_dl_ts = None      # wall-clock of the next scheduled run
         self._tray_icon = None  # set when tray is active
+        self._tray_title_after_id = None   # recurring hover-tooltip refresh
+        self._tray_dl_label = "Download All New (0)"  # live tray menu label
         self._auto_dl_interval.trace_add("write", self._autosave_automation_settings)
         self._minimize_to_tray.trace_add("write", self._autosave_automation_settings)
+        self._start_minimized.trace_add("write", self._autosave_automation_settings)
         self._watchlist_scan_on_startup.trace_add(
             "write", self._autosave_automation_settings)
 
@@ -2588,9 +2592,14 @@ class MP3DownloaderApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_window_close)
         self.bind("<Unmap>", self._on_minimize)
 
-        # If Windows auto-started us and tray mode is on, begin hidden.
-        if (sys.platform == "win32" and self._minimize_to_tray.get()
-                and "--startup" in sys.argv):
+        # Begin minimized when the user asked to ("Start App Minimized"), or
+        # when Windows auto-started us with tray mode on. Either way go straight
+        # to the System Tray (regardless of the 'Minimize to System Tray'
+        # setting); _hide_to_tray falls back to a taskbar minimise if the tray
+        # is unavailable.
+        _auto_started_tray = (self._minimize_to_tray.get()
+                              and "--startup" in sys.argv)
+        if self._start_minimized.get() or _auto_started_tray:
             self.after(1700, self._hide_to_tray)
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -3427,11 +3436,13 @@ class MP3DownloaderApp(tk.Tk):
 
         # ── Main tab ──────────────────────────────────────────────────────────
         main_frame = ttk.Frame(self._notebook)
+        self._tab_main = main_frame
         self._notebook.add(main_frame, text="     ▶  Main     ")
         self._build_main_tab(main_frame)
 
         # ── Watch List tab ────────────────────────────────────────────────────
         watchlist_frame = ttk.Frame(self._notebook)
+        self._tab_watchlist = watchlist_frame
         self._notebook.add(watchlist_frame, text="   👁  Watch List   ")
         self._build_watchlist_tab(watchlist_frame)
 
@@ -3784,16 +3795,27 @@ class MP3DownloaderApp(tk.Tk):
             startup_row = ttk.Frame(outer)
             startup_row.pack(fill="x", pady=(2, 4))
             ttk.Checkbutton(
-                startup_row, text="Run DJ-CrateBuilder when Windows starts",
+                startup_row, text="Run App on Startup",
                 variable=self._run_at_startup,
                 command=self._on_run_at_startup_toggle,
                 style="S.Opt.TCheckbutton").pack(side="left")
+
+            start_min_row = ttk.Frame(outer)
+            start_min_row.pack(fill="x", pady=(2, 4))
+            ttk.Checkbutton(
+                start_min_row, text="Start App Minimized",
+                variable=self._start_minimized,
+                style="S.Opt.TCheckbutton").pack(side="left")
+            self._settings_help(start_min_row,
+                "Launch DJ-CrateBuilder hidden in the System Tray (regardless "
+                "of the 'Minimize to System Tray' setting). Right-click the "
+                "tray icon to open it.").pack(side="left", padx=(8, 0))
 
             tray_row = ttk.Frame(outer)
             tray_row.pack(fill="x", pady=(2, 4))
             ttk.Checkbutton(
                 tray_row,
-                text="Minimize to system tray (keep Watch List running in background)",
+                text="Minimize to System Tray (keep Watch List running in background)",
                 variable=self._minimize_to_tray,
                 style="S.Opt.TCheckbutton").pack(side="left")
 
@@ -4406,6 +4428,7 @@ class MP3DownloaderApp(tk.Tk):
             "auto_download_interval": self._auto_dl_interval.get(),
             "run_at_startup":     self._run_at_startup.get(),
             "minimize_to_tray":   self._minimize_to_tray.get(),
+            "start_minimized":    self._start_minimized.get(),
             "watchlist_scan_on_startup": self._watchlist_scan_on_startup.get(),
             "watchlist_last_download": self._watchlist_last_download,
         })
@@ -4634,6 +4657,7 @@ class MP3DownloaderApp(tk.Tk):
         cfg = load_config()
         cfg["auto_download_interval"] = self._auto_dl_interval.get()
         cfg["minimize_to_tray"] = self._minimize_to_tray.get()
+        cfg["start_minimized"] = self._start_minimized.get()
         cfg["watchlist_scan_on_startup"] = self._watchlist_scan_on_startup.get()
         cfg["watchlist_last_download"] = self._watchlist_last_download
         save_config(cfg)
@@ -4774,11 +4798,80 @@ class MP3DownloaderApp(tk.Tk):
         self._tray_icon = TrayIcon(
             schedule=lambda fn: self.after(0, fn),
             on_open=self._show_from_tray,
-            on_scan=self._watchlist_scan_all,
-            on_quit=self._quit_app)
+            on_scan=self._tray_scan_now,
+            on_download=self._tray_download_all_new,
+            on_quit=self._tray_close,
+            download_text=lambda *_: self._tray_dl_label)
         if not self._tray_icon.available or not self._tray_icon.start():
             self._tray_icon = None
+        else:
+            # Keep the hover tooltip fresh while the icon is alive.
+            if self._tray_title_after_id is None:
+                self._tray_title_after_id = self.after(0, self._tray_title_tick)
         return self._tray_icon
+
+    def _tray_scan_now(self):
+        """Tray 'Scan Now': focus the app, show the Watch List tab, then scan."""
+        self._show_from_tray()
+        try:
+            self._notebook.select(self._tab_watchlist)
+        except Exception:
+            pass
+        self._watchlist_scan_all()
+
+    def _tray_download_all_new(self):
+        """Tray 'Download All New': focus the app, show the Main tab (where the
+        batch progress lives), then run the same action as the Watch List
+        button."""
+        self._show_from_tray()
+        try:
+            self._notebook.select(self._tab_main)
+        except Exception:
+            pass
+        self._watchlist_download_all_new()
+
+    def _tray_close(self):
+        """Tray 'Close': focus the app, then run the normal close confirmation."""
+        self._show_from_tray()
+        self._on_window_close()
+
+    def _tray_summary(self):
+        """Build the multi-line hover tooltip from the live Progress / Queue /
+        Watch List state. Runs on the Tk main thread (safe to read widgets)."""
+        lines = [f"{APP_NAME}"]
+        if self._downloading:
+            cur = self._cur_lbl.cget("text").strip() or "working…"
+            if len(cur) > 55:
+                cur = cur[:54] + "…"
+            lines.append(f"▶ {cur}")
+            ov = self._ov_lbl.cget("text").strip()
+            stats = self._ov_stats_lbl.cget("text").strip()
+            ov_line = "  ".join(p for p in (ov, stats) if p)
+            if ov_line:
+                lines.append(f"Overall: {ov_line}")
+            qc = self._qcount_lbl.cget("text").strip()
+            if qc:
+                lines.append(f"Queue: {qc} left")
+        if self._wl_scan_active > 0:
+            lines.append(f"👁 Watch List: scanning {self._wl_scan_active}…")
+        elif getattr(self, "_wl_download_active", False):
+            lines.append("👁 Watch List: downloading new tracks…")
+        if len(lines) == 1:
+            lines.append("Idle")
+        # Windows tray tooltips cap at 127 chars; keep it well under.
+        return "\n".join(lines)[:127]
+
+    def _tray_title_tick(self):
+        """Refresh the tray hover tooltip, rescheduling while the icon lives."""
+        self._tray_title_after_id = None
+        tray = self._tray_icon
+        if tray is None:
+            return
+        try:
+            tray.set_title(self._tray_summary())
+        except Exception:
+            pass
+        self._tray_title_after_id = self.after(2000, self._tray_title_tick)
 
     def _hide_to_tray(self):
         """Withdraw the window; keep the app (and scheduler) running."""
@@ -6762,6 +6855,9 @@ class MP3DownloaderApp(tk.Tk):
             total_pending = self._db.get_total_pending_count()
             self._wl_dl_all_btn.config(
                 text=f"  ⬇  Download All New ({total_pending})  ")
+            # Mirror the count into the tray menu label (plain str read on the
+            # tray thread; safe because it's only ever assigned from here).
+            self._tray_dl_label = f"Download All New ({total_pending})"
         except Exception:
             pass
 
