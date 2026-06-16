@@ -19,10 +19,32 @@ def test_new_settings_defaults(tmp_path, monkeypatch):
     app = _app(); app.update()
     assert app._auto_dl_interval.get() == "1 day"
     assert app._run_at_startup.get() is False
-    assert app._minimize_to_tray.get() is False
-    # Watch List startup scan is OFF by default: automatic scans are owned by
-    # the auto-download scheduler; users opt in via the Settings checkbox.
-    assert app._watchlist_scan_on_startup.get() is False
+    assert app._minimize_to_tray.get() is True
+    assert app._start_minimized.get() is False
+    # Watch List startup scan is ON by default so new uploads surface as soon
+    # as the app launches; users can opt out via the Settings checkbox.
+    assert app._watchlist_scan_on_startup.get() is True
+    app.destroy()
+
+
+def test_tray_summary_reflects_state(tmp_path, monkeypatch):
+    # The tray hover tooltip is built from live Progress / Queue / Watch List
+    # state. Idle shows just the app name + 'Idle'; an active Watch List scan
+    # surfaces a line.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    app = _app(); app.update()
+    summary = app._tray_summary()
+    assert summary.startswith("DJ-CrateBuilder")
+    assert "Idle" in summary
+
+    app._wl_scan_active = 2
+    assert "Watch List" in app._tray_summary()
+    assert "Idle" not in app._tray_summary()
+
+    # The dynamic tray menu label mirrors the Download All New count.
+    app._tray_dl_label = "Download All New (7)"
+    assert app._tray_dl_label == "Download All New (7)"
     app.destroy()
 
 
