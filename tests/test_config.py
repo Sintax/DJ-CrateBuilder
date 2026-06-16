@@ -13,7 +13,9 @@ def test_save_then_load_roundtrip(tmp_path, monkeypatch):
 def test_watchlist_scan_on_startup_roundtrip(tmp_path, monkeypatch):
     cfg_file = tmp_path / "cfg.json"
     monkeypatch.setattr(util, "_config_path", lambda: str(cfg_file))
-    # Missing key falls back to the True default at the call site.
+    # A missing key isn't present in the loaded dict, so each caller supplies
+    # its own fallback (the app itself now defaults this OFF — see
+    # test_settings_vars.test_new_settings_defaults).
     assert util.load_config().get("watchlist_scan_on_startup", True) is True
     # An explicit False round-trips faithfully.
     util.save_config({"watchlist_scan_on_startup": False})

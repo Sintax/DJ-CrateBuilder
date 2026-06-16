@@ -20,8 +20,9 @@ def test_new_settings_defaults(tmp_path, monkeypatch):
     assert app._auto_dl_interval.get() == "1 day"
     assert app._run_at_startup.get() is False
     assert app._minimize_to_tray.get() is False
-    # Watch List startup scan is on by default (preserves prior behavior).
-    assert app._watchlist_scan_on_startup.get() is True
+    # Watch List startup scan is OFF by default: automatic scans are owned by
+    # the auto-download scheduler; users opt in via the Settings checkbox.
+    assert app._watchlist_scan_on_startup.get() is False
     app.destroy()
 
 
