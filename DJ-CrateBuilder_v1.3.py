@@ -66,8 +66,15 @@ TEXT      = "#f0f0f0"
 TEXT_DIM  = "#888888"
 TEXT_MED  = "#bbbbbb"
 SUCCESS   = "#22c55e"
+MAROON    = "#800000"   # Overall-progress bar fill
 SKIP_COL  = "#6b7280"
 LINK_COL  = "#60a5fa"   # light blue for clickable links
+
+# Database-viewer grid: hairline dividers + zebra striping over the near-black
+# tree field (#0a0a0a), so each row/column reads as its own box.
+DB_FIELD  = "#0a0a0a"   # tree field background
+DB_GRID   = "#3a3a3a"   # light-grey hairline dividers / outlines
+DB_STRIPE = "#161616"   # alternate-row tint (subtle lift over DB_FIELD)
 
 # Platform accent colours
 YT_RED    = "#ff3b3b"
@@ -472,7 +479,7 @@ class _BaseLogViewerWindow(tk.Toplevel):
 class LogViewerWindow(_BaseLogViewerWindow):
     """Standalone dark-themed log viewer window."""
 
-    WINDOW_TITLE = "📋  Downloads Log  —  DJ CrateBuilder"
+    WINDOW_TITLE = "📋  Activity Log  —  DJ CrateBuilder"
     WINDOW_W     = 1000
     WINDOW_H     = 640
 
@@ -1532,19 +1539,58 @@ class DatabaseViewerWindow(tk.Toplevel):
         self._configure_styles()
         self._build_ui()
         self.load_data()
-        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.focus_force()
+
+    # ── Column-width persistence ───────────────────────────────────────────────
+    # Remember each column's width between sessions so the viewer reopens laid
+    # out the way the user left it.
+    _DL_WIDTH_KEY = "db_dl_col_widths"
+    _WL_WIDTH_KEY = "db_wl_col_widths"
+
+    @staticmethod
+    def _saved_col_widths(key):
+        """Return the saved {column_id: width} dict for *key* (empty if none)."""
+        val = load_config().get(key)
+        return val if isinstance(val, dict) else {}
+
+    def _persist_col_widths(self):
+        """Save both trees' current column widths to the config file."""
+        def widths(tree, col_ids):
+            out = {}
+            for cid in col_ids:
+                try:
+                    out[cid] = int(tree.column(cid, "width"))
+                except Exception:
+                    pass
+            return out
+        try:
+            cfg = load_config()
+            cfg[self._DL_WIDTH_KEY] = widths(
+                self._dl_tree, ["#0", *self._DL_COLS])
+            cfg[self._WL_WIDTH_KEY] = widths(self._wl_tree, list(self._WL_COLS))
+            save_config(cfg)
+        except Exception:
+            pass   # column widths are a nicety; never block closing on them
+
+    def _on_close(self):
+        self._persist_col_widths()
+        self.destroy()
 
     # ── Theming ───────────────────────────────────────────────────────────────
     def _configure_styles(self):
         """Dark-theme the ttk.Treeview widgets used in this window."""
         s = ttk.Style(self)
         s.configure("DB.Treeview",
-                    background="#0a0a0a", fieldbackground="#0a0a0a",
+                    background=DB_FIELD, fieldbackground=DB_FIELD,
                     foreground=TEXT_MED, rowheight=24, borderwidth=0,
                     font=("Segoe UI", 10))
+        # relief="solid" + borderwidth draws a 1px box around each heading cell,
+        # giving a vertical divider between every column header. bordercolor sets
+        # those dividers to the light-grey hairline tone.
         s.configure("DB.Treeview.Heading",
-                    background=SURFACE2, foreground=TEXT, relief="flat",
+                    background=SURFACE2, foreground=TEXT,
+                    relief="solid", borderwidth=1, bordercolor=DB_GRID,
                     font=("Segoe UI", 10, "bold"), padding=(6, 4))
         s.map("DB.Treeview",
               background=[("selected", YT_DARK)],
@@ -1640,26 +1686,44 @@ class DatabaseViewerWindow(tk.Toplevel):
         self._dl_stats.pack(fill="x", side="bottom")
 
         # ── Tree ──────────────────────────────────────────────────────────────
-        tree_frame = tk.Frame(parent, bg=BG)
+        # 1px light-grey outline around the grid so the whole entry area reads as
+        # a framed box.
+        tree_frame = tk.Frame(parent, bg=BG,
+                              highlightthickness=1, highlightbackground=DB_GRID)
         tree_frame.pack(fill="both", expand=True)
 
         col_ids = list(self._DL_COLS)
         self._dl_tree = ttk.Treeview(
             tree_frame, columns=col_ids, show="tree headings",
             style="DB.Treeview", selectmode="browse")
+        # stretch=False on every column (incl. #0) so dragging one header never
+        # rebalances the others — columns keep their width and run off-screen,
+        # where the horizontal scrollbar takes over. Saved widths win over the
+        # built-in defaults.
+        saved = self._saved_col_widths(self._DL_WIDTH_KEY)
         self._dl_tree.heading("#0", text="Title  /  Group",
                               command=lambda: self._sort_downloads("title"))
-        self._dl_tree.column("#0", width=340, minwidth=180, anchor="w",
-                             stretch=True)
+        self._dl_tree.column("#0", width=saved.get("#0", 340), minwidth=180,
+                             anchor="w", stretch=False)
         for cid, (head, width, anchor) in self._DL_COLS.items():
             self._dl_tree.heading(
                 cid, text=head, command=lambda c=cid: self._sort_downloads(c))
-            self._dl_tree.column(cid, width=width, minwidth=50, anchor=anchor,
-                                 stretch=False)
+            self._dl_tree.column(cid, width=saved.get(cid, width), minwidth=50,
+                                 anchor=anchor, stretch=False)
 
         self._dl_tree.tag_configure("group", foreground=TEXT,
                                     font=("Segoe UI", 10, "bold"))
         self._dl_tree.tag_configure("leaf", foreground=TEXT_MED)
+        # Zebra striping makes each leaf entry its own visible box. The stripe
+        # tags set ONLY background, so they compose with group/leaf (which set
+        # only fg/font) without conflict. Re-applied on expand/collapse since
+        # that changes which rows are visible.
+        self._dl_tree.tag_configure("oddrow", background=DB_STRIPE)
+        self._dl_tree.tag_configure("evenrow", background=DB_FIELD)
+        self._dl_tree.bind("<<TreeviewOpen>>",
+                           lambda e: self.after(1, self._restripe_dl_tree))
+        self._dl_tree.bind("<<TreeviewClose>>",
+                           lambda e: self.after(1, self._restripe_dl_tree))
 
         vs = ttk.Scrollbar(tree_frame, orient="vertical",
                            command=self._dl_tree.yview)
@@ -1701,21 +1765,33 @@ class DatabaseViewerWindow(tk.Toplevel):
                                   highlightbackground=BORDER)
         self._wl_stats.pack(fill="x", side="bottom")
 
-        frame = tk.Frame(parent, bg=BG)
+        frame = tk.Frame(parent, bg=BG,
+                         highlightthickness=1, highlightbackground=DB_GRID)
         frame.pack(fill="both", expand=True)
 
         col_ids = list(self._WL_COLS)
         self._wl_tree = ttk.Treeview(
             frame, columns=col_ids, show="headings",
             style="DB.Treeview", selectmode="browse")
+        # stretch=False + a horizontal scrollbar: resizing one header keeps the
+        # other columns put and lets the row run off-screen. Saved widths win.
+        saved = self._saved_col_widths(self._WL_WIDTH_KEY)
         for cid, (head, width, anchor) in self._WL_COLS.items():
             self._wl_tree.heading(
                 cid, text=head, command=lambda c=cid: self._sort_watchlist(c))
-            self._wl_tree.column(cid, width=width, minwidth=50, anchor=anchor)
+            self._wl_tree.column(cid, width=saved.get(cid, width), minwidth=50,
+                                 anchor=anchor, stretch=False)
+
+        # Zebra striping so each channel entry reads as its own box.
+        self._wl_tree.tag_configure("oddrow", background=DB_STRIPE)
+        self._wl_tree.tag_configure("evenrow", background=DB_FIELD)
 
         vs = ttk.Scrollbar(frame, orient="vertical",
                            command=self._wl_tree.yview)
-        self._wl_tree.configure(yscrollcommand=vs.set)
+        hs = ttk.Scrollbar(frame, orient="horizontal",
+                           command=self._wl_tree.xview)
+        self._wl_tree.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
+        hs.pack(side="bottom", fill="x")
         vs.pack(side="right", fill="y")
         self._wl_tree.pack(side="left", fill="both", expand=True)
 
@@ -1859,6 +1935,27 @@ class DatabaseViewerWindow(tk.Toplevel):
                  f"{gens} genre{'s' if gens != 1 else ''}   •   "
                  f"{plats} platform{'s' if plats != 1 else ''}")
         self._update_dl_heading_arrows()
+        self._restripe_dl_tree()
+
+    def _restripe_dl_tree(self):
+        """Re-apply zebra striping to the currently-visible leaf rows. Walks the
+        tree in display order, alternating the stripe tag on leaves only (group
+        headers keep the base field colour)."""
+        tree = self._dl_tree
+        n = [0]
+
+        def walk(node):
+            for item in tree.get_children(node):
+                tags = tree.item(item, "tags")
+                if "leaf" in tags:
+                    stripe = "oddrow" if n[0] % 2 else "evenrow"
+                    tree.item(item, tags=("leaf", stripe))
+                    n[0] += 1
+                if tree.get_children(item) and \
+                        self.tk.getboolean(tree.item(item, "open")):
+                    walk(item)
+
+        walk("")
 
     def _insert_group(self, parent, rows, keys):
         """Recursively insert grouped nodes; leaves at the deepest level."""
@@ -2082,11 +2179,12 @@ class DatabaseViewerWindow(tk.Toplevel):
         tree.delete(*tree.get_children())
         rows = sorted(self._channels, key=self._wl_sort_key,
                       reverse=self._wl_sort_desc)
-        for ch in rows:
+        for i, ch in enumerate(rows):
             cutoff = format_yyyymmdd_readable(ch.get("scan_cutoff_date", "")) \
                      if ch.get("scan_cutoff_date") else ""
             last = format_timestamp_relative(ch.get("last_scanned_timestamp"))
-            tree.insert("", "end", values=(
+            tree.insert("", "end", tags=("oddrow" if i % 2 else "evenrow",),
+                        values=(
                 ch.get("display_name") or "",
                 self._wl_display_url(ch),
                 ch.get("platform") or "",
@@ -2219,9 +2317,11 @@ class MP3DownloaderApp(tk.Tk):
             self._run_at_startup.set(cb_startup.startup_is_enabled())
         self._minimize_to_tray = tk.BooleanVar(
             value=cfg.get("minimize_to_tray", False))
-        # Scan the Watch List for new uploads as soon as the app launches.
+        # Optionally scan the Watch List for new uploads as soon as the app
+        # launches. Off by default — automatic scans are owned by the
+        # auto-download scheduler; the user can opt in via Settings.
         self._watchlist_scan_on_startup = tk.BooleanVar(
-            value=cfg.get("watchlist_scan_on_startup", True))
+            value=cfg.get("watchlist_scan_on_startup", False))
         # The auto-download schedule counts from when the app starts: the next
         # run is always (this launch time + interval), regardless of any stored
         # value from a previous session. A later Download All New re-anchors to
@@ -2985,14 +3085,15 @@ class MP3DownloaderApp(tk.Tk):
             background=[("active", "#ff9633")],
             foreground=[("active", "#1a0f00")])
 
-        # Grey action buttons for the Downloads/Debug log + Database rows.
-        # DlBtn = the primary "open/view" buttons; SysView = "open in system viewer".
+        # Action buttons for the Activity/Debug log + Database rows.
+        # DlBtn = the primary built-in "open/view" buttons (light blue, matching
+        # the Watch List tab); SysView = "open in system viewer" (grey).
         s.configure("DlBtn.TButton",
-            background="#B3B3B3", foreground="#1a1a1a",
+            background=WL_BLUE_DARK, foreground=TEXT,
             font=("Segoe UI", 10), relief="flat", borderwidth=0, padding=(10, 8))
         s.map("DlBtn.TButton",
-            background=[("active", "#c6c6c6")],
-            foreground=[("active", "#1a1a1a")])
+            background=[("active", WL_BLUE)],
+            foreground=[("active", TEXT)])
 
         s.configure("SysView.TButton",
             background="#7F7F7F", foreground="#ffffff",
@@ -3029,7 +3130,7 @@ class MP3DownloaderApp(tk.Tk):
             fieldbackground=SURFACE2, foreground=TEXT,
             background=SURFACE2, bordercolor=YT_RED,
             lightcolor=YT_RED, darkcolor=YT_RED,
-            arrowcolor=TEXT_DIM,
+            arrowcolor=TEXT_DIM, borderwidth=1,
             font=("Segoe UI", 11), padding=(8, 6))
         s.map("URL.TCombobox",
             fieldbackground=[("readonly", SURFACE2)],
@@ -3045,7 +3146,7 @@ class MP3DownloaderApp(tk.Tk):
         self.option_add("*TCombobox*Listbox.font", ("Segoe UI", 11))
 
         for name, color in [("Accent.Horizontal.TProgressbar", YT_RED),
-                             ("Green.Horizontal.TProgressbar",  SUCCESS)]:
+                             ("Maroon.Horizontal.TProgressbar", MAROON)]:
             s.configure(name,
                 troughcolor=SURFACE2, background=color,
                 bordercolor=SURFACE2, lightcolor=color,
@@ -3309,7 +3410,7 @@ class MP3DownloaderApp(tk.Tk):
                                         fg=TEXT_DIM, bg=SURFACE, anchor="e")
         self._ov_stats_lbl.pack(side="right", padx=(0, 4))
         self._overall_progress = ttk.Progressbar(prog, mode="determinate",
-                                                   style="Green.Horizontal.TProgressbar")
+                                                   style="Maroon.Horizontal.TProgressbar")
         self._overall_progress.pack(fill="x")
 
         # ── Queue ─────────────────────────────────────────────────────────────
@@ -3353,6 +3454,33 @@ class MP3DownloaderApp(tk.Tk):
     # Settings tab — the form plus the autosave handlers that back each control
     # ══════════════════════════════════════════════════════════════════════════
     # ── Settings tab ──────────────────────────────────────────────────────────
+    def _settings_help(self, parent, tip, wraplength=360):
+        """Return a tiny '?'-in-a-box help icon (the caller packs it) that shows
+        *tip* on hover. Used at the end of a Settings option so the hover target
+        is an explicit icon instead of the checkbox / dropdown / label itself."""
+        icon = tk.Label(parent, text="?", font=("Segoe UI", 7, "bold"),
+                        fg="#7F7F7F", bg=BG, padx=1, pady=0,
+                        highlightthickness=1, highlightbackground="#7F7F7F",
+                        cursor="question_arrow")
+        Tooltip(icon, tip, wraplength=wraplength)
+        return icon
+
+    def _open_containing_folder(self, path):
+        """Open the folder holding *path* in the system file manager."""
+        folder = os.path.dirname(path) or path
+        try:
+            os.makedirs(folder, exist_ok=True)
+            if sys.platform == "win32":
+                os.startfile(folder)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", folder])
+            else:
+                subprocess.Popen(["xdg-open", folder])
+        except Exception as exc:
+            messagebox.showerror(
+                "Could Not Open Folder",
+                f"Unable to open the folder:\n{exc}\n\nPath: {folder}")
+
     def _build_settings_tab(self, parent):
         """Build the Settings tab: save folder, bitrate, behavior, and automation controls."""
         # ── Scrollable wrapper ────────────────────────────────────────────────
@@ -3402,11 +3530,6 @@ class MP3DownloaderApp(tk.Tk):
             variable=self._watchlist_scan_on_startup,
             style="S.Opt.TCheckbutton")
         self._startup_scan_cb.pack(side="left")
-        Tooltip(self._startup_scan_cb,
-                "When enabled, scans every watched channel for new uploads the "
-                "moment the app starts, so cards show current new-track counts. "
-                "Turn off to skip the startup scan and check manually.",
-                wraplength=320)
 
         # Auto-add channels to Watch List (moved here from the Watch List section)
         autoadd_row = ttk.Frame(outer)
@@ -3416,10 +3539,6 @@ class MP3DownloaderApp(tk.Tk):
             variable=self._auto_add_to_watchlist,
             style="S.Opt.TCheckbutton")
         self._auto_add_cb.pack(side="left")
-        Tooltip(self._auto_add_cb,
-                "When enabled, any channel or playlist you download is "
-                "automatically added to the Watch List so you can scan "
-                "it for new uploads later.")
 
         # Auto-download interval dropdown (moved to the bottom of the section)
         auto_row = ttk.Frame(outer)
@@ -3431,20 +3550,23 @@ class MP3DownloaderApp(tk.Tk):
             values=AUTO_DOWNLOAD_OPTIONS,
             state="readonly", width=10)
         self._auto_dl_combo.pack(side="left")
-        Tooltip(self._auto_dl_combo,
-                "How often to automatically scan every watched channel for new "
-                "uploads and download them. Each run scans all channels first, "
-                "then downloads everything new. Default 1 day; 'Off' disables it.",
-                wraplength=320)
+        self._settings_help(
+            auto_row,
+            "How often to automatically scan every watched channel for new "
+            "uploads and download them. Each run scans all channels first, "
+            "then downloads everything new. Default 1 day; 'Off' disables it.",
+            wraplength=320).pack(side="left", padx=(8, 0))
 
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 18))
 
         # ── Time / Length Limiter ─────────────────────────────────────────────
-        _lbl = ttk.Label(outer, text="Time / Length Limiter",
-                  style="S.White.Section.TLabel")
-        _lbl.pack(anchor="w", pady=(0, 8))
-        Tooltip(_lbl, "Skip any file whose duration exceeds the limit below. "
-                      "Uncheck to allow files of any length.", wraplength=360)
+        _row = ttk.Frame(outer)
+        _row.pack(fill="x", pady=(0, 8))
+        ttk.Label(_row, text="Time / Length Limiter",
+                  style="S.White.Section.TLabel").pack(side="left")
+        self._settings_help(_row,
+            "Skip any file whose duration exceeds the limit below. "
+            "Uncheck to allow files of any length.").pack(side="left", padx=(8, 0))
 
         limit_enable_row = ttk.Frame(outer)
         limit_enable_row.pack(fill="x", pady=(0, 8))
@@ -3502,11 +3624,8 @@ class MP3DownloaderApp(tk.Tk):
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 20))
 
         # ── MP3 Bitrate Selector ──────────────────────────────────────────────
-        _lbl = ttk.Label(outer, text="Audio Output",
-                  style="S.White.Section.TLabel")
-        _lbl.pack(anchor="w", pady=(0, 8))
-        Tooltip(_lbl, "Bitrate used when converting the downloaded audio to MP3. "
-                      "Higher values produce better quality and larger files.", wraplength=360)
+        ttk.Label(outer, text="Audio Output",
+                  style="S.White.Section.TLabel").pack(anchor="w", pady=(0, 8))
 
         bitrate_row = ttk.Frame(outer)
         bitrate_row.pack(fill="x", pady=(0, 10))
@@ -3521,7 +3640,9 @@ class MP3DownloaderApp(tk.Tk):
             values=["128 kbps", "192 kbps", "224 kbps", "256 kbps", "320 kbps"],
             state="readonly", width=14)
         self._bitrate_combo.pack(side="left", padx=(0, 14))
-        Tooltip(self._bitrate_combo, "192 kbps = good quality  •  320 kbps = maximum MP3 quality", wraplength=360)
+        self._settings_help(bitrate_row,
+            "192 kbps = good quality  •  320 kbps = maximum MP3 quality").pack(
+                side="left", padx=(0, 0))
 
         # ── No-conversion checkbox ────────────────────────────────────────────
         no_conv_row = ttk.Frame(outer)
@@ -3532,11 +3653,13 @@ class MP3DownloaderApp(tk.Tk):
                         command=self._on_no_conversion_toggle,
                         style="S.Opt.TCheckbutton")
         self._no_conv_cb.pack(side="left")
-        Tooltip(self._no_conv_cb,
-                "When enabled, files are saved in their original format "
-                "and bitrate without conversion to MP3. YouTube typically serves "
-                ".webm (Opus) or .m4a (AAC); SoundCloud serves .mp3 or .webm. "
-                "Your folder will contain a mix of extensions.", wraplength=400)
+        self._settings_help(
+            no_conv_row,
+            "When enabled, files are saved in their original format "
+            "and bitrate without conversion to MP3. YouTube typically serves "
+            ".webm (Opus) or .m4a (AAC); SoundCloud serves .mp3 or .webm. "
+            "Your folder will contain a mix of extensions.",
+            wraplength=400).pack(side="left", padx=(8, 0))
 
         # Apply initial enabled/disabled state for the bitrate combo
         self._on_no_conversion_toggle()
@@ -3549,12 +3672,13 @@ class MP3DownloaderApp(tk.Tk):
         _lbl = ttk.Label(beh_title_row, text="Download Behavior",
                   style="S.White.Section.TLabel")
         _lbl.pack(side="left")
-        Tooltip(_lbl, "Options that control how DJ-CrateBuilder connects and paces "
-                      "requests. These can help avoid throttling, geographic "
-                      "restrictions, or IP-banning from YouTube/SoundCloud when "
-                      "doing entire channel/batch downloads.", wraplength=360)
         ttk.Label(beh_title_row, text="(Experimental)",
                   style="S.Dim.TLabel").pack(side="left", padx=(8, 0))
+        self._settings_help(beh_title_row,
+            "Options that control how DJ-CrateBuilder connects and paces "
+            "requests. These can help avoid throttling, geographic "
+            "restrictions, or IP-banning from YouTube/SoundCloud when "
+            "doing entire channel/batch downloads.").pack(side="left", padx=(8, 0))
 
         # Geo-bypass checkbox
         geo_row = ttk.Frame(outer)
@@ -3564,7 +3688,9 @@ class MP3DownloaderApp(tk.Tk):
                         variable=self._geo_bypass,
                         style="S.Opt.TCheckbutton")
         _cb.pack(side="left")
-        Tooltip(_cb, "Bypass geographic IP-based restrictions using a fake X-Forwarded-For header", wraplength=360)
+        self._settings_help(geo_row,
+            "Bypass geographic IP-based restrictions using a fake "
+            "X-Forwarded-For header").pack(side="left", padx=(8, 0))
 
         # Rotate User-Agent checkbox
         ua_row = ttk.Frame(outer)
@@ -3574,7 +3700,9 @@ class MP3DownloaderApp(tk.Tk):
                         variable=self._rotate_ua,
                         style="S.Opt.TCheckbutton")
         _cb.pack(side="left")
-        Tooltip(_cb, "Send a randomized browser User-Agent string (consistent within each session)", wraplength=360)
+        self._settings_help(ua_row,
+            "Send a randomized browser User-Agent string (consistent within "
+            "each session)").pack(side="left", padx=(8, 0))
 
         # Sleep interval checkbox + mode selector
         sleep_row = ttk.Frame(outer)
@@ -3585,11 +3713,12 @@ class MP3DownloaderApp(tk.Tk):
                         command=self._on_sleep_toggle,
                         style="S.Opt.TCheckbutton")
         _throttle_cb.pack(side="left")
-        Tooltip(_throttle_cb,
-                "Pause between requests to avoid rate-limiting or IP bans during "
-                "large channel / batch downloads. Auto picks delays from the "
-                "selected preset; Manual lets you set exact min/max seconds.",
-                wraplength=320)
+        self._settings_help(
+            sleep_row,
+            "Pause between requests to avoid rate-limiting or IP bans during "
+            "large channel / batch downloads. Auto picks delays from the "
+            "selected preset; Manual lets you set exact min/max seconds.",
+            wraplength=320).pack(side="left", padx=(8, 0))
 
         self._sleep_labels = []
 
@@ -3623,10 +3752,10 @@ class MP3DownloaderApp(tk.Tk):
         # Auto descriptions
         self._sleep_auto_row = ttk.Frame(self._sleep_detail)
         Tooltip(self._sleep_preset_combo,
-               "Light = Downloading 50 files or less, per 24hrs.\n"
-               "Moderate = Downloading between 50-200 files, per 24hrs.\n"
-               "Aggressive = Downloading 200 files or more, per 24hrs.",
-               wraplength=360)
+                "Light = Downloading 50 files or less, per 24hrs.\n"
+                "Moderate = Downloading between 50-200 files, per 24hrs.\n"
+                "Aggressive = Downloading 200 files or more, per 24hrs.",
+                wraplength=360)
 
         # Manual spinboxes
         self._sleep_manual_row = ttk.Frame(self._sleep_detail)
@@ -3684,12 +3813,14 @@ class MP3DownloaderApp(tk.Tk):
                         command=self._on_cookies_toggle,
                         style="S.Opt.TCheckbutton")
         self._use_cookies_cb.pack(side="left")
-        Tooltip(self._use_cookies_cb,
-                "Authenticate downloads using a browser login session (increases speed).\n\n"
-                "⚠ It is strongly recommended to create a dedicated/throwaway account. "
-                "Chrome 127+ blocks cookie extraction (DPAPI) — use Firefox or a "
-                "cookie file instead. For cookie files: install the 'Get cookies.txt "
-                "LOCALLY' browser extension.", wraplength=400)
+        self._settings_help(
+            cookie_row,
+            "Authenticate downloads using a browser login session (increases speed).\n\n"
+            "⚠ It is strongly recommended to create a dedicated/throwaway account. "
+            "Chrome 127+ blocks cookie extraction (DPAPI) — use Firefox or a "
+            "cookie file instead. For cookie files: install the 'Get cookies.txt "
+            "LOCALLY' browser extension.",
+            wraplength=400).pack(side="left", padx=(8, 0))
 
         # Cookie detail widgets
         self._cookie_labels = []
@@ -3786,7 +3917,8 @@ class MP3DownloaderApp(tk.Tk):
             command=self._browse_cookie_file)
         self._cookie_browse_btn.pack(side="left", padx=(0, 8))
 
-        Tooltip(self._cookie_file_entry, "Netscape/Mozilla cookie.txt format")
+        self._settings_help(self._cookie_file_row,
+            "Netscape/Mozilla cookie.txt format").pack(side="left", padx=(0, 8))
 
         howto_row = ttk.Frame(outer)
         howto_row.pack(fill="x", pady=(6, 0))
@@ -3806,11 +3938,8 @@ class MP3DownloaderApp(tk.Tk):
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 20))
 
         # ── Base directory ────────────────────────────────────────────────────
-        _lbl = ttk.Label(outer, text="Default Save Directory",
-                  style="S.White.Section.TLabel")
-        _lbl.pack(anchor="w", pady=(0, 8))
-        Tooltip(_lbl, "All downloads are organized under this folder.  "
-                      "YouTube and SoundCloud sub-folders are created automatically.", wraplength=360)
+        ttk.Label(outer, text="Default Save Directory",
+                  style="S.White.Section.TLabel").pack(anchor="w", pady=(0, 8))
 
         dir_row = ttk.Frame(outer)
         dir_row.pack(fill="x", pady=(0, 8))
@@ -3827,23 +3956,22 @@ class MP3DownloaderApp(tk.Tk):
         ttk.Button(dir_row, text="Browse…", style="Browse.TButton",
                    command=self._settings_browse).pack(side="left")
 
-        self._settings_msg = ttk.Label(outer, text="", style="S.Dim.TLabel")
-        self._settings_msg.pack(anchor="w", pady=(0, 4))
+        # Save confirmation sits inline beside Browse so it doesn't reserve an
+        # empty row beneath the directory field.
+        self._settings_msg = ttk.Label(dir_row, text="", style="S.Dim.TLabel")
+        self._settings_msg.pack(side="left", padx=(10, 0))
 
         # ── Downloads log ─────────────────────────────────────────────────────
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(8, 20))
 
         _hdr = ttk.Frame(outer)
         _hdr.pack(anchor="w", pady=(0, 6))
-        ttk.Label(_hdr, text="Downloads Log",
+        ttk.Label(_hdr, text="Activity Log",
                   style="S.White.Section.TLabel").pack(side="left")
-        _help = tk.Label(_hdr, text="?", font=("Segoe UI", 8, "bold"),
-                         fg="#7F7F7F", bg=BG, padx=3,
-                         highlightthickness=1, highlightbackground="#7F7F7F")
-        _help.pack(side="left", padx=(8, 0))
-        Tooltip(_help, "A color-coded record of every downloaded, skipped, and failed "
-                       "file. View it here in the built-in viewer, or open it in your "
-                       "system's default text editor.", wraplength=360)
+        self._settings_help(_hdr,
+            "A color-coded record of every downloaded, skipped, and failed "
+            "file. View it here in the built-in viewer, or open it in your "
+            "system's default text editor.").pack(side="left", padx=(8, 0))
 
         log_row = ttk.Frame(outer)
         log_row.pack(fill="x", pady=(0, 4))
@@ -3854,9 +3982,14 @@ class MP3DownloaderApp(tk.Tk):
         ttk.Button(log_row, text="↗  Open in System Viewer", style="SysView.TButton",
                    command=self._open_log_external).pack(side="left", padx=(0, 16))
 
-        # Show the resolved log path so the user always knows where it lives
-        self._log_path_lbl = ttk.Label(log_row, text="", style="S.Dim.TLabel")
+        # Resolved log path — click to reveal the file in the system file manager.
+        self._log_path_lbl = tk.Label(
+            log_row, text="", font=("Segoe UI", 11, "underline"),
+            fg=LINK_COL, bg=BG, cursor="hand2", anchor="w")
         self._log_path_lbl.pack(side="left", fill="x", expand=True)
+        self._log_path_lbl.bind(
+            "<Button-1>", lambda _e: self._open_containing_folder(self._log_path))
+        Tooltip(self._log_path_lbl, "Open this folder in your file explorer")
         self._refresh_log_path_label()
 
         # ── Debug log ─────────────────────────────────────────────────────────
@@ -3866,25 +3999,29 @@ class MP3DownloaderApp(tk.Tk):
         _hdr.pack(anchor="w", pady=(0, 6))
         ttk.Label(_hdr, text="Debug Log",
                   style="S.White.Section.TLabel").pack(side="left")
-        _help = tk.Label(_hdr, text="?", font=("Segoe UI", 8, "bold"),
-                         fg="#7F7F7F", bg=BG, padx=3,
-                         highlightthickness=1, highlightbackground="#7F7F7F")
-        _help.pack(side="left", padx=(8, 0))
-        Tooltip(_help, "Detailed diagnostic log capturing cookie configuration, "
-                       "yt-dlp options, request/response data, and full error "
-                       "tracebacks. Useful for troubleshooting download failures.", wraplength=360)
+        self._settings_help(_hdr,
+            "Detailed diagnostic log capturing cookie configuration, "
+            "yt-dlp options, request/response data, and full error "
+            "tracebacks. Useful for troubleshooting download failures.").pack(
+                side="left", padx=(8, 0))
 
         dbg_row = ttk.Frame(outer)
         dbg_row.pack(fill="x", pady=(0, 4))
 
-        ttk.Button(dbg_row, text="🔍  View Debug Log", style="DlBtn.TButton",
+        ttk.Button(dbg_row, text="🔍  View Log", style="DlBtn.TButton",
                    command=self._open_debug_log_viewer).pack(side="left", padx=(0, 8))
 
         ttk.Button(dbg_row, text="↗  Open in System Viewer", style="SysView.TButton",
                    command=self._open_debug_log_external).pack(side="left", padx=(0, 16))
 
-        self._debug_path_lbl = ttk.Label(dbg_row, text="", style="S.Dim.TLabel")
+        self._debug_path_lbl = tk.Label(
+            dbg_row, text="", font=("Segoe UI", 11, "underline"),
+            fg=LINK_COL, bg=BG, cursor="hand2", anchor="w")
         self._debug_path_lbl.pack(side="left", fill="x", expand=True)
+        self._debug_path_lbl.bind(
+            "<Button-1>",
+            lambda _e: self._open_containing_folder(self._debug_log_path))
+        Tooltip(self._debug_path_lbl, "Open this folder in your file explorer")
         self._refresh_debug_path_label()
 
         # ── Database management ────────────────────────────────────────────────
@@ -3894,13 +4031,11 @@ class MP3DownloaderApp(tk.Tk):
         _hdr.pack(anchor="w", pady=(0, 6))
         ttk.Label(_hdr, text="Downloads Database",
                   style="S.White.Section.TLabel").pack(side="left")
-        _help = tk.Label(_hdr, text="?", font=("Segoe UI", 8, "bold"),
-                         fg="#7F7F7F", bg=BG, padx=3,
-                         highlightthickness=1, highlightbackground="#7F7F7F")
-        _help.pack(side="left", padx=(8, 0))
-        Tooltip(_help, "The SQLite database tracks every download for fast "
-                       "lookups and Watch List history. If it gets corrupted "
-                       "or deleted, rebuild it from the files on disk.", wraplength=360)
+        self._settings_help(_hdr,
+            "The SQLite database tracks every download for fast "
+            "lookups and Watch List history. If it gets corrupted "
+            "or deleted, rebuild it from the files on disk.").pack(
+                side="left", padx=(8, 0))
 
         db_row = ttk.Frame(outer)
         db_row.pack(fill="x", pady=(0, 4))
@@ -3910,23 +4045,25 @@ class MP3DownloaderApp(tk.Tk):
             style="DlBtn.TButton",
             command=self._open_database_viewer)
         self._open_db_btn.pack(side="left", padx=(0, 8))
-        Tooltip(self._open_db_btn,
-                "Browse your download history as a file-explorer-style tree — "
-                "group, filter, search, sort, and export — plus a sortable view "
-                "of your watched channels.", wraplength=360)
 
         self._rebuild_db_btn = ttk.Button(
             db_row, text="🔄  Rebuild Database from Files",
             style="Orange.TButton",
             command=self._rebuild_db_from_files)
-        self._rebuild_db_btn.pack(side="left", padx=(0, 16))
-        Tooltip(self._rebuild_db_btn,
-                "Scans the .mp3 files already in your library folders and "
-                "rebuilds the database from them. This is safe to run at any "
-                "time — it clears and rebuilds from scratch.")
+        self._rebuild_db_btn.pack(side="left", padx=(0, 8))
+        self._settings_help(db_row,
+            "Scans the .mp3 files already in your library folders and "
+            "rebuilds the database from them. This is safe to run at any "
+            "time — it clears and rebuilds from scratch.").pack(
+                side="left", padx=(0, 16))
 
-        self._db_path_lbl = ttk.Label(db_row, text="", style="S.Dim.TLabel")
+        self._db_path_lbl = tk.Label(
+            db_row, text="", font=("Segoe UI", 11, "underline"),
+            fg=LINK_COL, bg=BG, cursor="hand2", anchor="w")
         self._db_path_lbl.pack(side="left", fill="x", expand=True)
+        self._db_path_lbl.bind(
+            "<Button-1>", lambda _e: self._open_containing_folder(self._db_path))
+        Tooltip(self._db_path_lbl, "Open this folder in your file explorer")
         if hasattr(self, "_db_path"):
             short = self._db_path.replace(os.path.expanduser("~"), "~")
             self._db_path_lbl.config(text=short)
@@ -4460,8 +4597,11 @@ class MP3DownloaderApp(tk.Tk):
 
             ("Q: Why are some downloads marked \"login required\"?",
              "A: YouTube sometimes requires account authentication for certain content, especially when accessing from "
-             "VPN or datacenter IP addresses. Try disconnecting your VPN, switching to a different VPN server, or "
-             "waiting a while before retrying."),
+             "VPN or datacenter IP addresses. The most reliable fix is to enable \"Use browser cookies\" in the "
+             "Settings tab and pick the browser you're signed into YouTube with — the app then borrows that session "
+             "so downloads authenticate as you. (Use a throwaway account in a separate browser profile if you'd "
+             "rather not risk your main one.) Otherwise, try disconnecting your VPN, switching to a different VPN "
+             "server, or waiting a while before retrying."),
 
             ("Q: Why are some downloads marked \"unavailable\" or \"private\"?",
              "A: The video has been removed by the uploader, made private, or is restricted in your region. These "
@@ -4505,10 +4645,11 @@ class MP3DownloaderApp(tk.Tk):
              "platform (YouTube/SoundCloud), then by genre and channel name. You can change the base directory in the "
              "Settings tab. The \"Open Folder\" button on the Main tab opens the current download directory."),
 
-            ("Q: What is the download log?",
+            ("Q: What is the Activity Log?",
              "A: A text file that records every downloaded, skipped, and failed file with timestamps. It lives in "
-             "your base save directory as \"activity.log\" and can be viewed with the built-in log viewer "
-             "in the Settings tab."),
+             "your base save directory as \"activity.log\". Under the \"Activity Log\" heading in the Settings tab, "
+             "\"View Log\" opens it in the built-in color-coded viewer and \"Open in System Viewer\" opens it in your "
+             "default text editor. The path beneath is a clickable link that opens its folder in your file explorer."),
 
             ("Q: Why does the Queue stop showing entries after a large number of files?",
              "A: This was a known issue in v1.0 caused by a Tk Canvas widget limitation. It has been fixed in v1.1 "
@@ -4531,9 +4672,17 @@ class MP3DownloaderApp(tk.Tk):
             ("Q: What is the Watch List?",
              "A: It tracks YouTube and SoundCloud channels you care about and "
              "surfaces only genuinely-new uploads — tracks you haven't already "
-             "downloaded — so you never re-grab your whole library. Every entry is "
-             "re-scanned in the background when the app starts, so the new-track "
-             "counts are always up to date."),
+             "downloaded — so you never re-grab your whole library. New-track counts "
+             "refresh whenever you press 'Scan All', on each scheduled auto-download "
+             "run, and (optionally) at launch if you enable 'Scan Watch List for new "
+             "uploads when the app starts' in Settings."),
+            ("Q: What's the difference between 'Scan All' and 'Download All New'?",
+             "A: 'Scan All' only checks every watched channel for new uploads and "
+             "updates the new-track counts on each card — it never downloads "
+             "anything. 'Download All New' downloads the tracks already counted as "
+             "new across all channels without first re-scanning. (The scheduled "
+             "auto-download does both: it scans first, then downloads.) Each card "
+             "also has its own buttons to scan or download just that one channel."),
             ("Q: How do channels get added to the Watch List?",
              "A: Three ways: manually with 'Add Channel' (paste a youtube.com or "
              "soundcloud.com channel/artist URL); automatically after you download "
@@ -4555,11 +4704,14 @@ class MP3DownloaderApp(tk.Tk):
              "offers to remove the redundant entry. Resolved entries don't show the "
              "button."),
             ("Q: How does automatic checking and downloading work?",
-             "A: In Settings → Automation, set 'Check watched channels every…' "
-             "(default 24 hours). On that interval the app scans every watched "
-             "channel and automatically downloads any new tracks into their folders, "
-             "using your bitrate/throttle/skip settings, and shows a tray "
-             "notification summarising what it grabbed."),
+             "A: In Settings → Automation/Startup, set 'Auto-download Watch-List "
+             "channels every…' (default 1 day; choose 'Off' to disable it). On that "
+             "interval the app scans every watched channel first, then automatically "
+             "downloads any new tracks into their folders using your "
+             "bitrate/throttle/skip settings, and shows a tray notification "
+             "summarising what it grabbed. The countdown runs from app launch and "
+             "re-anchors each time a 'Download All New' completes; the Watch List tab "
+             "shows when the next run is due."),
             ("Q: What do 'Run at startup' and 'Minimize to system tray' do?",
              "A: 'Run at startup' launches DJ-CrateBuilder when Windows starts. "
              "'Minimize to system tray' keeps the app (and its scheduled checks) "
@@ -4572,10 +4724,18 @@ class MP3DownloaderApp(tk.Tk):
                      font=("Segoe UI", 11, "bold"), fg=TEXT, bg=BG,
                      anchor="w", justify="left", wraplength=660
                      ).pack(fill="x", pady=(0, 4))
-            tk.Label(outer, text=answer,
+            # Render the leading "A:" in the question's font/color, with the
+            # answer body beside it (hanging indent so wrapped lines align under
+            # the body, not the marker).
+            arow = tk.Frame(outer, bg=BG)
+            arow.pack(fill="x", pady=(0, 16))
+            tk.Label(arow, text="A:",
+                     font=("Segoe UI", 11, "bold"), fg=TEXT, bg=BG,
+                     anchor="nw").pack(side="left", padx=(0, 5))
+            tk.Label(arow, text=answer.removeprefix("A:").lstrip(),
                      font=("Segoe UI", 10), fg=TEXT_DIM, bg=BG,
-                     anchor="w", justify="left", wraplength=660
-                     ).pack(fill="x", pady=(0, 16))
+                     anchor="w", justify="left", wraplength=638
+                     ).pack(side="left", fill="x")
 
     # ── Genre management ──────────────────────────────────────────────────────
     def _refresh_log_path_label(self):
