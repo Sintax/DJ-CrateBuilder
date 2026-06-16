@@ -1577,6 +1577,74 @@ class DatabaseViewerWindow(tk.Toplevel):
         self._persist_col_widths()
         self.destroy()
 
+    # ── Column drag-to-reorder ─────────────────────────────────────────────────
+    # Drag a header onto another header to reorder columns; the order is
+    # remembered between sessions. Reordering uses Treeview's displaycolumns, so
+    # the underlying column ids (and saved widths) are untouched.
+    _DL_ORDER_KEY = "db_dl_col_order"
+    _WL_ORDER_KEY = "db_wl_col_order"
+
+    @staticmethod
+    def _display_order(tree, all_cols):
+        """Current left-to-right order of the data columns."""
+        dc = tree.cget("displaycolumns")
+        if not dc or "#all" in dc:
+            return list(all_cols)
+        return list(dc)
+
+    def _apply_saved_order(self, tree, all_cols, key):
+        """Restore a saved column order if it's still a valid permutation."""
+        order = load_config().get(key)
+        if isinstance(order, list) and sorted(order) == sorted(all_cols):
+            tree.configure(displaycolumns=order)
+
+    @staticmethod
+    def _save_col_order(key, order):
+        try:
+            cfg = load_config()
+            cfg[key] = list(order)
+            save_config(cfg)
+        except Exception:
+            pass
+
+    def _enable_col_reorder(self, tree, all_cols, order_key):
+        """Bind header drag-and-drop reordering onto *tree*. A plain click still
+        sorts (we only intercept when the column is dropped on a different one)."""
+        state = {"src": None}
+
+        def on_press(e):
+            if tree.identify_region(e.x, e.y) == "heading":
+                state["src"] = tree.identify_column(e.x)
+
+        def name_at(disp, order):
+            # disp is "#0" (the tree column, not reorderable) or "#N" into order.
+            if not disp or disp == "#0":
+                return None
+            i = int(disp[1:]) - 1
+            return order[i] if 0 <= i < len(order) else None
+
+        def on_release(e):
+            src, state["src"] = state["src"], None
+            if src is None or tree.identify_region(e.x, e.y) != "heading":
+                return
+            tgt = tree.identify_column(e.x)
+            if not tgt or tgt == src:
+                return                       # pure click → let the sort fire
+            order = self._display_order(tree, all_cols)
+            src_name = name_at(src, order)
+            if src_name is None:
+                return                       # can't move the tree (#0) column
+            tgt_name = name_at(tgt, order)
+            order.remove(src_name)
+            insert_at = order.index(tgt_name) if tgt_name in order else 0
+            order.insert(insert_at, src_name)
+            tree.configure(displaycolumns=order)
+            self._save_col_order(order_key, order)
+            return "break"                   # suppress the sort on a real drag
+
+        tree.bind("<ButtonPress-1>", on_press, add="+")
+        tree.bind("<ButtonRelease-1>", on_release, add="+")
+
     # ── Theming ───────────────────────────────────────────────────────────────
     def _configure_styles(self):
         """Dark-theme the ttk.Treeview widgets used in this window."""
@@ -1725,6 +1793,10 @@ class DatabaseViewerWindow(tk.Toplevel):
         self._dl_tree.bind("<<TreeviewClose>>",
                            lambda e: self.after(1, self._restripe_dl_tree))
 
+        # Drag a header to reorder columns; restore any saved order.
+        self._apply_saved_order(self._dl_tree, col_ids, self._DL_ORDER_KEY)
+        self._enable_col_reorder(self._dl_tree, col_ids, self._DL_ORDER_KEY)
+
         vs = ttk.Scrollbar(tree_frame, orient="vertical",
                            command=self._dl_tree.yview)
         hs = ttk.Scrollbar(tree_frame, orient="horizontal",
@@ -1795,6 +1867,10 @@ class DatabaseViewerWindow(tk.Toplevel):
         vs.pack(side="right", fill="y")
         self._wl_tree.pack(side="left", fill="both", expand=True)
 
+        # Drag a header to reorder columns; restore any saved order.
+        self._apply_saved_order(self._wl_tree, col_ids, self._WL_ORDER_KEY)
+        self._enable_col_reorder(self._wl_tree, col_ids, self._WL_ORDER_KEY)
+
         # Right-click the Link column to open or copy a channel's URL.
         self._wl_menu = tk.Menu(self._wl_tree, tearoff=0)
         self._wl_tree.bind("<Button-3>", self._on_wl_right_click)
@@ -1838,6 +1914,7 @@ class DatabaseViewerWindow(tk.Toplevel):
             self._downloads = self._db.get_all_downloads()
         except Exception:
             self._downloads = []
+        self._backfill_missing_timestamps()
         try:
             self._channels = self._db.get_all_watchlist_channels()
         except Exception:
@@ -1856,6 +1933,37 @@ class DatabaseViewerWindow(tk.Toplevel):
 
         self._rebuild_downloads_tree()
         self._rebuild_watchlist_tree()
+
+    def _backfill_missing_timestamps(self):
+        """Tracks imported before the database feature existed have no download
+        timestamp (stored as 0). Fill each in from the file's creation time on
+        disk and persist it, so the 'Downloaded' column and its sort are
+        meaningful. Rows whose file is gone are left blank."""
+        updates = []
+        for d in self._downloads:
+            try:
+                ts = int(d.get("download_timestamp") or 0)
+            except (TypeError, ValueError):
+                ts = 0
+            if ts > 0:
+                continue
+            path = d.get("file_path") or ""
+            if not path or not os.path.exists(path):
+                continue
+            try:
+                ctime = int(os.path.getctime(path))
+            except OSError:
+                continue
+            if ctime <= 0:
+                continue
+            d["download_timestamp"] = ctime          # update in-memory view
+            if d.get("id") is not None:
+                updates.append((ctime, d["id"]))      # and persist it
+        if updates:
+            try:
+                self._db.backfill_missing_download_timestamps(updates)
+            except Exception:
+                pass   # display still works from the in-memory fill above
 
     def refresh(self):
         self.load_data()

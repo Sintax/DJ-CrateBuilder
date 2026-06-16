@@ -109,6 +109,38 @@ def test_backfill_downloads_roundtrip(tmp_path):
     assert db.backfill_downloads([]) == 0
 
 
+def test_backfill_missing_download_timestamps(tmp_path):
+    # Tracks imported before the DB feature carry download_timestamp <= 0; the
+    # viewer fills these from the file's creation time and persists them here.
+    db = _new_db(tmp_path)
+    db.backfill_downloads([
+        dict(video_id=None, title="No Date", channel_name="Chan",
+             channel_url="https://yt/c", channel_id="UC1", platform="YouTube",
+             genre="DnB", file_path="/x/No Date.mp3", upload_date="",
+             ts=0, bitrate=""),
+        dict(video_id=None, title="Has Date", channel_name="Chan",
+             channel_url="https://yt/c", channel_id="UC1", platform="YouTube",
+             genre="DnB", file_path="/x/Has Date.mp3", upload_date="",
+             ts=5000, bitrate=""),
+    ])
+    rows = {r["title"]: r for r in db.get_all_downloads()}
+    no_date_id = rows["No Date"]["id"]
+    has_date_id = rows["Has Date"]["id"]
+
+    n = db.backfill_missing_download_timestamps(
+        [(1234, no_date_id), (9999, has_date_id)])
+    assert n == 2  # returns the number of update tuples it was handed
+
+    rows = {r["title"]: r for r in db.get_all_downloads()}
+    # The zero-timestamp row was filled in...
+    assert rows["No Date"]["download_timestamp"] == 1234
+    # ...but the row that already had a timestamp is guarded and left untouched.
+    assert rows["Has Date"]["download_timestamp"] == 5000
+
+    # Empty input is a safe no-op.
+    assert db.backfill_missing_download_timestamps([]) == 0
+
+
 def test_update_fields_returns_false_on_unique_collision(tmp_path):
     db = _new_db(tmp_path)
     db.add_watchlist_channel(
