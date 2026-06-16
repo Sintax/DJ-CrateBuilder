@@ -36,6 +36,8 @@ debug.log
 .dj_cratebuilder_config.json
 .yt_dj_cratebuilder_config.json
 cratebuilder.db
+cratebuilder.db-shm
+cratebuilder.db-wal
 cratebuilder.db.bak-*
 
 # Backups & archives
