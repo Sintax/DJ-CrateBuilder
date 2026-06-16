@@ -2233,9 +2233,13 @@ class DatabaseViewerWindow(tk.Toplevel):
 
     def _expand_all(self):
         self._set_open_recursive("", True)
+        # Setting `open` programmatically doesn't fire <<TreeviewOpen>>, so the
+        # stripe binding never runs — re-stripe the now-visible rows by hand.
+        self._restripe_dl_tree()
 
     def _collapse_all(self):
         self._set_open_recursive("", False)
+        self._restripe_dl_tree()
 
     # ── Export ────────────────────────────────────────────────────────────────
     def _export_csv(self):

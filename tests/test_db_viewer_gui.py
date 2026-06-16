@@ -105,6 +105,54 @@ def test_reorder_columns_edge_cases():
     assert reorder(base, "a", "b") is not base
 
 
+def test_expand_all_restripes_leaf_rows(tmp_path, monkeypatch):
+    # Expand All sets `open` programmatically, which does NOT fire
+    # <<TreeviewOpen>>; the stripes must still be recomputed so the now-visible
+    # leaf rows alternate background instead of all sharing one tag.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    m = _module()
+    db = m.DownloadsDatabase(str(tmp_path / "t.db"))
+    # Several leaves under one group so striping has something to alternate.
+    db.backfill_downloads([
+        dict(video_id=None, title=f"Track {i}", channel_name="Chan",
+             channel_url="https://yt/c", channel_id="UC1", platform="YouTube",
+             genre="DnB", file_path=f"/x/Track {i}.mp3", upload_date="",
+             ts=1000 + i, bitrate="")
+        for i in range(4)
+    ])
+
+    root = _root()
+    try:
+        v = m.DatabaseViewerWindow(root, db)
+        v.update()
+        v._expand_all()
+        v.update()
+
+        tree = v._dl_tree
+        leaf_stripes = []
+
+        def walk(node):
+            for it in tree.get_children(node):
+                tags = tree.item(it, "tags")
+                if "leaf" in tags:
+                    # exactly one stripe tag is applied to each visible leaf
+                    assert ("oddrow" in tags) ^ ("evenrow" in tags), tags
+                    leaf_stripes.append(
+                        "odd" if "oddrow" in tags else "even")
+                if tree.get_children(it) and \
+                        v.tk.getboolean(tree.item(it, "open")):
+                    walk(it)
+
+        walk("")
+        assert len(leaf_stripes) == 4
+        # Adjacent visible leaves alternate — not all the same tag.
+        assert all(a != b for a, b in zip(leaf_stripes, leaf_stripes[1:]))
+        v.destroy()
+    finally:
+        root.destroy()
+
+
 def test_viewer_column_order_persists(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
