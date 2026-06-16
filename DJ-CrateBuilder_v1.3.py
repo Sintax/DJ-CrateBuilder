@@ -3273,16 +3273,16 @@ class MP3DownloaderApp(tk.Tk):
         # reads as the primary input.
         s.configure("URL.TCombobox",
             fieldbackground=SURFACE2, foreground=TEXT,
-            background=SURFACE2, bordercolor=YT_RED,
-            lightcolor=YT_RED, darkcolor=YT_RED,
+            background=SURFACE2, bordercolor=BORDER,
+            lightcolor=BORDER, darkcolor=BORDER,
             arrowcolor=TEXT_DIM, borderwidth=1,
             font=("Segoe UI", 11), padding=(8, 6))
         s.map("URL.TCombobox",
             fieldbackground=[("readonly", SURFACE2)],
             foreground=[("readonly", TEXT)],
-            bordercolor=[("focus", YT_RED), ("active", YT_RED)],
-            lightcolor=[("focus", YT_RED), ("active", YT_RED)],
-            darkcolor=[("focus", YT_RED), ("active", YT_RED)])
+            bordercolor=[("focus", BORDER), ("active", BORDER)],
+            lightcolor=[("focus", BORDER), ("active", BORDER)],
+            darkcolor=[("focus", BORDER), ("active", BORDER)])
         # Dropdown list colours
         self.option_add("*TCombobox*Listbox.background", SURFACE2)
         self.option_add("*TCombobox*Listbox.foreground", TEXT)
