@@ -209,6 +209,66 @@ UNRESOLVED_URL_PREFIX = "unresolved://"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# Head-trimming file handler — keeps a log file under a byte cap by dropping the
+# OLDEST lines from the top, so the file always retains the most recent activity.
+# A plain RotatingFileHandler would spill into .1/.2 backups instead of trimming
+# the live file in place, which isn't what we want here.
+# ═════════════════════════════════════════════════════════════════════════════
+class _HeadTrimFileHandler(logging.FileHandler):
+    """FileHandler that caps the log at *max_bytes* by removing the oldest lines
+    from the top once the file grows past the cap. ``max_bytes <= 0`` means
+    unlimited (never trims). After a trim the file is left at ~90% of the cap so
+    we don't rewrite on every subsequent line."""
+
+    def __init__(self, filename, max_bytes=0, encoding=None):
+        self.max_bytes = max_bytes
+        super().__init__(filename, encoding=encoding)
+        self.maybe_trim()   # trim a pre-existing oversized file on open
+
+    def emit(self, record):
+        super().emit(record)
+        try:
+            if self.max_bytes > 0 and self.stream is not None \
+                    and self.stream.tell() >= self.max_bytes:
+                self._trim()
+        except Exception:
+            pass   # logging must never raise into the app
+
+    def maybe_trim(self):
+        """Trim now if the file already exceeds the cap (e.g. on open or after
+        the cap is lowered at runtime). Safe no-op when unlimited or small."""
+        try:
+            if self.max_bytes > 0 and os.path.exists(self.baseFilename) \
+                    and os.path.getsize(self.baseFilename) > self.max_bytes:
+                self._trim()
+        except Exception:
+            pass
+
+    def _trim(self):
+        # logging handlers use a reentrant lock, so acquiring here is safe even
+        # when called from inside emit() (which already holds it).
+        self.acquire()
+        try:
+            if self.stream is not None:
+                self.stream.close()
+                self.stream = None
+            target = max(1, int(self.max_bytes * 0.9))
+            with open(self.baseFilename, "rb") as f:
+                data = f.read()
+            if len(data) > target:
+                data = data[-target:]
+                # Drop the partial first line so the file starts on a boundary.
+                nl = data.find(b"\n")
+                if nl != -1:
+                    data = data[nl + 1:]
+                with open(self.baseFilename, "wb") as f:
+                    f.write(data)
+            self.stream = self._open()
+        finally:
+            self.release()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # Tooltip — dark-themed hover tooltip for any tkinter widget.
 # Usage:     Tooltip(widget, "Short explanation of what this does.")
 # ═════════════════════════════════════════════════════════════════════════════
@@ -2373,6 +2433,25 @@ class DatabaseViewerWindow(tk.Toplevel):
 # ══════════════════════════════════════════════════════════════════════════════
 class MP3DownloaderApp(tk.Tk):
 
+    # Log-size-limit dropdown choices (label order). 0 MB = Unlimited.
+    _LOG_LIMIT_CHOICES = ("Unlimited", "2MB", "4MB", "6MB",
+                          "8MB", "9MB", "10MB", "15MB")
+
+    @staticmethod
+    def _log_limit_label(mb):
+        """Map a megabyte count (0 = unlimited) to its dropdown label."""
+        return "Unlimited" if not mb else f"{int(mb)}MB"
+
+    @staticmethod
+    def _parse_log_limit_mb(label):
+        """Map a dropdown label back to a megabyte count (0 = unlimited)."""
+        if not label or label.strip().lower() == "unlimited":
+            return 0
+        try:
+            return int(label.strip().lower().replace("mb", "").strip())
+        except ValueError:
+            return 0
+
     def __init__(self):
         super().__init__()
         self.title(f"{APP_NAME}  v{APP_VERSION}")
@@ -2413,6 +2492,14 @@ class MP3DownloaderApp(tk.Tk):
         self._bitrate_quality.trace_add("write", self._autosave_bitrate_setting)
         self._no_conversion = tk.BooleanVar(value=cfg.get("no_conversion", False))
         self._no_conversion.trace_add("write", self._autosave_bitrate_setting)
+
+        # Log size limit — caps activity.log and debug.log (each) by trimming the
+        # oldest lines; 0 = Unlimited. Default 4 MB keeps the logs from growing
+        # without bound while preserving plenty of recent history.
+        self._log_max_mb = int(cfg.get("log_max_mb", 4) or 0)
+        self._log_max_bytes = self._log_max_mb * 1024 * 1024
+        self._log_limit_var = tk.StringVar(
+            value=self._log_limit_label(self._log_max_mb))
 
         # Download behavior settings
         self._geo_bypass      = tk.BooleanVar(value=cfg.get("geo_bypass", False))
@@ -2563,7 +2650,8 @@ class MP3DownloaderApp(tk.Tk):
         logger.setLevel(logging.INFO)
         logger.propagate = False
 
-        fh = logging.FileHandler(self._log_path, encoding="utf-8")
+        fh = _HeadTrimFileHandler(self._log_path, max_bytes=self._log_max_bytes,
+                                  encoding="utf-8")
         fh.setLevel(logging.INFO)
         fh.setFormatter(logging.Formatter(
             "%(asctime)s | %(message)s",
@@ -2571,6 +2659,7 @@ class MP3DownloaderApp(tk.Tk):
         ))
         logger.addHandler(fh)
         self._logger = logger
+        self._log_fh = fh
 
         # ── Debug logger (separate file for diagnostics) ──────────────────────
         self._debug_log_path = os.path.join(app_dir, "debug.log")
@@ -2579,7 +2668,9 @@ class MP3DownloaderApp(tk.Tk):
         dbg.setLevel(logging.DEBUG)
         dbg.propagate = False
 
-        dfh = logging.FileHandler(self._debug_log_path, encoding="utf-8")
+        dfh = _HeadTrimFileHandler(self._debug_log_path,
+                                   max_bytes=self._log_max_bytes,
+                                   encoding="utf-8")
         dfh.setLevel(logging.DEBUG)
         dfh.setFormatter(logging.Formatter(
             "%(asctime)s.%(msecs)03d | %(levelname)-5s | %(message)s",
@@ -2587,6 +2678,7 @@ class MP3DownloaderApp(tk.Tk):
         ))
         dbg.addHandler(dfh)
         self._dbg = dbg
+        self._dbg_fh = dfh
         self._dbg.info("═" * 80)
         self._dbg.info(f"SESSION START  —  {APP_NAME} v{APP_VERSION}")
         self._dbg.info(f"Platform: {sys.platform}  |  Python: {sys.version.split()[0]}")
@@ -2886,6 +2978,19 @@ class MP3DownloaderApp(tk.Tk):
         self._batch_count_lbl = ttk.Label(hdr, text="Batch Queue  (0 URLs)",
                                            style="S.White.Section.TLabel")
         self._batch_count_lbl.pack(side="left")
+        self._settings_help(
+            hdr,
+            "The Batch Queue is the list of links you've lined up to download "
+            "together.\n\n"
+            "•  Paste a link above, choose its Genre, then press "
+            "'+ Add to Batch' (or Enter) to drop it in the queue.\n"
+            "•  Repeat to stack as many links as you want — each can have its "
+            "own genre.\n"
+            "•  Use the ▲ ▼ buttons on a row to reorder it, or ✕ to remove it; "
+            "'Clear All' empties the whole queue.\n"
+            "•  When you press 'Downloads MP3's', every link in the queue is "
+            "processed top to bottom.",
+            wraplength=360).pack(side="left", padx=(8, 0))
         ttk.Button(hdr, text="Clear All", style="Browse.TButton",
                    command=self._batch_clear).pack(side="right")
         self._batch_add_btn = ttk.Button(hdr, text="+ Add to Batch",
@@ -3027,25 +3132,28 @@ class MP3DownloaderApp(tk.Tk):
                   fg=TEXT_MED, bg=SURFACE2, anchor="w"
                   ).pack(side="left", fill="x", expand=True)
 
-        genre_str = item["genre"] if item["genre"] != "(none)" else "—"
+        genre_str = item["genre"] if item["genre"] != "(none)" else ""
         tk.Label(row, text=genre_str, font=("Segoe UI", 9),
                   fg=TEXT_DIM, bg=SURFACE2, anchor="e"
                   ).pack(side="left", padx=(4, 6))
 
-        for sym, delta in [("▲", -1), ("▼", 1)]:
-            tk.Button(row, text=sym, font=("Segoe UI", 8),
+        for sym, delta, tip in [("▲", -1, "Move this URL up in the queue"),
+                                 ("▼", 1, "Move this URL down in the queue")]:
+            btn = tk.Button(row, text=sym, font=("Segoe UI", 8),
                        bg=SURFACE2, fg=TEXT_DIM, relief="flat", bd=0,
                        activebackground=BORDER, activeforeground=TEXT,
                        cursor="hand2", padx=3,
-                       command=lambda i=idx, d=delta: self._batch_move(i, d)
-                       ).pack(side="left")
+                       command=lambda i=idx, d=delta: self._batch_move(i, d))
+            btn.pack(side="left")
+            Tooltip(btn, tip)
 
-        tk.Button(row, text="✕", font=("Segoe UI", 10),
-                   bg=SURFACE2, fg="#555", relief="flat", bd=0,
+        rm_btn = tk.Button(row, text="✕", font=("Segoe UI", 10),
+                   bg=SURFACE2, fg=TEXT_DIM, relief="flat", bd=0,
                    activebackground="#3b0000", activeforeground=YT_RED,
                    cursor="hand2", padx=4,
-                   command=lambda i=idx: self._batch_remove(i)
-                   ).pack(side="left", padx=(4, 2))
+                   command=lambda i=idx: self._batch_remove(i))
+        rm_btn.pack(side="left", padx=(4, 2))
+        Tooltip(rm_btn, "Remove this URL from the queue")
 
     def _wl_batch_render_rows(self):
         """Render the running Watch List batch's channels in the Batch Queue
@@ -3440,6 +3548,21 @@ class MP3DownloaderApp(tk.Tk):
             side="left")
         ttk.Label(url_lbl_row, text="To paste the link, press [CTRL+V] or Right-Click on it.",
                   style="S.Dim.TLabel").pack(side="left", padx=(10, 0))
+        self._settings_help(
+            url_lbl_row,
+            "How the Main tab works, step by step:\n\n"
+            "1.  Paste a YouTube or SoundCloud link — a single track, a "
+            "playlist, or a whole channel.\n"
+            "2.  Pick a Genre for it (or make one with '+ New'). The genre is "
+            "saved into each track's tags.\n"
+            "3.  Press '+ Add to Batch' (or Enter) to queue the link. Repeat "
+            "to line up as many as you like.\n"
+            "4.  Optionally tick 'Skip files already downloaded' so tracks you "
+            "already have aren't grabbed again.\n"
+            "5.  Press 'Downloads MP3's'. Each track is downloaded, converted "
+            "to MP3, tagged, and saved to your download folder — watch the "
+            "Queue and progress bars below.",
+            wraplength=360).pack(side="left", padx=(10, 0))
 
         url_row = ttk.Frame(outer)
         url_row.pack(fill="x", pady=(0, 8))
@@ -4114,8 +4237,28 @@ class MP3DownloaderApp(tk.Tk):
         self._settings_msg = ttk.Label(dir_row, text="", style="S.Dim.TLabel")
         self._settings_msg.pack(side="left", padx=(10, 0))
 
-        # ── Downloads log ─────────────────────────────────────────────────────
+        # ── Logs & Database ───────────────────────────────────────────────────
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(8, 20))
+
+        # Log size limit — caps activity.log and debug.log (each), trimming the
+        # oldest lines from the top once a file passes the chosen size.
+        limit_row = ttk.Frame(outer)
+        limit_row.pack(fill="x", pady=(0, 14))
+        ttk.Label(limit_row, text="Log Size Limit",
+                  style="S.White.Section.TLabel").pack(side="left")
+        self._log_limit_combo = ttk.Combobox(
+            limit_row, textvariable=self._log_limit_var,
+            values=list(self._LOG_LIMIT_CHOICES),
+            state="readonly", width=12)
+        self._log_limit_combo.pack(side="left", padx=(10, 0))
+        self._log_limit_combo.bind(
+            "<<ComboboxSelected>>", self._autosave_log_limit)
+        self._settings_help(limit_row,
+            "Caps the size of the Activity Log and Debug Log (each file "
+            "separately). When a log grows past this size, the oldest lines at "
+            "the top are removed to make room for the newest — so the file "
+            "keeps the most recent activity and never grows without bound. "
+            "'Unlimited' disables trimming.").pack(side="left", padx=(8, 0))
 
         _hdr = ttk.Frame(outer)
         _hdr.pack(anchor="w", pady=(0, 6))
@@ -4146,10 +4289,8 @@ class MP3DownloaderApp(tk.Tk):
         self._refresh_log_path_label()
 
         # ── Debug log ─────────────────────────────────────────────────────────
-        tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(8, 20))
-
         _hdr = ttk.Frame(outer)
-        _hdr.pack(anchor="w", pady=(0, 6))
+        _hdr.pack(anchor="w", pady=(16, 6))
         ttk.Label(_hdr, text="Debug Log",
                   style="S.White.Section.TLabel").pack(side="left")
         self._settings_help(_hdr,
@@ -4178,10 +4319,8 @@ class MP3DownloaderApp(tk.Tk):
         self._refresh_debug_path_label()
 
         # ── Database management ────────────────────────────────────────────────
-        tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(8, 20))
-
         _hdr = ttk.Frame(outer)
-        _hdr.pack(anchor="w", pady=(0, 6))
+        _hdr.pack(anchor="w", pady=(16, 6))
         ttk.Label(_hdr, text="Downloads Database",
                   style="S.White.Section.TLabel").pack(side="left")
         self._settings_help(_hdr,
@@ -4248,6 +4387,7 @@ class MP3DownloaderApp(tk.Tk):
             "limit_minutes":  self._limit_minutes.get(),
             "bitrate_quality": self._bitrate_quality.get().split()[0],
             "no_conversion":  self._no_conversion.get(),
+            "log_max_mb":     self._log_max_mb,
             "skip_existing":  self._skip_existing.get(),
             "skip_mode":      self._skip_mode.get(),
             "geo_bypass":     self._geo_bypass.get(),
@@ -4333,6 +4473,20 @@ class MP3DownloaderApp(tk.Tk):
         cfg["bitrate_quality"] = self._bitrate_quality.get().split()[0]
         cfg["no_conversion"]   = self._no_conversion.get()
         save_config(cfg)
+
+    def _autosave_log_limit(self, *_):
+        """Persist the log size limit and apply it to the live handlers,
+        trimming immediately if a file already exceeds the new cap."""
+        mb = self._parse_log_limit_mb(self._log_limit_var.get())
+        self._log_max_mb = mb
+        self._log_max_bytes = mb * 1024 * 1024
+        cfg = load_config()
+        cfg["log_max_mb"] = mb
+        save_config(cfg)
+        for fh in (getattr(self, "_log_fh", None), getattr(self, "_dbg_fh", None)):
+            if fh is not None:
+                fh.max_bytes = self._log_max_bytes
+                fh.maybe_trim()
 
     def _on_no_conversion_toggle(self):
         """Grey out the bitrate combobox when 'no conversion' is enabled."""
@@ -4865,11 +5019,6 @@ class MP3DownloaderApp(tk.Tk):
              "summarising what it grabbed. The countdown runs from app launch and "
              "re-anchors each time a 'Download All New' completes; the Watch List tab "
              "shows when the next run is due."),
-            ("Q: What do 'Run at startup' and 'Minimize to system tray' do?",
-             "A: 'Run at startup' launches DJ-CrateBuilder when Windows starts. "
-             "'Minimize to system tray' keeps the app (and its scheduled checks) "
-             "running in the background when you close the window — find it in the "
-             "tray, right-click for Open / Scan Now / Quit."),
         ]
 
         for question, answer in faq:
