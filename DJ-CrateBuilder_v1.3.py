@@ -27,6 +27,7 @@ from cratebuilder.sidecar import (
     watch_fetch_url, classify_scan_entries,
 )
 from cratebuilder.db import DownloadsDatabase
+from cratebuilder.cleanup import is_scan_trustworthy, classify_local_files
 from cratebuilder import startup as cb_startup
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1584,6 +1585,204 @@ class CookieHowToWindow(tk.Toplevel):
         self.focus_force()
 
 
+class _FoldersCleanupSession:
+    """Drives Folders Cleanup ‹Smart› across one or more channels: per-channel
+    scan (with a modal progress dialog), classify, then a review/delete window.
+    Owned by a DatabaseViewerWindow; reaches the App only for data-layer helpers
+    (scan URL building, cookie opts, save-dir, loggers) — never its Watch List
+    UI."""
+
+    def __init__(self, viewer, cids):
+        self.viewer = viewer            # DatabaseViewerWindow
+        self.app = viewer._parent       # main App (data-layer helpers)
+        self.db = viewer._db
+        self.cids = list(cids)
+        self.total = len(self.cids)
+        self.idx = 0
+        self.cancelled = False
+        self.removed_total = 0
+        self.channels_cleaned = 0
+        self.channels_skipped = 0
+        self._progress = None
+
+    # ── public entry ──────────────────────────────────────────────────────
+    def start(self):
+        self.app._cancel_flag.clear()
+        self._next_channel()
+
+    # ── per-channel pump ──────────────────────────────────────────────────
+    def _next_channel(self):
+        if self.cancelled or self.idx >= self.total:
+            self._finish()
+            return
+        cid = self.cids[self.idx]
+        ch = self.db.get_watchlist_channel(cid)
+        if not ch:
+            self.channels_skipped += 1
+            self.idx += 1
+            self._next_channel()
+            return
+        self._show_progress(ch)
+        self.app._run_bg(self._scan_worker, ch)
+
+    def _scan_worker(self, ch):
+        """Background thread: flat-scan the channel, then hand results back to
+        the main thread."""
+        try:
+            import yt_dlp
+            opts = {
+                "extract_flat":  "in_playlist",
+                "skip_download": True,
+                "lazy_playlist": True,
+                "quiet":         True,
+                "no_warnings":   True,
+            }
+            self.app._apply_cookie_opts(opts)
+            platform = ch.get("platform") or "YouTube"
+            url = watch_fetch_url(platform, ch["url"])
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+            entries = list(info.get("entries") or [])
+            err = None
+        except Exception as exc:
+            entries = []
+            err = str(exc)[:160]
+        if self.app._cancel_flag.is_set():
+            self.cancelled = True
+        self.viewer.after(0, lambda: self._on_scan_done(ch, entries, err))
+
+    def _on_scan_done(self, ch, entries, err):
+        self._hide_progress()
+        if self.cancelled:
+            self._finish()
+            return
+        if err is not None:
+            self.app._dbg.info(
+                f"CLEANUP SCAN FAIL | {ch.get('display_name')} | {err}")
+            self._log_channel(ch, removed=0, kept=0, errors=0,
+                              note=f"skipped (scan error: {err})")
+            self.channels_skipped += 1
+            self._advance()
+            return
+        folder = self.app._resolve_save_dir(
+            ch.get("genre") or "(none)", ch.get("display_name"),
+            platform=ch.get("platform") or "YouTube")
+        folder_files, db_map = self._gather_folder(folder)
+        if not is_scan_trustworthy(len(entries), len(folder_files)):
+            self.app._dbg.info(
+                f"CLEANUP SKIP | {ch.get('display_name')} | "
+                f"scan={len(entries)} folder={len(folder_files)} (untrusted)")
+            self._log_channel(ch, removed=0, kept=len(folder_files), errors=0,
+                              note="skipped (scan returned too few videos)")
+            self.channels_skipped += 1
+            self._advance()
+            return
+        flagged = classify_local_files(entries, folder_files, db_map)
+        if not flagged:
+            self._log_channel(ch, removed=0, kept=len(folder_files), errors=0,
+                              note="clean (nothing to remove)")
+            self._advance()
+            return
+        # Hand off to the review window (Task 8).
+        self.viewer._open_cleanup_review(self, ch, flagged, len(folder_files))
+
+    # ── helpers ───────────────────────────────────────────────────────────
+    def _gather_folder(self, folder):
+        """Return (folder_files, db_video_id_by_path) for *folder*.
+        folder_files: list of (filename, full_path, size, mtime) for each .mp3.
+        db_map: full_path -> video_id from the downloads table."""
+        folder_files = []
+        try:
+            for fn in os.listdir(folder):
+                if not fn.lower().endswith(".mp3"):
+                    continue
+                full = os.path.join(folder, fn)
+                try:
+                    st = os.stat(full)
+                    folder_files.append((fn, full, st.st_size, int(st.st_mtime)))
+                except OSError:
+                    folder_files.append((fn, full, 0, 0))
+        except OSError:
+            pass
+        norm_folder = os.path.normpath(folder)
+        db_map = {}
+        for d in self.db.get_all_downloads():
+            fp = d.get("file_path")
+            if fp and os.path.dirname(os.path.normpath(fp)) == norm_folder:
+                db_map[os.path.normpath(fp)] = d.get("video_id")
+        # Re-key db_map onto the exact full paths we built for folder_files, so
+        # lookups in classify_local_files match regardless of separator/casing.
+        remap = {}
+        for fn, full, _sz, _mt in folder_files:
+            nf = os.path.normpath(full)
+            if nf in db_map:
+                remap[full] = db_map[nf]
+        return folder_files, remap
+
+    def _log_channel(self, ch, *, removed, kept, errors, note=""):
+        plat = ch.get("platform") or "YouTube"
+        genre = ch.get("genre") or "(none)"
+        name = ch.get("display_name") or ""
+        tail = f" — {note}" if note else ""
+        self.app._logger.info(
+            f"Folder Cleanup | {plat} / {genre} / {name}: "
+            f"{removed} removed, {kept} kept, {errors} errors{tail}")
+
+    # ── progress dialog ───────────────────────────────────────────────────
+    def _show_progress(self, ch):
+        self._hide_progress()
+        dlg = tk.Toplevel(self.viewer)
+        dlg.title("Folders Cleanup")
+        dlg.configure(bg=BG)
+        dlg.transient(self.viewer)
+        dlg.resizable(False, False)
+        tk.Label(dlg, text=f"Scanning  {ch.get('display_name') or ''}…",
+                 font=("Segoe UI", 11, "bold"), bg=BG, fg=TEXT
+                 ).pack(padx=24, pady=(18, 4))
+        tk.Label(dlg, text=f"Channel {self.idx + 1} of {self.total}",
+                 font=("Segoe UI", 9), bg=BG, fg=TEXT_DIM).pack(pady=(0, 8))
+        bar = ttk.Progressbar(dlg, mode="indeterminate", length=260)
+        bar.pack(padx=24, pady=(0, 10))
+        bar.start(12)
+        tk.Button(dlg, text="Cancel", font=("Segoe UI", 9),
+                  relief="flat", bd=0, bg=SURFACE2, fg=TEXT,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  padx=12, pady=4, cursor="hand2",
+                  command=self._cancel).pack(pady=(0, 16))
+        dlg.protocol("WM_DELETE_WINDOW", self._cancel)
+        dlg.update_idletasks()
+        px = self.viewer.winfo_x() + (self.viewer.winfo_width() - dlg.winfo_width()) // 2
+        py = self.viewer.winfo_y() + (self.viewer.winfo_height() - dlg.winfo_height()) // 2
+        dlg.geometry(f"+{max(0, px)}+{max(0, py)}")
+        self._progress = (dlg, bar)
+
+    def _hide_progress(self):
+        if self._progress is not None:
+            dlg, bar = self._progress
+            try:
+                bar.stop()
+                dlg.destroy()
+            except Exception:
+                pass
+            self._progress = None
+
+    def _cancel(self):
+        """Cancel button / dialog close: abort the in-flight scan immediately.
+        Prior confirmed deletions stay (already trashed)."""
+        self.cancelled = True
+        self.app._cancel_flag.set()
+        self._hide_progress()
+
+    # ── advance / finish ──────────────────────────────────────────────────
+    def _advance(self):
+        self.idx += 1
+        self._next_channel()
+
+    def _finish(self):
+        self._hide_progress()
+        self.viewer._finish_folders_cleanup(self)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # DatabaseViewerWindow — browse the downloads history + watch list
 #   A dark-themed Toplevel (sibling to the log viewers) that presents the
@@ -2269,8 +2468,23 @@ class DatabaseViewerWindow(tk.Toplevel):
         self._run_folders_cleanup(checked)
 
     def _run_folders_cleanup(self, cids):
-        # Implemented in Task 7. Temporary stub so the module loads.
-        pass
+        self._cleanup_session = _FoldersCleanupSession(self, cids)
+        self._cleanup_session.start()
+
+    def _open_cleanup_review(self, session, ch, flagged, folder_count):
+        # Real review window arrives in Task 8. Placeholder: skip this channel's
+        # deletions so the per-channel loop still advances end-to-end.
+        session._log_channel(ch, removed=0, kept=folder_count, errors=0,
+                             note="review window not yet implemented")
+        session._advance()
+
+    def _finish_folders_cleanup(self, session):
+        messagebox.showinfo(
+            "Folders Cleanup",
+            f"Done. {session.removed_total} files removed across "
+            f"{session.channels_cleaned} channel(s).", parent=self)
+        self._wl_checked.clear()
+        self.load_data()
 
     def _wl_copy_link(self, url):
         self.clipboard_clear()
