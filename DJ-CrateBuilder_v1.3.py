@@ -1604,6 +1604,7 @@ class _FoldersCleanupSession:
         self.channels_cleaned = 0
         self.channels_skipped = 0
         self._progress = None
+        self._done = False
 
     # ── public entry ──────────────────────────────────────────────────────
     def start(self):
@@ -1652,6 +1653,8 @@ class _FoldersCleanupSession:
         self.viewer.after(0, lambda: self._on_scan_done(ch, entries, err))
 
     def _on_scan_done(self, ch, entries, err):
+        if not self.viewer.winfo_exists():
+            return
         self._hide_progress()
         if self.cancelled:
             self._finish()
@@ -1768,7 +1771,9 @@ class _FoldersCleanupSession:
 
     def _cancel(self):
         """Cancel button / dialog close: abort the in-flight scan immediately.
-        Prior confirmed deletions stay (already trashed)."""
+        Prior confirmed deletions stay (already trashed). Deliberately does NOT
+        call _finish() — the in-flight worker's late _on_scan_done sees
+        `cancelled` and finishes exactly once, avoiding a double-finish."""
         self.cancelled = True
         self.app._cancel_flag.set()
         self._hide_progress()
@@ -1779,8 +1784,12 @@ class _FoldersCleanupSession:
         self._next_channel()
 
     def _finish(self):
+        if self._done:
+            return
+        self._done = True
         self._hide_progress()
-        self.viewer._finish_folders_cleanup(self)
+        if self.viewer.winfo_exists():
+            self.viewer._finish_folders_cleanup(self)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1896,6 +1905,12 @@ class DatabaseViewerWindow(tk.Toplevel):
 
     def _on_close(self):
         self._hide_wl_celltip()
+        # If a Folders Cleanup run is in flight, abort its scan so a late
+        # background callback can't fire against this destroyed window.
+        sess = getattr(self, "_cleanup_session", None)
+        if sess is not None and not sess._done:
+            sess.cancelled = True
+            self._parent._cancel_flag.set()
         self._persist_col_widths()
         self.destroy()
 
