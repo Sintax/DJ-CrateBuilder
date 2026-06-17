@@ -308,11 +308,8 @@ class Tooltip:
         if self._tip or not self.text:
             return
         try:
-            x = self.widget.winfo_rootx() + 20
-            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
             self._tip = tk.Toplevel(self.widget)
             self._tip.wm_overrideredirect(True)
-            self._tip.wm_geometry(f"+{x}+{y}")
             self._tip.configure(bg="#000000")
             tk.Label(
                 self._tip, text=self.text,
@@ -323,6 +320,26 @@ class Tooltip:
                 wraplength=self.wraplength,
                 justify="left",
             ).pack()
+            # Measure the natural size, then place — clamped to the screen so a
+            # tooltip on a widget near the right edge (e.g. the Database
+            # Viewer Help button when maximised) shifts leftward instead of
+            # disappearing past the screen edge.
+            self._tip.update_idletasks()
+            tw = self._tip.winfo_reqwidth()
+            th = self._tip.winfo_reqheight()
+            sw = self._tip.winfo_screenwidth()
+            sh = self._tip.winfo_screenheight()
+            x = self.widget.winfo_rootx() + 20
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+            if x + tw > sw - 4:
+                x = sw - tw - 4
+            if x < 4:
+                x = 4
+            if y + th > sh - 4:
+                y = self.widget.winfo_rooty() - th - 4
+            if y < 4:
+                y = 4
+            self._tip.wm_geometry(f"+{x}+{y}")
         except Exception:
             self._tip = None
 
