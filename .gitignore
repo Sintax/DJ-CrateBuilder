@@ -40,11 +40,6 @@ cratebuilder.db-shm
 cratebuilder.db-wal
 cratebuilder.db.bak-*
 
-# Logs & Database
-activity.log
-debug.log
-cratebuilder.db
-
 # Backups & archives
 _BACKUP/
 *.zip
@@ -58,3 +53,7 @@ cookies.json
 ffmpeg.exe
 ffprobe.exe
 ffmpeg_essentials.zip
+
+# Internal dev scratchpad — plans/specs written during multi-phase reworks.
+# Not user docs and not required by the app; keep them out of the public repo.
+docs/superpowers/
