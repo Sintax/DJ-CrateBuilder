@@ -2600,6 +2600,14 @@ class DatabaseViewerWindow(tk.Toplevel):
                 ch.get("total_downloaded") or 0,
                 ch.get("status") or "",
             ))
+        # Prune Folders Cleanup state for channels no longer in the list, so a
+        # deleted channel's stale checkbox/eligibility can't linger or be acted
+        # on by the cleanup run.
+        live_cids = {ch.get("id") for ch in rows}
+        self._wl_checked = {c: v for c, v in self._wl_checked.items()
+                            if c in live_cids}
+        self._wl_eligible = {c: v for c, v in self._wl_eligible.items()
+                             if c in live_cids}
         total_pending = sum(int(c.get("pending_new_count") or 0)
                             for c in self._channels)
         self._wl_stats.config(
