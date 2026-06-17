@@ -304,6 +304,48 @@ class Tooltip:
                 pass
             self._after_id = None
 
+    def _widget_monitor_bounds(self):
+        """Return (left, top, right, bottom) of the monitor's work area for
+        the monitor the widget currently lives on. On Windows this uses
+        MonitorFromWindow + GetMonitorInfoW so a tooltip on monitor 2 stays
+        on monitor 2 (winfo_screenwidth() only knows the primary monitor).
+        Non-Windows platforms fall back to Tk's virtual root, which spans
+        every monitor — won't follow the widget perfectly, but at least
+        won't yank the tooltip back to monitor 1. Returns None if anything
+        goes wrong; the caller treats that as 'skip clamping'."""
+        try:
+            if sys.platform == "win32":
+                import ctypes
+                from ctypes import wintypes
+
+                class _MI(ctypes.Structure):
+                    _fields_ = [("cbSize",    wintypes.DWORD),
+                                ("rcMonitor", wintypes.RECT),
+                                ("rcWork",    wintypes.RECT),
+                                ("dwFlags",   wintypes.DWORD)]
+
+                MONITOR_DEFAULTTONEAREST = 2
+                user32 = ctypes.windll.user32
+                # Toplevel HWND is the reliable handle on Windows; child
+                # widgets in some Tk builds don't get their own HWND.
+                hwnd = self.widget.winfo_toplevel().winfo_id()
+                hmon = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+                if not hmon:
+                    return None
+                mi = _MI(); mi.cbSize = ctypes.sizeof(_MI)
+                if not user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+                    return None
+                r = mi.rcWork  # excludes taskbar
+                return (r.left, r.top, r.right, r.bottom)
+            # Non-Windows: virtual root covers every monitor combined.
+            vrx = self.widget.winfo_vrootx() or 0
+            vry = self.widget.winfo_vrooty() or 0
+            return (vrx, vry,
+                    vrx + self.widget.winfo_vrootwidth(),
+                    vry + self.widget.winfo_vrootheight())
+        except Exception:
+            return None
+
     def _show(self):
         if self._tip or not self.text:
             return
@@ -320,25 +362,26 @@ class Tooltip:
                 wraplength=self.wraplength,
                 justify="left",
             ).pack()
-            # Measure the natural size, then place — clamped to the screen so a
-            # tooltip on a widget near the right edge (e.g. the Database
-            # Viewer Help button when maximised) shifts leftward instead of
-            # disappearing past the screen edge.
+            # Measure natural size, then clamp into the monitor the widget is
+            # actually on — handles both maximised single-monitor (tooltip
+            # near right edge gets pushed leftward) and multi-monitor
+            # (tooltip on monitor 2 stays on monitor 2).
             self._tip.update_idletasks()
             tw = self._tip.winfo_reqwidth()
             th = self._tip.winfo_reqheight()
-            sw = self._tip.winfo_screenwidth()
-            sh = self._tip.winfo_screenheight()
             x = self.widget.winfo_rootx() + 20
             y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
-            if x + tw > sw - 4:
-                x = sw - tw - 4
-            if x < 4:
-                x = 4
-            if y + th > sh - 4:
-                y = self.widget.winfo_rooty() - th - 4
-            if y < 4:
-                y = 4
+            bounds = self._widget_monitor_bounds()
+            if bounds:
+                left, top, right, bottom = bounds
+                if x + tw > right - 4:
+                    x = right - tw - 4
+                if x < left + 4:
+                    x = left + 4
+                if y + th > bottom - 4:
+                    y = self.widget.winfo_rooty() - th - 4
+                if y < top + 4:
+                    y = top + 4
             self._tip.wm_geometry(f"+{x}+{y}")
         except Exception:
             self._tip = None
