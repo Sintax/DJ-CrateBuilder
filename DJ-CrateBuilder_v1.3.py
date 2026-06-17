@@ -4136,9 +4136,20 @@ class MP3DownloaderApp(tk.Tk):
             cd_method, textvariable=self._cookie_method,
             values=["Browser", "Cookie File"],
             state="readonly", width=12)
-        self._cookie_method_combo.pack(side="left", padx=(0, 16))
+        self._cookie_method_combo.pack(side="left", padx=(0, 8))
         self._cookie_method_combo.bind("<<ComboboxSelected>>",
             lambda _: (self._on_cookies_toggle(), self._autosave_behavior_settings()))
+
+        self._open_yt_btn = tk.Button(
+            cd_method, text="🌐  Open Browser",
+            font=("Segoe UI", 8), bg="#7F7F7F", fg="#ffffff",
+            activebackground="#949494", activeforeground=TEXT,
+            relief="flat", bd=0, padx=8, pady=1, cursor="hand2",
+            command=self._open_youtube_in_selected_browser)
+        self._open_yt_btn.pack(side="left", padx=(0, 16))
+        Tooltip(self._open_yt_btn,
+                "Opens selected browser to YouTube. Play at least one "
+                "video to activate the session's cookies.")
 
         # Container for Browser/File sub-rows (stable pack position)
         self._cookie_detail = ttk.Frame(outer)
@@ -4157,21 +4168,9 @@ class MP3DownloaderApp(tk.Tk):
             self._cookie_browser_row, textvariable=self._cookies_browser,
             values=["Firefox", "Chrome", "Edge", "Brave", "Opera", "Chromium"],
             state="readonly", width=12)
-        self._cookies_browser_combo.pack(side="left", padx=(0, 8))
+        self._cookies_browser_combo.pack(side="left", padx=(0, 16))
         self._cookies_browser_combo.bind("<<ComboboxSelected>>",
             lambda _: (self._update_howto_label(), self._autosave_behavior_settings()))
-
-        self._open_yt_btn = tk.Button(
-            self._cookie_browser_row, text="🌐  Open YouTube",
-            font=("Segoe UI", 8), bg="#7F7F7F", fg="#ffffff",
-            activebackground="#949494", activeforeground=TEXT,
-            relief="flat", bd=0, padx=8, pady=1, cursor="hand2",
-            command=self._open_youtube_in_selected_browser)
-        self._open_yt_btn.pack(side="left", padx=(0, 16))
-        Tooltip(self._open_yt_btn,
-                "Open youtube.com in the browser selected above. "
-                "Use this to sign in to the dedicated account before "
-                "running a download with cookies enabled.")
 
         self._profile_lbl = tk.Label(self._cookie_browser_row, text="Profile:",
                  font=("Segoe UI", 11), fg=TEXT_DIM, bg=BG)
