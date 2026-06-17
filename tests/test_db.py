@@ -157,3 +157,31 @@ def test_update_fields_returns_false_on_unique_collision(tmp_path):
     row = db.get_watchlist_channel(other)
     assert row["channel_id"] in (None, "")
     assert " " in row["url"]
+
+
+def test_delete_downloads_by_paths_removes_only_matches(tmp_path):
+    db = _new_db(tmp_path)
+    db.add_download(video_id="v1", title="A", channel_name="C",
+                    channel_url="http://c", platform="YouTube", genre="g",
+                    file_path="/f/a.mp3", upload_date="20240101", bitrate="192")
+    db.add_download(video_id="v2", title="B", channel_name="C",
+                    channel_url="http://c", platform="YouTube", genre="g",
+                    file_path="/f/b.mp3", upload_date="20240102", bitrate="192")
+    db.add_download(video_id="v3", title="D", channel_name="C",
+                    channel_url="http://c", platform="YouTube", genre="g",
+                    file_path="/f/keep.mp3", upload_date="20240103", bitrate="192")
+
+    removed = db.delete_downloads_by_paths(["/f/a.mp3", "/f/b.mp3"])
+    assert removed == 2
+
+    paths = {d["file_path"] for d in db.get_all_downloads()}
+    assert paths == {"/f/keep.mp3"}
+
+
+def test_delete_downloads_by_paths_empty_is_noop(tmp_path):
+    db = _new_db(tmp_path)
+    db.add_download(video_id="v1", title="A", channel_name="C",
+                    channel_url="http://c", platform="YouTube", genre="g",
+                    file_path="/f/a.mp3", upload_date="20240101", bitrate="192")
+    assert db.delete_downloads_by_paths([]) == 0
+    assert len(db.get_all_downloads()) == 1
