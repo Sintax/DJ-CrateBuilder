@@ -252,7 +252,9 @@ class DownloadsDatabase:
     def delete_downloads_by_paths(self, paths):
         """Delete download rows whose file_path is in *paths*. Returns the
         number of rows removed. Best-effort: logs and returns 0 on error.
-        Used by Folders Cleanup after a file is sent to the Recycle Bin."""
+        Used by Folders Cleanup after a file is sent to the Recycle Bin.
+        Safe for typical per-folder counts; SQLite caps bind variables at ~999,
+        so a single call with 1000+ paths would error out and return 0."""
         paths = [p for p in (paths or []) if p]
         if not paths:
             return 0
