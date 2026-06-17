@@ -1605,10 +1605,15 @@ class _FoldersCleanupSession:
         self.channels_skipped = 0
         self._progress = None
         self._done = False
+        # Private cancel signal — deliberately NOT the App's shared _cancel_flag,
+        # so cancelling a cleanup run can't abort an unrelated main-window scan
+        # or download (and vice-versa). The Database Viewer is non-modal, so both
+        # can be in flight at once.
+        self._cancel_event = threading.Event()
 
     # ── public entry ──────────────────────────────────────────────────────
     def start(self):
-        self.app._cancel_flag.clear()
+        self._cancel_event.clear()
         self._next_channel()
 
     # ── per-channel pump ──────────────────────────────────────────────────
@@ -1648,7 +1653,7 @@ class _FoldersCleanupSession:
         except Exception as exc:
             entries = []
             err = str(exc)[:160]
-        if self.app._cancel_flag.is_set():
+        if self._cancel_event.is_set():
             self.cancelled = True
         self.viewer.after(0, lambda: self._on_scan_done(ch, entries, err))
 
@@ -1775,7 +1780,7 @@ class _FoldersCleanupSession:
         call _finish() — the in-flight worker's late _on_scan_done sees
         `cancelled` and finishes exactly once, avoiding a double-finish."""
         self.cancelled = True
-        self.app._cancel_flag.set()
+        self._cancel_event.set()
         self._hide_progress()
 
     # ── advance / finish ──────────────────────────────────────────────────
@@ -2077,7 +2082,7 @@ class DatabaseViewerWindow(tk.Toplevel):
         sess = getattr(self, "_cleanup_session", None)
         if sess is not None and not sess._done:
             sess.cancelled = True
-            self._parent._cancel_flag.set()
+            sess._cancel_event.set()
         self._persist_col_widths()
         self.destroy()
 
@@ -2650,6 +2655,9 @@ class DatabaseViewerWindow(tk.Toplevel):
         self._run_folders_cleanup(checked)
 
     def _run_folders_cleanup(self, cids):
+        existing = getattr(self, "_cleanup_session", None)
+        if existing is not None and not existing._done:
+            return                      # a cleanup run is already in flight
         self._cleanup_session = _FoldersCleanupSession(self, cids)
         self._cleanup_session.start()
 
