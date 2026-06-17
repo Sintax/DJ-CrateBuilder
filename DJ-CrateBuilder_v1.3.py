@@ -2014,6 +2014,15 @@ class DatabaseViewerWindow(tk.Toplevel):
                  font=("Segoe UI", 9), fg=TEXT_DIM, bg=SURFACE2
                  ).pack(side="left", padx=12, pady=8)
         self._tb_btn(bar, "⟳  Refresh", self.refresh, side="right")
+        clean_btn = self._tb_btn(
+            bar, "🧹  Folders Cleanup ‹Smart›",
+            self._start_folders_cleanup, side="right")
+        Tooltip(clean_btn,
+                "Scans each ticked channel's live YouTube/SoundCloud listing, "
+                "then flags downloaded tracks in that channel's folder that no "
+                "longer appear on the channel. You review and confirm every "
+                "deletion per channel before anything is removed (files go to "
+                "the Recycle Bin).", wraplength=360)
 
         # Folders Cleanup selection state: cid -> bool (checked).
         self._wl_checked = {}
@@ -2073,6 +2082,14 @@ class DatabaseViewerWindow(tk.Toplevel):
         # Right-click the Link column to open or copy a channel's URL.
         self._wl_menu = tk.Menu(self._wl_tree, tearoff=0)
         self._wl_tree.bind("<Button-3>", self._on_wl_right_click)
+
+        # Left-click toggles the cleanup checkbox; hover shows why a disabled
+        # row can't be ticked.
+        self._wl_tree.bind("<Button-1>", self._on_wl_left_click, add="+")
+        self._wl_tree.bind("<Motion>", self._on_wl_motion, add="+")
+        self._wl_tree.bind("<Leave>",
+                           lambda _e: self._hide_wl_celltip(), add="+")
+        self._wl_celltip = None   # transient tooltip Toplevel for disabled cells
 
     # ── Link / Folder column helpers ──────────────────────────────────────────
     @staticmethod
@@ -2173,6 +2190,83 @@ class DatabaseViewerWindow(tk.Toplevel):
             command=lambda f=folder: self._wl_open_folder(f),
             state="normal" if folder else "disabled")
         self._wl_menu.tk_popup(event.x_root, event.y_root)
+
+    def _on_wl_left_click(self, event):
+        """Toggle the cleanup checkbox when the 'sel' cell is clicked. Other
+        clicks fall through to normal selection/sort behaviour."""
+        if self._wl_tree.identify_region(event.x, event.y) != "cell":
+            return
+        if self._wl_tree.identify_column(event.x) != "#1":
+            return                     # sel is always display-column #1
+        row = self._wl_tree.identify_row(event.y)
+        if not row:
+            return
+        try:
+            cid = int(row)
+        except (TypeError, ValueError):
+            return
+        eligible, _reason = self._wl_eligible.get(cid, (False, ""))
+        if not eligible:
+            return                     # disabled — ignore the click
+        self._wl_checked[cid] = not self._wl_checked.get(cid, False)
+        self._wl_tree.set(
+            row, "sel", "☑" if self._wl_checked[cid] else "☐")
+        return "break"                 # don't also start a drag-select
+
+    def _on_wl_motion(self, event):
+        """Show a small tooltip explaining why a disabled checkbox can't be
+        ticked, when hovering the 'sel' cell of an ineligible row."""
+        if (self._wl_tree.identify_region(event.x, event.y) != "cell"
+                or self._wl_tree.identify_column(event.x) != "#1"):
+            self._hide_wl_celltip()
+            return
+        row = self._wl_tree.identify_row(event.y)
+        try:
+            cid = int(row)
+        except (TypeError, ValueError):
+            self._hide_wl_celltip()
+            return
+        eligible, reason = self._wl_eligible.get(cid, (True, ""))
+        if eligible or not reason:
+            self._hide_wl_celltip()
+            return
+        self._show_wl_celltip(event.x_root + 12, event.y_root + 12, reason)
+
+    def _show_wl_celltip(self, x, y, text):
+        if self._wl_celltip is not None:
+            self._wl_celltip_lbl.config(text=text)
+            self._wl_celltip.geometry(f"+{x}+{y}")
+            return
+        tip = tk.Toplevel(self._wl_tree)
+        tip.overrideredirect(True)
+        tip.attributes("-topmost", True)
+        lbl = tk.Label(tip, text=text, font=("Segoe UI", 8),
+                       bg="#1f1f1f", fg=TEXT, bd=1, relief="solid",
+                       padx=6, pady=3, justify="left")
+        lbl.pack()
+        tip.geometry(f"+{x}+{y}")
+        self._wl_celltip = tip
+        self._wl_celltip_lbl = lbl
+
+    def _hide_wl_celltip(self):
+        if self._wl_celltip is not None:
+            self._wl_celltip.destroy()
+            self._wl_celltip = None
+
+    def _start_folders_cleanup(self):
+        """Entry point for the Folders Cleanup ‹Smart› button. Validates that
+        at least one eligible channel is ticked, then launches the run."""
+        checked = [cid for cid, on in self._wl_checked.items() if on]
+        if not checked:
+            messagebox.showinfo(
+                "Folders Cleanup",
+                "Tick at least one channel first.", parent=self)
+            return
+        self._run_folders_cleanup(checked)
+
+    def _run_folders_cleanup(self, cids):
+        # Implemented in Task 7. Temporary stub so the module loads.
+        pass
 
     def _wl_copy_link(self, url):
         self.clipboard_clear()
