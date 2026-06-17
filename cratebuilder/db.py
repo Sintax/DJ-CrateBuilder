@@ -249,6 +249,24 @@ class DownloadsDatabase:
         except Exception as e:
             self._log("error", f"clear_all_downloads failed: {e}")
 
+    def delete_downloads_by_paths(self, paths):
+        """Delete download rows whose file_path is in *paths*. Returns the
+        number of rows removed. Best-effort: logs and returns 0 on error.
+        Used by Folders Cleanup after a file is sent to the Recycle Bin."""
+        paths = [p for p in (paths or []) if p]
+        if not paths:
+            return 0
+        try:
+            with self._conn() as conn:
+                placeholders = ",".join("?" for _ in paths)
+                cur = conn.execute(
+                    f"DELETE FROM downloads WHERE file_path IN ({placeholders})",
+                    paths)
+                return cur.rowcount or 0
+        except Exception as e:
+            self._log("error", f"delete_downloads_by_paths failed: {e}")
+            return 0
+
     def add_watchlist_channel(self, *, url, display_name, platform, genre,
                                scan_cutoff_date, auto_added=False,
                                channel_id=None, status="idle"):
