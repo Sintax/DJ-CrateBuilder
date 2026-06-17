@@ -26,3 +26,69 @@ def test_empty_folder_is_trivially_trustworthy():
     # nothing on disk to wrongly flag; any scan count is fine
     assert is_scan_trustworthy(0, 0) is False  # 0 scan still blocked
     assert is_scan_trustworthy(10, 0) is True
+
+
+from cratebuilder.cleanup import classify_local_files
+
+
+def _entry(vid, title):
+    return {"id": vid, "title": title}
+
+
+def _ff(name, full, size=1000, mtime=111):
+    return (name, full, size, mtime)
+
+
+SCAN = [
+    _entry("aaa", "Artist - Track One"),
+    _entry("bbb", "Artist - Track Two"),
+    _entry("ccc", "Artist - Track Three"),
+]
+
+
+def test_kept_by_video_id():
+    files = [_ff("Track One.mp3", "/f/Track One.mp3")]
+    db = {"/f/Track One.mp3": "aaa"}
+    assert classify_local_files(SCAN, files, db) == []
+
+
+def test_kept_by_title_when_id_absent_or_changed():
+    # file has a DB id that's NOT on the channel, but the title still matches a
+    # current entry (re-upload under a new id) -> kept.
+    files = [_ff("Artist - Track Two.mp3", "/f/Artist - Track Two.mp3")]
+    db = {"/f/Artist - Track Two.mp3": "zzz"}  # zzz not in scan, title is
+    assert classify_local_files(SCAN, files, db) == []
+
+
+def test_strong_flag_id_in_db_gone_from_channel():
+    files = [_ff("Old Removed Track.mp3", "/f/Old Removed Track.mp3")]
+    db = {"/f/Old Removed Track.mp3": "ddd"}  # ddd gone, title not on channel
+    out = classify_local_files(SCAN, files, db)
+    assert len(out) == 1
+    assert out[0]["confidence"] == "strong"
+    assert out[0]["full_path"] == "/f/Old Removed Track.mp3"
+    assert out[0]["video_id"] == "ddd"
+
+
+def test_weak_flag_no_db_row():
+    files = [_ff("Some Random Mix.mp3", "/f/Some Random Mix.mp3")]
+    db = {}  # no DB row at all
+    out = classify_local_files(SCAN, files, db)
+    assert len(out) == 1
+    assert out[0]["confidence"] == "weak"
+    assert out[0]["video_id"] is None
+
+
+def test_unicode_mangled_filename_still_matches():
+    # title normalisation collapses to the same key despite mangled glyphs
+    scan = [_entry("eee", "1788-L - ÆTHERSUIT")]
+    files = [_ff("1788-L - �THERSUIT.mp3", "/f/x.mp3")]
+    assert classify_local_files(scan, files, {}) == []
+
+
+def test_size_and_mtime_passed_through():
+    files = [_ff("Gone.mp3", "/f/Gone.mp3", size=4321, mtime=999)]
+    out = classify_local_files(SCAN, files, {"/f/Gone.mp3": "ddd"})
+    assert out[0]["size_bytes"] == 4321
+    assert out[0]["mtime"] == 999
+    assert out[0]["filename"] == "Gone.mp3"
