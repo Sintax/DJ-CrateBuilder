@@ -168,11 +168,13 @@ pip install pyinstaller -r requirements.txt
 pyinstaller --noconfirm --clean --name "DJ-CrateBuilder" --windowed --onedir ^
   --collect-submodules cratebuilder ^
   --hidden-import pystray._win32 --hidden-import PIL.ImageDraw ^
+  --hidden-import send2trash ^
   DJ-CrateBuilder_v1.3.py
 ```
 
 The `--collect-submodules`/`--hidden-import` flags bundle the local `cratebuilder/`
-package and the lazily-imported tray dependencies (pystray + Pillow). Copy
+package, the lazily-imported tray dependencies (pystray + Pillow), and send2trash
+(used by Folders Cleanup to move files to the Recycle Bin). Copy
 `ffmpeg.exe` and `ffprobe.exe` into `dist\DJ-CrateBuilder\`.
 
 ### Create Installer
