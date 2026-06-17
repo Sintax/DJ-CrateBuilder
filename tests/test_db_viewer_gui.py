@@ -185,12 +185,17 @@ def test_viewer_column_order_persists(tmp_path, monkeypatch):
         v = m.DatabaseViewerWindow(root, db)
         v.update()
         cols = list(v._WL_COLS)
-        new_order = [cols[2]] + cols[:2] + cols[3:]   # move 3rd column to front
+        # "sel" is pinned to the front and never reorderable, so reorder a pair
+        # of non-pinned columns and expect sel to stay at position 0 on reopen.
+        non_sel = [c for c in cols if c != "sel"]
+        # Swap the first two non-pinned columns.
+        reordered = [non_sel[1], non_sel[0]] + non_sel[2:]
+        new_order = ["sel"] + reordered
         v._save_col_order(v._WL_ORDER_KEY, new_order)
         v._wl_tree.configure(displaycolumns=new_order)
         v.destroy()
 
-        # Reopening restores the saved order.
+        # Reopening restores the saved order, with sel still pinned to the front.
         v2 = m.DatabaseViewerWindow(root, db)
         v2.update()
         assert list(v2._wl_tree.cget("displaycolumns")) == new_order

@@ -1613,6 +1613,7 @@ class DatabaseViewerWindow(tk.Toplevel):
 
     # Watch List columns: id -> (heading, width, anchor)
     _WL_COLS = {
+        "sel":        ("",             34, "center"),
         "channel":    ("Channel",      180, "w"),
         "link":       ("URL Link",     220, "w"),
         "folder":     ("Folder",       260, "w"),
@@ -1728,9 +1729,10 @@ class DatabaseViewerWindow(tk.Toplevel):
         except Exception:
             pass
 
-    def _enable_col_reorder(self, tree, all_cols, order_key):
+    def _enable_col_reorder(self, tree, all_cols, order_key, pinned=()):
         """Bind header drag-and-drop reordering onto *tree*. A plain click still
-        sorts (we only intercept when the column is dropped on a different one)."""
+        sorts (we only intercept when the column is dropped on a different one).
+        Columns named in *pinned* cannot be moved and cannot be displaced."""
         state = {"src": None}
 
         def on_press(e):
@@ -1753,9 +1755,11 @@ class DatabaseViewerWindow(tk.Toplevel):
                 return                       # pure click → let the sort fire
             order = self._display_order(tree, all_cols)
             src_name = name_at(src, order)
-            if src_name is None:
-                return                       # can't move the tree (#0) column
+            if src_name is None or src_name in pinned:
+                return                       # can't move tree (#0) or a pinned col
             tgt_name = name_at(tgt, order)
+            if tgt_name in pinned:
+                return                       # can't displace a pinned col
             new_order = self._reorder_columns(order, src_name, tgt_name)
             if new_order == order:
                 return                       # nothing actually moved
@@ -2011,6 +2015,11 @@ class DatabaseViewerWindow(tk.Toplevel):
                  ).pack(side="left", padx=12, pady=8)
         self._tb_btn(bar, "⟳  Refresh", self.refresh, side="right")
 
+        # Folders Cleanup selection state: cid -> bool (checked).
+        self._wl_checked = {}
+        # cid -> (eligible: bool, reason: str) for the cleanup checkbox.
+        self._wl_eligible = {}
+
         self._wl_stats = tk.Label(parent, text="", font=("Segoe UI", 8),
                                   fg=TEXT_DIM, bg=SURFACE2, anchor="w",
                                   padx=12, pady=3, highlightthickness=1,
@@ -2037,6 +2046,7 @@ class DatabaseViewerWindow(tk.Toplevel):
         # Zebra striping so each channel entry reads as its own box.
         self._wl_tree.tag_configure("oddrow", background=DB_STRIPE)
         self._wl_tree.tag_configure("evenrow", background=DB_FIELD)
+        self._wl_tree.tag_configure("wl_disabled", foreground=TEXT_DIM)
 
         vs = ttk.Scrollbar(frame, orient="vertical",
                            command=self._wl_tree.yview)
@@ -2047,9 +2057,16 @@ class DatabaseViewerWindow(tk.Toplevel):
         vs.pack(side="right", fill="y")
         self._wl_tree.pack(side="left", fill="both", expand=True)
 
-        # Drag a header to reorder columns; restore any saved order.
+        # Drag a header to reorder columns; restore any saved order. The "sel"
+        # checkbox column is pinned to position 0 — never reorderable.
         self._apply_saved_order(self._wl_tree, col_ids, self._WL_ORDER_KEY)
-        self._enable_col_reorder(self._wl_tree, col_ids, self._WL_ORDER_KEY)
+        # Force sel back to the front in case a saved order or default placed it
+        # elsewhere (older configs predate the column).
+        disp = [c for c in self._display_order(self._wl_tree, col_ids)
+                if c != "sel"]
+        self._wl_tree.configure(displaycolumns=["sel"] + disp)
+        self._enable_col_reorder(self._wl_tree, col_ids, self._WL_ORDER_KEY,
+                                 pinned=("sel",))
 
         self._bind_tree_wheel(self._wl_tree)
 
@@ -2087,6 +2104,23 @@ class DatabaseViewerWindow(tk.Toplevel):
             return os.path.join(*parts)
         except Exception:
             return ""
+
+    def _wl_cleanup_eligibility(self, ch):
+        """Return (eligible, reason) for whether a channel can be cleaned.
+        Ineligible when unresolved/error, folder missing, or folder empty."""
+        if is_unresolved_channel(ch) or ch.get("status") in (
+                "needs_resolve", "error"):
+            return (False, "Unresolved — fix the channel link first.")
+        folder = self._wl_channel_folder(ch)
+        if not folder or not os.path.isdir(folder):
+            return (False, "Folder missing — no downloads to clean.")
+        try:
+            has_mp3 = any(f.lower().endswith(".mp3") for f in os.listdir(folder))
+        except OSError:
+            has_mp3 = False
+        if not has_mp3:
+            return (False, "Folder empty — nothing to clean.")
+        return (True, "")
 
     def _wl_open_folder(self, folder):
         """Open *folder* in the system file manager; report errors politely
@@ -2545,8 +2579,16 @@ class DatabaseViewerWindow(tk.Toplevel):
             cutoff = format_yyyymmdd_readable(ch.get("scan_cutoff_date", "")) \
                      if ch.get("scan_cutoff_date") else ""
             last = format_timestamp_relative(ch.get("last_scanned_timestamp"))
-            tree.insert("", "end", tags=("oddrow" if i % 2 else "evenrow",),
+            cid = ch.get("id")
+            eligible, reason = self._wl_cleanup_eligibility(ch)
+            self._wl_eligible[cid] = (eligible, reason)
+            checked = self._wl_checked.get(cid, False) and eligible
+            glyph = "☑" if checked else "☐"
+            zebra = "oddrow" if i % 2 else "evenrow"
+            tags = (zebra,) if eligible else (zebra, "wl_disabled")
+            tree.insert("", "end", iid=str(cid), tags=tags,
                         values=(
+                glyph,
                 ch.get("display_name") or "",
                 self._wl_display_url(ch),
                 self._wl_channel_folder(ch),
