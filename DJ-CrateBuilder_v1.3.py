@@ -1827,6 +1827,12 @@ class _CleanupReviewWindow(tk.Toplevel):
         self._build(name)
         self._populate()
 
+        # Center over the viewer (matches the progress dialog's placement).
+        self.update_idletasks()
+        px = viewer.winfo_x() + (viewer.winfo_width() - self.winfo_width()) // 2
+        py = viewer.winfo_y() + (viewer.winfo_height() - self.winfo_height()) // 2
+        self.geometry(f"+{max(0, px)}+{max(0, py)}")
+
     def _build(self, name):
         top = tk.Frame(self, bg=SURFACE2)
         top.pack(fill="x")
@@ -2650,6 +2656,10 @@ class DatabaseViewerWindow(tk.Toplevel):
     def _open_cleanup_review(self, session, ch, flagged, folder_count):
         win = _CleanupReviewWindow(self, session, ch, flagged, folder_count)
         self.wait_window(win)           # modal: block until the user chooses
+        if not self.winfo_exists():     # viewer torn down while modal was open
+            session.cancelled = True
+            session._finish()
+            return
         if win.result == "confirm":
             self._apply_cleanup_deletions(session, ch, win.selected,
                                           folder_count)
@@ -2695,9 +2705,11 @@ class DatabaseViewerWindow(tk.Toplevel):
             f"CLEANUP DB | removed {removed_rows} download row(s)")
         session.removed_total += len(trashed)
         session.channels_cleaned += 1
+        # Errored files remain on disk but are reported under `errors`, not
+        # `kept`, so removed + kept + errors == folder_count in the log line.
         session._log_channel(
             ch, removed=len(trashed),
-            kept=folder_count - len(trashed), errors=errors)
+            kept=folder_count - len(trashed) - errors, errors=errors)
 
     def _finish_folders_cleanup(self, session):
         skipped = session.channels_skipped
