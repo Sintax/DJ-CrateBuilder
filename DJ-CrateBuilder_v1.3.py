@@ -1614,7 +1614,8 @@ class DatabaseViewerWindow(tk.Toplevel):
     # Watch List columns: id -> (heading, width, anchor)
     _WL_COLS = {
         "channel":    ("Channel",      180, "w"),
-        "link":       ("Link",         220, "w"),
+        "link":       ("URL Link",     220, "w"),
+        "folder":     ("Folder",       260, "w"),
         "platform":   ("Platform",      80, "w"),
         "genre":      ("Genre",        110, "w"),
         "cutoff":     ("Cutoff",       130, "w"),
@@ -2053,7 +2054,7 @@ class DatabaseViewerWindow(tk.Toplevel):
         self._wl_menu = tk.Menu(self._wl_tree, tearoff=0)
         self._wl_tree.bind("<Button-3>", self._on_wl_right_click)
 
-    # ── Link column helpers ───────────────────────────────────────────────────
+    # ── Link / Folder column helpers ──────────────────────────────────────────
     @staticmethod
     def _wl_display_url(ch):
         """The channel's real URL, or '' for unresolved/sentinel placeholders."""
@@ -2062,12 +2063,62 @@ class DatabaseViewerWindow(tk.Toplevel):
             return ""
         return url
 
+    def _wl_channel_folder(self, ch):
+        """Compute the local folder path for a watch-list channel — pure, no
+        side effects (the App's _resolve_save_dir helper would makedirs).
+        Returns '' if the channel's platform isn't recognised or the parent
+        app isn't reachable. Note: the path may not exist on disk yet
+        (channel with no downloads); callers must handle that."""
+        try:
+            platform     = (ch.get("platform") or "").strip()
+            genre        = (ch.get("genre") or "").strip()
+            channel_name = (ch.get("display_name") or "").strip()
+            if platform not in PLATFORMS:
+                return ""
+            parts = [self._parent._platform_dir(platform)]
+            parts.append(genre if genre and genre != "(none)" else "_No Genre")
+            if channel_name:
+                safe = safe_filename(channel_name, strip=True)
+                if safe:
+                    parts.append(safe)
+            return os.path.join(*parts)
+        except Exception:
+            return ""
+
+    def _wl_open_folder(self, folder):
+        """Open *folder* in the system file manager; report errors politely
+        (the folder may not exist yet if the channel hasn't downloaded)."""
+        if not folder:
+            messagebox.showerror(
+                "Folder Unknown",
+                "Couldn't compute a folder path for this channel "
+                "(missing platform or display name).")
+            return
+        if not os.path.isdir(folder):
+            messagebox.showerror(
+                "Folder Not Found",
+                f"This channel's folder doesn't exist yet:\n\n{folder}\n\n"
+                "Download at least one track for the channel to create it.")
+            return
+        try:
+            if sys.platform == "win32":
+                os.startfile(folder)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", folder])
+            else:
+                subprocess.Popen(["xdg-open", folder])
+        except Exception as exc:
+            messagebox.showerror(
+                "Could Not Open Folder",
+                f"Unable to open the folder:\n{exc}\n\nPath: {folder}")
+
     def _on_wl_right_click(self, event):
         row = self._wl_tree.identify_row(event.y)
         if not row:
             return
         self._wl_tree.selection_set(row)
-        url = self._wl_tree.set(row, "link").strip()
+        url    = self._wl_tree.set(row, "link").strip()
+        folder = self._wl_tree.set(row, "folder").strip()
         self._wl_menu.delete(0, "end")
         if url:
             self._wl_menu.add_command(
@@ -2079,6 +2130,11 @@ class DatabaseViewerWindow(tk.Toplevel):
         else:
             self._wl_menu.add_command(
                 label="(no link for this channel)", state="disabled")
+        self._wl_menu.add_separator()
+        self._wl_menu.add_command(
+            label="Open Folder",
+            command=lambda f=folder: self._wl_open_folder(f),
+            state="normal" if folder else "disabled")
         self._wl_menu.tk_popup(event.x_root, event.y_root)
 
     def _wl_copy_link(self, url):
@@ -2459,6 +2515,8 @@ class DatabaseViewerWindow(tk.Toplevel):
             return (ch.get("display_name") or "").lower()
         if col == "link":
             return self._wl_display_url(ch).lower()
+        if col == "folder":
+            return self._wl_channel_folder(ch).lower()
         if col == "platform":
             return (ch.get("platform") or "").lower()
         if col == "genre":
@@ -2488,6 +2546,7 @@ class DatabaseViewerWindow(tk.Toplevel):
                         values=(
                 ch.get("display_name") or "",
                 self._wl_display_url(ch),
+                self._wl_channel_folder(ch),
                 ch.get("platform") or "",
                 ch.get("genre") or "",
                 cutoff,
