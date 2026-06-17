@@ -40,6 +40,11 @@ cratebuilder.db-shm
 cratebuilder.db-wal
 cratebuilder.db.bak-*
 
+# Logs & Database
+activity.log
+debug.log
+cratebuilder.db
+
 # Backups & archives
 _BACKUP/
 *.zip
