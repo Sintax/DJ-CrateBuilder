@@ -92,3 +92,25 @@ def test_size_and_mtime_passed_through():
     assert out[0]["size_bytes"] == 4321
     assert out[0]["mtime"] == 999
     assert out[0]["filename"] == "Gone.mp3"
+
+
+def test_none_valued_db_entry_is_weak_like_absent():
+    # an explicit None value must behave identically to a missing key
+    files = [_ff("Untracked.mp3", "/f/Untracked.mp3")]
+    out = classify_local_files(SCAN, files, {"/f/Untracked.mp3": None})
+    assert len(out) == 1
+    assert out[0]["confidence"] == "weak"
+    assert out[0]["video_id"] is None
+
+
+def test_empty_scan_flags_every_file():
+    # the dangerous degenerate case: an empty scan must NOT silently keep files
+    # (is_scan_trustworthy gates this upstream, but the unit contract is explicit)
+    files = [_ff("A.mp3", "/f/A.mp3"), _ff("B.mp3", "/f/B.mp3")]
+    out = classify_local_files([], files, {})
+    assert len(out) == 2
+    assert all(f["confidence"] == "weak" for f in out)
+
+
+def test_empty_folder_returns_nothing():
+    assert classify_local_files(SCAN, [], {}) == []
