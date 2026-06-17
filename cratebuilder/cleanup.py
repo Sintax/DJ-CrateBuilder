@@ -32,7 +32,8 @@ def classify_local_files(scan_entries, folder_files, db_video_id_by_path):
         folder_files: list of (filename, full_path, size_bytes, mtime) tuples,
             one per .mp3 in the channel folder.
         db_video_id_by_path: dict full_path -> video_id (or None) from the
-            downloads table for this channel. Absent path == no DB row.
+            downloads table for this channel. Absent path == no DB row. A path
+            mapped explicitly to None is treated the same as absent (weak flag).
 
     A file is FLAGGED only when BOTH signals miss: its DB video_id is not in the
     scan AND its normalised title (from the filename) is not in the scan.
