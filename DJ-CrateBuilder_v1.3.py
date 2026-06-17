@@ -1696,6 +1696,7 @@ class DatabaseViewerWindow(tk.Toplevel):
             pass   # column widths are a nicety; never block closing on them
 
     def _on_close(self):
+        self._hide_wl_celltip()
         self._persist_col_widths()
         self.destroy()
 
@@ -2090,6 +2091,7 @@ class DatabaseViewerWindow(tk.Toplevel):
         self._wl_tree.bind("<Leave>",
                            lambda _e: self._hide_wl_celltip(), add="+")
         self._wl_celltip = None   # transient tooltip Toplevel for disabled cells
+        self._wl_celltip_lbl = None
 
     # ── Link / Folder column helpers ──────────────────────────────────────────
     @staticmethod
@@ -2226,7 +2228,9 @@ class DatabaseViewerWindow(tk.Toplevel):
         except (TypeError, ValueError):
             self._hide_wl_celltip()
             return
-        eligible, reason = self._wl_eligible.get(cid, (True, ""))
+        # Unknown cid is a can't-happen fallback (rebuild always populates
+        # _wl_eligible for every visible row); default to ineligible/no-tip.
+        eligible, reason = self._wl_eligible.get(cid, (False, ""))
         if eligible or not reason:
             self._hide_wl_celltip()
             return
@@ -2249,7 +2253,7 @@ class DatabaseViewerWindow(tk.Toplevel):
         self._wl_celltip_lbl = lbl
 
     def _hide_wl_celltip(self):
-        if self._wl_celltip is not None:
+        if getattr(self, "_wl_celltip", None) is not None:
             self._wl_celltip.destroy()
             self._wl_celltip = None
 
