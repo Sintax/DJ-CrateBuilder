@@ -1746,6 +1746,28 @@ class DatabaseViewerWindow(tk.Toplevel):
               background=[("active", BORDER)])
 
     # ── Build UI ──────────────────────────────────────────────────────────────
+    # Tooltip content for the Help button on the tab-bar row.
+    _HELP_TOOLTIP = (
+        "DOWNLOADS TAB\n"
+        "• Group by — change how rows nest (e.g. Platform › Genre › Channel).\n"
+        "• Platform / Genre filters — hide rows that don't match the selection.\n"
+        "• Search — live-filter rows by any column text.\n"
+        "• ⊞ / ⊟ — expand or collapse every group at once.\n"
+        "• Click a column header to sort; drag a header to reorder columns.\n"
+        "• Double-click a row to open the file.\n"
+        "• Right-click a row for Open File / Open Containing Folder / Copy Path.\n"
+        "• ⤓ Export CSV — write the current view to a .csv file.\n"
+        "• ⟳ Refresh — reload from the database.\n"
+        "\n"
+        "WATCH LIST TAB\n"
+        "• Every tracked channel with its scan, pending-new, and download history.\n"
+        "• Click a column header to sort; drag a header to reorder columns.\n"
+        "• Right-click the Link column to open or copy the channel URL.\n"
+        "• ⟳ Refresh — reload from the database.\n"
+        "\n"
+        "Column widths and order are remembered between sessions."
+    )
+
     def _build_ui(self):
         self._notebook = ttk.Notebook(self)
         self._notebook.pack(fill="both", expand=True)
@@ -1757,6 +1779,20 @@ class DatabaseViewerWindow(tk.Toplevel):
 
         self._build_downloads_tab(dl_tab)
         self._build_watchlist_tab(wl_tab)
+
+        # Help button floats over the right end of the tab strip. place() on
+        # the Toplevel + lift() puts it above the notebook's chrome at the
+        # absolute right of the window, on the same row as the tabs.
+        self._help_btn = tk.Button(
+            self, text="❔  Help",
+            font=("Segoe UI", 9), relief="flat", bd=0,
+            bg=SURFACE2, fg=TEXT_DIM,
+            activebackground=BORDER, activeforeground=TEXT,
+            padx=10, pady=4, cursor="hand2",
+            command=lambda: None)
+        self._help_btn.place(relx=1.0, y=2, x=-8, anchor="ne")
+        self._help_btn.lift()
+        Tooltip(self._help_btn, self._HELP_TOOLTIP, wraplength=420)
 
     def _tb_btn(self, parent, label, cmd, side="left", padx=(2, 2)):
         """Small flat toolbar button matching the app palette."""
@@ -4595,6 +4631,14 @@ class MP3DownloaderApp(tk.Tk):
             if lbl not in [getattr(self, "_browser_lbl", None),
                            getattr(self, "_profile_lbl", None)]:
                 lbl.config(fg=TEXT_DIM if enabled else GREY)
+
+        # Open-Browser button only makes sense for the Browser method;
+        # hide it entirely when the user is on Cookie File.
+        if hasattr(self, "_open_yt_btn"):
+            if is_browser:
+                self._open_yt_btn.pack(side="left", padx=(0, 16))
+            else:
+                self._open_yt_btn.pack_forget()
 
         # Switch visible row inside the container
         if is_browser:
