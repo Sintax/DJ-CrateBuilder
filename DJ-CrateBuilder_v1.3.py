@@ -3357,14 +3357,13 @@ class MP3DownloaderApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_window_close)
         self.bind("<Unmap>", self._on_minimize)
 
-        # Begin minimized when the user asked to ("Start App Minimized"), or
-        # when Windows auto-started us with tray mode on. Either way go straight
-        # to the System Tray (regardless of the 'Minimize to System Tray'
-        # setting); _hide_to_tray falls back to a taskbar minimise if the tray
-        # is unavailable.
-        _auto_started_tray = (self._minimize_to_tray.get()
-                              and "--startup" in sys.argv)
-        if self._start_minimized.get() or _auto_started_tray:
+        # Start in the System Tray only when the user ticked "Start App
+        # Minimized to System Tray" — this is the sole control for it, and it
+        # applies equally to a manual launch and a Windows run-at-startup
+        # ("--startup") launch. When it's unticked, both launch paths just show
+        # the open window. _hide_to_tray falls back to a taskbar minimise if the
+        # tray is unavailable.
+        if self._start_minimized.get():
             self.after(1700, self._hide_to_tray)
 
     # ══════════════════════════════════════════════════════════════════════════
