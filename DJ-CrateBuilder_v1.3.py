@@ -3349,7 +3349,8 @@ class MP3DownloaderApp(tk.Tk):
 
         # Action buttons for the Activity/Debug log + Database rows.
         # DlBtn = the primary built-in "open/view" buttons (light blue, matching
-        # the Watch List tab); SysView = "open in system viewer" (grey).
+        # the Watch List tab); SysView = "open in system viewer" (a slightly
+        # darker blue, so it reads as the secondary action on the same row).
         s.configure("DlBtn.TButton",
             background=WL_BLUE_DARK, foreground=TEXT,
             font=("Segoe UI", 10), relief="flat", borderwidth=0, padding=(10, 8))
@@ -3358,11 +3359,11 @@ class MP3DownloaderApp(tk.Tk):
             foreground=[("active", TEXT)])
 
         s.configure("SysView.TButton",
-            background="#7F7F7F", foreground="#ffffff",
+            background="#1d4ed8", foreground=TEXT,
             font=("Segoe UI", 10), relief="flat", borderwidth=0, padding=(10, 8))
         s.map("SysView.TButton",
-            background=[("active", "#949494")],
-            foreground=[("active", "#ffffff")])
+            background=[("active", WL_BLUE_DARK)],
+            foreground=[("active", TEXT)])
 
         s.configure("TCheckbutton",
             background=BG, foreground=TEXT_DIM, font=("Segoe UI", 10))
@@ -3803,21 +3804,20 @@ class MP3DownloaderApp(tk.Tk):
             start_min_row = ttk.Frame(outer)
             start_min_row.pack(fill="x", pady=(2, 4))
             ttk.Checkbutton(
-                start_min_row, text="Start App Minimized",
+                start_min_row, text="Start App Minimized to System Tray",
                 variable=self._start_minimized,
                 style="S.Opt.TCheckbutton").pack(side="left")
-            self._settings_help(start_min_row,
-                "Launch DJ-CrateBuilder hidden in the System Tray (regardless "
-                "of the 'Minimize to System Tray' setting). Right-click the "
-                "tray icon to open it.").pack(side="left", padx=(8, 0))
 
             tray_row = ttk.Frame(outer)
             tray_row.pack(fill="x", pady=(2, 4))
             ttk.Checkbutton(
                 tray_row,
-                text="Minimize to System Tray (keep Watch List running in background)",
+                text="Minimize to System Tray",
                 variable=self._minimize_to_tray,
                 style="S.Opt.TCheckbutton").pack(side="left")
+            self._settings_help(tray_row,
+                "Keeps Watch-List scheduler running in the background"
+                ).pack(side="left", padx=(8, 0))
 
         # Scan Watch List on startup
         startup_scan_row = ttk.Frame(outer)
@@ -4157,9 +4157,21 @@ class MP3DownloaderApp(tk.Tk):
             self._cookie_browser_row, textvariable=self._cookies_browser,
             values=["Firefox", "Chrome", "Edge", "Brave", "Opera", "Chromium"],
             state="readonly", width=12)
-        self._cookies_browser_combo.pack(side="left", padx=(0, 16))
+        self._cookies_browser_combo.pack(side="left", padx=(0, 8))
         self._cookies_browser_combo.bind("<<ComboboxSelected>>",
             lambda _: (self._update_howto_label(), self._autosave_behavior_settings()))
+
+        self._open_yt_btn = tk.Button(
+            self._cookie_browser_row, text="🌐  Open YouTube",
+            font=("Segoe UI", 8), bg="#7F7F7F", fg="#ffffff",
+            activebackground="#949494", activeforeground=TEXT,
+            relief="flat", bd=0, padx=8, pady=1, cursor="hand2",
+            command=self._open_youtube_in_selected_browser)
+        self._open_yt_btn.pack(side="left", padx=(0, 16))
+        Tooltip(self._open_yt_btn,
+                "Open youtube.com in the browser selected above. "
+                "Use this to sign in to the dedicated account before "
+                "running a download with cookies enabled.")
 
         self._profile_lbl = tk.Label(self._cookie_browser_row, text="Profile:",
                  font=("Segoe UI", 11), fg=TEXT_DIM, bg=BG)
@@ -5275,6 +5287,71 @@ class MP3DownloaderApp(tk.Tk):
         if hasattr(self, "_cookie_howto") and self._cookie_howto.winfo_exists():
             self._cookie_howto.destroy()
         self._cookie_howto = CookieHowToWindow(self, browser=browser)
+
+    # exe filename per browser — used both by webbrowser.get() (which uses these
+    # as PATH lookups) and by the Windows App Paths registry fallback below.
+    _BROWSER_EXES = {
+        "Firefox":  "firefox.exe",
+        "Chrome":   "chrome.exe",
+        "Edge":     "msedge.exe",
+        "Brave":    "brave.exe",
+        "Opera":    "opera.exe",
+        "Chromium": "chrome.exe",
+    }
+    # Python stdlib webbrowser names that map to our dropdown labels.
+    # Edge/Brave aren't in the stdlib registry, so they fall through to the
+    # Windows registry lookup.
+    _BROWSER_WEBBROWSER_NAMES = {
+        "Firefox":  "firefox",
+        "Chrome":   "chrome",
+        "Opera":    "opera",
+        "Chromium": "chromium",
+    }
+
+    def _open_youtube_in_selected_browser(self):
+        """Launch youtube.com in whatever browser is selected in the Cookies
+        dropdown. Tries Python's webbrowser module first, then falls back to
+        looking the exe up via the Windows App Paths registry. Shows an
+        error dialog if neither finds the browser."""
+        browser = self._cookies_browser.get()
+        url = "https://www.youtube.com"
+
+        py_name = self._BROWSER_WEBBROWSER_NAMES.get(browser)
+        if py_name:
+            try:
+                webbrowser.get(py_name).open(url, new=2)
+                return
+            except webbrowser.Error:
+                pass
+
+        if sys.platform == "win32":
+            exe = self._BROWSER_EXES.get(browser)
+            if exe:
+                try:
+                    import winreg
+                except ImportError:
+                    winreg = None
+                if winreg is not None:
+                    key = (rf"SOFTWARE\Microsoft\Windows\CurrentVersion"
+                           rf"\App Paths\{exe}")
+                    for hive in (winreg.HKEY_CURRENT_USER,
+                                 winreg.HKEY_LOCAL_MACHINE):
+                        try:
+                            with winreg.OpenKey(hive, key) as k:
+                                path, _ = winreg.QueryValueEx(k, None)
+                        except OSError:
+                            continue
+                        if path and os.path.exists(path):
+                            try:
+                                subprocess.Popen([path, url])
+                                return
+                            except OSError:
+                                break
+
+        messagebox.showerror(
+            "Browser Not Found",
+            f"Could not locate {browser} on this system.\n\n"
+            f"Make sure it is installed, or open {url} manually.")
 
     # ══════════════════════════════════════════════════════════════════════════
     # Input handling — genre picker, platform switch, URL entry & history
