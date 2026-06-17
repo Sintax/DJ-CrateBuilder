@@ -1792,6 +1792,167 @@ class _FoldersCleanupSession:
             self.viewer._finish_folders_cleanup(self)
 
 
+class _CleanupReviewWindow(tk.Toplevel):
+    """Per-channel review: list flagged files with checkboxes; Confirm / Skip /
+    Cancel. Strong-confidence rows start checked; weak rows unchecked."""
+
+    _COLS = {
+        "sel":      ("",          34,  "center"),
+        "filename": ("File",      360, "w"),
+        "size":     ("Size",      90,  "e"),
+        "modified": ("Modified",  130, "w"),
+        "reason":   ("Reason",    260, "w"),
+    }
+
+    def __init__(self, viewer, session, ch, flagged, folder_count):
+        super().__init__(viewer)
+        self.viewer = viewer
+        self.session = session
+        self.ch = ch
+        self.flagged = flagged
+        self.folder_count = folder_count
+        self.result = None              # "confirm" | "skip" | "cancel"
+        self.selected = []              # full paths chosen, set on confirm
+        self.checked = {}               # full_path -> bool
+
+        name = ch.get("display_name") or ""
+        self.title(f"Folders Cleanup — {name}  "
+                   f"({session.idx + 1} of {session.total})")
+        self.configure(bg=BG)
+        self.geometry("900x520")
+        self.transient(viewer)
+        self.grab_set()                 # modal
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        self._build(name)
+        self._populate()
+
+    def _build(self, name):
+        top = tk.Frame(self, bg=SURFACE2)
+        top.pack(fill="x")
+        tk.Label(top,
+                 text=f"{len(self.flagged)} file(s) on disk are no longer on "
+                      f"“{name}”. Ticked files go to the Recycle Bin.",
+                 font=("Segoe UI", 9), bg=SURFACE2, fg=TEXT_DIM,
+                 anchor="w").pack(side="left", padx=12, pady=8)
+        tk.Button(top, text="Deselect All", font=("Segoe UI", 9),
+                  relief="flat", bd=0, bg=SURFACE2, fg=TEXT_DIM,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  padx=8, pady=4, cursor="hand2",
+                  command=lambda: self._set_all(False)).pack(side="right", padx=(0, 8))
+        tk.Button(top, text="Select All", font=("Segoe UI", 9),
+                  relief="flat", bd=0, bg=SURFACE2, fg=TEXT_DIM,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  padx=8, pady=4, cursor="hand2",
+                  command=lambda: self._set_all(True)).pack(side="right", padx=(0, 4))
+
+        frame = tk.Frame(self, bg=BG)
+        frame.pack(fill="both", expand=True)
+        cols = list(self._COLS)
+        self.tree = ttk.Treeview(frame, columns=cols, show="headings",
+                                 style="DB.Treeview", selectmode="none")
+        for cid, (head, w, anchor) in self._COLS.items():
+            self.tree.heading(cid, text=head)
+            self.tree.column(cid, width=w, anchor=anchor, stretch=(cid == "reason"))
+        self.tree.tag_configure("weakrow", foreground=TEXT_DIM)
+        vs = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vs.set)
+        vs.pack(side="right", fill="y")
+        self.tree.pack(side="left", fill="both", expand=True)
+        self.tree.bind("<Button-1>", self._on_click, add="+")
+
+        btns = tk.Frame(self, bg=BG)
+        btns.pack(fill="x", pady=10)
+        tk.Button(btns, text="Confirm Deletions", font=("Segoe UI", 10, "bold"),
+                  relief="flat", bd=0, bg=WL_BLUE_DARK, fg=TEXT,
+                  activebackground=WL_BLUE, activeforeground=TEXT,
+                  padx=14, pady=6, cursor="hand2",
+                  command=self._confirm).pack(side="left", padx=(16, 6))
+        if self.session.total > 1:
+            tk.Button(btns, text="Skip Channel", font=("Segoe UI", 10),
+                      relief="flat", bd=0, bg=SURFACE2, fg=TEXT,
+                      activebackground=BORDER, activeforeground=TEXT,
+                      padx=14, pady=6, cursor="hand2",
+                      command=self._skip).pack(side="left", padx=6)
+            cancel_text = "Cancel Scans"
+        else:
+            cancel_text = "Cancel Scan"
+        tk.Button(btns, text=cancel_text, font=("Segoe UI", 10),
+                  relief="flat", bd=0, bg=SURFACE2, fg=TEXT,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  padx=14, pady=6, cursor="hand2",
+                  command=self._cancel).pack(side="right", padx=(6, 16))
+
+    def _populate(self):
+        for f in self.flagged:
+            start = (f["confidence"] == "strong")
+            self.checked[f["full_path"]] = start
+            tag = "weakrow" if f["confidence"] == "weak" else ""
+            self.tree.insert(
+                "", "end", iid=f["full_path"], tags=(tag,) if tag else (),
+                values=("☑" if start else "☐",
+                        f["filename"],
+                        self._fmt_size(f["size_bytes"]),
+                        self._fmt_mtime(f["mtime"]),
+                        f["reason"]))
+
+    @staticmethod
+    def _fmt_size(n):
+        n = n or 0
+        for unit in ("B", "KB", "MB", "GB"):
+            if n < 1024 or unit == "GB":
+                return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+            n /= 1024.0
+
+    @staticmethod
+    def _fmt_mtime(ts):
+        if not ts:
+            return ""
+        import datetime
+        return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+
+    def _on_click(self, event):
+        if (self.tree.identify_region(event.x, event.y) != "cell"
+                or self.tree.identify_column(event.x) != "#1"):
+            return
+        row = self.tree.identify_row(event.y)
+        if not row:
+            return
+        self.checked[row] = not self.checked.get(row, False)
+        self.tree.set(row, "sel", "☑" if self.checked[row] else "☐")
+        return "break"
+
+    def _set_all(self, value):
+        for path in self.checked:
+            self.checked[path] = value
+            self.tree.set(path, "sel", "☑" if value else "☐")
+
+    def _selected_paths(self):
+        return [p for p, on in self.checked.items() if on]
+
+    def _confirm(self):
+        self.result = "confirm"
+        self.selected = self._selected_paths()
+        self.grab_release()
+        self.destroy()
+
+    def _skip(self):
+        self.result = "skip"
+        self.grab_release()
+        self.destroy()
+
+    def _cancel(self):
+        self.result = "cancel"
+        self.grab_release()
+        self.destroy()
+
+    def _on_close(self):
+        # [X] = the safe no-delete option: skip (multi) / cancel (single).
+        self.result = "skip" if self.session.total > 1 else "cancel"
+        self.grab_release()
+        self.destroy()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # DatabaseViewerWindow — browse the downloads history + watch list
 #   A dark-themed Toplevel (sibling to the log viewers) that presents the
@@ -2487,19 +2648,68 @@ class DatabaseViewerWindow(tk.Toplevel):
         self._cleanup_session.start()
 
     def _open_cleanup_review(self, session, ch, flagged, folder_count):
-        # Real review window arrives in Task 8. Placeholder: skip this channel's
-        # deletions so the per-channel loop still advances end-to-end.
-        session._log_channel(ch, removed=0, kept=folder_count, errors=0,
-                             note="review window not yet implemented")
-        session._advance()
+        win = _CleanupReviewWindow(self, session, ch, flagged, folder_count)
+        self.wait_window(win)           # modal: block until the user chooses
+        if win.result == "confirm":
+            self._apply_cleanup_deletions(session, ch, win.selected,
+                                          folder_count)
+            session._advance()
+        elif win.result == "skip":
+            session._log_channel(ch, removed=0, kept=folder_count, errors=0,
+                                 note="skipped by user")
+            session.channels_skipped += 1
+            session._advance()
+        else:  # cancel
+            session.cancelled = True
+            session._finish()
+
+    def _apply_cleanup_deletions(self, session, ch, paths, folder_count):
+        """Send the selected files to the Recycle Bin and drop their DB rows."""
+        if not paths:
+            session._log_channel(ch, removed=0, kept=folder_count, errors=0,
+                                 note="confirmed, nothing ticked")
+            session.channels_cleaned += 1
+            return
+        try:
+            from send2trash import send2trash
+        except Exception:
+            messagebox.showerror(
+                "Folders Cleanup",
+                "This feature needs the 'send2trash' package.\n\n"
+                "Install it with:  pip install send2trash",
+                parent=self)
+            session._log_channel(ch, removed=0, kept=folder_count, errors=0,
+                                 note="aborted (send2trash missing)")
+            return
+        trashed, errors = [], 0
+        for p in paths:
+            try:
+                send2trash(p)
+                trashed.append(p)
+                self._parent._dbg.info(f"CLEANUP TRASH | {p}")
+            except Exception as exc:
+                errors += 1
+                self._parent._dbg.info(f"CLEANUP TRASH FAIL | {p} | {exc}")
+        removed_rows = self._db.delete_downloads_by_paths(trashed)
+        self._parent._dbg.info(
+            f"CLEANUP DB | removed {removed_rows} download row(s)")
+        session.removed_total += len(trashed)
+        session.channels_cleaned += 1
+        session._log_channel(
+            ch, removed=len(trashed),
+            kept=folder_count - len(trashed), errors=errors)
 
     def _finish_folders_cleanup(self, session):
+        skipped = session.channels_skipped
+        extra = (f" {skipped} channel(s) skipped (see activity log)."
+                 if skipped else "")
         messagebox.showinfo(
-            "Folders Cleanup",
-            f"Done. {session.removed_total} files removed across "
-            f"{session.channels_cleaned} channel(s).", parent=self)
-        self._wl_checked.clear()
-        self.load_data()
+            "Folders Cleanup complete",
+            f"{session.removed_total} file(s) removed across "
+            f"{session.channels_cleaned} channel(s).{extra}",
+            parent=self)
+        self._wl_checked.clear()        # auto-untick
+        self.load_data()                # refresh tree from disk/DB reality
 
     def _wl_copy_link(self, url):
         self.clipboard_clear()
