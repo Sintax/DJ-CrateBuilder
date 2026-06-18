@@ -73,3 +73,32 @@ def classify_local_files(scan_entries, folder_files, db_video_id_by_path):
             "reason":     reason,
         })
     return flagged
+
+
+def partition_trash(paths, trash_func):
+    """Send each path to the trash, partitioning into successes and failures.
+
+    The single safety-critical step of a cleanup, made testable by injecting
+    the deleter. Pure except for ``trash_func``; no Tk, DB, or logging — the
+    caller logs and updates the DB from the returned lists.
+
+    Args:
+        paths: iterable of file-path strings to delete.
+        trash_func: callable(path) that removes one file (e.g. send2trash).
+            May raise on failure; the exception is captured, not propagated.
+
+    Returns (trashed, errors):
+        trashed: list of paths ``trash_func`` accepted, in input order.
+        errors:  list of (path, exception) for paths that raised, in order.
+
+    A path appears in exactly one of the two lists, so
+    ``len(trashed) + len(errors) == len(list(paths))``.
+    """
+    trashed, errors = [], []
+    for p in paths:
+        try:
+            trash_func(p)
+            trashed.append(p)
+        except Exception as exc:
+            errors.append((p, exc))
+    return trashed, errors

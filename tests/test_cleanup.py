@@ -114,3 +114,39 @@ def test_empty_scan_flags_every_file():
 
 def test_empty_folder_returns_nothing():
     assert classify_local_files(SCAN, [], {}) == []
+
+
+from cratebuilder.cleanup import partition_trash
+
+
+def test_partition_trash_all_succeed():
+    seen = []
+    trashed, errors = partition_trash(["/a", "/b", "/c"], seen.append)
+    assert trashed == ["/a", "/b", "/c"]
+    assert errors == []
+    assert seen == ["/a", "/b", "/c"]   # every path was actually passed through
+
+
+def test_partition_trash_all_fail_preserves_exceptions():
+    def boom(p):
+        raise OSError(f"locked: {p}")
+    trashed, errors = partition_trash(["/a", "/b"], boom)
+    assert trashed == []
+    assert [p for p, _ in errors] == ["/a", "/b"]
+    assert all(isinstance(exc, OSError) for _, exc in errors)
+
+
+def test_partition_trash_mixed_partitions_disjointly():
+    def selective(p):
+        if p == "/bad":
+            raise RuntimeError("nope")
+    trashed, errors = partition_trash(["/ok1", "/bad", "/ok2"], selective)
+    assert trashed == ["/ok1", "/ok2"]
+    assert [p for p, _ in errors] == ["/bad"]
+    # the core invariant the DB-row removal relies on
+    assert len(trashed) + len(errors) == 3
+
+
+def test_partition_trash_empty_input():
+    trashed, errors = partition_trash([], lambda p: None)
+    assert trashed == [] and errors == []

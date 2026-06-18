@@ -27,7 +27,8 @@ from cratebuilder.sidecar import (
     watch_fetch_url, classify_scan_entries,
 )
 from cratebuilder.db import DownloadsDatabase
-from cratebuilder.cleanup import is_scan_trustworthy, classify_local_files
+from cratebuilder.cleanup import (
+    is_scan_trustworthy, classify_local_files, partition_trash)
 from cratebuilder import startup as cb_startup
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2699,15 +2700,11 @@ class DatabaseViewerWindow(tk.Toplevel):
             session._log_channel(ch, removed=0, kept=folder_count, errors=0,
                                  note="aborted (send2trash missing)")
             return
-        trashed, errors = [], 0
-        for p in paths:
-            try:
-                send2trash(p)
-                trashed.append(p)
-                self._parent._dbg.info(f"CLEANUP TRASH | {p}")
-            except Exception as exc:
-                errors += 1
-                self._parent._dbg.info(f"CLEANUP TRASH FAIL | {p} | {exc}")
+        trashed, errors = partition_trash(paths, send2trash)
+        for p in trashed:
+            self._parent._dbg.info(f"CLEANUP TRASH | {p}")
+        for p, exc in errors:
+            self._parent._dbg.info(f"CLEANUP TRASH FAIL | {p} | {exc}")
         removed_rows = self._db.delete_downloads_by_paths(trashed)
         self._parent._dbg.info(
             f"CLEANUP DB | removed {removed_rows} download row(s)")
@@ -2717,7 +2714,7 @@ class DatabaseViewerWindow(tk.Toplevel):
         # `kept`, so removed + kept + errors == folder_count in the log line.
         session._log_channel(
             ch, removed=len(trashed),
-            kept=folder_count - len(trashed) - errors, errors=errors)
+            kept=folder_count - len(trashed) - len(errors), errors=len(errors))
 
     def _finish_folders_cleanup(self, session):
         skipped = session.channels_skipped
