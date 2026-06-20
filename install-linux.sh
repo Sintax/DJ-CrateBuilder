@@ -1,20 +1,20 @@
 #!/bin/bash
 # ============================================================================
-# DJ-CrateBuilder v1.2 — Linux Installer
+# DJ-CrateBuilder v1.3 — Linux Installer
 # ============================================================================
 
 set -e
 
 APP_NAME="DJ-CrateBuilder"
-APP_VERSION="1.2"
+APP_VERSION="1.3"
 INSTALL_DIR="$HOME/.local/share/DJ-CrateBuilder"
 BIN_LINK="$HOME/.local/bin/dj-cratebuilder"
 DESKTOP_DIR="$HOME/.local/share/applications"
-SCRIPT_NAME="DJ-CrateBuilder_v1.2.py"
+SCRIPT_NAME="DJ-CrateBuilder_v1.3.py"
 
 echo ""
 echo "  ┌─────────────────────────────────────────┐"
-echo "  │   DJ-CrateBuilder v1.2 — Linux Setup    │"
+echo "  │   DJ-CrateBuilder v1.3 — Linux Setup    │"
 echo "  └─────────────────────────────────────────┘"
 echo ""
 
@@ -62,28 +62,47 @@ if ! command -v ffmpeg &>/dev/null; then
 fi
 echo "  ✓ FFmpeg: $(ffmpeg -version 2>&1 | head -1 | awk '{print $3}')"
 
-# ── Install yt-dlp ────────────────────────────────────────────────────────
-if ! $PYTHON -c "import yt_dlp" &>/dev/null; then
-    echo "  → Installing yt-dlp..."
-    $PYTHON -m pip install --user yt-dlp -q
+# ── Install Python dependencies ──────────────────────────────────────────
+# yt-dlp is the download engine; pystray + Pillow drive the system-tray icon.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$SCRIPT_DIR/requirements.txt" ]; then
+    echo "  → Installing Python dependencies (yt-dlp, pystray, Pillow)..."
+    $PYTHON -m pip install --user -r "$SCRIPT_DIR/requirements.txt" -q
+else
+    echo "  → Installing yt-dlp, pystray, Pillow..."
+    $PYTHON -m pip install --user yt-dlp "pystray>=0.19" "Pillow>=10.0" -q
 fi
-echo "  ✓ yt-dlp: installed"
+echo "  ✓ Python dependencies installed"
 
 # ── Copy application ─────────────────────────────────────────────────────
 echo ""
 echo "  → Installing to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 
-# Find the script (same directory as this installer)
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ ! -f "$SCRIPT_DIR/$SCRIPT_NAME" ]; then
     echo "  ✗ Cannot find $SCRIPT_NAME in $SCRIPT_DIR"
     echo "    Place this installer in the same folder as the .py file."
     exit 1
 fi
 
+if [ ! -d "$SCRIPT_DIR/cratebuilder" ]; then
+    echo "  ✗ Cannot find the cratebuilder/ package in $SCRIPT_DIR"
+    echo "    v1.3 needs the cratebuilder/ folder shipped alongside the .py."
+    exit 1
+fi
+
 cp "$SCRIPT_DIR/$SCRIPT_NAME" "$INSTALL_DIR/$SCRIPT_NAME"
 chmod +x "$INSTALL_DIR/$SCRIPT_NAME"
+
+# Copy the cratebuilder/ package (util, sidecar, db, startup, tray)
+rm -rf "$INSTALL_DIR/cratebuilder"
+cp -r "$SCRIPT_DIR/cratebuilder" "$INSTALL_DIR/cratebuilder"
+echo "  ✓ cratebuilder/ package installed"
+
+# Copy the app icon if present (used by the .desktop entry)
+if [ -f "$SCRIPT_DIR/icon.ico" ]; then
+    cp "$SCRIPT_DIR/icon.ico" "$INSTALL_DIR/icon.ico"
+fi
 
 # ── Create launcher script ────────────────────────────────────────────────
 mkdir -p "$(dirname "$BIN_LINK")"
@@ -97,12 +116,16 @@ echo "  ✓ Command: dj-cratebuilder"
 
 # ── Create .desktop entry ────────────────────────────────────────────────
 mkdir -p "$DESKTOP_DIR"
+ICON_LINE=""
+[ -f "$INSTALL_DIR/icon.ico" ] && ICON_LINE="Icon=$INSTALL_DIR/icon.ico"
+
 cat > "$DESKTOP_DIR/dj-cratebuilder.desktop" << EOF
 [Desktop Entry]
 Type=Application
 Name=DJ-CrateBuilder
 Comment=Batch download audio from YouTube and SoundCloud as MP3
 Exec=$BIN_LINK
+$ICON_LINE
 Terminal=false
 Categories=AudioVideo;Audio;Music;
 Keywords=youtube;soundcloud;mp3;download;dj;music;

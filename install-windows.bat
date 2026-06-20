@@ -110,21 +110,23 @@ if %errorlevel% neq 0 (
 
 :: ── Locate the script ─────────────────────────────────────────────────────
 set "SCRIPT_DIR=%~dp0"
-set "SCRIPT_V13=%SCRIPT_DIR%.claude\worktrees\inspiring-jackson\DJ-CrateBuilder_v1.3.py"
-set "SCRIPT_MAIN=%SCRIPT_DIR%DJ-CrateBuilder_v1.2.py"
+set "RUN_SCRIPT=%SCRIPT_DIR%DJ-CrateBuilder_v1.3.py"
 
-if exist "%SCRIPT_V13%" (
-    set "RUN_SCRIPT=%SCRIPT_V13%"
-    echo  [+] Found DJ-CrateBuilder v1.3
-) else if exist "%SCRIPT_MAIN%" (
-    set "RUN_SCRIPT=%SCRIPT_MAIN%"
-    echo  [+] Found DJ-CrateBuilder v1.2
-) else (
-    echo  [X] Could not find DJ-CrateBuilder .py file.
+if not exist "%RUN_SCRIPT%" (
+    echo  [X] Could not find DJ-CrateBuilder_v1.3.py
     echo      Make sure this batch file is in the DJ-CrateBuilder folder.
     pause
     exit /b 1
 )
+echo  [+] Found DJ-CrateBuilder v1.3
+
+if not exist "%SCRIPT_DIR%cratebuilder\__init__.py" (
+    echo  [X] Could not find the cratebuilder\ package next to the script.
+    echo      v1.3 needs the cratebuilder\ folder in the same directory.
+    pause
+    exit /b 1
+)
+echo  [+] cratebuilder package OK
 
 :: ── Create desktop shortcut ───────────────────────────────────────────────
 echo  [*] Creating desktop shortcut...

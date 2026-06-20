@@ -33,12 +33,12 @@ desktop.ini
 DJ-CrateBuilder.log
 activity.log
 debug.log
-cratebuilder.db
 .dj_cratebuilder_config.json
 .yt_dj_cratebuilder_config.json
-
-# Chat-to-Code handoff (private planning notes)
-HANDOFF.md
+cratebuilder.db
+cratebuilder.db-shm
+cratebuilder.db-wal
+cratebuilder.db.bak-*
 
 # Backups & archives
 _BACKUP/
@@ -53,3 +53,7 @@ cookies.json
 ffmpeg.exe
 ffprobe.exe
 ffmpeg_essentials.zip
+
+# Internal dev scratchpad — plans/specs written during multi-phase reworks.
+# Not user docs and not required by the app; keep them out of the public repo.
+docs/superpowers/
