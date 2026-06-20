@@ -1,5 +1,5 @@
 ; ============================================================================
-; DJ-CrateBuilder v1.2 — Inno Setup Installer (Linux / Wine)
+; DJ-CrateBuilder v1.3 — Inno Setup Installer (Linux / Wine)
 ; Installs to user Program Files with no admin required
 ; ============================================================================
 ;
@@ -10,7 +10,7 @@
 ;   3. (Optional) Update SetupIconFile to your .ico path.
 ;
 ; LINUX USAGE:
-;   wine DJ-CrateBuilder_v1.2_Setup_Linux.exe
+;   wine DJ-CrateBuilder_v1.3_Setup_Linux.exe
 ;
 ; ============================================================================
 
@@ -18,14 +18,14 @@
 ; IMPORTANT: Replace this GUID with your own unique identifier
 AppId={{PUT-YOUR-GENERATED-GUID-HERE}
 AppName=DJ-CrateBuilder
-AppVersion=1.2
-AppVerName=DJ-CrateBuilder v1.2
+AppVersion=1.3
+AppVerName=DJ-CrateBuilder v1.3
 AppPublisher=DJ-CrateBuilder
 DefaultDirName={userpf}\DJ-CrateBuilder
 DefaultGroupName=DJ-CrateBuilder
 AllowNoIcons=yes
 OutputDir=Output
-OutputBaseFilename=DJ-CrateBuilder_v1.2_Setup_Linux
+OutputBaseFilename=DJ-CrateBuilder_v1.3_Setup_Linux
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
