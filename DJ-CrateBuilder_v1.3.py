@@ -30,6 +30,7 @@ from cratebuilder.db import DownloadsDatabase
 from cratebuilder.cleanup import (
     is_scan_trustworthy, classify_local_files, partition_trash)
 from cratebuilder import startup as cb_startup
+from cratebuilder.singleton import acquire_single_instance, SINGLE_INSTANCE_PORT
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Version & About — edit these values to update the app info
@@ -9244,5 +9245,13 @@ class MP3DownloaderApp(tk.Tk):
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    # Single-instance guard: a second launch (manual OR Windows --startup)
+    # can't bind the loopback port the running instance already holds, so it
+    # exits silently. The lock is parked on the app instance so it isn't
+    # garbage-collected — that would close the socket and release the lock.
+    _instance_lock = acquire_single_instance(SINGLE_INSTANCE_PORT)
+    if _instance_lock is None:
+        sys.exit(0)
     app = MP3DownloaderApp()
+    app._instance_lock = _instance_lock
     app.mainloop()
