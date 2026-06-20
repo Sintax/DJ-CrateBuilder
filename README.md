@@ -1,11 +1,22 @@
-BETA [STILL IN DEVELOPMENT!]
----
-
 # <img src="docs/screenshots/DJ-CrateBuilder_LOGO_1.png" width="85"> DJ-CrateBuilder v1.3 
 
 A desktop application for batch-downloading audio from YouTube and SoundCloud as MP3 files, organized by platform, genre, and channel — like a digital record crate for DJs and music collectors. 
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue) ![Platform](https://img.shields.io/badge/Platform-Windows_|_Linux-lightgrey) ![License](https://img.shields.io/badge/License-Personal_Use-orange)
+
+---
+
+## Screenshots
+
+<p align="left">
+  <img src="docs/screenshots/01-main.png" width="480">
+</p>
+
+<p align="left">
+  <img src="docs/screenshots/02-watchlist.png" width="320">
+  <img src="docs/screenshots/03-settings.png" width="320">
+  <img src="docs/screenshots/04-about.png" width="320">
+</p>
 
 ---
 
@@ -30,20 +41,6 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 
 ---
 
-## Screenshots
-
-<p align="left">
-  <img src="docs/screenshots/01-main.png" width="480">
-</p>
-
-<p align="left">
-  <img src="docs/screenshots/02-watchlist.png" width="320">
-  <img src="docs/screenshots/03-settings.png" width="320">
-  <img src="docs/screenshots/04-about.png" width="320">
-</p>
-
----
-
 ## Requirements
 
 - **Python 3.10+**
@@ -54,6 +51,16 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 ---
 
 ## Installation
+
+### Windows Quick Setup (install-windows.bat)
+
+The fastest way to get running on Windows. Right-click `install-windows.bat` and choose **Run as administrator**. The script automatically:
+
+- Checks for Python 3.10+ (and downloads/installs Python 3.12 if it's missing)
+- Verifies tkinter is available
+- Upgrades pip and installs yt-dlp
+- Checks for FFmpeg and shows install options if it's not on PATH
+- Creates a Desktop shortcut and offers to launch the app
 
 ### Run from Source
 
