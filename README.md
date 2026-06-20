@@ -62,7 +62,7 @@ The fastest way to get running on Windows. Right-click `install-windows.bat` and
 - Checks for FFmpeg and shows install options if it's not on PATH
 - Creates a Desktop shortcut and offers to launch the app
 
----
+<hr style="border:0; border-top:1px solid #30363d; height:0;">
 
 ### Run from Source
 
@@ -73,13 +73,13 @@ pip install -r requirements.txt
 python DJ-CrateBuilder_v1.3.py
 ```
 
----
+<hr style="border:0; border-top:1px solid #30363d; height:0;">
 
 ### Windows Installer
 
 Download the latest installer from the [Releases](https://github.com/Sintax/DJ-CrateBuilder/releases) page. The installer bundles Python, yt-dlp, and FFmpeg — no additional setup required.
 
----
+<hr style="border:0; border-top:1px solid #30363d; height:0;">
 
 ### Linux
 
