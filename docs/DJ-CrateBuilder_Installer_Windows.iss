@@ -53,25 +53,9 @@ Name: "{autodesktop}\DJ-CrateBuilder"; Filename: "{app}\DJ-CrateBuilder.exe"; Ta
 [Run]
 Filename: "{app}\DJ-CrateBuilder.exe"; Description: "Launch DJ-CrateBuilder"; Flags: nowait postinstall skipifsilent
 
-[Registry]
-; Add install directory to user PATH so FFmpeg is accessible
-Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; \
-    ValueData: "{olddata};{app}"; Check: NeedsAddPath(ExpandConstant('{app}'))
-
-[Code]
-function NeedsAddPath(Param: string): boolean;
-var
-    OrigPath: string;
-begin
-    if not RegQueryStringValue(HKEY_CURRENT_USER,
-        'Environment', 'Path', OrigPath)
-    then begin
-        Result := True;
-        exit;
-    end;
-    Result := (Pos(';' + Uppercase(Param) + ';', ';' + Uppercase(OrigPath) + ';') = 0) and
-              (Pos(';' + Uppercase(Param) + '\;', ';' + Uppercase(OrigPath) + ';') = 0);
-end;
+; Note: no PATH entry is needed. FFmpeg is bundled next to the app executable
+; and the app points yt-dlp straight at it (see bundled_ffmpeg_dir() in the
+; Python source), so there are no per-user (HKCU) registry changes to make.
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
