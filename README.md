@@ -6,6 +6,26 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 
 ---
 
+## Contents
+
+- [Screenshots](#screenshots)
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Browser Cookie Authentication](#browser-cookie-authentication)
+- [Settings](#settings)
+- [Building from Source](#building-from-source)
+- [File Locations](#file-locations)
+- [FAQ](#faq)
+- [Known Limitations](#known-limitations)
+- [Tech Stack](#tech-stack)
+- [Disclaimer](#disclaimer)
+- [Contributing](#contributing)
+- [Version History](#version-history)
+
+---
+
 ## Screenshots
 
 <p align="left">
