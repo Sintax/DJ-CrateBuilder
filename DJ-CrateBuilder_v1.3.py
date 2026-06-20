@@ -61,6 +61,25 @@ def check_dependencies():
         missing.append("yt-dlp")
     return missing
 
+# ── Bundled FFmpeg location ─────────────────────────────────────────────────
+def bundled_ffmpeg_dir():
+    """Return the directory of the bundled ffmpeg.exe, or None to fall back to PATH.
+
+    In the packaged (PyInstaller) build, ffmpeg.exe/ffprobe.exe are shipped next
+    to the application executable. Pointing yt-dlp straight at that folder means
+    the installer no longer has to add anything to PATH, so it works regardless
+    of how/where the app is installed. When running from source, return None and
+    let yt-dlp discover FFmpeg on PATH as documented.
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    exe_dir = os.path.dirname(sys.executable)
+    name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+    for cand in (exe_dir, getattr(sys, "_MEIPASS", None)):
+        if cand and os.path.isfile(os.path.join(cand, name)):
+            return cand
+    return None
+
 # ── Color palette ─────────────────────────────────────────────────────────────
 BG        = "#0f0f0f"
 SURFACE   = "#1a1a1a"
@@ -7171,6 +7190,12 @@ class MP3DownloaderApp(tk.Tk):
                     "quiet":       True,
                     "no_warnings": True,
                 }
+
+                # Point yt-dlp at the bundled FFmpeg (packaged build) so it does
+                # not depend on FFmpeg being on PATH. None when run from source.
+                _ffmpeg_dir = bundled_ffmpeg_dir()
+                if _ffmpeg_dir:
+                    ydl_opts["ffmpeg_location"] = _ffmpeg_dir
 
                 # Only add the FFmpeg MP3 postprocessor if conversion is enabled.
                 # When "Keep original format" is checked, the file is saved
