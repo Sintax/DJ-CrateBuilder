@@ -33,15 +33,17 @@ From the folder containing `DJ-CrateBuilder_v1.3.py`:
 pyinstaller --noconfirm --clean --name "DJ-CrateBuilder" --windowed --onedir --icon "icon.ico" ^
   --collect-submodules cratebuilder ^
   --hidden-import pystray._win32 --hidden-import PIL.ImageDraw ^
+  --hidden-import send2trash ^
   DJ-CrateBuilder_v1.3.py
 ```
 
 Output: `dist\DJ-CrateBuilder\`
 
 > The `--collect-submodules cratebuilder` flag bundles the local `cratebuilder/`
-> package (util, sidecar, db, startup, tray). The two `--hidden-import` flags pull
-> in pystray's Windows backend and Pillow's drawing module, which PyInstaller can't
-> detect automatically because they're imported lazily for the tray icon.
+> package (util, sidecar, db, startup, tray). The `--hidden-import` flags pull
+> in pystray's Windows backend and Pillow's drawing module (imported lazily for
+> the tray icon) and send2trash (used by Folders Cleanup to move files to the
+> Recycle Bin) — PyInstaller can't detect these automatically.
 > (`^` is the Windows line-continuation character — keep it as one command.)
 
 ## Step 2 — Bundle FFmpeg
@@ -50,6 +52,12 @@ Output: `dist\DJ-CrateBuilder\`
 copy "C:\path\to\ffmpeg.exe"  "dist\DJ-CrateBuilder\"
 copy "C:\path\to\ffprobe.exe" "dist\DJ-CrateBuilder\"
 ```
+
+> Placement matters: the packaged app locates FFmpeg by looking next to its own
+> executable (`bundled_ffmpeg_dir()` in the source sets yt-dlp's `ffmpeg_location`
+> to that folder). So `ffmpeg.exe`/`ffprobe.exe` **must** sit in
+> `dist\DJ-CrateBuilder\` alongside `DJ-CrateBuilder.exe`. No PATH entry is
+> required — the installer deliberately makes no per-user PATH changes.
 
 ## Step 3 — Smoke test
 
