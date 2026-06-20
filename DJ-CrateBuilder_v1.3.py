@@ -41,6 +41,7 @@ APP_VERSION = "1.3"
 ABOUT_CREATED_BY  = "CorruptSintax@Gmail.com"
 ABOUT_DESCRIPTION = "Vibe-Coded entirely with Claude-AI"
 GITHUB_URL        = "https://github.com/Sintax/DJ-CrateBuilder"
+GITHUB_ISSUES_URL = "https://github.com/Sintax/DJ-CrateBuilder/issues"
 
 # ── Add or remove lines below to customize the About tab content. ──────────
 # ── Each tuple is  ("Label", "Value")  and will display as a row. ──────────
@@ -5740,6 +5741,25 @@ class MP3DownloaderApp(tk.Tk):
             val_lbl = tk.Label(row, text=value, font=("Segoe UI", 11),
                       fg=TEXT, bg=BG, anchor="w")
             val_lbl.pack(side="left", padx=(8, 0))
+
+        # ── Bug-report note + Submit Issues button ────────────────────────────
+        tk.Label(outer,
+                 text="For any bugs encountered, submit them to the Issues "
+                      "section on GitHub.",
+                 font=("Segoe UI", 11), fg=TEXT_MED, bg=BG, anchor="w",
+                 justify="left").pack(anchor="w", pady=(6, 6))
+
+        self._issues_btn = tk.Button(
+            outer, text="  Submit Issues  ",
+            font=("Segoe UI", 10, "bold"),
+            bg="#2563eb", fg="#ffffff",
+            activebackground="#1d4ed8", activeforeground="#ffffff",
+            relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
+            command=lambda: webbrowser.open(GITHUB_ISSUES_URL))
+        self._issues_btn.pack(anchor="w", pady=(0, 4))
+        Tooltip(self._issues_btn,
+                "Opens the DJ-CrateBuilder Issues page on GitHub in your "
+                "browser, where you can report bugs.")
 
         # ── GitHub link (button replaces the old plain-text URL row) ──────────
         self._github_btn = tk.Button(
