@@ -26,7 +26,9 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 
 ---
 
-## Screenshots
+<a name="screenshots"></a>
+
+## Screenshots&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
 
 <p align="left">
   <img src="docs/screenshots/01-main.png" width="480">
@@ -40,7 +42,9 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 
 ---
 
-## Features
+<a name="features"></a>
+
+## Features&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
 
 - **Watch List** — Track your favourite YouTube and SoundCloud channels and periodically scan for *only* genuinely-new uploads, so you never re-download tracks you already own. YouTube channels are identified by their canonical channel ID (with a built-in search resolver to heal broken links) while SoundCloud artists are tracked by their profile URL, new uploads are cross-referenced against what's already in your folders, and per-channel cards let you Fix Link (shown only when a link needs healing), Scan, Download New, Edit, or Cancel at any time — all alongside a pinned, resizable scan log. Every tracked entry is re-scanned in the background on launch so the new-track counts are always current *(new in v1.3)*
 - **Background Automation** — Let the Watch List run on its own: every launch the app refreshes the new-track counts for all entries (YouTube and SoundCloud) in the background, and you can pick a check interval (Off / 6 / 12 / 24 / 48 hours) so DJ-CrateBuilder periodically scans every tracked channel and auto-downloads new tracks to their folders, notifying you when it does. Optionally launch at Windows startup and minimize to the system tray so it keeps watching while you work *(new in v1.3)*
@@ -61,7 +65,9 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 
 ---
 
-## Requirements
+<a name="requirements"></a>
+
+## Requirements&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
 
 - **Python 3.10+**
 - **yt-dlp**, **pystray**, **Pillow** — `pip install -r requirements.txt` (pystray + Pillow power the system-tray icon)
@@ -70,7 +76,9 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 
 ---
 
-## Installation
+<a name="installation"></a>
+
+## Installation&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
 
 ### Windows Installer
 
@@ -121,7 +129,9 @@ After installation, launch with `dj-cratebuilder` from terminal or find it in yo
 
 ---
 
-## Usage
+<a name="usage"></a>
+
+## Usage&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
 
 1. **Select a platform** — YouTube or SoundCloud
 2. **Paste a URL** — Single video, playlist, or entire channel
@@ -147,7 +157,9 @@ After installation, launch with `dj-cratebuilder` from terminal or find it in yo
 
 ---
 
-## Browser Cookie Authentication
+<a name="browser-cookie-authentication"></a>
+
+## Browser Cookie Authentication&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
 
 For faster downloads and fewer "login required" errors, you can authenticate with a YouTube account.
 
@@ -172,7 +184,9 @@ For faster downloads and fewer "login required" errors, you can authenticate wit
 
 ---
 
-## Settings
+<a name="settings"></a>
+
+## Settings&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -192,7 +206,9 @@ All settings auto-save and persist between sessions.
 
 ---
 
-## Building from Source
+<a name="building-from-source"></a>
+
+## Building from Source&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
 
 ### Create Windows Executable
 
@@ -218,7 +234,9 @@ See [docs/Packaging_Guide.md](docs/Packaging_Guide.md) for detailed instructions
 
 ---
 
-## File Locations
+<a name="file-locations"></a>
+
+## File Locations&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
 
 | File | Path |
 |------|------|
@@ -229,13 +247,17 @@ See [docs/Packaging_Guide.md](docs/Packaging_Guide.md) for detailed instructions
 
 ---
 
-## FAQ
+<a name="faq"></a>
+
+## FAQ&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
 
 See the built-in FAQ in the app's About tab for answers to common questions about bitrate, skip logic, throttle presets, folder organization, and more.
 
 ---
 
-## Known Limitations
+<a name="known-limitations"></a>
+
+## Known Limitations&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
 
 - **Chrome 127+** blocks cookie extraction due to DPAPI encryption — use Firefox or export a cookie file
 - **Age-restricted videos** require age verification on the throwaway account, or the app falls back to anonymous download (which bypasses age gates via YouTube's embedded player)
@@ -244,7 +266,9 @@ See the built-in FAQ in the app's About tab for answers to common questions abou
 
 ---
 
-## Tech Stack
+<a name="tech-stack"></a>
+
+## Tech Stack&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
 
 - **Python 3** with tkinter (GUI)
 - **yt-dlp** (download engine)
@@ -255,13 +279,17 @@ See the built-in FAQ in the app's About tab for answers to common questions abou
 
 ---
 
-## Disclaimer
+<a name="disclaimer"></a>
+
+## Disclaimer&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
 
 This tool is intended for downloading audio that you have the right to access. Respect copyright laws and the terms of service of the platforms you use. The developers are not responsible for misuse of this software.
 
 ---
 
-## Contributing
+<a name="contributing"></a>
+
+## Contributing&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
 
 This project is in active development. Bug reports, feature requests, and pull requests are welcome.
 
@@ -274,7 +302,9 @@ python -m pytest -q
 
 ---
 
-## Version History
+<a name="version-history"></a>
+
+## Version History&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
 
 | Version | Date | Highlights |
 |---------|------|------------|
