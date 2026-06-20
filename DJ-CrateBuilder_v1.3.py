@@ -9087,6 +9087,12 @@ class MP3DownloaderApp(tk.Tk):
         else:
             self._dbg.info(
                 f"WL AUTO-ADD | {display_name!r}  cutoff={cutoff}")
+            # A brand-new channel was added on the background download worker.
+            # Marshal a structural card rebuild to the main thread so the card
+            # appears immediately instead of only after a restart. No scan is
+            # triggered here; scanning stays blocked during the download by the
+            # self._downloading guard in _auto_download_tick.
+            self.after(0, self._watchlist_refresh)
 
     # ══════════════════════════════════════════════════════════════════════════
     # Maintenance — first-run folder import and DB rebuild from the activity log
