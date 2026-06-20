@@ -8,21 +8,21 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 
 ## Contents
 
-- [Screenshots](#screenshots)
-- [Features](#features)
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Browser Cookie Authentication](#browser-cookie-authentication)
-- [Settings](#settings)
-- [Building from Source](#building-from-source)
-- [File Locations](#file-locations)
-- [FAQ](#faq)
-- [Known Limitations](#known-limitations)
-- [Tech Stack](#tech-stack)
-- [Disclaimer](#disclaimer)
-- [Contributing](#contributing)
-- [Version History](#version-history)
+- <sub>[Screenshots](#screenshots)</sub>
+- <sub>[Features](#features)</sub>
+- <sub>[Requirements](#requirements)</sub>
+- <sub>[Installation](#installation)</sub>
+- <sub>[Usage](#usage)</sub>
+- <sub>[Browser Cookie Authentication](#browser-cookie-authentication)</sub>
+- <sub>[Settings](#settings)</sub>
+- <sub>[Building from Source](#building-from-source)</sub>
+- <sub>[File Locations](#file-locations)</sub>
+- <sub>[FAQ](#faq)</sub>
+- <sub>[Known Limitations](#known-limitations)</sub>
+- <sub>[Tech Stack](#tech-stack)</sub>
+- <sub>[Disclaimer](#disclaimer)</sub>
+- <sub>[Contributing](#contributing)</sub>
+- <sub>[Version History](#version-history)</sub>
 
 ---
 
