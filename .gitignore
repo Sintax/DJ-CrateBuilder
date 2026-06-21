@@ -44,6 +44,9 @@ cratebuilder.db.bak-*
 _BACKUP/
 *.zip
 
+# Nightly release: local baseline for delta builds (machine-local state)
+.nightly_release_state.json
+
 # Release binaries — published as GitHub Release assets, not committed to the repo
 releases/
 

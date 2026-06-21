@@ -25,11 +25,15 @@ pip install pyinstaller -r requirements.txt
 - FFmpeg: https://www.gyan.dev/ffmpeg/builds/ (get `ffmpeg-release-essentials.zip`)
 - Inno Setup 6: https://jrsoftware.org/isinfo.php
 
-> **Shortcut (recommended):** run **`build-windows.bat`** from the repo root. It
-> does Steps 1, 1b, and 2 below in one go — builds the app, builds `updater.exe`
-> and drops it into the app folder, and copies FFmpeg from your PATH. Then skip
-> straight to Step 3 (smoke test) / Step 4 (installer). The manual steps below
-> are the reference for what that script automates.
+> **Shortcut (recommended):** run **`python scripts/release.py --build-only`** from the
+> repo root. It does Steps 1, 1b, and 2 below in one go — builds the app, builds
+> `updater.exe` and drops it into the app folder, and copies FFmpeg from your
+> PATH. Then skip straight to Step 3 (smoke test) / Step 4 (installer). The
+> manual steps below are the reference for what that command automates.
+>
+> (`scripts/release.py` is the single script that handles both fresh-installer builds
+> and nightly publishing — see "Nightly build channel" below. Run with `--help`
+> for the full flag reference and examples.)
 
 ## Step 1 — Build the EXE
 
@@ -129,27 +133,64 @@ How it works:
 ### One-time setup — create the `nightly` branch
 
 ```bash
-python scripts/init_nightly.py
+python scripts/release.py --init
 ```
 
 This creates the orphan `nightly` branch (holding only `update.json`) using git
 plumbing — it **never switches your branch or touches your working tree** — and
-offers to push it. Do this once. (Manual equivalent, if you prefer: create an
-orphan branch with just `update.json` from `scripts/update.json.example`.)
+pushes it. Do this once. (Already done for v1.3; you only need it on a fresh
+clone or if the branch is ever deleted.)
 
-### Publishing a nightly build
+### Publishing a nightly build — one command
 
-1. Bump `APP_BUILD` in `DJ-CrateBuilder_v1.3.py` and rebuild
-   (`build-windows.bat`, or Steps 1, 1b, 2).
-2. From the repo root, with the GitHub CLI `gh` authenticated, run **one**
-   command — it zips the build, uploads it to the `nightly` release, writes
-   `update.json`, and pushes it to the `nightly` branch:
-   ```bash
-   python scripts/release_nightly.py --dist dist/DJ-CrateBuilder --build <N> \
-       --notes "What changed in this build." --publish
-   ```
-   Drop `--publish` if you want to review `update.json` and push it yourself.
-   The push uses git plumbing, so your current checkout is never disturbed.
+From the repo root, with the GitHub CLI `gh` authenticated, run:
+
+```bash
+python scripts/release.py
+```
+
+It will prompt for one line of release notes, then do **everything**:
+
+1. Auto-increment `APP_BUILD` in `DJ-CrateBuilder_v1.3.py` (so the `.exe` reports
+   the new build — no manual edit).
+2. Build the app + `updater.exe` + bundle FFmpeg (Steps 1, 1b, 2).
+3. Work out the **smallest payload**: it hashes every file in the build and zips
+   only the files that changed since the last full build — typically just
+   `DJ-CrateBuilder.exe`, a few MB instead of 150 MB+. FFmpeg and the CPython
+   runtime are never re-downloaded.
+4. SHA-256 the zip, upload it to the reused `nightly` pre-release, and push
+   `update.json` to the `nightly` branch via git plumbing (your checkout and
+   `main` are never touched).
+
+Useful flags:
+
+| Flag | What it does |
+|------|--------------|
+| `--notes "..."` | Provide notes instead of being prompted |
+| `--full` | Force a full payload (minus FFmpeg) and reset the delta baseline |
+| `--build N` | Override the auto-incremented build number |
+| `--dry-run` | Build + zip locally; don't upload or publish |
+| `--no-build` | Publish from an existing `dist/` (skip PyInstaller) |
+| `--build-only` | Just build `dist/` for a fresh installer (no publish) |
+| `--keep` | Keep `build/`, `dist/`, and the zip after publishing (they're deleted by default) |
+
+After a **successful** nightly publish the script deletes `build/`, `dist/`, and
+the `DJ-CrateBuilder-<ver>.zip` automatically, so the repo folder stays clean.
+This is safe: the delta baseline is stored in `.nightly_release_state.json`
+(file hashes), not in `dist/`, and the zip already lives on the GitHub release.
+Pass `--keep` if you want to inspect the build. (`--build-only` never deletes
+`dist/` — you need it for Inno Setup.)
+
+**How the delta stays correct:** the updater is an additive overlay — it copies
+the zip's files over the install and leaves everything else alone. Deltas are
+diffed against a **fixed baseline** (the last `--full` build, tracked locally in
+`.nightly_release_state.json`), so one delta zip always carries the complete
+current version of every file changed since that baseline. A user who skipped
+several nightlies still ends up on the exact current build. Run `--full`
+occasionally (e.g. when you ship a new dependency) to refresh the baseline.
+
+After publishing, commit the `APP_BUILD` bump so the source matches the shipped
+build.
 
 > **Unsigned-binary note:** the app and `updater.exe` are not Authenticode-signed,
 > so Windows SmartScreen / Defender may warn or quarantine on first run and
@@ -278,12 +319,12 @@ The **debug log** is new — it captures yt-dlp options, cookie config, and full
 # RELEASE CHECKLIST
 
 - [ ] `APP_VERSION = "1.3"` in `DJ-CrateBuilder_v1.3.py`
-- [ ] `APP_BUILD` bumped (for a nightly) and matches the `--build` you publish
 - [ ] `pytest -q` passes (`requirements-dev.txt` installed)
-- [ ] `updater.exe` built (Step 1b) and present in `dist\DJ-CrateBuilder\`
-- [ ] Windows installer built and smoke-tested
-- [ ] (Nightly) `update.json` published to the `nightly` branch; About-tab
-      "Check for updates" sees and installs it on a test machine
+- [ ] (Nightly) `python scripts/release.py` run — it auto-bumps `APP_BUILD`, builds,
+      publishes the delta, and pushes `update.json`. About-tab "Check for
+      updates" sees and installs it on a test machine. Commit the bump after.
+- [ ] (Fresh installer) `python scripts/release.py --build-only`, smoke-test, then build
+      the Windows installer in Inno Setup
 - [ ] Linux `.tar.gz` archive built — contains `cratebuilder/` + `requirements.txt`
 - [ ] Tested `install-linux.sh` on Linux Mint VM
 - [ ] Tested `uninstall-linux.sh` (leaves MP3s intact)

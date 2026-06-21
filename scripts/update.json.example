@@ -1,7 +1,0 @@
-{
-  "version": "1.3",
-  "build": 2,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.2.zip",
-  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-  "notes": "Short, user-facing summary of what changed in this build."
-}
