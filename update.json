@@ -1,8 +1,8 @@
 {
   "version": "1.3",
-  "build": 6,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.6.zip",
-  "sha256": "cbaff5cd8d8501f3d2e975f4e3201866699ad52095b776427d55aee86ebc8ba1",
-  "notes": "Simplify the About-tab GitHub button label to 'View on GitHub'.",
+  "build": 7,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.7.zip",
+  "sha256": "b224a83d46fc0f4d34700a7463909427b8788a26f6fa2608beac7463344ef787",
+  "notes": "Restyle Settings and Watch List action buttons to match the About tab.",
   "base": 5
 }
