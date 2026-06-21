@@ -8167,7 +8167,7 @@ class MP3DownloaderApp(tk.Tk):
                 ("✕ Cancel", lambda c=cid: self._watchlist_cancel_card(c), True))
         card_buttons += [
             ("🔍 Scan",    lambda c=cid: self._watchlist_scan_channel(c), False),
-            ("⚡ Force",   lambda c=cid: self._watchlist_force_download(c), False),
+            ("⚡ Force Download", lambda c=cid: self._watchlist_force_download(c), False),
             (f"⬇ Download New ({pending})",
                            lambda c=cid: self._watchlist_download_new(c), False),
         ]
