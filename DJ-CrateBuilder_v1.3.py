@@ -4155,22 +4155,13 @@ class MP3DownloaderApp(tk.Tk):
             background=[("active", "#ff9633")],
             foreground=[("active", "#1a0f00")])
 
-        # Action buttons for the Activity/Debug log + Database rows.
-        # DlBtn = the primary built-in "open/view" buttons (light blue, matching
-        # the Watch List tab); SysView = "open in system viewer" (a slightly
-        # darker blue, so it reads as the secondary action on the same row).
+        # Action button for the Database row. DlBtn = the primary built-in
+        # "open/view" button (light blue, matching the Watch List tab).
         s.configure("DlBtn.TButton",
             background=WL_BLUE_DARK, foreground=TEXT,
             font=("Segoe UI", 10), relief="flat", borderwidth=0, padding=(10, 8))
         s.map("DlBtn.TButton",
             background=[("active", WL_BLUE)],
-            foreground=[("active", TEXT)])
-
-        s.configure("SysView.TButton",
-            background="#1d4ed8", foreground=TEXT,
-            font=("Segoe UI", 10), relief="flat", borderwidth=0, padding=(10, 8))
-        s.map("SysView.TButton",
-            background=[("active", WL_BLUE_DARK)],
             foreground=[("active", TEXT)])
 
         s.configure("TCheckbutton",
@@ -5113,11 +5104,19 @@ class MP3DownloaderApp(tk.Tk):
         log_row = ttk.Frame(outer)
         log_row.pack(fill="x", pady=(0, 4))
 
-        ttk.Button(log_row, text="📋  View Log", style="DlBtn.TButton",
-                   command=self._open_log_viewer).pack(side="left", padx=(0, 8))
+        tk.Button(log_row, text="📋  View Log",
+                  font=("Segoe UI", 10, "bold"),
+                  bg=SURFACE2, fg=LINK_COL,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
+                  command=self._open_log_viewer).pack(side="left", padx=(0, 8))
 
-        ttk.Button(log_row, text="↗  Open in System Viewer", style="SysView.TButton",
-                   command=self._open_log_external).pack(side="left", padx=(0, 16))
+        tk.Button(log_row, text="↗  Open in System Viewer",
+                  font=("Segoe UI", 10, "bold"),
+                  bg=SURFACE2, fg=LINK_COL,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
+                  command=self._open_log_external).pack(side="left", padx=(0, 16))
 
         # Resolved log path — click to reveal the file in the system file manager.
         self._log_path_lbl = tk.Label(
@@ -5143,11 +5142,19 @@ class MP3DownloaderApp(tk.Tk):
         dbg_row = ttk.Frame(outer)
         dbg_row.pack(fill="x", pady=(0, 4))
 
-        ttk.Button(dbg_row, text="🔍  View Log", style="DlBtn.TButton",
-                   command=self._open_debug_log_viewer).pack(side="left", padx=(0, 8))
+        tk.Button(dbg_row, text="🔍  View Log",
+                  font=("Segoe UI", 10, "bold"),
+                  bg=SURFACE2, fg=LINK_COL,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
+                  command=self._open_debug_log_viewer).pack(side="left", padx=(0, 8))
 
-        ttk.Button(dbg_row, text="↗  Open in System Viewer", style="SysView.TButton",
-                   command=self._open_debug_log_external).pack(side="left", padx=(0, 16))
+        tk.Button(dbg_row, text="↗  Open in System Viewer",
+                  font=("Segoe UI", 10, "bold"),
+                  bg=SURFACE2, fg=LINK_COL,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
+                  command=self._open_debug_log_external).pack(side="left", padx=(0, 16))
 
         self._debug_path_lbl = tk.Label(
             dbg_row, text="", font=("Segoe UI", 11, "underline"),
@@ -7879,18 +7886,18 @@ class MP3DownloaderApp(tk.Tk):
         self._wl_add_btn = tk.Button(
             toolbar, text="  +  Add Channel  ",
             font=("Segoe UI", 10, "bold"),
-            bg=WL_BLUE_DARK, fg=TEXT,
-            activebackground=WL_BLUE, activeforeground=TEXT,
-            relief="flat", bd=0, padx=10, pady=5, cursor="hand2",
+            bg=SURFACE2, fg=LINK_COL,
+            activebackground=BORDER, activeforeground=TEXT,
+            relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
             command=self._watchlist_open_add_dialog)
         self._wl_add_btn.pack(side="left", padx=(0, 6))
 
         self._wl_scan_all_btn = tk.Button(
             toolbar, text="  🔍  Scan All  ",
             font=("Segoe UI", 10, "bold"),
-            bg=SURFACE2, fg=TEXT_MED,
+            bg=SURFACE2, fg=LINK_COL,
             activebackground=BORDER, activeforeground=TEXT,
-            relief="flat", bd=0, padx=10, pady=5, cursor="hand2",
+            relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
             command=self._watchlist_scan_all)
         self._wl_scan_all_btn.pack(side="left", padx=(0, 6))
         Tooltip(self._wl_scan_all_btn,
@@ -7899,9 +7906,9 @@ class MP3DownloaderApp(tk.Tk):
         self._wl_fix_btn = tk.Button(
             toolbar, text="  🛠  Check Links  ",
             font=("Segoe UI", 10, "bold"),
-            bg=SURFACE2, fg=TEXT_MED,
+            bg=SURFACE2, fg=LINK_COL,
             activebackground=BORDER, activeforeground=TEXT,
-            relief="flat", bd=0, padx=10, pady=5, cursor="hand2",
+            relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
             command=self._watchlist_fix_broken)
         self._wl_fix_btn.pack(side="left", padx=(0, 6))
         Tooltip(self._wl_fix_btn,
@@ -7912,9 +7919,9 @@ class MP3DownloaderApp(tk.Tk):
         self._wl_dl_all_btn = tk.Button(
             toolbar, text="  ⬇  Download All New (0)  ",
             font=("Segoe UI", 10, "bold"),
-            bg=SURFACE2, fg=TEXT_MED,
+            bg=SURFACE2, fg=LINK_COL,
             activebackground=BORDER, activeforeground=TEXT,
-            relief="flat", bd=0, padx=10, pady=5, cursor="hand2",
+            relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
             command=self._watchlist_download_all_new)
         self._wl_dl_all_btn.pack(side="left", padx=(0, 6))
         Tooltip(self._wl_dl_all_btn,
