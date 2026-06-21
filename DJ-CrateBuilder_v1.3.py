@@ -6026,7 +6026,7 @@ class MP3DownloaderApp(tk.Tk):
 
         # ── GitHub link (button replaces the old plain-text URL row) ──────────
         self._github_btn = tk.Button(
-            outer, text="  ↗  View on GitHub — Updates & Releases  ",
+            outer, text="View on GitHub",
             font=("Segoe UI", 10, "bold"),
             bg=SURFACE2, fg=LINK_COL,
             activebackground=BORDER, activeforeground=TEXT,
