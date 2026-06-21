@@ -133,3 +133,151 @@ def test_build_cookie_opts_delegator(cb):
     # The monolith's _apply_cookie_opts uses the same extracted helper, so the
     # metadata / probe / download / scan cookie blocks share one source.
     assert cb.build_cookie_opts is util.build_cookie_opts
+
+
+# ── derive_collection_name ────────────────────────────────────────────────────
+def test_derive_collection_name_title_wins():
+    assert util.derive_collection_name(
+        {"title": "Real Title", "uploader": "Up", "uploader_id": "@h",
+         "channel_id": "UC1"}) == "Real Title"
+
+
+def test_derive_collection_name_falls_back_to_uploader():
+    assert util.derive_collection_name(
+        {"title": "", "uploader": "Uploader Name",
+         "uploader_id": "@h", "channel_id": "UC1"}) == "Uploader Name"
+
+
+def test_derive_collection_name_falls_back_to_handle_with_at_stripped():
+    assert util.derive_collection_name(
+        {"uploader_id": "@MyHandle", "channel_id": "UC1"}) == "MyHandle"
+
+
+def test_derive_collection_name_falls_back_to_channel_id():
+    assert util.derive_collection_name(
+        {"channel_id": "UCabc123"}) == "UCabc123"
+
+
+def test_derive_collection_name_empty_when_nothing():
+    assert util.derive_collection_name({}) == ""
+    assert util.derive_collection_name(None) == ""
+
+
+def test_derive_collection_name_strips_videos_suffix():
+    assert util.derive_collection_name(
+        {"title": "Some Channel - Videos"}) == "Some Channel"
+    # Suffix stripping applies to whichever fallback wins, not just title.
+    assert util.derive_collection_name(
+        {"uploader": "Up Chan - Videos"}) == "Up Chan"
+
+
+def test_derive_collection_name_whitespace_title_falls_back_to_uploader():
+    # A whitespace-only title must not short-circuit the chain — it should be
+    # skipped so the next usable candidate (uploader) wins.
+    assert util.derive_collection_name(
+        {"title": "   ", "uploader": "Uploader Name"}) == "Uploader Name"
+
+
+def test_derive_collection_name_returns_stripped_value():
+    assert util.derive_collection_name(
+        {"title": "  Padded Title  "}) == "Padded Title"
+
+
+# ── canonical_channel_key ─────────────────────────────────────────────────────
+def test_canonical_channel_key_collapses_forms_with_channel_id():
+    # @handle, /channel/UC…, and …/videos forms for the same channel all
+    # collapse to the same key when a UC channel_id is present.
+    key_handle = util.canonical_channel_key(
+        "https://www.youtube.com/@SomeHandle", channel_id="UCxyz")
+    key_channel = util.canonical_channel_key(
+        "https://www.youtube.com/channel/UCxyz", channel_id="UCxyz")
+    key_videos = util.canonical_channel_key(
+        "https://www.youtube.com/channel/UCxyz/videos", channel_id="UCxyz")
+    assert key_handle == key_channel == key_videos == "yt:UCxyz"
+
+
+def test_canonical_channel_key_url_normalization_without_channel_id():
+    # No channel_id -> URL is normalized: host lower-cased, www. dropped,
+    # trailing /videos etc. stripped, query/fragment/trailing slash removed.
+    base = util.canonical_channel_key(
+        "https://www.YouTube.com/@SomeHandle/videos")
+    assert base == util.canonical_channel_key(
+        "https://youtube.com/@SomeHandle/")
+    assert base == util.canonical_channel_key(
+        "http://www.youtube.com/@SomeHandle/streams?foo=bar#frag")
+    assert base.startswith("url:")
+
+
+def test_canonical_channel_key_is_total_and_deterministic():
+    # Never throws on odd input.
+    assert util.canonical_channel_key(None) == util.canonical_channel_key(None)
+    assert util.canonical_channel_key("") is not None
+    assert util.canonical_channel_key(
+        "not a url", channel_id="") is not None
+
+
+# ── find_matching_watchlist_row ───────────────────────────────────────────────
+def test_find_matching_watchlist_row_by_channel_id():
+    rows = [
+        {"url": "https://www.youtube.com/@other", "channel_id": "UCother",
+         "platform": "YouTube"},
+        {"url": "https://www.youtube.com/channel/UCabc", "channel_id": "UCabc",
+         "platform": "YouTube"},
+    ]
+    match = util.find_matching_watchlist_row(
+        rows, "https://youtube.com/@something/videos", channel_id="UCabc")
+    assert match is rows[1]
+
+
+def test_find_matching_watchlist_row_by_exact_url():
+    rows = [
+        {"url": "https://www.youtube.com/@chan", "channel_id": "",
+         "platform": "YouTube"},
+    ]
+    match = util.find_matching_watchlist_row(
+        rows, "https://www.youtube.com/@chan")
+    assert match is rows[0]
+
+
+def test_find_matching_watchlist_row_by_canonical_key_with_channel_id():
+    # Row stored under the /channel/UC… form; lookup arrives as the @handle
+    # /videos form — different URLs, same channel_id collapses them.
+    rows = [
+        {"url": "https://www.youtube.com/channel/UCabc", "channel_id": "UCabc",
+         "platform": "YouTube"},
+    ]
+    match = util.find_matching_watchlist_row(
+        rows, "https://youtube.com/@handle/videos", channel_id="UCabc")
+    assert match is rows[0]
+
+
+def test_find_matching_watchlist_row_by_canonical_key_no_channel_id():
+    # No channel_id on either side: URLs differ only by /videos + www, which
+    # the canonical key normalizes away.
+    rows = [
+        {"url": "https://www.youtube.com/@handle/videos", "channel_id": "",
+         "platform": "YouTube"},
+    ]
+    match = util.find_matching_watchlist_row(
+        rows, "https://youtube.com/@handle")
+    assert match is rows[0]
+
+
+def test_find_matching_watchlist_row_returns_none_when_nothing_matches():
+    rows = [
+        {"url": "https://www.youtube.com/@one", "channel_id": "UCone",
+         "platform": "YouTube"},
+    ]
+    assert util.find_matching_watchlist_row(
+        rows, "https://www.youtube.com/@two", channel_id="UCtwo") is None
+    assert util.find_matching_watchlist_row([], "https://x") is None
+
+
+def test_find_matching_watchlist_row_total_on_missing_keys():
+    # Rows lacking url/channel_id/platform (or being None) must not raise.
+    rows = [None, {}, {"url": "https://www.youtube.com/@chan"}]
+    match = util.find_matching_watchlist_row(
+        rows, "https://www.youtube.com/@chan")
+    assert match is rows[2]
+    assert util.find_matching_watchlist_row(
+        [None, {}], "https://nope") is None
