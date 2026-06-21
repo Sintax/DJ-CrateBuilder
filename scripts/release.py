@@ -379,6 +379,16 @@ behavior notes:
 
 
 def main(argv=None):
+    # Windows consoles default to cp1252, which can't encode the arrows/box
+    # characters in our status lines (e.g. the "→" in the --build-only message),
+    # so a trailing print would crash with UnicodeEncodeError *after* a fully
+    # successful build. Force UTF-8 on the output streams up front.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
+
     ap = argparse.ArgumentParser(
         prog="release.py",
         description=HELP_DESCRIPTION,
