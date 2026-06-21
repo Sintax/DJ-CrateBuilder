@@ -185,3 +185,51 @@ def test_delete_downloads_by_paths_empty_is_noop(tmp_path):
                     file_path="/f/a.mp3", upload_date="20240101", bitrate="192")
     assert db.delete_downloads_by_paths([]) == 0
     assert len(db.get_all_downloads()) == 1
+
+
+def test_get_watchlist_channel_by_channel_id(tmp_path):
+    db = _new_db(tmp_path)
+    db.add_watchlist_channel(
+        url="https://www.youtube.com/channel/UCmatch/videos",
+        channel_id="UCmatch", display_name="Match", platform="YouTube",
+        genre="(none)", scan_cutoff_date="20260101")
+    # A row whose channel_id is NULL must never be returned by an id lookup.
+    db.add_watchlist_channel(
+        url="https://www.youtube.com/@nullid", display_name="NullId",
+        platform="YouTube", genre="(none)", scan_cutoff_date="20260101")
+
+    row = db.get_watchlist_channel_by_channel_id("UCmatch")
+    assert row is not None
+    assert row["display_name"] == "Match"
+
+    # Missing / blank ids never match (and must not return the NULL-id row).
+    assert db.get_watchlist_channel_by_channel_id("UCnope") is None
+    assert db.get_watchlist_channel_by_channel_id("") is None
+    assert db.get_watchlist_channel_by_channel_id(None) is None
+
+
+def test_delete_blank_watchlist_channels(tmp_path):
+    db = _new_db(tmp_path)
+    db.add_watchlist_channel(
+        url="https://www.youtube.com/channel/UCnamed/videos",
+        display_name="Named", platform="YouTube", genre="(none)",
+        scan_cutoff_date="20260101")
+    # Blank-name rows: empty string and whitespace-only. These are the broken
+    # cards we want gone. (The schema is display_name TEXT NOT NULL, so a true
+    # NULL can't occur; '' and '   ' are the only blank forms to handle.)
+    blank_empty = db.add_watchlist_channel(
+        url="https://www.youtube.com/@blank1", display_name="",
+        platform="YouTube", genre="(none)", scan_cutoff_date="20260101")
+    blank_space = db.add_watchlist_channel(
+        url="https://www.youtube.com/@blank2", display_name="   ",
+        platform="YouTube", genre="(none)", scan_cutoff_date="20260101")
+    assert blank_empty is not None and blank_space is not None
+
+    removed = db.delete_blank_watchlist_channels()
+    assert removed == 2
+
+    remaining = db.get_all_watchlist_channels()
+    assert [c["display_name"] for c in remaining] == ["Named"]
+
+    # Idempotent: nothing left to delete on a second pass.
+    assert db.delete_blank_watchlist_channels() == 0

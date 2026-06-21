@@ -20,6 +20,7 @@ from cratebuilder.util import (
     interval_label_to_seconds,
     normalize_track_key, scan_folder_newest_mp3, safe_filename, push_mru,
     detect_platform, redact_ydl_opts, build_cookie_opts,
+    derive_collection_name, find_matching_watchlist_row,
 )
 from cratebuilder.sidecar import (
     channel_url_from_id, channel_id_from_url,
@@ -3378,6 +3379,9 @@ class MP3DownloaderApp(tk.Tk):
         self._apply_platform()      # paint initial platform colours
         self._check_deps_async()
 
+        # Sweep out any blank "nameless" Watch List cards left by older
+        # auto-add bugs BEFORE the list is first populated or rendered.
+        self.after(900, self._watchlist_cleanup_blank_rows)
         # First-run: auto-populate the Watch List from existing channel folders
         self.after(1200, self._watchlist_populate_from_folders)
         self.after(1600, self._reschedule_auto_download)
@@ -3425,8 +3429,11 @@ class MP3DownloaderApp(tk.Tk):
             if os.path.isdir(os.path.join(pdir, d)) and d != "_No Genre"
         )
 
-    def _resolve_save_dir(self, genre, channel_name=None, platform=None):
-        """Build the final save path:  base/Platform[/Genre[/Channel]]"""
+    def _channel_save_path(self, genre, channel_name=None, platform=None):
+        """Build the save path  base/Platform[/Genre[/Channel]]  — pure, no
+        side effects (does NOT create the directory). The path may not exist
+        on disk yet; callers that need it created should use
+        _resolve_save_dir instead."""
         parts = [self._platform_dir(platform)]
         if genre and genre != "(none)":
             parts.append(genre)
@@ -3436,7 +3443,12 @@ class MP3DownloaderApp(tk.Tk):
             safe = safe_filename(channel_name, strip=True)
             if safe:
                 parts.append(safe)
-        path = os.path.join(*parts)
+        return os.path.join(*parts)
+
+    def _resolve_save_dir(self, genre, channel_name=None, platform=None):
+        """Build the final save path:  base/Platform[/Genre[/Channel]]
+        and create it on disk."""
+        path = self._channel_save_path(genre, channel_name, platform=platform)
         os.makedirs(path, exist_ok=True)
         return path
 
@@ -7147,10 +7159,11 @@ class MP3DownloaderApp(tk.Tk):
                                 or info.get("uploader_url") or "")
             if is_collection:
                 entries = list(info.get("entries") or [])
-                collection_name = info.get("title") or info.get("uploader") or ""
-                # Strip "- Videos" suffix so the folder is just the channel name
-                if collection_name.endswith(" - Videos"):
-                    collection_name = collection_name[:-9].strip()
+                # Robust name fallback (title -> uploader -> @handle ->
+                # channel_id) so a missing title never yields a blank channel
+                # name — which would also drop downloads into the genre root
+                # with no channel subfolder. " - Videos" suffix is stripped.
+                collection_name = derive_collection_name(info)
             else:
                 entries = [info]
                 collection_name = ""
@@ -7732,7 +7745,8 @@ class MP3DownloaderApp(tk.Tk):
                     url,
                     channel_name_override or collection_name,
                     genre,
-                    _max_upload_date_this_run)
+                    _max_upload_date_this_run,
+                    channel_id=coll_channel_id)
 
             return actual_downloaded, skipped, errors
 
@@ -8153,6 +8167,7 @@ class MP3DownloaderApp(tk.Tk):
                 ("✕ Cancel", lambda c=cid: self._watchlist_cancel_card(c), True))
         card_buttons += [
             ("🔍 Scan",    lambda c=cid: self._watchlist_scan_channel(c), False),
+            ("⚡ Force",   lambda c=cid: self._watchlist_force_download(c), False),
             (f"⬇ Download New ({pending})",
                            lambda c=cid: self._watchlist_download_new(c), False),
         ]
@@ -8702,9 +8717,7 @@ class MP3DownloaderApp(tk.Tk):
                             "playlist_items": "0"}
                     with yt_dlp.YoutubeDL(opts) as ydl:
                         info = ydl.extract_info(raw_url, download=False)
-                    title = info.get("title") or info.get("uploader") or ""
-                    if title.endswith(" - Videos"):
-                        title = title[:-9].strip()
+                    title = derive_collection_name(info)
                     dlg.after(0, lambda: name_var.set(title or raw_url))
                 except Exception:
                     dlg.after(0, lambda: name_var.set(""))
@@ -8883,6 +8896,25 @@ class MP3DownloaderApp(tk.Tk):
             dlg.destroy()
             self._watchlist_resolve_dialog(cid)
 
+        def _open_folder():
+            # Compute the folder purely (no creation) and open it if present.
+            path = self._channel_save_path(
+                ch.get("genre"), ch.get("display_name"),
+                platform=ch.get("platform"))
+            if path and os.path.isdir(path):
+                try:
+                    os.startfile(path)
+                except Exception as e:
+                    messagebox.showerror(
+                        "Open Folder Failed",
+                        f"Couldn't open the folder:\n\n{e}", parent=dlg)
+            else:
+                messagebox.showinfo(
+                    "No Folder Yet",
+                    "No download folder exists for this channel yet.\n"
+                    "It's created automatically on the first download.",
+                    parent=dlg)
+
         link_btn_row = tk.Frame(outer, bg=BG)
         link_btn_row.pack(fill="x", pady=(0, 12))
         tk.Button(link_btn_row, text="  🌐 Open Link  ",
@@ -8894,7 +8926,12 @@ class MP3DownloaderApp(tk.Tk):
                   font=("Segoe UI", 9), bg=SURFACE2, fg=TEXT_DIM,
                   activebackground=BORDER, activeforeground=TEXT,
                   relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
-                  command=_edit_link).pack(side="left")
+                  command=_edit_link).pack(side="left", padx=(0, 8))
+        tk.Button(link_btn_row, text="  📂 Open Folder  ",
+                  font=("Segoe UI", 9), bg=SURFACE2, fg=TEXT_DIM,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
+                  command=_open_folder).pack(side="left")
 
         # Genre
         tk.Label(outer, text="Genre",
@@ -9225,6 +9262,66 @@ class MP3DownloaderApp(tk.Tk):
                     break
         self._run_bg(_do_all)
 
+    # ── Force a normal full download for one channel ──────────────────────────
+    def _watchlist_force_download(self, cid):
+        """Force a normal full download of a channel, exactly as if the user
+        pasted its URL into the Main tab and pressed "Download MP3's". Used when
+        a scan finds nothing (cutoff / bad yt-dlp scan data) but the user still
+        wants to pull the channel down. Runs through the standard Main-tab path
+        (NOT a watchlist=True session) so the post-download auto-add/dedup in
+        _watchlist_auto_add_if_enabled attaches the run to this card."""
+        if self._downloading:
+            messagebox.showinfo(
+                "Download in Progress",
+                "A download is already running. Wait for it to finish first.",
+                parent=self)
+            return
+
+        ch = self._db.get_watchlist_channel(cid)
+        if not ch:
+            return
+
+        # Never force-download an unresolved card — its link is a folder-name
+        # placeholder, not a real URL. Route the user to Fix Link first.
+        if is_unresolved_channel(ch):
+            messagebox.showinfo(
+                "Link Needs Fixing",
+                "This channel's link isn't resolved yet. Use 🛠 Fix Link on "
+                "the card first, then Force Download.",
+                parent=self)
+            return
+
+        platform  = ch.get("platform", "YouTube")
+        genre     = ch.get("genre", "(none)")
+        fetch_url = watch_fetch_url(platform, ch["url"])
+
+        # Bail before touching the Main tab if there's no usable URL, so a blank
+        # channel can't blank out the Main-tab fields.
+        if not fetch_url:
+            messagebox.showwarning(
+                "No URL",
+                "This channel has no usable URL to download.",
+                parent=self)
+            return
+
+        # Show it in the Main tab so the user sees exactly what is downloading.
+        self._url_var.set(fetch_url)
+        self._genre_var.set(genre)
+        self._record_url_history(fetch_url)
+        self._notebook.select(self._tab_main)
+
+        # Build a single-item batch and launch it through the SAME worker a
+        # normal Main-tab download uses. Passing the explicit run_batch to
+        # _batch_worker (rather than calling _start) means a queued batch in
+        # self._batch_urls is ignored — exactly this one channel downloads.
+        # No channel_name/override here, so _watchlist_auto_add_if_enabled runs.
+        run_batch = [{"url": fetch_url, "genre": genre, "platform": platform}]
+
+        self._begin_download_session("Preparing batch…")
+        self._set_status(f"Starting forced download of {ch['display_name']}…")
+
+        self._run_bg(self._batch_worker, run_batch)
+
     # ── Download new for one channel ──────────────────────────────────────────
     def _watchlist_download_new(self, cid):
         """Download the pending new tracks for one watched channel."""
@@ -9362,12 +9459,27 @@ class MP3DownloaderApp(tk.Tk):
         # Update just the batched cards so they show a Cancel button.
         self._watchlist_update_cards(channel_ids)
 
+    # ── Startup hygiene ────────────────────────────────────────────────────────
+    def _watchlist_cleanup_blank_rows(self):
+        """Remove any nameless Watch List cards (blank/whitespace display_name)
+        left behind by older auto-add bugs. Runs at startup before the list is
+        populated or rendered, so the user never sees a broken blank card."""
+        try:
+            removed = self._db.delete_blank_watchlist_channels()
+        except Exception as e:
+            self._dbg.error(f"WL CLEANUP | failed: {e}")
+            return
+        if removed:
+            self._dbg.info(f"WL CLEANUP | removed {removed} blank card(s)")
+
     # ── Auto-add after a normal channel download ──────────────────────────────
     def _watchlist_auto_add_if_enabled(self, url, display_name, genre,
-                                        max_upload_date):
+                                        max_upload_date, channel_id=None):
         """Called from _process_one_url after a successful collection download.
-        If auto-add is enabled, adds the channel to the watchlist (or updates
-        the cutoff if it already exists)."""
+        If auto-add is enabled, adds the channel to the watchlist — or, if the
+        channel is already tracked under ANY of its URL forms (@handle vs
+        /channel/UC… vs …/videos), updates that existing row instead of
+        creating a duplicate blank card."""
         if not self._auto_add_to_watchlist.get():
             return
 
@@ -9379,29 +9491,53 @@ class MP3DownloaderApp(tk.Tk):
         else:
             cutoff = today_yyyymmdd()
 
-        # Try to add; if duplicate, just update the cutoff
-        result = self._db.add_watchlist_channel(
-            url=url, display_name=display_name,
-            platform=self._detect_platform(url), genre=genre or "(none)",
-            scan_cutoff_date=cutoff, auto_added=True)
+        cid  = (channel_id or "").strip()
+        name = (display_name or "").strip()
+        platform = self._detect_platform(url)
 
-        if result is None:
-            # Already exists — update the cutoff if newer
-            existing = self._db.get_watchlist_channel_by_url(url)
-            if existing and cutoff > existing.get("scan_cutoff_date", ""):
-                self._db.update_watchlist_cutoff(url, cutoff)
-                self._dbg.info(
-                    f"WL AUTO-UPDATE | {display_name!r}  "
-                    f"cutoff updated to {cutoff}")
-        else:
+        # ── Find an existing row, robust to differing URL forms ──────────────
+        # (a) by canonical channel_id; (b) exact url; (c) canonical-key scan.
+        existing = find_matching_watchlist_row(
+            self._db.get_all_watchlist_channels(),
+            url, channel_id=cid, platform=platform)
+
+        if existing is not None:
+            # Update the tracked row in place — never insert a second card.
+            wl_id = existing["id"]
+            fields = {}
+            if cid and not (existing.get("channel_id") or "").strip():
+                fields["channel_id"] = cid          # backfill canonical id
+            if name and not (existing.get("display_name") or "").strip():
+                fields["display_name"] = name       # backfill blank name
+            if fields:
+                self._db.update_watchlist_channel_fields(wl_id, **fields)
+            if cutoff > (existing.get("scan_cutoff_date") or ""):
+                self._db.update_watchlist_cutoff(existing["url"], cutoff)
             self._dbg.info(
-                f"WL AUTO-ADD | {display_name!r}  cutoff={cutoff}")
-            # A brand-new channel was added on the background download worker.
-            # Marshal a structural card rebuild to the main thread so the card
-            # appears immediately instead of only after a restart. No scan is
-            # triggered here; scanning stays blocked during the download by the
-            # self._downloading guard in _auto_download_tick.
-            self.after(0, self._watchlist_refresh)
+                f"WL AUTO-UPDATE | {name or existing.get('display_name')!r}  "
+                f"cutoff={cutoff}  fields={list(fields) or 'none'}")
+            return
+
+        # ── No existing row. Never create a nameless card. ───────────────────
+        if not name:
+            self._dbg.info(
+                f"WL AUTO-ADD SKIP | blank name for {url!r} — not inserting")
+            return
+
+        result = self._db.add_watchlist_channel(
+            url=url, display_name=name,
+            platform=platform, genre=genre or "(none)",
+            scan_cutoff_date=cutoff, auto_added=True,
+            channel_id=cid or None)
+        if result is None:
+            return
+        self._dbg.info(f"WL AUTO-ADD | {name!r}  cutoff={cutoff}")
+        # A brand-new channel was added on the background download worker.
+        # Marshal a structural card rebuild to the main thread so the card
+        # appears immediately instead of only after a restart. No scan is
+        # triggered here; scanning stays blocked during the download by the
+        # self._downloading guard in _auto_download_tick.
+        self.after(0, self._watchlist_refresh)
 
     # ══════════════════════════════════════════════════════════════════════════
     # Maintenance — first-run folder import and DB rebuild from the activity log

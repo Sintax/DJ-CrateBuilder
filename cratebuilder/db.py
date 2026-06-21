@@ -374,6 +374,20 @@ class DownloadsDatabase:
         except Exception as e:
             self._log("error", f"remove_watchlist_channel failed: {e}")
 
+    def delete_blank_watchlist_channels(self):
+        """Delete watchlist rows whose display_name is NULL, empty, or only
+        whitespace — the broken "blank cards" left by older auto-add bugs.
+        Returns the number of rows removed."""
+        try:
+            with self._conn() as conn:
+                cur = conn.execute(
+                    "DELETE FROM watchlist "
+                    "WHERE display_name IS NULL OR TRIM(display_name) = ''")
+                return cur.rowcount or 0
+        except Exception as e:
+            self._log("error", f"delete_blank_watchlist_channels failed: {e}")
+            return 0
+
     def get_all_watchlist_channels(self):
         try:
             with self._conn() as conn:
@@ -405,6 +419,27 @@ class DownloadsDatabase:
                 return dict(row) if row else None
         except Exception as e:
             self._log("error", f"get_watchlist_channel_by_url failed: {e}")
+            return None
+
+    def get_watchlist_channel_by_channel_id(self, channel_id):
+        """Return the watchlist row matching a YouTube UC channel_id, or None.
+        NULL/empty channel_id rows (auto-added by URL only) are never matched,
+        so a blank lookup can't collide with them."""
+        cid = (channel_id or "").strip()
+        if not cid:
+            return None
+        try:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT * FROM watchlist "
+                    "WHERE channel_id = ? AND channel_id IS NOT NULL "
+                    "AND channel_id != ''",
+                    (cid,)
+                ).fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            self._log("error",
+                      f"get_watchlist_channel_by_channel_id failed: {e}")
             return None
 
     def get_total_pending_count(self):
