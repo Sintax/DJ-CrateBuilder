@@ -43,6 +43,7 @@ cratebuilder.db.bak-*
 # Backups & archives
 _BACKUP/
 *.zip
+docs/BACKUP icon.ico
 
 # Nightly release: local baseline for delta builds (machine-local state)
 .nightly_release_state.json
@@ -62,4 +63,4 @@ ffmpeg_essentials.zip
 
 # Internal dev scratchpad — plans/specs written during multi-phase reworks.
 # Not user docs and not required by the app; keep them out of the public repo.
-docs/superpowers/
+superpowers/
