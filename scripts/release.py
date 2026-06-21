@@ -127,6 +127,25 @@ def write_build(src, new_build):
         f.write(new_text)
 
 
+def write_readme_build(new_build):
+    """Sync the ``(Build_N)`` marker in the README H1 with the new build number.
+
+    Non-fatal: if the marker is missing (README renamed or reformatted) we warn
+    and carry on — a cosmetic mismatch must never block a release."""
+    path = os.path.join(REPO_ROOT, "README.md")
+    if not os.path.exists(path):
+        print("  [!] README.md not found — skipping build-number sync.")
+        return
+    text = open(path, encoding="utf-8").read()
+    new_text, n = re.subn(r"\(Build_\d+\)", f"(Build_{new_build})", text, count=1)
+    if n != 1:
+        print("  [!] README '(Build_N)' marker not found — skipping sync.")
+        return
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(new_text)
+    print(f"[+] README build marker -> (Build_{new_build})")
+
+
 # ── Build step (replaces build-windows.bat) ──────────────────────────────────
 def ensure_pyinstaller():
     r = subprocess.run([sys.executable, "-m", "PyInstaller", "--version"],
@@ -246,6 +265,32 @@ def gh_upload(zip_path, repo, tag):
     if res.returncode != 0:
         sys.exit(f"gh upload failed:\n{res.stderr}")
     print(f"  [+] uploaded asset to {repo} release '{tag}'.")
+    prune_old_zip_assets(repo, tag, keep=os.path.basename(zip_path))
+
+
+def prune_old_zip_assets(repo, tag, keep):
+    """Keep only the freshly uploaded ``.zip`` on the nightly release and delete
+    older payloads, so the Assets list doesn't grow without bound. Each manifest
+    references exactly one zip (the latest), so older zips are never downloaded.
+
+    Non-fatal: pruning failures warn but never abort an otherwise-good publish."""
+    res = subprocess.run(
+        ["gh", "release", "view", tag, "--repo", repo,
+         "--json", "assets", "--jq", ".assets[].name"],
+        capture_output=True, text=True)
+    if res.returncode != 0:
+        print(f"  [!] couldn't list assets to prune: {res.stderr.strip()}")
+        return
+    stale = [n for n in res.stdout.splitlines()
+             if n.strip() and n.endswith(".zip") and n != keep]
+    for name in stale:
+        d = subprocess.run(
+            ["gh", "release", "delete-asset", tag, name, "--repo", repo, "--yes"],
+            capture_output=True, text=True)
+        if d.returncode == 0:
+            print(f"  [+] pruned old nightly asset {name}.")
+        else:
+            print(f"  [!] failed to prune {name}: {d.stderr.strip()}")
 
 
 def publish_manifest(manifest_text, build, branch="nightly"):
@@ -455,14 +500,19 @@ def main(argv=None):
 
     print(f"\n=== DJ-CrateBuilder nightly  v{version}.{new_build} ===")
 
-    # 1. Bump the source so the frozen .exe reports the new build.
+    # 1. Bump the source so the frozen .exe reports the new build, and sync the
+    #    README's (Build_N) marker so the repo's front page matches the channel.
     original_src = open(src, encoding="utf-8").read()
+    readme_path = os.path.join(REPO_ROOT, "README.md")
+    original_readme = (open(readme_path, encoding="utf-8").read()
+                       if os.path.exists(readme_path) else None)
     if new_build != current_build:
         write_build(src, new_build)
         print(f"[+] APP_BUILD: {current_build} -> {new_build}")
+        write_readme_build(new_build)
 
-    # 2. Build (restore the source bump if the build fails, so re-runs don't skip
-    #    a build number).
+    # 2. Build (restore the source + README bumps if the build fails, so re-runs
+    #    don't skip a build number).
     dist_abs = os.path.join(REPO_ROOT, DIST_DIR)
     if not args.no_build:
         try:
@@ -470,6 +520,9 @@ def main(argv=None):
         except SystemExit:
             with open(src, "w", encoding="utf-8") as f:
                 f.write(original_src)
+            if original_readme is not None:
+                with open(readme_path, "w", encoding="utf-8") as f:
+                    f.write(original_readme)
             print("[!] build failed — reverted the APP_BUILD bump.")
             raise
     if not os.path.isdir(dist_abs):
