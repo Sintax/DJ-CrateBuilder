@@ -1,7 +1,8 @@
 {
   "version": "1.3",
-  "build": 2,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.2.zip",
-  "sha256": "b7ad99eaf8b640d8a7c6a9d8663abe7f7527d3ab76bc0f7c511cbb87f5cdafbe",
-  "notes": "First nightly update test"
+  "build": 4,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.4.zip",
+  "sha256": "712dcdba875418beb5c1e552dabd39b29e305f87d032f8781e553fbc890b7e83",
+  "notes": "Fix blank duplicate Watch List cards; add per-channel Force Download and Open Folder buttons.",
+  "base": 4
 }
