@@ -31,10 +31,16 @@ DEFAULT_MANIFEST = """\
 
 
 def git(*args, stdin=None, check=True):
-    r = subprocess.run(["git", *args], capture_output=True, text=True, input=stdin)
+    # Pipe stdin as bytes (NOT text mode) so Python doesn't translate \n -> \r\n
+    # on Windows. Git plumbing commands like `mktree` parse tab-/newline-
+    # delimited records strictly: a stray \r becomes part of the filename and
+    # silently produces a tree like "update.json\r".
+    input_bytes = stdin.encode("utf-8") if isinstance(stdin, str) else stdin
+    r = subprocess.run(["git", *args], capture_output=True, input=input_bytes)
     if check and r.returncode != 0:
-        sys.exit(f"git {' '.join(args)} failed:\n{r.stderr.strip()}")
-    return r.stdout.strip()
+        err = r.stderr.decode("utf-8", "replace").strip()
+        sys.exit(f"git {' '.join(args)} failed:\n{err}")
+    return r.stdout.decode("utf-8", "replace").strip()
 
 
 def main(argv=None):
@@ -70,10 +76,15 @@ def main(argv=None):
         ans = input("Push `nightly` to origin now? [y/N]: ").strip().lower()
         do_push = ans in ("y", "yes")
     if do_push:
-        git("push", "-u", "origin", "nightly")
+        # Full refspec on both sides — `gh release create nightly` creates a
+        # git tag of the same name, and `git push origin nightly` then errors
+        # with "src refspec nightly matches more than one".
+        git("push", "origin", "refs/heads/nightly:refs/heads/nightly")
+        git("branch", "--set-upstream-to=origin/nightly", "nightly")
         print("Pushed origin/nightly. The update channel is live.")
     else:
-        print("Not pushed. When ready:  git push -u origin nightly")
+        print("Not pushed. When ready:  "
+              "git push origin refs/heads/nightly:refs/heads/nightly")
     return 0
 
 

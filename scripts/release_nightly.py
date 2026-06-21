@@ -76,10 +76,16 @@ def zip_dist(dist_dir, zip_path):
 
 
 def _git(*args, stdin=None, check=True):
-    r = subprocess.run(["git", *args], capture_output=True, text=True, input=stdin)
+    # Pipe stdin as bytes (NOT text mode) so Python doesn't translate \n -> \r\n
+    # on Windows. Git plumbing commands like `mktree` parse tab-/newline-
+    # delimited records strictly: a stray \r becomes part of the filename and
+    # silently produces a tree like "update.json\r".
+    input_bytes = stdin.encode("utf-8") if isinstance(stdin, str) else stdin
+    r = subprocess.run(["git", *args], capture_output=True, input=input_bytes)
     if check and r.returncode != 0:
-        sys.exit(f"git {' '.join(args)} failed:\n{r.stderr.strip()}")
-    return r.stdout.strip()
+        err = r.stderr.decode("utf-8", "replace").strip()
+        sys.exit(f"git {' '.join(args)} failed:\n{err}")
+    return r.stdout.decode("utf-8", "replace").strip()
 
 
 def publish_manifest(manifest_text, build, branch="nightly"):
@@ -89,9 +95,14 @@ def publish_manifest(manifest_text, build, branch="nightly"):
     the new manifest, commit it on top, and push the ref. Your checkout and
     current branch are never switched or modified.
     """
-    _git("fetch", "origin", branch)
+    # Fetch the branch explicitly into refs/remotes/origin/<branch> and resolve
+    # via that ref — NOT FETCH_HEAD. The `gh release create nightly` step also
+    # creates a git tag called `nightly`, and FETCH_HEAD silently resolves to
+    # the tag instead of the branch when both names collide, which makes the
+    # subsequent push non-fast-forward.
+    _git("fetch", "origin", f"refs/heads/{branch}:refs/remotes/origin/{branch}")
     try:
-        parent = _git("rev-parse", "FETCH_HEAD")
+        parent = _git("rev-parse", f"refs/remotes/origin/{branch}")
     except SystemExit:
         sys.exit(f"Couldn't find origin/{branch}. Run init_nightly.py first.")
     blob = _git("hash-object", "-w", "--stdin", stdin=manifest_text)
