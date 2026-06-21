@@ -80,7 +80,7 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 <a name="installation"></a>
 
 ## Installation&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
-
+## &nbsp;&nbsp;
 ### Windows Installer
 
 Download the latest installer from the [Releases](https://github.com/Sintax/DJ-CrateBuilder/releases) page. The installer bundles Python, yt-dlp, and FFmpeg — no additional setup required.
