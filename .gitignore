@@ -44,6 +44,9 @@ cratebuilder.db.bak-*
 _BACKUP/
 *.zip
 docs/BACKUP icon.ico
+# Personal copy of the installer .iss with user-specific absolute paths.
+# Brackets escaped — gitignore treats [...] as a glob character class otherwise.
+docs/DJ-CrateBuilder_Installer_Windows \[CUSTOMIZED\].iss
 
 # Nightly release: local baseline for delta builds (machine-local state)
 .nightly_release_state.json
