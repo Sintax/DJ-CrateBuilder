@@ -6,6 +6,7 @@ import json
 import os
 import re
 import time
+import urllib.parse
 from datetime import datetime, date, timedelta
 
 def detect_platform(url):
@@ -13,6 +14,101 @@ def detect_platform(url):
     if url and re.search(r"soundcloud\.com", url, re.IGNORECASE):
         return "SoundCloud"
     return "YouTube"
+
+
+def derive_collection_name(info):
+    """Pick the channel/collection display name from a yt-dlp info dict.
+
+    Fallback order: title -> uploader -> uploader_id/handle (leading '@'
+    stripped) -> channel_id -> "". Each candidate is stripped and skipped when
+    empty or whitespace-only, so a blank/whitespace title falls through to the
+    next usable value. The legacy " - Videos" suffix is stripped from whichever
+    candidate wins so the folder is just the channel name. Never raises;
+    returns "" when the dict carries no usable name."""
+    info = info or {}
+    candidates = (
+        info.get("title"),
+        info.get("uploader"),
+        (info.get("uploader_id") or "").lstrip("@"),
+        info.get("channel_id"),
+    )
+    name = ""
+    for cand in candidates:
+        cand = (cand or "").strip()
+        if cand:
+            name = cand
+            break
+    if name.endswith(" - Videos"):
+        name = name[:-len(" - Videos")].strip()
+    return name
+
+
+def canonical_channel_key(url, channel_id=None, platform=None):
+    """Return a stable identity string for matching a channel across the
+    different URL forms yt-dlp may report for it (@handle, /channel/UC…,
+    …/videos, …/streams, etc.).
+
+    When a YouTube UC channel_id is present it dominates: every form of the
+    same channel collapses to "yt:<channel_id>". Otherwise the URL is
+    normalised — host lower-cased, leading "www." dropped, query/fragment and
+    trailing slash removed, and trailing collection path segments
+    (/videos, /streams, /featured, /playlists) stripped — yielding
+    "url:<normalized>". Deterministic and total: never raises."""
+    cid = (channel_id or "").strip()
+    if cid:
+        return f"yt:{cid}"
+
+    raw = (url or "").strip()
+    if not raw:
+        return "url:"
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+        host = (parsed.netloc or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
+        path = (parsed.path or "").rstrip("/")
+        for seg in ("/videos", "/streams", "/featured", "/playlists"):
+            if path.lower().endswith(seg):
+                path = path[:-len(seg)]
+                break
+        norm = (host + path) if host else (path or raw)
+        return f"url:{norm.rstrip('/').lower()}"
+    except Exception:
+        return f"url:{raw.lower()}"
+
+
+def find_matching_watchlist_row(rows, url, channel_id=None, platform=None):
+    """Return the first row in *rows* that identifies the same channel as the
+    given (url, channel_id, platform), or None.
+
+    Match priority (each tier scanned across all rows before the next):
+    (a) a non-empty row channel_id equal to the argument's channel_id;
+    (b) exact url equality; (c) canonical_channel_key parity (which collapses
+    the different URL forms of one channel). *rows* is an iterable of dicts each
+    carrying at least 'url', 'channel_id', 'platform'. Total: never raises on
+    missing keys."""
+    rows = list(rows or ())
+    cid = (channel_id or "").strip()
+
+    if cid:
+        for row in rows:
+            if ((row or {}).get("channel_id") or "").strip() == cid:
+                return row
+
+    for row in rows:
+        if (row or {}).get("url") == url:
+            return row
+
+    want_key = canonical_channel_key(url, channel_id=cid, platform=platform)
+    for row in rows:
+        row = row or {}
+        row_key = canonical_channel_key(
+            row.get("url"), channel_id=row.get("channel_id"),
+            platform=row.get("platform"))
+        if row_key == want_key:
+            return row
+
+    return None
 
 
 # ── Config persistence ────────────────────────────────────────────────────────
