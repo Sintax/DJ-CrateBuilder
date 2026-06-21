@@ -5899,6 +5899,13 @@ class MP3DownloaderApp(tk.Tk):
         bar.pack(padx=20, pady=(0, 18))
         dlg.update_idletasks()
 
+        # Center on the main window (so it lands on whatever monitor the app
+        # is on) instead of the OS default top-left.
+        w, h = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        px = self.winfo_x() + (self.winfo_width()  - w) // 2
+        py = self.winfo_y() + (self.winfo_height() - h) // 2
+        dlg.geometry(f"+{max(0, px)}+{max(0, py)}")
+
         def set_status(text):
             self.after(0, status_var.set, text)
 
