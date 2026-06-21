@@ -30,6 +30,7 @@ from cratebuilder.db import DownloadsDatabase
 from cratebuilder.cleanup import (
     is_scan_trustworthy, classify_local_files, partition_trash)
 from cratebuilder import startup as cb_startup
+from cratebuilder import updater_core as ucore
 from cratebuilder.singleton import acquire_single_instance, SINGLE_INSTANCE_PORT
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -37,16 +38,29 @@ from cratebuilder.singleton import acquire_single_instance, SINGLE_INSTANCE_PORT
 # ══════════════════════════════════════════════════════════════════════════════
 APP_NAME    = "DJ-CrateBuilder"
 APP_VERSION = "1.3"
+# Nightly build number. The display version stays pinned at APP_VERSION; only
+# this integer increments for small in-place updates. Bump it for every build
+# you publish to the nightly channel (see scripts/release_nightly.py).
+APP_BUILD   = 1
 
 ABOUT_CREATED_BY  = "CorruptSintax@Gmail.com"
 ABOUT_DESCRIPTION = "Vibe-Coded entirely with Claude-AI"
 GITHUB_URL        = "https://github.com/Sintax/DJ-CrateBuilder"
 GITHUB_ISSUES_URL = "https://github.com/Sintax/DJ-CrateBuilder/issues/new"
+# Raw manifest for the in-app updater. Lives on a dedicated `nightly` branch so
+# `main` and the tagged v1.3 release are never touched by a nightly push.
+UPDATE_MANIFEST_URL = (
+    "https://raw.githubusercontent.com/Sintax/DJ-CrateBuilder/"
+    "nightly/update.json"
+)
+
+# Full version string shown to the user, e.g. "1.3.1".
+APP_VERSION_FULL = f"{APP_VERSION}.{APP_BUILD}"
 
 # ── Add or remove lines below to customize the About tab content. ──────────
 # ── Each tuple is  ("Label", "Value")  and will display as a row. ──────────
 ABOUT_FIELDS = [
-    ("Application",  f"{APP_NAME}  v{APP_VERSION}"),
+    ("Application",  f"{APP_NAME}  v{APP_VERSION_FULL}"),
     ("Created by",   ABOUT_CREATED_BY),
     ("Built with",   ABOUT_DESCRIPTION),
 ]
@@ -3237,7 +3251,7 @@ class MP3DownloaderApp(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title(f"{APP_NAME}  v{APP_VERSION}")
+        self.title(f"{APP_NAME}  v{APP_VERSION_FULL}")
         self.geometry("850x950")
         self.minsize(640, 620)
         self.configure(bg=BG)
@@ -3471,7 +3485,7 @@ class MP3DownloaderApp(tk.Tk):
         self._dbg = dbg
         self._dbg_fh = dfh
         self._dbg.info("═" * 80)
-        self._dbg.info(f"SESSION START  —  {APP_NAME} v{APP_VERSION}")
+        self._dbg.info(f"SESSION START  —  {APP_NAME} v{APP_VERSION_FULL}")
         self._dbg.info(f"Platform: {sys.platform}  |  Python: {sys.version.split()[0]}")
         try:
             import yt_dlp
@@ -5732,6 +5746,236 @@ class MP3DownloaderApp(tk.Tk):
         save_config(cfg)
 
     # ══════════════════════════════════════════════════════════════════════════
+    # Self-update — nightly build channel (logic in cratebuilder/updater_core.py)
+    # ══════════════════════════════════════════════════════════════════════════
+    # Shown FIRST, before any download begins, every time an update is applied.
+    _AV_WARNING = (
+        "Heads-up: Windows Defender or your antivirus may flag this update.\n\n"
+        "DJ-CrateBuilder is not code-signed (signing certificates are costly for "
+        "a small project), so Windows can show a false-positive warning when the "
+        "updater downloads files and replaces the app. This is expected and safe:\n\n"
+        "  •  The update comes straight from the official GitHub repository.\n"
+        "  •  Its download is verified with a SHA-256 checksum before anything is "
+        "installed.\n\n"
+        "If Windows or your antivirus blocks the update, choose \"Run anyway\" / "
+        "allow DJ-CrateBuilder, or update manually from the GitHub Releases page.\n\n"
+        "Continue with the update?"
+    )
+
+    def _set_update_status(self, text):
+        """Update the About-tab status label if it has been built yet."""
+        var = getattr(self, "_update_status_var", None)
+        if var is not None:
+            var.set(text)
+
+    def _on_check_updates_clicked(self):
+        """Manual 'Check for updates' button — always reports the outcome."""
+        btn = getattr(self, "_update_btn", None)
+        if btn is not None:
+            btn.config(state="disabled")
+        self._set_update_status("Checking for updates…")
+        threading.Thread(target=self._check_updates_worker,
+                         args=(True,), daemon=True).start()
+
+    def _auto_check_for_updates(self):
+        """Throttled silent check on launch (at most once every 6 hours)."""
+        try:
+            last = float(load_config().get("last_update_check", 0) or 0)
+        except (TypeError, ValueError):
+            last = 0.0
+        if time.time() - last < 6 * 3600:
+            return
+        threading.Thread(target=self._check_updates_worker,
+                         args=(False,), daemon=True).start()
+
+    def _check_updates_worker(self, manual):
+        """Background thread: fetch the manifest, then marshal back to the UI."""
+        manifest = ucore.fetch_manifest(UPDATE_MANIFEST_URL)
+        try:
+            cfg = load_config()
+            cfg["last_update_check"] = time.time()
+            save_config(cfg)
+        except Exception:
+            pass
+        self.after(0, lambda: self._on_check_result(manifest, manual))
+
+    def _on_check_result(self, manifest, manual):
+        """UI thread: interpret the manifest and react."""
+        btn = getattr(self, "_update_btn", None)
+        if btn is not None:
+            btn.config(state="normal")
+
+        if manifest is None:
+            self._set_update_status("Couldn't reach the update server.")
+            if manual:
+                messagebox.showinfo(
+                    "Check for updates",
+                    "Couldn't reach the update server. Check your internet "
+                    "connection and try again.", parent=self)
+            return
+
+        ok, _reason = ucore.validate_manifest(manifest)
+        if not ok:
+            self._set_update_status("Update info unavailable.")
+            if manual:
+                messagebox.showinfo(
+                    "Check for updates",
+                    "The update information looks invalid right now. Please try "
+                    "again later.", parent=self)
+            return
+
+        if not ucore.is_update_available(manifest, APP_BUILD):
+            self._set_update_status(f"You're on the latest build ({APP_BUILD}).")
+            if manual:
+                messagebox.showinfo(
+                    "Check for updates",
+                    f"You're already on the latest build ({APP_BUILD}).",
+                    parent=self)
+            return
+
+        build = int(manifest["build"])
+        self._set_update_status(f"Update available: build {build}.")
+        self._prompt_and_update(manifest, build)
+
+    def _prompt_and_update(self, manifest, build):
+        """Offer the update, then (if accepted) show the AV note and apply."""
+        # Running from source: there's no installed exe to swap.
+        if not ucore.is_frozen():
+            messagebox.showinfo(
+                "Update available",
+                f"Build {build} is available, but you're running from source.\n\n"
+                "Update with git (pull the latest) instead of the in-app updater.",
+                parent=self)
+            return
+
+        notes = str(manifest.get("notes", "")).strip()
+        note_line = f"\n\nWhat's new:\n{notes}" if notes else ""
+        if not messagebox.askyesno(
+                "Update available",
+                f"A newer build is available (build {build}; you have "
+                f"{APP_BUILD}).{note_line}\n\nDownload and install it now?",
+                parent=self):
+            self._set_update_status(f"Update available: build {build}.")
+            return
+
+        # Antivirus / Defender false-positive warning — FIRST, pre-download.
+        if not messagebox.askokcancel(
+                "Before updating — antivirus note", self._AV_WARNING,
+                icon="warning", parent=self):
+            self._set_update_status("Update canceled.")
+            return
+
+        self._run_update(manifest, build)
+
+    def _run_update(self, manifest, build):
+        """Download + verify + stage in a worker, with a small progress dialog."""
+        ws = ucore.default_workspace()
+        ucore.purge_dir(ws)
+        os.makedirs(ws, exist_ok=True)
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Updating DJ-CrateBuilder")
+        dlg.transient(self)
+        dlg.resizable(False, False)
+        dlg.configure(bg=BG)
+        dlg.protocol("WM_DELETE_WINDOW", lambda: None)   # no close mid-update
+        status_var = tk.StringVar(value="Starting download…")
+        tk.Label(dlg, textvariable=status_var, font=("Segoe UI", 11),
+                 fg=TEXT, bg=BG, anchor="w", width=44, justify="left"
+                 ).pack(padx=20, pady=(18, 8), anchor="w")
+        bar = ttk.Progressbar(dlg, length=320, mode="determinate", maximum=100)
+        bar.pack(padx=20, pady=(0, 18))
+        dlg.update_idletasks()
+
+        def set_status(text):
+            self.after(0, status_var.set, text)
+
+        def set_pct(pct):
+            self.after(0, lambda: bar.config(value=pct))
+
+        def worker():
+            try:
+                zip_path = os.path.join(ws, f"build-{build}.zip")
+
+                def prog(done, total):
+                    if total:
+                        set_pct(done * 100 // total)
+                        set_status(f"Downloading build {build}… "
+                                   f"{done // 1048576} / {total // 1048576} MB")
+                    else:
+                        set_status(f"Downloading build {build}… "
+                                   f"{done // 1048576} MB")
+
+                ucore.download(manifest["url"], zip_path, progress_cb=prog)
+
+                set_status("Verifying download…")
+                if not ucore.verify_sha256(zip_path, manifest["sha256"]):
+                    raise ValueError(
+                        "checksum mismatch — the download may be corrupt")
+
+                set_status("Preparing files…")
+                staged = os.path.join(ws, "staged")
+                ucore.purge_dir(staged)
+                ucore.extract_zip(zip_path, staged)
+
+                self.after(0, lambda: self._launch_updater_and_quit(
+                    dlg, staged, ws))
+            except Exception as exc:   # noqa: BLE001 — report and recover
+                self.after(0, lambda: self._update_failed(dlg, exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _update_failed(self, dlg, exc):
+        """Close the progress dialog and tell the user the update didn't apply."""
+        try:
+            dlg.destroy()
+        except Exception:
+            pass
+        self._set_update_status("Update failed — still on build "
+                                f"{APP_BUILD}.")
+        messagebox.showerror(
+            "Update failed",
+            f"The update couldn't be installed:\n\n{exc}\n\n"
+            "Your current version is unchanged. You can try again later or "
+            "download the latest build from GitHub.", parent=self)
+
+    def _launch_updater_and_quit(self, dlg, staged, ws):
+        """Hand off to the separate updater process, then fully exit."""
+        app_dir = ucore.install_dir()
+        app_exe = sys.executable
+        backup = os.path.join(ws, "backup")
+        log = os.path.join(ws, "update.log")
+
+        updater_exe = os.path.join(app_dir, "updater.exe")
+        if os.path.exists(updater_exe):
+            cmd = [updater_exe]
+        else:
+            # Dev fallback (running from source): drive updater.py with Python.
+            cmd = [sys.executable, os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "updater.py")]
+
+        cmd += ["--pid", str(os.getpid()), "--src", staged, "--dst", app_dir,
+                "--relaunch", app_exe, "--backup", backup, "--log", log]
+
+        flags = 0
+        if os.name == "nt":
+            flags = 0x00000008 | 0x00000200  # DETACHED | NEW_PROCESS_GROUP
+        try:
+            subprocess.Popen(cmd, close_fds=True, creationflags=flags,
+                             cwd=app_dir)
+        except OSError as exc:
+            self._update_failed(dlg, exc)
+            return
+
+        try:
+            dlg.destroy()
+        except Exception:
+            pass
+        # Fully exit so the updater can replace the (now-unlocked) files and
+        # the single-instance lock is released before it relaunches us.
+        self._quit_app()
+
+    # ══════════════════════════════════════════════════════════════════════════
     # About tab — version info, FAQ, and the log-viewer / folder launchers
     # ══════════════════════════════════════════════════════════════════════════
     def _build_about_tab(self, parent):
@@ -5745,7 +5989,7 @@ class MP3DownloaderApp(tk.Tk):
 
         # ── App title + version ───────────────────────────────────────────────
         ttk.Label(outer,
-                  text=f"{APP_NAME}  v{APP_VERSION}",
+                  text=f"{APP_NAME}  v{APP_VERSION_FULL}",
                   style="Title.TLabel").pack(anchor="w", pady=(0, 20))
 
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(0, 24))
@@ -5773,6 +6017,26 @@ class MP3DownloaderApp(tk.Tk):
         Tooltip(self._github_btn,
                 "Opens the DJ-CrateBuilder GitHub page in your browser. "
                 "Check here for the latest releases and update notes.")
+
+        # ── Updates (nightly build channel) ───────────────────────────────────
+        self._update_status_var = tk.StringVar(
+            value=f"You're on build {APP_BUILD}.")
+        upd_row = ttk.Frame(outer)
+        upd_row.pack(fill="x", pady=(14, 0))
+        self._update_btn = tk.Button(
+            upd_row, text="  ⟳  Check for updates  ",
+            font=("Segoe UI", 10, "bold"),
+            bg=SURFACE2, fg=LINK_COL,
+            activebackground=BORDER, activeforeground=TEXT,
+            relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
+            command=self._on_check_updates_clicked)
+        self._update_btn.pack(side="left")
+        tk.Label(upd_row, textvariable=self._update_status_var,
+                 font=("Segoe UI", 10), fg=TEXT_MED, bg=BG, anchor="w"
+                 ).pack(side="left", padx=(10, 0))
+        Tooltip(self._update_btn,
+                "Checks GitHub for a newer nightly build and, if one exists, "
+                "downloads and installs it (the app restarts to finish).")
 
         # ── Bug-report note + Submit Issues button ────────────────────────────
         tk.Label(outer,
@@ -6280,7 +6544,7 @@ class MP3DownloaderApp(tk.Tk):
         s.map("TEntry",
             bordercolor=[("focus", YT_RED), ("!focus", BORDER)],
             lightcolor=[("focus", YT_RED),  ("!focus", BORDER)])
-        self.title(f"{APP_NAME}  v{APP_VERSION}")
+        self.title(f"{APP_NAME}  v{APP_VERSION_FULL}")
         self._refresh_genre_list()
 
     # ── URL placeholder ───────────────────────────────────────────────────────
@@ -9305,4 +9569,9 @@ if __name__ == "__main__":
         sys.exit(0)
     app = MP3DownloaderApp()
     app._instance_lock = _instance_lock
+    # Purge any leftover update workspace from a prior update (e.g. the old
+    # updater image that couldn't delete itself while running), then schedule a
+    # throttled background update check once the UI has settled.
+    ucore.purge_dir(ucore.default_workspace())
+    app.after(3000, app._auto_check_for_updates)
     app.mainloop()
