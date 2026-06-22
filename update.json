@@ -1,8 +1,8 @@
 {
   "version": "1.3",
-  "build": 8,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.8.zip",
-  "sha256": "215b11e5392e4dc85fb5074fc9a37ff50b09c1b7f440edb140649bc101e61e60",
-  "notes": "Cold-boot Watch List scan fix, themed SoundCloud link dialog, About tab redesign, and automatic check-for-updates on launch.",
+  "build": 9,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.9.zip",
+  "sha256": "138d910f4a2fb838878edd44366c87f8f5b8bdb2590b6a3f493530cd9230b0f6",
+  "notes": "About-tab copy fix; internal: added CLAUDE.md and hardened the /build-update release skill.",
   "base": 5
 }
