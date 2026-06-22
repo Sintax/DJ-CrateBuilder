@@ -220,6 +220,106 @@ def interval_label_to_seconds(value):
         return None
 
 
+# SoundCloud routes that are site structure, not artist profiles. The first
+# path segment of a soundcloud.com URL is the artist handle UNLESS it is one of
+# these reserved words.
+SC_RESERVED_ROUTES = frozenset({
+    "search", "discover", "stream", "you", "upload", "settings", "pro",
+    "tags", "popular", "charts", "people", "mobile", "pages", "jobs",
+    "imprint", "community-guidelines", "terms-of-use", "notifications",
+    "messages", "library", "feed", "stations", "tracks", "albums", "sets",
+    "reposts", "comments", "likes", "following", "followers", "embed",
+})
+
+
+def soundcloud_profile_handle(url):
+    """Reduce any soundcloud.com URL (a bare profile, a track, a /sets/ link,
+    etc.) to the artist handle in its first path segment, or None when the URL
+    is not a soundcloud.com URL or points at a reserved site route rather than
+    an artist. Lower-cased so the same artist from different URL forms collapses
+    to one identity. Never raises."""
+    try:
+        parsed = urllib.parse.urlparse((url or "").strip())
+    except (ValueError, AttributeError):
+        return None
+    host = (parsed.netloc or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if host not in ("soundcloud.com", "m.soundcloud.com", "on.soundcloud.com"):
+        return None
+    parts = [p for p in (parsed.path or "").split("/") if p]
+    if not parts:
+        return None
+    handle = parts[0].lower()
+    if handle in SC_RESERVED_ROUTES:
+        return None
+    return handle
+
+
+def merge_soundcloud_candidates(track_hits, web_hits, max_results=8):
+    """Combine artist-profile candidates from a yt-dlp track search and an
+    invisible web search into one deduped, ranked list.
+
+    Each input is a list of dicts carrying at least a 'url' (and optionally a
+    'title'). Both URL forms (track URLs from the audio search, profile/result
+    URLs from the web search) are reduced to the artist handle via
+    ``soundcloud_profile_handle`` and merged on that handle. A profile surfaced
+    by BOTH sources is the strongest signal and ranks first; track-only next;
+    web-only last. First-seen order is preserved within each rank tier.
+
+    Returns up to ``max_results`` dicts:
+        {handle, url, title, sources: [..], confidence: 'both'|'tracks'|'web'}
+    """
+    order = []          # handles in first-seen order
+    by_handle = {}
+
+    def _add(hit, source):
+        url = (hit.get("url") or "").strip() if isinstance(hit, dict) else ""
+        handle = soundcloud_profile_handle(url)
+        if not handle:
+            return
+        rec = by_handle.get(handle)
+        if rec is None:
+            rec = {"handle": handle,
+                   "url": f"https://soundcloud.com/{handle}",
+                   "title": handle, "sources": set()}
+            by_handle[handle] = rec
+            order.append(handle)
+        rec["sources"].add(source)
+        # Prefer a real human title. Track hits carry the cleanest artist name;
+        # otherwise take any non-empty title over the bare handle.
+        title = (hit.get("title") or "").strip()
+        if title and (rec["title"] == handle or source == "tracks"):
+            rec["title"] = title
+
+    for hit in track_hits or []:
+        _add(hit, "tracks")
+    for hit in web_hits or []:
+        _add(hit, "web")
+
+    def _rank(handle):
+        s = by_handle[handle]["sources"]
+        if "tracks" in s and "web" in s:
+            return 0
+        if "tracks" in s:
+            return 1
+        return 2
+
+    ranked = sorted(order, key=_rank)   # stable → preserves first-seen order
+    out = []
+    for handle in ranked[:max_results]:
+        rec = by_handle[handle]
+        srcs = sorted(rec["sources"])
+        out.append({
+            "handle": rec["handle"],
+            "url": rec["url"],
+            "title": rec["title"],
+            "sources": srcs,
+            "confidence": "both" if len(srcs) == 2 else srcs[0],
+        })
+    return out
+
+
 def scan_folder_newest_mp3(folder):
     if not folder or not os.path.isdir(folder):
         return 0, None

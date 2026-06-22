@@ -11,6 +11,7 @@ import logging
 import time
 import webbrowser
 import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta, date
 
 from cratebuilder.util import (
@@ -21,6 +22,7 @@ from cratebuilder.util import (
     normalize_track_key, scan_folder_newest_mp3, safe_filename, push_mru,
     detect_platform, redact_ydl_opts, build_cookie_opts,
     derive_collection_name, find_matching_watchlist_row,
+    soundcloud_profile_handle, merge_soundcloud_candidates,
 )
 from cratebuilder.sidecar import (
     channel_url_from_id, channel_id_from_url,
@@ -123,6 +125,9 @@ SC_DARK   = "#cc4400"
 # Watch List accent
 WL_BLUE      = "#60a5fa"   # light blue accent (icons, status, hover)
 WL_BLUE_DARK = "#2563eb"   # darker blue fill for buttons (carries white text)
+# Dark maroon for the global Cancel button while it's idle (nothing to cancel),
+# so the control reads as "armed but inactive" rather than a plain grey button.
+WL_CANCEL_IDLE = "#5e1414"
 
 # ── Platform config ───────────────────────────────────────────────────────────
 PLATFORMS = {
@@ -245,6 +250,10 @@ DEFAULT_BASE = os.path.join(os.path.expanduser("~"), "Music", "DJ-CrateBuilder")
 # is '<integer> <unit>' (hours/days/week), parsed by interval_label_to_seconds.
 AUTO_DOWNLOAD_OPTIONS = ["Off", "6 hours", "12 hours", "1 day", "2 days",
                          "3 days", "1 week"]
+
+# How often the app silently re-checks GitHub for a newer nightly build. Shown
+# in the About-tab dropdown; each label parses via interval_label_to_seconds.
+UPDATE_CHECK_OPTIONS = ["1 hour", "3 hours", "6 hours", "12 hours", "1 day"]
 
 # Sentinel URL prefix stored for Watch List channels whose canonical YouTube
 # /channel/UC… URL isn't known yet (e.g. imported from a folder name). Such
@@ -665,6 +674,12 @@ class LogViewerWindow(_BaseLogViewerWindow):
                  fg=TEXT_DIM, bg=SURFACE2).pack(side="left", padx=(12, 6), pady=8)
 
         self._filter_btns = {}
+        _filter_tips = {
+            "All":        "Show every log entry.",
+            "Downloaded": "Show only successfully downloaded tracks.",
+            "Skipped":    "Show only tracks that were skipped.",
+            "Errors":     "Show only entries that failed with an error.",
+        }
         for opt in FILTER_OPTIONS:
             b = tk.Button(
                 toolbar, text=opt,
@@ -673,6 +688,7 @@ class LogViewerWindow(_BaseLogViewerWindow):
                 command=lambda o=opt: self._set_filter(o))
             b.pack(side="left", padx=2, pady=6)
             self._filter_btns[opt] = b
+            Tooltip(b, _filter_tips.get(opt, opt))
         self._paint_filter_btns()
 
         # Separator
@@ -689,6 +705,7 @@ class LogViewerWindow(_BaseLogViewerWindow):
             activebackground=BORDER, activeforeground=TEXT,
             command=self._toggle_wrap)
         self._wrap_btn.pack(side="left", padx=2, pady=6)
+        Tooltip(self._wrap_btn, "Toggle line wrapping for long entries.")
 
         # Separator
         tk.Frame(toolbar, width=1, bg=BORDER).pack(side="left", fill="y",
@@ -715,20 +732,33 @@ class LogViewerWindow(_BaseLogViewerWindow):
         self._prev_btn = self._tb_btn(search_frame, "▲", self._find_prev)
         self._next_btn = self._tb_btn(search_frame, "▼", self._find_next)
         self._clear_btn= self._tb_btn(search_frame, "✕", self._clear_search)
+        Tooltip(self._prev_btn,  "Jump to the previous search match.")
+        Tooltip(self._next_btn,  "Jump to the next search match.")
+        Tooltip(self._clear_btn, "Clear the search and its highlights.")
 
         self._match_lbl = tk.Label(search_frame, text="", font=("Segoe UI", 8),
                                    fg=TEXT_DIM, bg=SURFACE2, width=10)
         self._match_lbl.pack(side="left", padx=(4, 0))
 
         # Right cluster: action buttons
-        self._tb_btn(toolbar, "↗  System Viewer", self._open_external,
-                     side="right", padx=(0,10))
+        _sysview_btn = self._tb_btn(toolbar, "↗  System Viewer",
+                                    self._open_external,
+                                    side="right", padx=(0,10))
+        Tooltip(_sysview_btn, "Open this log in your default text editor.")
         tk.Frame(toolbar, width=1, bg=BORDER).pack(side="right", fill="y",
                                                     padx=2, pady=6)
-        self._tb_btn(toolbar, "⎘  Copy All",    self._copy_all,   side="right")
-        self._tb_btn(toolbar, "⟳  Refresh",     self.refresh,     side="right")
-        self._tb_btn(toolbar, "⤓  Jump to End", self._jump_end,   side="right")
-        self._tb_btn(toolbar, "⤒  Jump to Top", self._jump_top,   side="right")
+        _copy_btn = self._tb_btn(toolbar, "⎘  Copy All", self._copy_all,
+                                 side="right")
+        _refresh_btn = self._tb_btn(toolbar, "⟳  Refresh", self.refresh,
+                                    side="right")
+        _end_btn = self._tb_btn(toolbar, "⤓  Jump to End", self._jump_end,
+                                side="right")
+        _top_btn = self._tb_btn(toolbar, "⤒  Jump to Top", self._jump_top,
+                                side="right")
+        Tooltip(_copy_btn,    "Copy the visible log text to the clipboard.")
+        Tooltip(_refresh_btn, "Reload the log file from disk.")
+        Tooltip(_end_btn,     "Scroll to the newest entries at the bottom.")
+        Tooltip(_top_btn,     "Scroll to the oldest entries at the top.")
 
         # ── Stats bar ─────────────────────────────────────────────────────────
         self._stats_bar = tk.Label(
@@ -858,6 +888,11 @@ class LogViewerWindow(_BaseLogViewerWindow):
         self._paint_filter_btns()
         self._render()
         self._run_search()
+        # Selecting a new view should land on the most-recent entries, not jump
+        # back to the top. If a search is active, _run_search already positioned
+        # on the current match, so only auto-scroll when nothing is matched.
+        if not self._match_idx:
+            self.after_idle(lambda: self._txt.yview_moveto(1.0))
 
     def _paint_filter_btns(self):
         active = self._filter_var.get()
@@ -918,6 +953,12 @@ class DebugLogViewerWindow(_BaseLogViewerWindow):
 
         self._filter_var = tk.StringVar(value="All")
         self._filter_btns = {}
+        _filter_tips = {
+            "All":   "Show every debug log line.",
+            "INFO":  "Show only INFO-level lines.",
+            "ERROR": "Show only ERROR-level lines.",
+            "DEBUG": "Show only DEBUG-level lines.",
+        }
         for opt in ["All", "INFO", "ERROR", "DEBUG"]:
             b = tk.Button(
                 toolbar, text=opt,
@@ -926,6 +967,7 @@ class DebugLogViewerWindow(_BaseLogViewerWindow):
                 command=lambda o=opt: self._set_filter(o))
             b.pack(side="left", padx=2, pady=6)
             self._filter_btns[opt] = b
+            Tooltip(b, _filter_tips.get(opt, opt))
         self._paint_filter_btns()
 
         tk.Frame(toolbar, width=1, bg=BORDER).pack(side="left", fill="y",
@@ -941,6 +983,7 @@ class DebugLogViewerWindow(_BaseLogViewerWindow):
             activebackground=BORDER, activeforeground=TEXT,
             command=self._toggle_wrap)
         self._wrap_btn.pack(side="left", padx=2, pady=6)
+        Tooltip(self._wrap_btn, "Toggle line wrapping for long entries.")
 
         tk.Frame(toolbar, width=1, bg=BORDER).pack(side="left", fill="y",
                                                     padx=10, pady=6)
@@ -963,29 +1006,43 @@ class DebugLogViewerWindow(_BaseLogViewerWindow):
         self._search_entry.bind("<KP_Enter>", lambda e: self._find_next())
         self._search_var.trace_add("write", lambda *_: self._run_search())
 
+        _search_tips = {"▲": "Jump to the previous search match.",
+                        "▼": "Jump to the next search match.",
+                        "✕": "Clear the search and its highlights."}
         for sym, cmd in [("▲", self._find_prev), ("▼", self._find_next),
                          ("✕", self._clear_search)]:
-            tk.Button(search_frame, text=sym, font=("Segoe UI", 9, "bold"),
-                      relief="flat", bd=0, padx=6, pady=2, cursor="hand2",
-                      bg=SURFACE2, fg=TEXT_DIM,
-                      activebackground=BORDER, activeforeground=TEXT,
-                      command=cmd).pack(side="left", padx=1)
+            sb = tk.Button(search_frame, text=sym, font=("Segoe UI", 9, "bold"),
+                           relief="flat", bd=0, padx=6, pady=2, cursor="hand2",
+                           bg=SURFACE2, fg=TEXT_DIM,
+                           activebackground=BORDER, activeforeground=TEXT,
+                           command=cmd)
+            sb.pack(side="left", padx=1)
+            Tooltip(sb, _search_tips[sym])
 
         self._match_lbl = tk.Label(search_frame, text="", font=("Segoe UI", 8),
                                    fg=TEXT_DIM, bg=SURFACE2, width=10)
         self._match_lbl.pack(side="left", padx=(4, 0))
 
         # Right cluster
+        _right_tips = {
+            "↗  System Viewer": "Open this log in your default text editor.",
+            "⎘  Copy All":      "Copy the visible log text to the clipboard.",
+            "⟳  Refresh":       "Reload the debug log from disk.",
+            "⤓  End":           "Scroll to the newest entries at the bottom.",
+            "⤒  Top":           "Scroll to the oldest entries at the top.",
+        }
         for txt, cmd in [("↗  System Viewer", self._open_external),
                          ("⎘  Copy All", self._copy_all),
                          ("⟳  Refresh", self.refresh),
                          ("⤓  End", self._jump_end),
                          ("⤒  Top", self._jump_top)]:
-            tk.Button(toolbar, text=txt, font=("Segoe UI", 9, "bold"),
-                      relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
-                      bg=SURFACE2, fg=TEXT_DIM,
-                      activebackground=BORDER, activeforeground=TEXT,
-                      command=cmd).pack(side="right", padx=2, pady=6)
+            rb = tk.Button(toolbar, text=txt, font=("Segoe UI", 9, "bold"),
+                           relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
+                           bg=SURFACE2, fg=TEXT_DIM,
+                           activebackground=BORDER, activeforeground=TEXT,
+                           command=cmd)
+            rb.pack(side="right", padx=2, pady=6)
+            Tooltip(rb, _right_tips.get(txt, txt))
 
         # ── Stats bar ─────────────────────────────────────────────────────────
         self._stats_bar = tk.Label(
@@ -1082,6 +1139,8 @@ class DebugLogViewerWindow(_BaseLogViewerWindow):
         self._paint_filter_btns()
         self._clear_search(silent=True)
         self.load_log()
+        # Land on the newest entries when switching views, not back at the top.
+        self.after_idle(lambda: self._txt.yview_moveto(1.0))
 
     def _paint_filter_btns(self):
         cur = self._filter_var.get()
@@ -3372,11 +3431,18 @@ class MP3DownloaderApp(tk.Tk):
         self._tray_icon = None  # set when tray is active
         self._tray_title_after_id = None   # recurring hover-tooltip refresh
         self._tray_dl_label = "Download All New (0)"  # live tray menu label
+        # How often to silently re-check GitHub for a newer nightly build. Set
+        # from the About-tab dropdown; persisted as 'update_check_interval'.
+        self._update_check_interval = tk.StringVar(
+            value=cfg.get("update_check_interval", "6 hours"))
+        self._update_check_after_id = None
         self._auto_dl_interval.trace_add("write", self._autosave_automation_settings)
         self._minimize_to_tray.trace_add("write", self._autosave_automation_settings)
         self._start_minimized.trace_add("write", self._autosave_automation_settings)
         self._watchlist_scan_on_startup.trace_add(
             "write", self._autosave_automation_settings)
+        self._update_check_interval.trace_add(
+            "write", self._on_update_interval_changed)
 
         # Ensure directory structure exists on startup
         self._url_history = cfg.get("url_history", [])[:6]
@@ -5865,6 +5931,42 @@ class MP3DownloaderApp(tk.Tk):
         threading.Thread(target=self._check_updates_worker,
                          args=(False,), daemon=True).start()
 
+    def _on_update_interval_changed(self, *_):
+        """Persist the chosen auto-update-check interval and re-arm the timer."""
+        try:
+            cfg = load_config()
+            cfg["update_check_interval"] = self._update_check_interval.get()
+            save_config(cfg)
+        except Exception:
+            pass
+        self._reschedule_update_check()
+
+    def _reschedule_update_check(self):
+        """(Re)arm the periodic silent update-check timer from the current
+        dropdown interval. Cancels any pending timer first so changing the
+        interval takes effect immediately. Called on startup and whenever the
+        interval changes."""
+        if self._update_check_after_id is not None:
+            try:
+                self.after_cancel(self._update_check_after_id)
+            except Exception:
+                pass
+            self._update_check_after_id = None
+        secs = interval_label_to_seconds(self._update_check_interval.get())
+        if not secs:
+            return   # no/invalid interval — leave the timer disarmed
+        self._update_check_after_id = self.after(
+            int(secs * 1000), self._update_check_tick)
+
+    def _update_check_tick(self):
+        """Fire one scheduled silent update check, then re-arm for the next
+        interval. Skips (without breaking the schedule) while an update download
+        is already in flight."""
+        self._update_check_after_id = None
+        if not getattr(self, "_update_in_progress", False):
+            self._auto_check_for_updates()
+        self._reschedule_update_check()
+
     def _check_updates_worker(self, manual):
         """Background thread: fetch the manifest, then marshal back to the UI."""
         manifest = ucore.fetch_manifest(UPDATE_MANIFEST_URL)
@@ -6131,6 +6233,20 @@ class MP3DownloaderApp(tk.Tk):
         Tooltip(self._update_btn,
                 "Checks GitHub for a newer nightly build and, if one exists, "
                 "downloads and installs it (the app restarts to finish).")
+
+        # Auto-check interval — right-aligned, directly below the status text.
+        auto_row = tk.Frame(btn_col, bg=BG)
+        auto_row.pack(anchor="e", pady=(8, 0))
+        tk.Label(auto_row, text="Auto-check for updates:",
+                 font=("Segoe UI", 10), fg=TEXT_MED, bg=BG,
+                 anchor="e").pack(side="left", padx=(0, 8))
+        self._update_interval_combo = ttk.Combobox(
+            auto_row, textvariable=self._update_check_interval,
+            values=UPDATE_CHECK_OPTIONS, state="readonly", width=10)
+        self._update_interval_combo.pack(side="left")
+        Tooltip(self._update_interval_combo,
+                "How often DJ-CrateBuilder quietly checks GitHub for a newer "
+                "nightly build in the background.")
 
         # Left column — info rows (driven by ABOUT_FIELDS) + bug/suggestion note.
         info_col = tk.Frame(top_sec, bg=BG)
@@ -7881,7 +7997,7 @@ class MP3DownloaderApp(tk.Tk):
                 pass
         try:
             self._wl_cancel_btn.config(state="disabled",
-                                       bg=SURFACE2, fg=TEXT_DIM)
+                                       bg=WL_CANCEL_IDLE, fg=TEXT_DIM)
         except Exception:
             pass
         if self._wl_scan_active > 0:
@@ -7896,7 +8012,7 @@ class MP3DownloaderApp(tk.Tk):
                     state="normal", bg=YT_DARK, fg=TEXT)
             else:
                 self._wl_cancel_btn.config(
-                    state="disabled", bg=SURFACE2, fg=TEXT_DIM)
+                    state="disabled", bg=WL_CANCEL_IDLE, fg=TEXT_DIM)
         except Exception:
             pass
 
@@ -7997,7 +8113,7 @@ class MP3DownloaderApp(tk.Tk):
         self._wl_cancel_btn = tk.Button(
             toolbar, text="  ✕  Cancel  ",
             font=("Segoe UI", 10, "bold"),
-            bg=SURFACE2, fg=TEXT_DIM,
+            bg=WL_CANCEL_IDLE, fg=TEXT_DIM,
             activebackground=YT_DARK, activeforeground=TEXT,
             disabledforeground=TEXT_DIM,
             relief="flat", bd=0, padx=10, pady=5, cursor="hand2",
@@ -8455,13 +8571,80 @@ class MP3DownloaderApp(tk.Tk):
 
         self._run_bg(_bg)
 
+    def _sc_track_search(self, name, limit=20):
+        """Search SoundCloud *tracks* by name via yt-dlp and return their
+        permalink URLs (each first path segment is the artist handle). Flat
+        extraction keeps it fast. Raises on extractor/network failure."""
+        import yt_dlp
+        opts = {"quiet": True, "no_warnings": True,
+                "extract_flat": True, "skip_download": True}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(f"scsearch{limit}:{name}", download=False)
+        out = []
+        for e in (info.get("entries") or []):
+            url = (e.get("url") or e.get("permalink_url")
+                   or e.get("webpage_url") or "")
+            if not url:
+                continue
+            title = (e.get("uploader") or e.get("channel") or "").strip()
+            out.append({"url": url, "title": title})
+        return out
+
+    @staticmethod
+    def _sc_web_search(name, limit=10):
+        """Invisible (no-browser) web search for a SoundCloud profile. Queries
+        DuckDuckGo's HTML endpoint scoped to soundcloud.com and scrapes the
+        profile URLs out of the server-rendered results. Best-effort; raises on
+        network failure so the caller can fall back to the track search."""
+        query = urllib.parse.quote(f"{name} site:soundcloud.com")
+        url = f"https://html.duckduckgo.com/html/?q={query}"
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/120.0 Safari/537.36"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            html = resp.read().decode("utf-8", "replace")
+        # DuckDuckGo wraps result links in a redirect with the real URL in a
+        # percent-encoded 'uddg=' param, so decode the whole page before
+        # scraping soundcloud.com links out of it.
+        text = urllib.parse.unquote(html)
+        hits, seen = [], set()
+        for m in re.findall(
+                r"https?://(?:www\.)?soundcloud\.com/[A-Za-z0-9_-]+", text):
+            key = m.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            hits.append({"url": m})
+            if len(hits) >= limit:
+                break
+        return hits
+
+    def _resolve_soundcloud_via_search(self, name, max_results=8):
+        """Find candidate SoundCloud artist profiles for a display name by
+        combining an in-app track search with an invisible web search, then
+        cross-referencing them. A profile surfaced by BOTH sources is the
+        strongest signal and ranks first. Either source failing is tolerated;
+        the other still yields results. Returns the merged candidate list (see
+        ``merge_soundcloud_candidates``)."""
+        track_hits, web_hits = [], []
+        try:
+            track_hits = self._sc_track_search(name)
+        except Exception as ex:
+            self._dbg.info(f"SC track search failed: {str(ex)[:120]}")
+        try:
+            web_hits = self._sc_web_search(name)
+        except Exception as ex:
+            self._dbg.info(f"SC web search failed: {str(ex)[:120]}")
+        return merge_soundcloud_candidates(track_hits, web_hits, max_results)
+
     def _watchlist_soundcloud_link_dialog(self, cid, on_done=None):
         """Themed Fix Link for SoundCloud — the platform analogue of the YouTube
-        resolve dialog. SoundCloud usernames are stable and there is no
-        channel-id search, so this collects the soundcloud.com profile URL in a
-        styled window (matching the YouTube card flow) instead of the old bare
-        prompt, then applies it. Deliberately a separate SoundCloud-only
-        function so the YouTube resolve path is never touched.
+        resolve dialog. SoundCloud has no artist-search API, so this searches
+        SoundCloud tracks AND the web (invisibly) for the display name,
+        cross-references the two to surface likely artist profiles, and lets the
+        user pick one — or paste the profile URL manually as a fallback.
+        Deliberately separate from the YouTube resolve path.
         on_done(resolved: bool) fires when the dialog closes."""
         ch = self._db.get_watchlist_channel(cid)
         if not ch:
@@ -8469,51 +8652,43 @@ class MP3DownloaderApp(tk.Tk):
                 on_done(False)
             return
 
-        W, H = 560, 340
         dlg = tk.Toplevel(self)
         dlg.title("Fix Link — SoundCloud")
+        dlg.geometry("600x560")
         dlg.configure(bg=BG)
         dlg.resizable(False, False)
         dlg.transient(self)
         dlg.grab_set()
         dlg.update_idletasks()
-        px = self.winfo_x() + (self.winfo_width() - W) // 2
-        py = self.winfo_y() + (self.winfo_height() - H) // 2
-        dlg.geometry(f"{W}x{H}+{max(0, px)}+{max(0, py)}")
+        px = self.winfo_x() + (self.winfo_width() - 600) // 2
+        py = self.winfo_y() + (self.winfo_height() - 560) // 2
+        dlg.geometry(f"+{max(0, px)}+{max(0, py)}")
 
         outer = tk.Frame(dlg, bg=BG, padx=24, pady=18)
         outer.pack(fill="both", expand=True)
 
-        tk.Label(outer, text="Set the SoundCloud profile",
+        tk.Label(outer, text="Find the right SoundCloud profile",
                  font=("Segoe UI", 14, "bold"), fg=TEXT, bg=BG
                  ).pack(anchor="w")
         tk.Label(outer,
-                 text=f"Link “{ch['display_name']}” to its SoundCloud profile "
-                      f"so the channel can be scanned for new tracks.",
-                 font=("Segoe UI", 9), fg=TEXT_DIM, bg=BG, wraplength=W - 60,
-                 justify="left").pack(anchor="w", pady=(2, 16))
+                 text=f"Matching the folder “{ch['display_name']}”. Pick the "
+                      f"correct artist below, or paste the profile URL.",
+                 font=("Segoe UI", 9), fg=TEXT_DIM, bg=BG, wraplength=540,
+                 justify="left").pack(anchor="w", pady=(2, 12))
 
-        tk.Label(outer, text="SoundCloud profile URL",
-                 font=("Segoe UI", 10, "bold"), fg=TEXT, bg=BG
-                 ).pack(anchor="w", pady=(0, 4))
+        status_lbl = tk.Label(outer, text="🔍  Searching SoundCloud…",
+                              font=("Segoe UI", 10), fg=SC_ORANGE, bg=BG)
+        status_lbl.pack(anchor="w", pady=(0, 8))
 
-        url_var = tk.StringVar()
-        url_entry = tk.Entry(
-            outer, textvariable=url_var,
-            font=("Segoe UI", 10), bg=SURFACE, fg=TEXT,
-            insertbackground=TEXT, relief="flat",
-            highlightthickness=1, highlightbackground=BORDER)
-        url_entry.pack(fill="x", ipady=6, pady=(0, 6))
-        url_entry.focus_set()
+        results_frame = tk.Frame(outer, bg=BG)
+        results_frame.pack(fill="both", expand=True)
 
-        tk.Label(outer, text="e.g.  https://soundcloud.com/artist-name",
-                 font=("Segoe UI", 8), fg=TEXT_DIM, bg=BG
-                 ).pack(anchor="w")
-
-        err_var = tk.StringVar(value="")
-        tk.Label(outer, textvariable=err_var,
-                 font=("Segoe UI", 9), fg=YT_RED, bg=BG, anchor="w",
-                 justify="left", wraplength=W - 60).pack(anchor="w", pady=(8, 0))
+        choice_var = tk.StringVar(value="")
+        manual_var = tk.StringVar()
+        cand_by_url = {}     # profile url -> candidate dict
+        # Paging for the "show more matches" toggle: fetch up to 8, reveal four
+        # at a time.
+        paging = {"all": [], "page": 0, "size": 4}
 
         def _close(resolved):
             try:
@@ -8525,31 +8700,162 @@ class MP3DownloaderApp(tk.Tk):
             if on_done:
                 on_done(resolved)
 
-        def _save(*_evt):
-            url = url_var.get().strip()
-            if not url:
-                err_var.set("Paste the channel's soundcloud.com profile URL.")
+        def _render(candidates):
+            for w in results_frame.winfo_children():
+                w.destroy()
+            if candidates:
+                choice_var.set(candidates[0]["url"])
+                for c in candidates:
+                    cand_by_url[c["url"]] = c
+                    conf = c.get("confidence")
+                    badge = ("✓ audio + web match" if conf == "both"
+                             else "audio match" if conf == "tracks"
+                             else "web match")
+                    label = c.get("title") or c["handle"]
+                    row = tk.Frame(results_frame, bg=SURFACE, padx=10, pady=6,
+                                   highlightthickness=1,
+                                   highlightbackground=BORDER)
+                    row.pack(fill="x", pady=(0, 5))
+                    tk.Radiobutton(
+                        row, text=label, value=c["url"],
+                        variable=choice_var, bg=SURFACE, fg=TEXT,
+                        selectcolor=SURFACE, activebackground=SURFACE,
+                        activeforeground=TEXT, font=("Segoe UI", 10, "bold"),
+                        anchor="w", highlightthickness=0, bd=0
+                    ).pack(anchor="w", fill="x")
+                    info_row = tk.Frame(row, bg=SURFACE)
+                    info_row.pack(anchor="w", fill="x")
+                    badge_fg = SUCCESS if conf == "both" else TEXT_DIM
+                    tk.Label(info_row, text=f"    {badge}  •  ",
+                             font=("Segoe UI", 8), fg=badge_fg, bg=SURFACE,
+                             anchor="w").pack(side="left")
+                    link = tk.Label(
+                        info_row, text=c["url"],
+                        font=("Segoe UI", 8, "underline"),
+                        fg=LINK_COL, bg=SURFACE, cursor="hand2", anchor="w")
+                    link.pack(side="left")
+                    link.bind("<Button-1>",
+                              lambda e, u=c["url"]: webbrowser.open(u))
+            else:
+                status_lbl.config(
+                    text="No close matches found — paste the profile URL "
+                         "manually.", fg=YT_RED)
+
+            # Always offer a manual-paste option.
+            man_row = tk.Frame(results_frame, bg=SURFACE, padx=10, pady=6,
+                               highlightthickness=1, highlightbackground=BORDER)
+            man_row.pack(fill="x", pady=(6, 0))
+            tk.Radiobutton(
+                man_row, text="Paste a soundcloud.com profile URL manually:",
+                value="__manual__", variable=choice_var,
+                bg=SURFACE, fg=TEXT, selectcolor=SURFACE,
+                activebackground=SURFACE, activeforeground=TEXT,
+                font=("Segoe UI", 10), anchor="w", highlightthickness=0, bd=0
+            ).pack(anchor="w")
+            tk.Entry(man_row, textvariable=manual_var, font=("Segoe UI", 9),
+                     bg=BG, fg=TEXT, insertbackground=TEXT, relief="flat",
+                     highlightthickness=1, highlightbackground=BORDER
+                     ).pack(fill="x", ipady=3, pady=(4, 0))
+            if not candidates:
+                choice_var.set("__manual__")
+
+        def _show_page():
+            allc = paging["all"]
+            size = paging["size"]
+            page = paging["page"]
+            start = page * size
+            page_slice = allc[start:start + size]
+            _render(page_slice)
+            total = len(allc)
+            if page_slice:
+                status_lbl.config(
+                    text=f"Found {total} match(es) — showing "
+                         f"{start + 1}–{start + len(page_slice)} of {total}. "
+                         f"Choose one:", fg=TEXT)
+            if total > size:
+                more_btn.config(
+                    text=("  ↩ Back to first matches  " if page
+                          else "  Show 4 more matches  "))
+                if not more_btn.winfo_ismapped():
+                    more_btn.pack(side="left", padx=(8, 0), before=skip_btn)
+            else:
+                more_btn.pack_forget()
+
+        def _toggle_more():
+            paging["page"] = 0 if paging["page"] else 1
+            _show_page()
+
+        def _search():
+            try:
+                cands = self._resolve_soundcloud_via_search(
+                    ch["display_name"], max_results=8)
+                paging["all"] = cands
+                paging["page"] = 0
+                dlg.after(0, _show_page)
+            except Exception as ex:
+                msg = str(ex)[:120]
+                dlg.after(0, lambda: (status_lbl.config(
+                    text=f"Search failed: {msg}", fg=YT_RED), _render([])))
+
+        self._run_bg(_search)
+
+        # ── Buttons ──────────────────────────────────────────────────────────
+        btn_row = tk.Frame(outer, bg=BG)
+        btn_row.pack(fill="x", pady=(12, 0))
+
+        def _confirm():
+            sel = choice_var.get()
+            if not sel:
                 return
-            if "soundcloud.com" not in url.lower():
-                err_var.set("That doesn't look like a soundcloud.com URL.")
+            if sel == "__manual__":
+                raw = manual_var.get().strip()
+                if not raw:
+                    status_lbl.config(
+                        text="Enter a URL or pick a match.", fg=YT_RED)
+                    return
+                if "soundcloud.com" not in raw.lower():
+                    status_lbl.config(
+                        text="That doesn't look like a soundcloud.com URL.",
+                        fg=YT_RED)
+                    return
+                self._watchlist_apply_url(cid, raw)
+                _close(True)
                 return
-            self._watchlist_apply_url(cid, url)
+            # A search candidate was chosen — sel is its profile URL.
+            self._watchlist_apply_url(cid, sel)
             _close(True)
 
-        btn_row = tk.Frame(outer, bg=BG)
-        btn_row.pack(side="bottom", fill="x", pady=(18, 0))
-        tk.Button(btn_row, text="  Save Link  ",
+        # Confirm button — themed like the main page's action buttons.
+        tk.Button(btn_row, text="  ✓ Use This Profile  ",
                   font=("Segoe UI", 10, "bold"), bg=SURFACE2, fg=LINK_COL,
                   activebackground=BORDER, activeforeground=TEXT,
                   relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
-                  command=_save).pack(side="left")
-        tk.Button(btn_row, text="  Cancel  ",
+                  command=_confirm).pack(side="left")
+        more_btn = tk.Button(
+                  btn_row, text="  Show 4 more matches  ",
+                  font=("Segoe UI", 10), bg=SURFACE2, fg=LINK_COL,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
+                  command=_toggle_more)
+        skip_btn = tk.Button(
+                  btn_row, text="  Skip  ",
                   font=("Segoe UI", 10), bg=SURFACE2, fg=TEXT_DIM,
                   activebackground=BORDER, activeforeground=TEXT,
                   relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
-                  command=lambda: _close(False)).pack(side="left", padx=(8, 0))
+                  command=lambda: _close(False))
+        skip_btn.pack(side="left", padx=(8, 0))
 
-        dlg.bind("<Return>", _save)
+        def _cancel_all():
+            # Stop the whole Fix-Channels pass (this channel + all remaining).
+            self._wl_fix_abort = True
+            _close(False)
+
+        tk.Button(btn_row, text="  ✕ Cancel  ",
+                  font=("Segoe UI", 10), bg=YT_RED, fg=TEXT,
+                  activebackground=YT_RED, activeforeground=TEXT,
+                  relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
+                  command=_cancel_all).pack(side="left", padx=(8, 0))
+
         dlg.bind("<Escape>", lambda _e: _close(False))
 
     def _watchlist_resolve_dialog(self, cid, on_done=None):
@@ -8600,6 +8906,9 @@ class MP3DownloaderApp(tk.Tk):
         choice_var = tk.StringVar(value="")
         manual_var = tk.StringVar()
         cand_by_id = {}   # channel_id -> candidate dict (for handle lookup)
+        # Paging for the "show more matches" toggle: we fetch up to 8 candidates
+        # and reveal them four at a time.
+        paging = {"all": [], "page": 0, "size": 4}
 
         # Outcome bookkeeping so the chained batch flow knows what happened.
         state = {"resolved": False, "cancel_all": False}
@@ -8678,11 +8987,42 @@ class MP3DownloaderApp(tk.Tk):
             if not candidates:
                 choice_var.set("__manual__")
 
+        def _show_page():
+            """Render the current page of four and update the toggle button."""
+            allc = paging["all"]
+            size = paging["size"]
+            page = paging["page"]
+            start = page * size
+            page_slice = allc[start:start + size]
+            _render(page_slice)
+            total = len(allc)
+            if page_slice:
+                status_lbl.config(
+                    text=f"Found {total} match(es) — showing "
+                         f"{start + 1}–{start + len(page_slice)} of {total}. "
+                         f"Choose one:", fg=TEXT)
+            # The toggle only matters when a second page of results exists.
+            if total > size:
+                more_btn.config(
+                    text=("  ↩ Back to first matches  " if page
+                          else "  Show 4 more matches  "))
+                if not more_btn.winfo_ismapped():
+                    more_btn.pack(side="left", padx=(8, 0), before=skip_btn)
+            else:
+                more_btn.pack_forget()
+
+        def _toggle_more():
+            # Two pages of four — flip between them.
+            paging["page"] = 0 if paging["page"] else 1
+            _show_page()
+
         def _search():
             try:
                 cands = self._resolve_channel_via_search(
-                    ch["display_name"], max_results=4)
-                dlg.after(0, lambda: _render(cands))
+                    ch["display_name"], max_results=8)
+                paging["all"] = cands
+                paging["page"] = 0
+                dlg.after(0, _show_page)
             except Exception as ex:
                 msg = str(ex)[:120]
                 dlg.after(0, lambda: (status_lbl.config(
@@ -8748,16 +9088,28 @@ class MP3DownloaderApp(tk.Tk):
                 ch, sel, handle,
                 success_msg=f"Resolved: {ch['display_name']}", close_fn=_close)
 
+        # Confirm button — themed like the main page's action buttons
+        # (flat dark surface + light-blue text), distinct from the red Cancel.
         tk.Button(btn_row, text="  ✓ Use This Channel  ",
-                  font=("Segoe UI", 10, "bold"), bg=WL_BLUE_DARK, fg=TEXT,
-                  activebackground=WL_BLUE, activeforeground=TEXT,
+                  font=("Segoe UI", 10, "bold"), bg=SURFACE2, fg=LINK_COL,
+                  activebackground=BORDER, activeforeground=TEXT,
                   relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
                   command=_confirm).pack(side="left")
-        tk.Button(btn_row, text="  Skip  ",
+        # 'Show 4 more matches' toggle — packed by _show_page only when a second
+        # page of results exists; flips to 'Back to first matches' on page 2.
+        more_btn = tk.Button(
+                  btn_row, text="  Show 4 more matches  ",
+                  font=("Segoe UI", 10), bg=SURFACE2, fg=LINK_COL,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
+                  command=_toggle_more)
+        skip_btn = tk.Button(
+                  btn_row, text="  Skip  ",
                   font=("Segoe UI", 10), bg=SURFACE2, fg=TEXT_DIM,
                   activebackground=BORDER, activeforeground=TEXT,
                   relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
-                  command=lambda: _close(False)).pack(side="left", padx=(8, 0))
+                  command=lambda: _close(False))
+        skip_btn.pack(side="left", padx=(8, 0))
 
         def _cancel_all():
             # Stop the whole Fix-Channels pass (this channel + all remaining).
@@ -9859,4 +10211,6 @@ if __name__ == "__main__":
     # throttled background update check once the UI has settled.
     ucore.purge_dir(ucore.default_workspace())
     app.after(3000, app._auto_check_for_updates)
+    # Arm the recurring silent update check on the user's chosen interval.
+    app.after(3500, app._reschedule_update_check)
     app.mainloop()
