@@ -6145,8 +6145,8 @@ class MP3DownloaderApp(tk.Tk):
                      fg=TEXT, bg=BG, anchor="w").pack(side="left", padx=(8, 0))
 
         tk.Label(info_col,
-                 text="For any bugs encountered or suggestions you'd like to "
-                      "make, submit them to the Issues section on GitHub.",
+                 text="**(For any bugs encountered or suggestions you'd like to "
+                      "make, submit them using the Submit Issues/Suggestions button.)",
                  font=("Segoe UI", 11), fg=TEXT_MED, bg=BG, anchor="w",
                  justify="left", wraplength=440).pack(anchor="w", pady=(4, 0))
 
