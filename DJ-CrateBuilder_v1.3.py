@@ -6013,7 +6013,8 @@ class MP3DownloaderApp(tk.Tk):
             return
 
         build = int(manifest["build"])
-        self._set_update_status(f"Update available: build {build}.")
+        self._set_update_status(
+            f"Update available: build {build}. (You're on build {APP_BUILD}.)")
         # Auto/startup check informs only — it updates the status text and stops.
         # The download+install flow runs solely from a manual button click.
         if manual:
@@ -6037,7 +6038,8 @@ class MP3DownloaderApp(tk.Tk):
                 f"A newer build is available (build {build}; you have "
                 f"{APP_BUILD}).{note_line}\n\nDownload and install it now?",
                 parent=self):
-            self._set_update_status(f"Update available: build {build}.")
+            self._set_update_status(
+                f"Update available: build {build}. (You're on build {APP_BUILD}.)")
             return
 
         # Antivirus / Defender false-positive warning — FIRST, pre-download.
@@ -6261,7 +6263,7 @@ class MP3DownloaderApp(tk.Tk):
                      fg=TEXT, bg=BG, anchor="w").pack(side="left", padx=(8, 0))
 
         tk.Label(info_col,
-                 text="**(For any bugs encountered or suggestions you'd like to "
+                 text="*(For any bugs encountered or suggestions you'd like to "
                       "make, submit them using the Submit Issues/Suggestions button.)",
                  font=("Segoe UI", 11), fg=TEXT_MED, bg=BG, anchor="w",
                  justify="left", wraplength=440).pack(anchor="w", pady=(4, 0))
