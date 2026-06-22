@@ -91,6 +91,7 @@ The section above is project facts. This section is how the maintainer (DJ / Sin
 
 ### Releases / publishing
 
+- The build-update skill (`.claude\skills\build-update/SKILL.md`) should never be allowed to run in a Worktree. It should only be allowed to run in the Main branch.
 - **Don't run `scripts/release.py` without an explicit ask.** Every invocation bumps `APP_BUILD`, builds artefacts, and publishes to GitHub — it's a real release.
 - **Prefer the project-local `/build-update` skill** over hand-running the script. The skill presents the correct menu (delta nightly / full nightly / fresh installer / dry-run / cleanup / init).
 - **`APP_BUILD` is owned by the release script.** Never bump it in a feature commit — the release script will do it as part of its own `chore: bump APP_BUILD to N` commit.
