@@ -209,6 +209,15 @@ WATCHLIST_CUTOFF_BUFFER_DAYS = 5
 # ── don't pile up dozens of simultaneous yt-dlp requests and time out.
 WATCHLIST_MAX_CONCURRENT_SCANS = 3
 
+# ── Cold-boot guard for the startup scan. When the app auto-launches at Windows
+# ── login the network is often a few seconds behind; scanning while offline
+# ── fails every channel and (per is_unresolved_channel) makes resolved cards
+# ── look like they "need a channel ID". So the startup scan waits for
+# ── connectivity first: probe every _DELAY seconds, up to _TRIES times, then
+# ── give up quietly (scheduled / manual scans still run normally).
+WATCHLIST_STARTUP_NET_TRIES = 18      # ≈ 90 s window at the delay below
+WATCHLIST_STARTUP_NET_DELAY = 5.0     # seconds between connectivity probes
+
 # ── "Since" date preset options used in the Add Channel dialog ───────────────
 SINCE_DATE_OPTIONS = [
     "Today  (only future uploads)",
@@ -5501,11 +5510,35 @@ class MP3DownloaderApp(tk.Tk):
     # ══════════════════════════════════════════════════════════════════════════
     # Watch List — automation scheduler (periodic scan-all + auto-download timer)
     # ══════════════════════════════════════════════════════════════════════════
+    @staticmethod
+    def _network_is_reachable(timeout=2.0):
+        """Best-effort TCP reachability probe. Tries a couple of stable, high-
+        availability endpoints and returns True on the first successful connect,
+        False if none answer. Never raises — used only to defer the startup scan
+        until the network is actually up."""
+        import socket
+        for host, port in (("www.youtube.com", 443),
+                           ("1.1.1.1", 443),
+                           ("8.8.8.8", 53)):
+            try:
+                with socket.create_connection((host, port), timeout=timeout):
+                    return True
+            except OSError:
+                continue
+        return False
+
     def _watchlist_startup_scan(self):
         """On launch, scan every watched channel (all platforms) so the cards
         show current new-track counts. Runs in the background via
         _watchlist_scan_all; skipped if a scan/download is already underway.
-        This only scans — it does not move the auto-download schedule anchor."""
+        This only scans — it does not move the auto-download schedule anchor.
+
+        Cold-boot guard: the scan is deferred until the network is reachable.
+        When the app auto-starts at Windows login the connection is usually a
+        few seconds behind, and scanning while offline fails every channel —
+        which (per is_unresolved_channel) strands resolved cards as "needs
+        channel ID". We poll for connectivity off the UI thread, then run the
+        scan once the network is up (or give up quietly after the budget)."""
         if not self._watchlist_scan_on_startup.get():
             return
         try:
@@ -5514,6 +5547,34 @@ class MP3DownloaderApp(tk.Tk):
             return
         if not channels:
             return
+
+        def _wait_then_scan():
+            def _ui(fn):
+                # Marshal to the UI thread, tolerating a root torn down while we
+                # were waiting for the network (the app may be closed mid-wait).
+                try:
+                    self.after(0, fn)
+                except RuntimeError:
+                    pass
+            for attempt in range(WATCHLIST_STARTUP_NET_TRIES):
+                if self._network_is_reachable():
+                    _ui(self._watchlist_startup_scan_now)
+                    return
+                if attempt == 0:
+                    _ui(lambda: self._watchlist_log(
+                        "🌐 Waiting for the network before the startup scan…",
+                        "info"))
+                time.sleep(WATCHLIST_STARTUP_NET_DELAY)
+            _ui(lambda: self._watchlist_log(
+                "Startup scan skipped — no network detected. Channels keep "
+                "their links; scan once you're back online.", "info"))
+
+        self._run_bg(_wait_then_scan)
+
+    def _watchlist_startup_scan_now(self):
+        """Run the deferred startup scan on the UI thread. Re-checks the busy
+        guards, since a manual scan/download may have begun while we waited for
+        the network."""
         if self._downloading or self._wl_download_active or self._wl_scan_active:
             return
         self._watchlist_log("🚀 Startup check: scanning all channels…", "info")
@@ -5797,13 +5858,10 @@ class MP3DownloaderApp(tk.Tk):
                          args=(True,), daemon=True).start()
 
     def _auto_check_for_updates(self):
-        """Throttled silent check on launch (at most once every 6 hours)."""
-        try:
-            last = float(load_config().get("last_update_check", 0) or 0)
-        except (TypeError, ValueError):
-            last = 0.0
-        if time.time() - last < 6 * 3600:
-            return
+        """Silent check on launch. Runs on every startup and ONLY updates the
+        About-tab status text so the user is told whether a newer build exists.
+        It never prompts or downloads — starting an update stays a deliberate
+        click on the 'Check for updates' button (see _on_check_result)."""
         threading.Thread(target=self._check_updates_worker,
                          args=(False,), daemon=True).start()
 
@@ -5854,7 +5912,10 @@ class MP3DownloaderApp(tk.Tk):
 
         build = int(manifest["build"])
         self._set_update_status(f"Update available: build {build}.")
-        self._prompt_and_update(manifest, build)
+        # Auto/startup check informs only — it updates the status text and stops.
+        # The download+install flow runs solely from a manual button click.
+        if manual:
+            self._prompt_and_update(manifest, build)
 
     def _prompt_and_update(self, manifest, build):
         """Offer the update, then (if accepted) show the AV note and apply."""
@@ -6020,68 +6081,74 @@ class MP3DownloaderApp(tk.Tk):
 
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(0, 24))
 
-        # ── Info rows (driven by ABOUT_FIELDS at top of file) ─────────────────
-        for label, value in ABOUT_FIELDS:
-            row = ttk.Frame(outer)
-            row.pack(fill="x", pady=(0, 14))
-            tk.Label(row, text=label, font=("Segoe UI", 12, "bold"),
-                      fg=TEXT, bg=BG, width=14, anchor="w"
-                      ).pack(side="left")
-            val_lbl = tk.Label(row, text=value, font=("Segoe UI", 11),
-                      fg=TEXT, bg=BG, anchor="w")
-            val_lbl.pack(side="left", padx=(8, 0))
+        # ── Top section: info text on the left, action buttons on the right ───
+        # Two columns. The ABOUT_FIELDS rows (Application / Created by / Built
+        # with) plus the bug/suggestion note live on the left; the three action
+        # buttons stack on the right.
+        top_sec = ttk.Frame(outer)
+        top_sec.pack(fill="x", pady=(0, 4))
 
-        # ── GitHub link (button replaces the old plain-text URL row) ──────────
-        self._github_btn = tk.Button(
-            outer, text="View on GitHub",
-            font=("Segoe UI", 10, "bold"),
-            bg=SURFACE2, fg=LINK_COL,
-            activebackground=BORDER, activeforeground=TEXT,
-            relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
-            command=lambda: webbrowser.open(GITHUB_URL))
-        self._github_btn.pack(anchor="w", pady=(4, 0))
+        def _about_btn(parent, label, command):
+            return tk.Button(
+                parent, text=label,
+                font=("Segoe UI", 10, "bold"),
+                bg=SURFACE2, fg=LINK_COL,
+                activebackground=BORDER, activeforeground=TEXT,
+                relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
+                command=command)
+
+        # Right column — packed first so it claims the right edge. Buttons stack
+        # top-to-bottom: View on GitHub, Submit Issues / Suggestions, then Check
+        # for updates with its status text sitting directly below it.
+        btn_col = tk.Frame(top_sec, bg=BG)
+        btn_col.pack(side="right", anchor="n")
+
+        self._github_btn = _about_btn(
+            btn_col, "View on GitHub",
+            lambda: webbrowser.open(GITHUB_URL))
+        self._github_btn.pack(anchor="e", pady=(0, 6))
         Tooltip(self._github_btn,
                 "Opens the DJ-CrateBuilder GitHub page in your browser. "
                 "Check here for the latest releases and update notes.")
 
-        # ── Updates (nightly build channel) ───────────────────────────────────
+        self._issues_btn = _about_btn(
+            btn_col, "  ↗  Submit Issues / Suggestions  ",
+            lambda: webbrowser.open(GITHUB_ISSUES_URL))
+        self._issues_btn.pack(anchor="e", pady=(0, 6))
+        Tooltip(self._issues_btn,
+                "Opens the GitHub 'Create new issue' form in your browser, "
+                "where you can report a bug or suggest a feature.")
+
         self._update_status_var = tk.StringVar(
             value=f"You're on build {APP_BUILD}.")
-        upd_row = ttk.Frame(outer)
-        upd_row.pack(fill="x", pady=(14, 0))
-        self._update_btn = tk.Button(
-            upd_row, text="  ⟳  Check for updates  ",
-            font=("Segoe UI", 10, "bold"),
-            bg=SURFACE2, fg=LINK_COL,
-            activebackground=BORDER, activeforeground=TEXT,
-            relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
-            command=self._on_check_updates_clicked)
-        self._update_btn.pack(side="left")
-        tk.Label(upd_row, textvariable=self._update_status_var,
-                 font=("Segoe UI", 10), fg=TEXT_MED, bg=BG, anchor="w"
-                 ).pack(side="left", padx=(10, 0))
+        self._update_btn = _about_btn(
+            btn_col, "  ⟳  Check for updates  ",
+            self._on_check_updates_clicked)
+        self._update_btn.pack(anchor="e", pady=(0, 2))
+        tk.Label(btn_col, textvariable=self._update_status_var,
+                 font=("Segoe UI", 10), fg=TEXT_MED, bg=BG,
+                 anchor="e", justify="right").pack(anchor="e")
         Tooltip(self._update_btn,
                 "Checks GitHub for a newer nightly build and, if one exists, "
                 "downloads and installs it (the app restarts to finish).")
 
-        # ── Bug-report note + Submit Issues button ────────────────────────────
-        tk.Label(outer,
-                 text="For any bugs encountered, submit them to the Issues "
-                      "section on GitHub.",
-                 font=("Segoe UI", 11), fg=TEXT_MED, bg=BG, anchor="w",
-                 justify="left").pack(anchor="w", pady=(12, 6))
+        # Left column — info rows (driven by ABOUT_FIELDS) + bug/suggestion note.
+        info_col = tk.Frame(top_sec, bg=BG)
+        info_col.pack(side="left", anchor="n")
 
-        self._issues_btn = tk.Button(
-            outer, text="  ↗  Submit Issues  ",
-            font=("Segoe UI", 10, "bold"),
-            bg=SURFACE2, fg=LINK_COL,
-            activebackground=BORDER, activeforeground=TEXT,
-            relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
-            command=lambda: webbrowser.open(GITHUB_ISSUES_URL))
-        self._issues_btn.pack(anchor="w", pady=(0, 4))
-        Tooltip(self._issues_btn,
-                "Opens the GitHub 'Create new issue' form in your browser, "
-                "where you can report a bug.")
+        for label, value in ABOUT_FIELDS:
+            row = tk.Frame(info_col, bg=BG)
+            row.pack(fill="x", pady=(0, 14))
+            tk.Label(row, text=label, font=("Segoe UI", 12, "bold"),
+                     fg=TEXT, bg=BG, width=14, anchor="w").pack(side="left")
+            tk.Label(row, text=value, font=("Segoe UI", 11),
+                     fg=TEXT, bg=BG, anchor="w").pack(side="left", padx=(8, 0))
+
+        tk.Label(info_col,
+                 text="For any bugs encountered or suggestions you'd like to "
+                      "make, submit them to the Issues section on GitHub.",
+                 font=("Segoe UI", 11), fg=TEXT_MED, bg=BG, anchor="w",
+                 justify="left", wraplength=440).pack(anchor="w", pady=(4, 0))
 
         # ── FAQ ───────────────────────────────────────────────────────────────
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(20, 20))
@@ -8389,33 +8456,101 @@ class MP3DownloaderApp(tk.Tk):
         self._run_bg(_bg)
 
     def _watchlist_soundcloud_link_dialog(self, cid, on_done=None):
-        """Minimal Fix Link for SoundCloud: paste the soundcloud.com/<user> URL.
-        SoundCloud usernames are stable, so there is no channel-id search —
-        applying the URL is all that's needed to make the entry scannable."""
+        """Themed Fix Link for SoundCloud — the platform analogue of the YouTube
+        resolve dialog. SoundCloud usernames are stable and there is no
+        channel-id search, so this collects the soundcloud.com profile URL in a
+        styled window (matching the YouTube card flow) instead of the old bare
+        prompt, then applies it. Deliberately a separate SoundCloud-only
+        function so the YouTube resolve path is never touched.
+        on_done(resolved: bool) fires when the dialog closes."""
         ch = self._db.get_watchlist_channel(cid)
         if not ch:
             if on_done:
                 on_done(False)
             return
-        url = simpledialog.askstring(
-            "Fix Link — SoundCloud",
-            f"Paste the SoundCloud profile URL for “{ch['display_name']}”\n"
-            f"(e.g. https://soundcloud.com/artist-name):",
-            parent=self)
-        if url and "soundcloud.com" in url.lower():
-            self._watchlist_apply_url(cid, url.strip())
+
+        W, H = 560, 340
+        dlg = tk.Toplevel(self)
+        dlg.title("Fix Link — SoundCloud")
+        dlg.configure(bg=BG)
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        dlg.grab_set()
+        dlg.update_idletasks()
+        px = self.winfo_x() + (self.winfo_width() - W) // 2
+        py = self.winfo_y() + (self.winfo_height() - H) // 2
+        dlg.geometry(f"{W}x{H}+{max(0, px)}+{max(0, py)}")
+
+        outer = tk.Frame(dlg, bg=BG, padx=24, pady=18)
+        outer.pack(fill="both", expand=True)
+
+        tk.Label(outer, text="Set the SoundCloud profile",
+                 font=("Segoe UI", 14, "bold"), fg=TEXT, bg=BG
+                 ).pack(anchor="w")
+        tk.Label(outer,
+                 text=f"Link “{ch['display_name']}” to its SoundCloud profile "
+                      f"so the channel can be scanned for new tracks.",
+                 font=("Segoe UI", 9), fg=TEXT_DIM, bg=BG, wraplength=W - 60,
+                 justify="left").pack(anchor="w", pady=(2, 16))
+
+        tk.Label(outer, text="SoundCloud profile URL",
+                 font=("Segoe UI", 10, "bold"), fg=TEXT, bg=BG
+                 ).pack(anchor="w", pady=(0, 4))
+
+        url_var = tk.StringVar()
+        url_entry = tk.Entry(
+            outer, textvariable=url_var,
+            font=("Segoe UI", 10), bg=SURFACE, fg=TEXT,
+            insertbackground=TEXT, relief="flat",
+            highlightthickness=1, highlightbackground=BORDER)
+        url_entry.pack(fill="x", ipady=6, pady=(0, 6))
+        url_entry.focus_set()
+
+        tk.Label(outer, text="e.g.  https://soundcloud.com/artist-name",
+                 font=("Segoe UI", 8), fg=TEXT_DIM, bg=BG
+                 ).pack(anchor="w")
+
+        err_var = tk.StringVar(value="")
+        tk.Label(outer, textvariable=err_var,
+                 font=("Segoe UI", 9), fg=YT_RED, bg=BG, anchor="w",
+                 justify="left", wraplength=W - 60).pack(anchor="w", pady=(8, 0))
+
+        def _close(resolved):
+            try:
+                dlg.grab_release()
+                dlg.destroy()
+            except Exception:
+                pass
+            self._watchlist_refresh()
             if on_done:
-                on_done(True)
-        elif url is not None:
-            messagebox.showwarning(
-                "Not a SoundCloud URL",
-                "That doesn't look like a soundcloud.com URL.", parent=self)
-            if on_done:
-                on_done(False)
-        else:
-            # User cancelled the prompt.
-            if on_done:
-                on_done(False)
+                on_done(resolved)
+
+        def _save(*_evt):
+            url = url_var.get().strip()
+            if not url:
+                err_var.set("Paste the channel's soundcloud.com profile URL.")
+                return
+            if "soundcloud.com" not in url.lower():
+                err_var.set("That doesn't look like a soundcloud.com URL.")
+                return
+            self._watchlist_apply_url(cid, url)
+            _close(True)
+
+        btn_row = tk.Frame(outer, bg=BG)
+        btn_row.pack(side="bottom", fill="x", pady=(18, 0))
+        tk.Button(btn_row, text="  Save Link  ",
+                  font=("Segoe UI", 10, "bold"), bg=SURFACE2, fg=LINK_COL,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
+                  command=_save).pack(side="left")
+        tk.Button(btn_row, text="  Cancel  ",
+                  font=("Segoe UI", 10), bg=SURFACE2, fg=TEXT_DIM,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
+                  command=lambda: _close(False)).pack(side="left", padx=(8, 0))
+
+        dlg.bind("<Return>", _save)
+        dlg.bind("<Escape>", lambda _e: _close(False))
 
     def _watchlist_resolve_dialog(self, cid, on_done=None):
         """Show the top-4 YouTube matches for a channel so the user can pick
