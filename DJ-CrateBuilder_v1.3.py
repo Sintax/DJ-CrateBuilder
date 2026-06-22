@@ -3436,6 +3436,8 @@ class MP3DownloaderApp(tk.Tk):
         self._update_check_interval = tk.StringVar(
             value=cfg.get("update_check_interval", "6 hours"))
         self._update_check_after_id = None
+        self._next_update_check_ts = None
+        self._next_update_check_var = tk.StringVar(value="")
         self._auto_dl_interval.trace_add("write", self._autosave_automation_settings)
         self._minimize_to_tray.trace_add("write", self._autosave_automation_settings)
         self._start_minimized.trace_add("write", self._autosave_automation_settings)
@@ -3883,10 +3885,10 @@ class MP3DownloaderApp(tk.Tk):
             "•  When you press 'Downloads MP3's', every link in the queue is "
             "processed top to bottom.",
             wraplength=360).pack(side="left", padx=(8, 0))
-        ttk.Button(hdr, text="Clear All", style="Browse.TButton",
+        ttk.Button(hdr, text="Clear All", style="MainBrowse.TButton",
                    command=self._batch_clear).pack(side="right")
         self._batch_add_btn = ttk.Button(hdr, text="+ Add to Batch",
-                   style="Browse.TButton", command=self._batch_add)
+                   style="MainBrowse.TButton", command=self._batch_add)
         self._batch_add_btn.pack(side="right", padx=(0, 6))
 
         outer = tk.Frame(parent, bg=SURFACE2,
@@ -4166,48 +4168,56 @@ class MP3DownloaderApp(tk.Tk):
             font=("Segoe UI", 11), relief="flat", padding=(10, 8))
 
         s.configure("Download.TButton",
-            background=YT_DARK, foreground=TEXT,
+            background=YT_DARK, foreground=YT_RED,
             font=("Segoe UI", 11, "bold"),
             relief="flat", borderwidth=0, padding=(16, 10))
         s.map("Download.TButton",
             background=[("active", YT_RED), ("disabled", "#2a1515")],
-            foreground=[("disabled", "#555")])
+            foreground=[("active", YT_RED), ("disabled", MAROON)])
 
         s.configure("Cancel.TButton",
-            background=SURFACE2, foreground=TEXT_DIM,
+            background=SURFACE2, foreground=YT_RED,
             font=("Segoe UI", 11),
             relief="flat", borderwidth=0, padding=(20, 12))
         s.map("Cancel.TButton",
             background=[("active", "#333"), ("disabled", SURFACE2)],
-            foreground=[("disabled", "#444")])
+            foreground=[("active", YT_RED), ("disabled", MAROON)])
 
         s.configure("CancelActive.TButton",
-            background=YT_DARK, foreground=TEXT,
+            background=YT_DARK, foreground=YT_RED,
             font=("Segoe UI", 11),
             relief="flat", borderwidth=0, padding=(20, 12))
         s.map("CancelActive.TButton",
             background=[("active", YT_RED), ("disabled", SURFACE2)],
-            foreground=[("disabled", "#444")])
+            foreground=[("active", YT_RED), ("disabled", MAROON)])
 
         s.configure("Pause.TButton",
-            background="#78350f", foreground="#fcd34d",
+            background="#78350f", foreground=YT_RED,
             font=("Segoe UI", 10), relief="flat", borderwidth=0, padding=(12, 12))
         s.map("Pause.TButton",
             background=[("active", "#f59e0b"), ("disabled", SURFACE2)],
-            foreground=[("active", "#1c1917"), ("disabled", "#444")])
+            foreground=[("active", YT_RED), ("disabled", MAROON)])
 
         s.configure("Resume.TButton",
-            background="#14532d", foreground="#86efac",
+            background="#14532d", foreground=YT_RED,
             font=("Segoe UI", 10), relief="flat", borderwidth=0, padding=(12, 12))
         s.map("Resume.TButton",
             background=[("active", "#22c55e"), ("disabled", SURFACE2)],
-            foreground=[("active", "#052e16"), ("disabled", "#444")])
+            foreground=[("active", YT_RED), ("disabled", MAROON)])
 
         s.configure("Browse.TButton",
             background=SURFACE2, foreground=TEXT_DIM,
             font=("Segoe UI", 10), relief="flat", borderwidth=0, padding=(10, 8))
         s.map("Browse.TButton",
             background=[("active", BORDER)], foreground=[("active", TEXT)])
+
+        # Main-tab variant of Browse.TButton with red text (per UI request).
+        s.configure("MainBrowse.TButton",
+            background=SURFACE2, foreground=YT_RED,
+            font=("Segoe UI", 10), relief="flat", borderwidth=0, padding=(10, 8))
+        s.map("MainBrowse.TButton",
+            background=[("active", BORDER), ("disabled", SURFACE2)],
+            foreground=[("active", YT_RED), ("disabled", MAROON)])
 
         s.configure("Save.TButton",
             background="#1ba34e", foreground=TEXT,
@@ -4494,7 +4504,7 @@ class MP3DownloaderApp(tk.Tk):
         self._genre_combo.pack(side="left", padx=(0, 8))
         self._genre_combo.bind("<<ComboboxSelected>>", self._on_genre_selected)
 
-        ttk.Button(genre_row, text="+ New", style="Browse.TButton",
+        ttk.Button(genre_row, text="+ New", style="MainBrowse.TButton",
                    command=self._add_genre).pack(side="left", padx=(0, 16))
 
         self._refresh_genre_list()
@@ -4516,7 +4526,7 @@ class MP3DownloaderApp(tk.Tk):
             state="readonly", width=20)
         self._skip_mode_combo.pack(side="left", padx=(14, 0))
 
-        ttk.Button(opt, text="📂  Open Folder", style="Browse.TButton",
+        ttk.Button(opt, text="📂  Open Folder", style="MainBrowse.TButton",
                    command=self._open_download_dir).pack(side="right")
 
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(4, 10))
@@ -5954,9 +5964,29 @@ class MP3DownloaderApp(tk.Tk):
             self._update_check_after_id = None
         secs = interval_label_to_seconds(self._update_check_interval.get())
         if not secs:
+            self._next_update_check_ts = None
+            self._refresh_next_update_check_label()
             return   # no/invalid interval — leave the timer disarmed
         self._update_check_after_id = self.after(
             int(secs * 1000), self._update_check_tick)
+        self._next_update_check_ts = time.time() + secs
+        self._refresh_next_update_check_label()
+
+    def _refresh_next_update_check_label(self):
+        """Update the 'Next check: …' label under the auto-check dropdown."""
+        var = getattr(self, "_next_update_check_var", None)
+        if var is None:
+            return
+        ts = getattr(self, "_next_update_check_ts", None)
+        if not ts:
+            var.set("")
+            return
+        try:
+            stamp = time.strftime("%Y-%m-%d  %I:%M %p",
+                                  time.localtime(ts)).lstrip("0")
+            var.set(f"Next check: {stamp}")
+        except Exception:
+            var.set("")
 
     def _update_check_tick(self):
         """Fire one scheduled silent update check, then re-arm for the next
@@ -6249,6 +6279,11 @@ class MP3DownloaderApp(tk.Tk):
         Tooltip(self._update_interval_combo,
                 "How often DJ-CrateBuilder quietly checks GitHub for a newer "
                 "nightly build in the background.")
+
+        tk.Label(btn_col, textvariable=self._next_update_check_var,
+                 font=("Segoe UI", 9), fg=TEXT_DIM, bg=BG,
+                 anchor="e", justify="right").pack(anchor="e", pady=(2, 0))
+        self._refresh_next_update_check_label()
 
         # Left column — info rows (driven by ABOUT_FIELDS) + bug/suggestion note.
         info_col = tk.Frame(top_sec, bg=BG)
