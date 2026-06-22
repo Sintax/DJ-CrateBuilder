@@ -97,6 +97,26 @@ def bundled_ffmpeg_dir():
             return cand
     return None
 
+
+def app_icon_path():
+    """Return the absolute path to the bundled app icon (icon.ico), or None.
+
+    Mirrors bundled_ffmpeg_dir(): in the packaged (PyInstaller) build the icon
+    is shipped beside the executable (and/or in the _MEIPASS temp dir); from
+    source it sits next to this script. Used to give the tray icon and the Tk
+    window the real app icon instead of a runtime-drawn placeholder.
+    """
+    if getattr(sys, "frozen", False):
+        cands = (os.path.dirname(sys.executable), getattr(sys, "_MEIPASS", None))
+    else:
+        cands = (os.path.dirname(os.path.abspath(__file__)),)
+    for cand in cands:
+        if cand:
+            p = os.path.join(cand, "icon.ico")
+            if os.path.isfile(p):
+                return p
+    return None
+
 # ── Color palette ─────────────────────────────────────────────────────────────
 BG        = "#0f0f0f"
 SURFACE   = "#1a1a1a"
@@ -5760,6 +5780,18 @@ class MP3DownloaderApp(tk.Tk):
         if self._tray_icon is not None:
             self._tray_icon.notify(msg, title)
 
+    def _load_tray_image(self):
+        """Load the real app icon (icon.ico) as a PIL image for the tray, or
+        None to let TrayIcon fall back to its runtime-drawn placeholder."""
+        path = app_icon_path()
+        if not path:
+            return None
+        try:
+            from PIL import Image
+            return Image.open(path)
+        except Exception:
+            return None
+
     def _ensure_tray(self):
         """Create and start the tray icon on first hide (lazy)."""
         if self._tray_icon is not None:
@@ -5771,7 +5803,8 @@ class MP3DownloaderApp(tk.Tk):
             on_scan=self._tray_scan_now,
             on_download=self._tray_download_all_new,
             on_quit=self._tray_close,
-            download_text=lambda *_: self._tray_dl_label)
+            download_text=lambda *_: self._tray_dl_label,
+            image=self._load_tray_image())
         if not self._tray_icon.available or not self._tray_icon.start():
             self._tray_icon = None
         else:
