@@ -67,3 +67,7 @@ ffmpeg_essentials.zip
 # Internal dev scratchpad — plans/specs written during multi-phase reworks.
 # Not user docs and not required by the app; keep them out of the public repo.
 superpowers/
+
+# Claude Code machine-local state: per-user permissions, worktrees, and the
+# project-local /build-update skill (contains hardcoded machine paths).
+.claude/
