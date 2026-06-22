@@ -161,6 +161,7 @@ def build_app(src):
     print("\n[*] Building the main app (onedir)...")
     run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
          "--name", APP_NAME, "--windowed", "--onedir", "--icon", "icon.ico",
+         "--add-data", "icon.ico" + os.pathsep + ".",
          "--collect-submodules", "cratebuilder",
          "--hidden-import", "pystray._win32",
          "--hidden-import", "PIL.ImageDraw",
