@@ -281,3 +281,61 @@ def test_find_matching_watchlist_row_total_on_missing_keys():
     assert match is rows[2]
     assert util.find_matching_watchlist_row(
         [None, {}], "https://nope") is None
+
+
+# ── SoundCloud profile-handle extraction ──────────────────────────────────────
+def test_soundcloud_profile_handle_from_profile_and_track_urls():
+    h = util.soundcloud_profile_handle
+    assert h("https://soundcloud.com/vicksleek") == "vicksleek"
+    # A track URL still resolves to the artist in its first path segment.
+    assert h("https://soundcloud.com/vicksleek/some-track-name") == "vicksleek"
+    # www / m subdomains and trailing junk are tolerated.
+    assert h("https://www.soundcloud.com/Vicksleek/") == "vicksleek"
+    assert h("https://m.soundcloud.com/vicksleek/sets/ep") == "vicksleek"
+
+
+def test_soundcloud_profile_handle_rejects_non_profiles():
+    h = util.soundcloud_profile_handle
+    assert h("https://soundcloud.com/search?q=vicksleek") is None
+    assert h("https://soundcloud.com/tags/house") is None
+    assert h("https://soundcloud.com/") is None
+    assert h("https://youtube.com/@vicksleek") is None
+    assert h("") is None
+    assert h(None) is None
+
+
+# ── Cross-source candidate merge ───────────────────────────────────────────────
+def test_merge_soundcloud_candidates_ranks_both_sources_first():
+    track_hits = [
+        {"url": "https://soundcloud.com/artist-a/track-1", "title": "Artist A"},
+        {"url": "https://soundcloud.com/artist-b/track-9", "title": "Artist B"},
+    ]
+    web_hits = [
+        {"url": "https://soundcloud.com/artist-b"},      # overlaps -> 'both'
+        {"url": "https://soundcloud.com/artist-c"},      # web-only
+    ]
+    out = util.merge_soundcloud_candidates(track_hits, web_hits)
+    handles = [c["handle"] for c in out]
+    # artist-b is confirmed by both sources -> first.
+    assert handles[0] == "artist-b"
+    assert out[0]["confidence"] == "both"
+    # All three distinct artists present; track-only outranks web-only.
+    assert set(handles) == {"artist-a", "artist-b", "artist-c"}
+    assert handles.index("artist-a") < handles.index("artist-c")
+    # Human title from the track hit is preferred over the bare handle.
+    assert out[0]["title"] == "Artist B"
+
+
+def test_merge_soundcloud_candidates_dedupes_and_caps():
+    track_hits = [{"url": f"https://soundcloud.com/a{i}/t"} for i in range(10)]
+    # Duplicate of a0 in a different URL form must collapse, not double-count.
+    web_hits = [{"url": "https://soundcloud.com/a0"}]
+    out = util.merge_soundcloud_candidates(track_hits, web_hits, max_results=4)
+    assert len(out) == 4
+    assert out[0]["handle"] == "a0" and out[0]["confidence"] == "both"
+    assert len({c["handle"] for c in out}) == 4
+
+
+def test_merge_soundcloud_candidates_handles_empty():
+    assert util.merge_soundcloud_candidates([], []) == []
+    assert util.merge_soundcloud_candidates(None, None) == []
