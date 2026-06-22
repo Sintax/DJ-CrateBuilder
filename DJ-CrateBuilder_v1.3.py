@@ -3885,10 +3885,10 @@ class MP3DownloaderApp(tk.Tk):
             "•  When you press 'Downloads MP3's', every link in the queue is "
             "processed top to bottom.",
             wraplength=360).pack(side="left", padx=(8, 0))
-        ttk.Button(hdr, text="Clear All", style="MainBrowse.TButton",
+        ttk.Button(hdr, text="Clear All", style="Browse.TButton",
                    command=self._batch_clear).pack(side="right")
         self._batch_add_btn = ttk.Button(hdr, text="+ Add to Batch",
-                   style="MainBrowse.TButton", command=self._batch_add)
+                   style="Browse.TButton", command=self._batch_add)
         self._batch_add_btn.pack(side="right", padx=(0, 6))
 
         outer = tk.Frame(parent, bg=SURFACE2,
@@ -4168,56 +4168,48 @@ class MP3DownloaderApp(tk.Tk):
             font=("Segoe UI", 11), relief="flat", padding=(10, 8))
 
         s.configure("Download.TButton",
-            background=YT_DARK, foreground=YT_RED,
+            background=YT_DARK, foreground=TEXT,
             font=("Segoe UI", 11, "bold"),
             relief="flat", borderwidth=0, padding=(16, 10))
         s.map("Download.TButton",
             background=[("active", YT_RED), ("disabled", "#2a1515")],
-            foreground=[("active", YT_RED), ("disabled", MAROON)])
+            foreground=[("disabled", "#555")])
 
         s.configure("Cancel.TButton",
-            background=SURFACE2, foreground=YT_RED,
+            background=SURFACE2, foreground=TEXT_DIM,
             font=("Segoe UI", 11),
             relief="flat", borderwidth=0, padding=(20, 12))
         s.map("Cancel.TButton",
             background=[("active", "#333"), ("disabled", SURFACE2)],
-            foreground=[("active", YT_RED), ("disabled", MAROON)])
+            foreground=[("disabled", "#444")])
 
         s.configure("CancelActive.TButton",
-            background=YT_DARK, foreground=YT_RED,
+            background=YT_DARK, foreground=TEXT,
             font=("Segoe UI", 11),
             relief="flat", borderwidth=0, padding=(20, 12))
         s.map("CancelActive.TButton",
             background=[("active", YT_RED), ("disabled", SURFACE2)],
-            foreground=[("active", YT_RED), ("disabled", MAROON)])
+            foreground=[("disabled", "#444")])
 
         s.configure("Pause.TButton",
-            background="#78350f", foreground=YT_RED,
+            background="#78350f", foreground="#fcd34d",
             font=("Segoe UI", 10), relief="flat", borderwidth=0, padding=(12, 12))
         s.map("Pause.TButton",
             background=[("active", "#f59e0b"), ("disabled", SURFACE2)],
-            foreground=[("active", YT_RED), ("disabled", MAROON)])
+            foreground=[("active", "#1c1917"), ("disabled", "#444")])
 
         s.configure("Resume.TButton",
-            background="#14532d", foreground=YT_RED,
+            background="#14532d", foreground="#86efac",
             font=("Segoe UI", 10), relief="flat", borderwidth=0, padding=(12, 12))
         s.map("Resume.TButton",
             background=[("active", "#22c55e"), ("disabled", SURFACE2)],
-            foreground=[("active", YT_RED), ("disabled", MAROON)])
+            foreground=[("active", "#052e16"), ("disabled", "#444")])
 
         s.configure("Browse.TButton",
             background=SURFACE2, foreground=TEXT_DIM,
             font=("Segoe UI", 10), relief="flat", borderwidth=0, padding=(10, 8))
         s.map("Browse.TButton",
             background=[("active", BORDER)], foreground=[("active", TEXT)])
-
-        # Main-tab variant of Browse.TButton with red text (per UI request).
-        s.configure("MainBrowse.TButton",
-            background=SURFACE2, foreground=YT_RED,
-            font=("Segoe UI", 10), relief="flat", borderwidth=0, padding=(10, 8))
-        s.map("MainBrowse.TButton",
-            background=[("active", BORDER), ("disabled", SURFACE2)],
-            foreground=[("active", YT_RED), ("disabled", MAROON)])
 
         s.configure("Save.TButton",
             background="#1ba34e", foreground=TEXT,
@@ -4504,7 +4496,7 @@ class MP3DownloaderApp(tk.Tk):
         self._genre_combo.pack(side="left", padx=(0, 8))
         self._genre_combo.bind("<<ComboboxSelected>>", self._on_genre_selected)
 
-        ttk.Button(genre_row, text="+ New", style="MainBrowse.TButton",
+        ttk.Button(genre_row, text="+ New", style="Browse.TButton",
                    command=self._add_genre).pack(side="left", padx=(0, 16))
 
         self._refresh_genre_list()
@@ -4526,7 +4518,7 @@ class MP3DownloaderApp(tk.Tk):
             state="readonly", width=20)
         self._skip_mode_combo.pack(side="left", padx=(14, 0))
 
-        ttk.Button(opt, text="📂  Open Folder", style="MainBrowse.TButton",
+        ttk.Button(opt, text="📂  Open Folder", style="Browse.TButton",
                    command=self._open_download_dir).pack(side="right")
 
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(4, 10))
