@@ -5951,20 +5951,6 @@ class MP3DownloaderApp(tk.Tk):
     # ══════════════════════════════════════════════════════════════════════════
     # Self-update — nightly build channel (logic in cratebuilder/updater_core.py)
     # ══════════════════════════════════════════════════════════════════════════
-    # Shown FIRST, before any download begins, every time an update is applied.
-    _AV_WARNING = (
-        "Heads-up: Windows Defender or your antivirus may flag this update.\n\n"
-        "DJ-CrateBuilder is not code-signed (signing certificates are costly for "
-        "a small project), so Windows can show a false-positive warning when the "
-        "updater downloads files and replaces the app. This is expected and safe:\n\n"
-        "  •  The update comes straight from the official GitHub repository.\n"
-        "  •  Its download is verified with a SHA-256 checksum before anything is "
-        "installed.\n\n"
-        "If Windows or your antivirus blocks the update, choose \"Run anyway\" / "
-        "allow DJ-CrateBuilder, or update manually from the GitHub Releases page.\n\n"
-        "Continue with the update?"
-    )
-
     def _set_update_status(self, text):
         """Update the About-tab status label if it has been built yet."""
         var = getattr(self, "_update_status_var", None)
@@ -6117,13 +6103,6 @@ class MP3DownloaderApp(tk.Tk):
                 parent=self):
             self._set_update_status(
                 f"Update available: build {build}. (You're on build {APP_BUILD}.)")
-            return
-
-        # Antivirus / Defender false-positive warning — FIRST, pre-download.
-        if not messagebox.askokcancel(
-                "Before updating — antivirus note", self._AV_WARNING,
-                icon="warning", parent=self):
-            self._set_update_status("Update canceled.")
             return
 
         self._run_update(manifest, build)
