@@ -6265,9 +6265,9 @@ class MP3DownloaderApp(tk.Tk):
                 relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
                 command=command)
 
-        # Right column — packed first so it claims the right edge. Buttons stack
-        # top-to-bottom: View on GitHub, Submit Issues / Suggestions, then Check
-        # for updates with its status text sitting directly below it.
+        # Right column — packed first so it claims the right edge. Stack:
+        # View on GitHub, a gap, then the current-build status text directly
+        # ABOVE the Check-for-Updates button.
         btn_col = tk.Frame(top_sec, bg=BG)
         btn_col.pack(side="right", anchor="n")
 
@@ -6279,23 +6279,15 @@ class MP3DownloaderApp(tk.Tk):
                 "Opens the DJ-CrateBuilder GitHub page in your browser. "
                 "Check here for the latest releases and update notes.")
 
-        self._issues_btn = _about_btn(
-            btn_col, "  ↗  Submit Issues / Suggestions  ",
-            lambda: webbrowser.open(GITHUB_ISSUES_URL))
-        self._issues_btn.pack(anchor="e", pady=(0, 6))
-        Tooltip(self._issues_btn,
-                "Opens the GitHub 'Create new issue' form in your browser, "
-                "where you can report a bug or suggest a feature.")
-
         self._update_status_var = tk.StringVar(
             value=f"You're on build {APP_BUILD}.")
+        tk.Label(btn_col, textvariable=self._update_status_var,
+                 font=("Segoe UI", 10, "bold"), fg=TEXT, bg=BG,
+                 anchor="e", justify="right").pack(anchor="e", pady=(22, 4))
         self._update_btn = _about_btn(
             btn_col, "  ⟳  Check for updates  ",
             self._on_check_updates_clicked)
         self._update_btn.pack(anchor="e", pady=(0, 2))
-        tk.Label(btn_col, textvariable=self._update_status_var,
-                 font=("Segoe UI", 10), fg=TEXT_MED, bg=BG,
-                 anchor="e", justify="right").pack(anchor="e")
         Tooltip(self._update_btn,
                 "Checks GitHub for a newer nightly build and, if one exists, "
                 "downloads and installs it (the app restarts to finish).")
@@ -6319,7 +6311,8 @@ class MP3DownloaderApp(tk.Tk):
                  anchor="e", justify="right").pack(anchor="e", pady=(2, 0))
         self._refresh_next_update_check_label()
 
-        # Left column — info rows (driven by ABOUT_FIELDS) + bug/suggestion note.
+        # Left column — info rows (driven by ABOUT_FIELDS), then the Submit
+        # Issues / Suggestions button, then its accompanying note.
         info_col = tk.Frame(top_sec, bg=BG)
         info_col.pack(side="left", anchor="n")
 
@@ -6331,11 +6324,19 @@ class MP3DownloaderApp(tk.Tk):
             tk.Label(row, text=value, font=("Segoe UI", 11),
                      fg=TEXT, bg=BG, anchor="w").pack(side="left", padx=(8, 0))
 
+        self._issues_btn = _about_btn(
+            info_col, "  ↗  Submit Issues / Suggestions  ",
+            lambda: webbrowser.open(GITHUB_ISSUES_URL))
+        self._issues_btn.pack(anchor="w", pady=(4, 6))
+        Tooltip(self._issues_btn,
+                "Opens the GitHub 'Create new issue' form in your browser, "
+                "where you can report a bug or suggest a feature.")
+
         tk.Label(info_col,
                  text="*(For any bugs encountered or suggestions you'd like to "
                       "make, submit them using the Submit Issues/Suggestions button.)",
                  font=("Segoe UI", 11), fg=TEXT_MED, bg=BG, anchor="w",
-                 justify="left", wraplength=440).pack(anchor="w", pady=(4, 0))
+                 justify="left", wraplength=440).pack(anchor="w", pady=(0, 0))
 
         # ── FAQ ───────────────────────────────────────────────────────────────
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(20, 20))
