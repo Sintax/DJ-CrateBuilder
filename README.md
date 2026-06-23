@@ -147,8 +147,8 @@ for a small, free side project. Because of that, Windows may show warnings:
   box. Click **More info → Run anyway**. (It looks scary; it just means the app
   has no paid certificate.)
 - **Windows Defender / antivirus during updates:** the updater downloads a file
-  and replaces the app's program files, which some antivirus tools flag as a
-  **false positive**. The app warns you about this **before** each update starts.
+  and replaces the app's program files, which some antivirus tools may flag as a
+  **false positive**.
 
 **This is expected and safe.** Every update comes straight from the official
 [GitHub repository](https://github.com/Sintax/DJ-CrateBuilder) and is verified
