@@ -34,6 +34,7 @@ from cratebuilder.cleanup import (
     is_scan_trustworthy, classify_local_files, partition_trash)
 from cratebuilder import startup as cb_startup
 from cratebuilder import updater_core as ucore
+from cratebuilder.tagging import write_track_tags
 from cratebuilder.singleton import acquire_single_instance, SINGLE_INSTANCE_PORT
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3693,6 +3694,18 @@ class MP3DownloaderApp(tk.Tk):
             f"Title: {title} | "
             f"File: {filepath}"
         )
+
+    def _tag_track(self, path, title, url):
+        """Best-effort: stamp Title / Encoded-by / source-URL ID3 tags onto a
+        downloaded MP3 so the originating YouTube/SoundCloud link is later
+        recoverable from the file's Details. Used both for freshly downloaded
+        files and as a backfill on tracks that were skipped because they were
+        already on disk. Never raises; a tag failure must not break a batch."""
+        try:
+            if write_track_tags(path, title=title, source_url=url):
+                self._dbg.debug(f"ID3 TAGGED   | {title!r}  {path}")
+        except Exception as exc:  # pragma: no cover - defensive
+            self._dbg.warning(f"ID3 TAG FAIL | {title!r}  {exc}")
 
     def _log_error(self, title, url, error):
         """Write one ERROR entry to the log file."""
@@ -7610,6 +7623,11 @@ class MP3DownloaderApp(tk.Tk):
                         self._grand_sk += 1
                         self._log_skipped(item_title, expected_path,
                                           reason=skip_reason)
+                        # Backfill ID3 tags on the file we already own, so the
+                        # source URL is recoverable even for tracks grabbed
+                        # before tagging existed. Only fills missing fields.
+                        if file_exists and expected_path:
+                            self._tag_track(expected_path, item_title, item_url)
                         self.after(0, lambda i=idx: self._set_row_state(
                             i, ST_SKIPPED, "skipped"))
                         self.after(0, lambda: self._vid_progress.config(value=100))
@@ -7829,6 +7847,12 @@ class MP3DownloaderApp(tk.Tk):
                         f"DOWNLOAD OK   | {item_title!r}  quality={src_str}")
                     self._log_download(item_title, expected_path, item_url,
                                        platform, genre, quality=src_str)
+                    # Stamp ID3 tags (title / encoded-by / source URL) on the
+                    # file just written. Resolve the real path first, since
+                    # yt-dlp's sanitiser may differ from expected_path.
+                    self._tag_track(
+                        self._file_exists_on_disk(save_dir, item_title)
+                        or expected_path, item_title, item_url)
                     # ── Record in the downloads database ──────────────
                     _vid_upload = entry.get("upload_date", "") or ""
                     self._db.add_download(
@@ -7916,6 +7940,9 @@ class MP3DownloaderApp(tk.Tk):
                             self._log_download(
                                 item_title, expected_path, item_url,
                                 platform, genre, quality=src_str)
+                            self._tag_track(
+                                self._file_exists_on_disk(save_dir, item_title)
+                                or expected_path, item_title, item_url)
                             # ── Record retry success in DB ────────────
                             _vid_upload = entry.get("upload_date", "") or ""
                             self._db.add_download(
