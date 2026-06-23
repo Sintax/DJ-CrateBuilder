@@ -8188,6 +8188,10 @@ class MP3DownloaderApp(tk.Tk):
         Tooltip(self._wl_scan_all_btn,
                 "Check every channel for new uploads since the last scan.")
 
+        # Check Links / Force Download All share one toolbar slot: Check Links
+        # shows only while a channel still needs its URL resolved; otherwise
+        # Force Download All takes its place. _wl_update_toolbar_buttons()
+        # (driven from _wl_update_dl_all_count) packs the right one.
         self._wl_fix_btn = tk.Button(
             toolbar, text="  🛠  Check Links  ",
             font=("Segoe UI", 10, "bold"),
@@ -8195,11 +8199,22 @@ class MP3DownloaderApp(tk.Tk):
             activebackground=BORDER, activeforeground=TEXT,
             relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
             command=self._watchlist_fix_broken)
-        self._wl_fix_btn.pack(side="left", padx=(0, 6))
         Tooltip(self._wl_fix_btn,
                 "Look up the real YouTube channel for any folder that still "
                 "needs one, so it can be scanned. Shows the top matches to "
                 "choose from.")
+
+        self._wl_force_btn = tk.Button(
+            toolbar, text="  ⤓  Force Download All  ",
+            font=("Segoe UI", 10, "bold"),
+            bg=SURFACE2, fg=LINK_COL,
+            activebackground=BORDER, activeforeground=TEXT,
+            relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
+            command=self._watchlist_force_download_all)
+        Tooltip(self._wl_force_btn,
+                "Run every channel's full catalogue, not just new uploads. "
+                "Tracks already on disk are skipped — and stamped with their "
+                "source-URL ID3 tag — while anything missing is downloaded.")
 
         self._wl_dl_all_btn = tk.Button(
             toolbar, text="  ⬇  Download All New (0)  ",
@@ -8326,6 +8341,29 @@ class MP3DownloaderApp(tk.Tk):
             # Mirror the count into the tray menu label (plain str read on the
             # tray thread; safe because it's only ever assigned from here).
             self._tray_dl_label = f"Download All New ({total_pending})"
+        except Exception:
+            pass
+        self._wl_update_toolbar_buttons()
+
+    def _wl_update_toolbar_buttons(self):
+        """Show Check Links only while at least one channel still needs its URL
+        resolved; otherwise show Force Download All in that same slot. Both are
+        packed just before the Download All New button so the slot stays put."""
+        fix = getattr(self, "_wl_fix_btn", None)
+        force = getattr(self, "_wl_force_btn", None)
+        anchor = getattr(self, "_wl_dl_all_btn", None)
+        if fix is None or force is None or anchor is None:
+            return
+        try:
+            has_broken = any(self._is_unresolved_channel(c)
+                             for c in self._db.get_all_watchlist_channels())
+        except Exception:
+            has_broken = False
+        show, hide = (fix, force) if has_broken else (force, fix)
+        try:
+            hide.pack_forget()
+            if not show.winfo_ismapped():
+                show.pack(side="left", padx=(0, 6), before=anchor)
         except Exception:
             pass
 
@@ -10060,6 +10098,71 @@ class MP3DownloaderApp(tk.Tk):
 
         self._run_bg(self._batch_worker, run_batch)
         # Update just the batched cards so they show a Cancel button.
+        self._watchlist_update_cards(channel_ids)
+
+    def _watchlist_force_download_all(self):
+        """Run EVERY resolved channel's full catalogue — not just pending new
+        uploads. The Watch List skip logic blows through tracks already on disk
+        (stamping each with its source-URL ID3 tag) and downloads anything
+        genuinely missing. Used to backfill tags across the whole library."""
+        if self._downloading:
+            messagebox.showinfo(
+                "Download in Progress",
+                "A download is already running. Wait for it to finish first.",
+                parent=self)
+            return
+
+        channels = self._db.get_all_watchlist_channels()
+        run_batch = []
+        channel_ids = []
+        for ch in channels:
+            if self._is_unresolved_channel(ch):
+                continue   # no canonical URL yet — Check Links first
+            platform = ch.get("platform", "YouTube")
+            run_batch.append({
+                "url":          watch_fetch_url(platform, ch["url"]),
+                "genre":        ch.get("genre", "(none)"),
+                "platform":     platform,
+                "channel_name": ch["display_name"],
+                "title":        ch["display_name"],
+            })
+            channel_ids.append(ch["id"])
+
+        if not run_batch:
+            messagebox.showinfo(
+                "Nothing to Download",
+                "No resolved channels to process.",
+                parent=self)
+            return
+
+        if not messagebox.askyesno(
+                "Force Download All",
+                f"Re-process the full catalogue of all {len(channel_ids)} "
+                "channel(s)?\n\nTracks already on disk are skipped (and stamped "
+                "with their source-URL tag); only missing tracks download. This "
+                "can take a while on large channels.",
+                parent=self):
+            return
+
+        self._active_watchlist_batch = {"channel_ids": channel_ids}
+        now = int(time.time())
+        self._db.set_watchlist_download_started(channel_ids, now)
+        self._watchlist_last_download = now
+        self._autosave_automation_settings()
+        self._wl_batch_channels = [item["channel_name"] for item in run_batch]
+        self._wl_batch_active_idx = 0
+
+        self._watchlist_log(
+            f"Force-downloading full catalogue across "
+            f"{len(channel_ids)} channels…", "info")
+
+        self._begin_download_session("Preparing Watch List batch…",
+                                     watchlist=True)
+        self._set_status(
+            f"Watch List: forcing full catalogue ({len(channel_ids)} channels)…")
+        self._batch_rebuild_rows()
+
+        self._run_bg(self._batch_worker, run_batch)
         self._watchlist_update_cards(channel_ids)
 
     # ── Startup hygiene ────────────────────────────────────────────────────────
