@@ -1,8 +1,8 @@
 {
   "version": "1.3",
-  "build": 16,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.16.zip",
-  "sha256": "cac900595b52b1dd34fe967ead1c7cc7467b875ceddbe05b8bab5ceaacf9b810",
-  "notes": "About-tab visual polish",
+  "build": 17,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.17.zip",
+  "sha256": "18c009add7b6aa6574a20be9c74078dfac3b7ff6e3dbe6346ae2b2c0dafbf24c",
+  "notes": "No user-facing changes; internal release-script tweak",
   "base": 14
 }
