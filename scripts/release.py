@@ -144,6 +144,7 @@ def build_app(src):
          "--name", APP_NAME, "--windowed", "--onedir", "--icon", "icon.ico",
          "--add-data", "icon.ico" + os.pathsep + ".",
          "--collect-submodules", "cratebuilder",
+         "--collect-submodules", "mutagen",
          "--hidden-import", "pystray._win32",
          "--hidden-import", "PIL.ImageDraw",
          "--hidden-import", "send2trash",
