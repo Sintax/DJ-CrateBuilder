@@ -8075,9 +8075,12 @@ class MP3DownloaderApp(tk.Tk):
             self._watchlist_log("Cancelling scans…", "info")
 
     def _wl_update_cancel_btn_state(self):
-        """Enable Watch List Cancel button if any download or scan is active."""
+        """Enable the Watch List Cancel button only when Watch-List work is in
+        flight (a Watch List batch download or a scan). A Main-tab download has
+        its own Cancel button, so it must not light this one up."""
         try:
-            active = self._downloading or self._wl_scan_active > 0
+            active = (getattr(self, "_wl_download_active", False)
+                      or self._wl_scan_active > 0)
             if active:
                 self._wl_cancel_btn.config(
                     state="normal", bg=YT_DARK, fg=TEXT)
