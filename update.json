@@ -1,8 +1,8 @@
 {
   "version": "1.3",
-  "build": 21,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.21.zip",
-  "sha256": "07e8727507e5769ccef439dd54ebbe488f6cbedc01dba73ebf7509c7b8664c18",
-  "notes": "Dropped the antivirus warning shown before installing an update",
+  "build": 22,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.22.zip",
+  "sha256": "e833ed7a2d4229eb59df35166ca45dafdb6c6a9bb3e96cc14b9a134c34c8b791",
+  "notes": "Batch queue now displays genre on Watch List items",
   "base": 20
 }
