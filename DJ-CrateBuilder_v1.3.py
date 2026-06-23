@@ -4201,7 +4201,7 @@ class MP3DownloaderApp(tk.Tk):
             relief="flat", borderwidth=0, padding=(20, 12))
         s.map("Cancel.TButton",
             background=[("active", "#333"), ("disabled", SURFACE2)],
-            foreground=[("disabled", "#444")])
+            foreground=[("disabled", "#aaaaaa")])
 
         s.configure("CancelActive.TButton",
             background=YT_DARK, foreground=TEXT,
@@ -4216,14 +4216,16 @@ class MP3DownloaderApp(tk.Tk):
             font=("Segoe UI", 10), relief="flat", borderwidth=0, padding=(12, 12))
         s.map("Pause.TButton",
             background=[("active", "#f59e0b"), ("disabled", SURFACE2)],
-            foreground=[("active", "#1c1917"), ("disabled", "#444")])
+            foreground=[("active", "#1c1917"), ("disabled", "#aaaaaa")])
 
+        # Resume = the 'currently paused' state. Dark-orange background flags it
+        # as inactive/awaiting user action.
         s.configure("Resume.TButton",
-            background="#14532d", foreground="#86efac",
+            background="#78350f", foreground="#cccccc",
             font=("Segoe UI", 10), relief="flat", borderwidth=0, padding=(12, 12))
         s.map("Resume.TButton",
-            background=[("active", "#22c55e"), ("disabled", SURFACE2)],
-            foreground=[("active", "#052e16"), ("disabled", "#444")])
+            background=[("active", "#a8521a"), ("disabled", SURFACE2)],
+            foreground=[("active", "#1c1917"), ("disabled", "#aaaaaa")])
 
         s.configure("Browse.TButton",
             background=SURFACE2, foreground=TEXT_DIM,
