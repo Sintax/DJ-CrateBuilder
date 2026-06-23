@@ -3422,6 +3422,7 @@ class MP3DownloaderApp(tk.Tk):
         # While a Watch List batch runs, the Main tab's Batch Queue container
         # shows these channels with the active one highlighted.
         self._wl_batch_channels = []          # ordered display names in the batch
+        self._wl_batch_genres = []            # genre per channel, parallel list
         self._wl_batch_active_idx = -1        # index currently downloading
 
         # Automation settings (auto-download / startup / tray)
@@ -4117,6 +4118,15 @@ class MP3DownloaderApp(tk.Tk):
                      font=("Segoe UI", 10, "bold" if i == active else "normal"),
                      fg=name_col, bg=bg, anchor="w"
                      ).pack(side="left", fill="x", expand=True)
+
+            # Genre/folder this channel saves into, mirroring the Batch Queue's
+            # static rows so the user can see where each download lands.
+            genres = getattr(self, "_wl_batch_genres", [])
+            gval = genres[i] if i < len(genres) else ""
+            genre_str = gval if gval and gval != "(none)" else ""
+            tk.Label(row, text=genre_str, font=("Segoe UI", 9),
+                     fg=(name_col if i == active else TEXT_DIM), bg=bg,
+                     anchor="e").pack(side="left", padx=(4, 6))
 
     # ══════════════════════════════════════════════════════════════════════════
     # UI construction — ttk styles, the notebook, and the Main tab
@@ -8496,15 +8506,25 @@ class MP3DownloaderApp(tk.Tk):
             ("✏ Edit",     lambda c=cid: self._watchlist_edit_channel(c), False),
             ("✕ Remove",   lambda c=cid: self._watchlist_remove_channel(c), False),
         ]
+        # Per-card Cancel is intentionally inert (disabled, dark orange): the
+        # only working Cancel on this tab is the top primary one, which stops
+        # the whole batch/scan. The card button just signals "busy".
+        WL_CARD_CANCEL = "#78350f"   # dark orange
         for btn_text, btn_cmd, is_cancel in card_buttons:
-            b = tk.Button(btns, text=btn_text,
-                          font=("Segoe UI", 9),
-                          bg=(YT_DARK if is_cancel else SURFACE2),
-                          fg=(TEXT if is_cancel else TEXT_MED),
-                          activebackground=(YT_RED if is_cancel else BORDER),
-                          activeforeground=TEXT,
-                          relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
-                          command=btn_cmd)
+            if is_cancel:
+                b = tk.Button(btns, text=btn_text,
+                              font=("Segoe UI", 9),
+                              bg=WL_CARD_CANCEL, fg=TEXT_DIM,
+                              disabledforeground=TEXT_DIM,
+                              relief="flat", bd=0, padx=8, pady=3,
+                              state="disabled")
+            else:
+                b = tk.Button(btns, text=btn_text,
+                              font=("Segoe UI", 9),
+                              bg=SURFACE2, fg=TEXT_MED,
+                              activebackground=BORDER, activeforeground=TEXT,
+                              relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
+                              command=btn_cmd)
             b.pack(side="left", padx=(0, 4))
 
         # Show error if present
@@ -9989,6 +10009,7 @@ class MP3DownloaderApp(tk.Tk):
         self._db.set_watchlist_download_started([cid], int(time.time()))
         # Show this channel in the Main tab's Batch Queue panel.
         self._wl_batch_channels = [ch["display_name"]]
+        self._wl_batch_genres = [genre]
         self._wl_batch_active_idx = 0
 
         self._watchlist_log(
@@ -10061,6 +10082,7 @@ class MP3DownloaderApp(tk.Tk):
         # Show every channel in this batch in the Main tab's Batch Queue panel,
         # in the same order the worker processes them.
         self._wl_batch_channels = [item["channel_name"] for item in run_batch]
+        self._wl_batch_genres = [item["genre"] for item in run_batch]
         self._wl_batch_active_idx = 0
 
         self._watchlist_log(
@@ -10129,6 +10151,7 @@ class MP3DownloaderApp(tk.Tk):
         self._watchlist_last_download = now
         self._autosave_automation_settings()
         self._wl_batch_channels = [item["channel_name"] for item in run_batch]
+        self._wl_batch_genres = [item["genre"] for item in run_batch]
         self._wl_batch_active_idx = 0
 
         self._watchlist_log(
