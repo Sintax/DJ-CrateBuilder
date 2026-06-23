@@ -127,25 +127,6 @@ def write_build(src, new_build):
         f.write(new_text)
 
 
-def write_readme_build(new_build):
-    """Sync the ``(Build_N)`` marker in the README H1 with the new build number.
-
-    Non-fatal: if the marker is missing (README renamed or reformatted) we warn
-    and carry on — a cosmetic mismatch must never block a release."""
-    path = os.path.join(REPO_ROOT, "README.md")
-    if not os.path.exists(path):
-        print("  [!] README.md not found — skipping build-number sync.")
-        return
-    text = open(path, encoding="utf-8").read()
-    new_text, n = re.subn(r"\(Build_\d+\)", f"(Build_{new_build})", text, count=1)
-    if n != 1:
-        print("  [!] README '(Build_N)' marker not found — skipping sync.")
-        return
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(new_text)
-    print(f"[+] README build marker -> (Build_{new_build})")
-
-
 # ── Build step (replaces build-windows.bat) ──────────────────────────────────
 def ensure_pyinstaller():
     r = subprocess.run([sys.executable, "-m", "PyInstaller", "--version"],
@@ -501,19 +482,14 @@ def main(argv=None):
 
     print(f"\n=== DJ-CrateBuilder nightly  v{version}.{new_build} ===")
 
-    # 1. Bump the source so the frozen .exe reports the new build, and sync the
-    #    README's (Build_N) marker so the repo's front page matches the channel.
+    # 1. Bump the source so the frozen .exe reports the new build.
     original_src = open(src, encoding="utf-8").read()
-    readme_path = os.path.join(REPO_ROOT, "README.md")
-    original_readme = (open(readme_path, encoding="utf-8").read()
-                       if os.path.exists(readme_path) else None)
     if new_build != current_build:
         write_build(src, new_build)
         print(f"[+] APP_BUILD: {current_build} -> {new_build}")
-        write_readme_build(new_build)
 
-    # 2. Build (restore the source + README bumps if the build fails, so re-runs
-    #    don't skip a build number).
+    # 2. Build (restore the source bump if the build fails, so re-runs don't
+    #    skip a build number).
     dist_abs = os.path.join(REPO_ROOT, DIST_DIR)
     if not args.no_build:
         try:
@@ -521,9 +497,6 @@ def main(argv=None):
         except SystemExit:
             with open(src, "w", encoding="utf-8") as f:
                 f.write(original_src)
-            if original_readme is not None:
-                with open(readme_path, "w", encoding="utf-8") as f:
-                    f.write(original_readme)
             print("[!] build failed — reverted the APP_BUILD bump.")
             raise
     if not os.path.isdir(dist_abs):
