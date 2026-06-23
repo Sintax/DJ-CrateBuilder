@@ -1,8 +1,8 @@
 {
   "version": "1.3",
-  "build": 18,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.18.zip",
-  "sha256": "f96825e48cde866c2a75bacc716f5c58f2fc8865afd8155ecb80ffedebd94b8b",
-  "notes": "Internal rebuild",
-  "base": 14
+  "build": 19,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.19.zip",
+  "sha256": "c282cbe974e214ce6449a7d0ad054e8f395a9f9829f4444db03002066d636310",
+  "notes": "Downloaded MP3s now include ID3 tags (title, encoder, source URL)",
+  "base": 19
 }
