@@ -1,8 +1,8 @@
 {
   "version": "1.3",
-  "build": 20,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.20.zip",
-  "sha256": "5304a34ab7b746216f64d9a2e2609bb4f0d1d786d63ed8541e131eb75eb28abe",
-  "notes": "Watch List polish: Force Download All button + smarter Check Links gating",
+  "build": 21,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.21.zip",
+  "sha256": "07e8727507e5769ccef439dd54ebbe488f6cbedc01dba73ebf7509c7b8664c18",
+  "notes": "Dropped the antivirus warning shown before installing an update",
   "base": 20
 }
