@@ -76,3 +76,10 @@ superpowers/
 # machine-local, not DJ-CrateBuilder source.
 .agents/
 skills-lock.json
+
+# Kept out of the public repo (local-only project material)
+scripts/
+tests/
+docs/
+.github/workflows/
+CLAUDE.md
