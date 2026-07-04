@@ -339,3 +339,24 @@ def test_merge_soundcloud_candidates_dedupes_and_caps():
 def test_merge_soundcloud_candidates_handles_empty():
     assert util.merge_soundcloud_candidates([], []) == []
     assert util.merge_soundcloud_candidates(None, None) == []
+
+
+def test_runtime_data_dir_uses_script_dir_when_writable(tmp_path):
+    script = tmp_path / "app.py"
+    script.write_text("")
+    assert util.runtime_data_dir(str(script)) == str(tmp_path)
+
+
+def test_runtime_data_dir_falls_back_when_unwritable(monkeypatch, tmp_path):
+    # Simulate a root-owned install dir (the .deb places the app under
+    # /opt/dj-cratebuilder): os.access reports not-writable, so the helper
+    # must return (and create) the per-user data dir instead.
+    import os as _os
+    monkeypatch.setattr(util.os, "access", lambda p, m: False)
+    fake_home = tmp_path / "home"
+    monkeypatch.setenv("LOCALAPPDATA", str(fake_home))          # nt branch
+    monkeypatch.setattr(util.os.path, "expanduser",
+                        lambda p: str(fake_home))               # posix branch
+    result = util.runtime_data_dir(str(tmp_path / "opt" / "app.py"))
+    assert _os.path.basename(result) == "DJ-CrateBuilder"
+    assert _os.path.isdir(result)

@@ -5,6 +5,7 @@ No tkinter imports — safe to unit-test in isolation.
 import json
 import os
 import re
+import sys
 import time
 import urllib.parse
 from datetime import datetime, date, timedelta
@@ -109,6 +110,33 @@ def find_matching_watchlist_row(rows, url, channel_id=None, platform=None):
             return row
 
     return None
+
+
+# ── Runtime data directory ────────────────────────────────────────────────────
+def runtime_data_dir(script_path=None):
+    """Directory for runtime artefacts (activity.log, debug.log, cratebuilder.db).
+
+    Normally the directory the app script lives in — matching every existing
+    Windows and per-user Linux install, where that folder is writable. When it
+    is NOT writable (a system-wide Linux install, e.g. the .deb placing the app
+    under /opt/dj-cratebuilder), fall back to a per-user data dir and create it:
+    %LOCALAPPDATA%\\DJ-CrateBuilder on Windows, ~/.local/share/DJ-CrateBuilder
+    elsewhere. *script_path* defaults to sys.argv[0]; it is a parameter only so
+    tests can exercise both branches. Never raises — if even the fallback can't
+    be created, the script dir is returned and the caller fails as before."""
+    app_dir = os.path.dirname(os.path.abspath(script_path or sys.argv[0]))
+    if os.access(app_dir, os.W_OK):
+        return app_dir
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    else:
+        base = os.path.join(os.path.expanduser("~"), ".local", "share")
+    path = os.path.join(base, "DJ-CrateBuilder")
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        return app_dir
+    return path
 
 
 # ── Config persistence ────────────────────────────────────────────────────────

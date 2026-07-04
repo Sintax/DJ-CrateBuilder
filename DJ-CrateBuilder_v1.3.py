@@ -23,6 +23,7 @@ from cratebuilder.util import (
     detect_platform, redact_ydl_opts, build_cookie_opts,
     derive_collection_name, find_matching_watchlist_row,
     soundcloud_profile_handle, merge_soundcloud_candidates,
+    runtime_data_dir,
 )
 from cratebuilder.sidecar import (
     channel_url_from_id, channel_id_from_url,
@@ -3556,8 +3557,9 @@ class MP3DownloaderApp(tk.Tk):
         """Initialise (or re-initialise) the file logger.
         Called on startup and whenever the base directory changes."""
         os.makedirs(self._base_dir, exist_ok=True)
-        # Place log in the program's install/script directory
-        app_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        # Place log in the program's install/script directory — or the per-user
+        # data dir when the install dir isn't writable (e.g. a .deb under /opt)
+        app_dir = runtime_data_dir()
         self._log_path = os.path.join(app_dir, "activity.log")
 
         logger = logging.getLogger("CrateBuilder")
