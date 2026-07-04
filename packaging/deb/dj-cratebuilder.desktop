@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=DJ-CrateBuilder
+Comment=Batch download audio from YouTube and SoundCloud as MP3
+Exec=dj-cratebuilder
+Icon=dj-cratebuilder
+Terminal=false
+Categories=AudioVideo;Audio;Music;
+Keywords=youtube;soundcloud;mp3;download;dj;music;
