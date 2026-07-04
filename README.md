@@ -109,7 +109,9 @@ python DJ-CrateBuilder_v1.3.py
 
 ### Linux
 
-**Easiest — one file, no terminal knowledge needed.** Download **`install-linux.sh`** from this repo, then run it:
+**Option 1 — Linux Mint / Ubuntu / Debian package (recommended).** Download the latest `.deb` from the [Linux release page](https://github.com/Sintax/DJ-CrateBuilder/releases/tag/linux-v1.3) and double-click it — Mint's package installer handles everything (or from a terminal: `sudo apt install ./dj-cratebuilder_*_all.deb`). Dependencies install automatically, DJ-CrateBuilder appears in your app menu, and it uninstalls cleanly through the Software Manager.
+
+**Option 2 — one-file installer script.** Download **`install-linux.sh`** from this repo, then run it:
 
 ```bash
 bash install-linux.sh
