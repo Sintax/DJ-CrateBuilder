@@ -1,0 +1,16 @@
+#!/bin/sh
+# DJ-CrateBuilder .deb pre-removal: delete the postinst-created venv and any
+# __pycache__ so dpkg can remove /opt/dj-cratebuilder cleanly (dpkg only
+# tracks the files it shipped).
+set -e
+
+APP_DIR=/opt/dj-cratebuilder
+
+case "$1" in
+    remove|upgrade|deconfigure)
+        rm -rf "$APP_DIR/venv"
+        find "$APP_DIR" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+        ;;
+esac
+
+exit 0
