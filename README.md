@@ -109,6 +109,23 @@ python DJ-CrateBuilder_v1.3.py
 
 ### Linux
 
+**Easiest — one file, no terminal knowledge needed.** Download **`install-linux.sh`** from this repo, then run it:
+
+```bash
+bash install-linux.sh
+```
+
+That's it. The installer auto-installs any missing system packages (Python,
+tkinter, FFmpeg — you'll be asked for your password), downloads the app from
+GitHub itself, builds an isolated virtual environment, and adds a menu entry.
+No `git`, no `chmod`, and don't prefix it with `sudo` — the script asks for
+your password only when it needs to. Run it with `bash install-linux.sh`
+(rather than `./install-linux.sh`) so a freshly-downloaded file works without
+setting the execute bit.
+
+<details>
+<summary>Manual install (for people comfortable with the terminal)</summary>
+
 Prerequisites: Python 3.10+, tkinter, FFmpeg. The installer creates its own
 virtual environment and installs the Python packages (yt-dlp, pystray, Pillow)
 into it — so on modern Debian/Ubuntu/Mint you do **not** run `pip install`
@@ -116,16 +133,17 @@ yourself (it would fail with `externally-managed-environment` / PEP 668).
 
 ```bash
 # Install system prerequisites (Ubuntu/Debian/Mint)
-sudo apt install python3 python3-tk python3-venv ffmpeg
+sudo apt install python3 python3-tk python3-venv ffmpeg git
 
 # Clone and install (the installer builds a venv for you)
 git clone https://github.com/Sintax/DJ-CrateBuilder.git
 cd DJ-CrateBuilder
-chmod +x install-linux.sh
-./install-linux.sh
+bash install-linux.sh
 ```
 
-After installation, launch with `dj-cratebuilder` from terminal or find it in your app launcher. To uninstall: `./uninstall-linux.sh`
+</details>
+
+After installation, launch with `dj-cratebuilder` from terminal or find it in your app launcher. To uninstall: `bash uninstall-linux.sh`
 
 ---
 
