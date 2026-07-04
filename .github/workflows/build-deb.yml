@@ -36,7 +36,9 @@ jobs:
           assert importlib.util.find_spec("pystray") is not None, "pystray missing"
           print("deps OK:", yt_dlp.version.__version__)
           PYEOF
-          /opt/dj-cratebuilder/venv/bin/python -m py_compile /opt/dj-cratebuilder/DJ-CrateBuilder_v1.3.py
+          # Redirect bytecode to a writable dir: /opt is root-owned and this
+          # step runs unprivileged (the app itself just skips caching there).
+          PYTHONPYCACHEPREFIX="$(mktemp -d)" /opt/dj-cratebuilder/venv/bin/python -m py_compile /opt/dj-cratebuilder/DJ-CrateBuilder_v1.3.py
           echo "Smoke test passed"
 
       - name: Publish to the linux-v1.3 release
