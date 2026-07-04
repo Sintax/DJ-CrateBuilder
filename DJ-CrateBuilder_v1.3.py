@@ -3459,6 +3459,8 @@ class MP3DownloaderApp(tk.Tk):
         self._update_check_interval = tk.StringVar(
             value=cfg.get("update_check_interval", "6 hours"))
         self._update_check_after_id = None
+        self._update_prompt_open = False    # an auto-check dialog is on screen
+        self._update_in_progress = False    # download/stage worker is running
         self._next_update_check_ts = None
         self._next_update_check_var = tk.StringVar(value="")
         self._auto_dl_interval.trace_add("write", self._autosave_automation_settings)
@@ -5979,10 +5981,10 @@ class MP3DownloaderApp(tk.Tk):
                          args=(True,), daemon=True).start()
 
     def _auto_check_for_updates(self):
-        """Silent check on launch. Runs on every startup and ONLY updates the
-        About-tab status text so the user is told whether a newer build exists.
-        It never prompts or downloads — starting an update stays a deliberate
-        click on the 'Check for updates' button (see _on_check_result)."""
+        """Automatic check (launch + periodic timer). Besides refreshing the
+        About-tab status text, a newer build now prompts to download — or
+        sends a tray notification when the window is hidden. The exact
+        prompt/notify/stay-silent rules live in _on_check_result."""
         threading.Thread(target=self._check_updates_worker,
                          args=(False,), daemon=True).start()
 
@@ -6090,10 +6092,26 @@ class MP3DownloaderApp(tk.Tk):
         build = int(manifest["build"])
         self._set_update_status(
             f"Update available: build {build}. (You're on build {APP_BUILD}.)")
-        # Auto/startup check informs only — it updates the status text and stops.
-        # The download+install flow runs solely from a manual button click.
         if manual:
             self._prompt_and_update(manifest, build)
+            return
+        # Automatic check: surface the update actively. Silent when running
+        # from source (nothing to swap — prompting would only nag), while a
+        # download is already in flight, or while a prompt is still open.
+        if (not ucore.is_frozen() or self._update_in_progress
+                or self._update_prompt_open):
+            return
+        if self.state() == "withdrawn":
+            self._notify_tray(
+                "Update available",
+                f"Build {build} is available (you're on {APP_BUILD}). "
+                "Open DJ-CrateBuilder to install it.")
+            return
+        self._update_prompt_open = True
+        try:
+            self._prompt_and_update(manifest, build)
+        finally:
+            self._update_prompt_open = False
 
     def _prompt_and_update(self, manifest, build):
         """Offer the update, then (if accepted) show the AV note and apply."""
@@ -6121,6 +6139,7 @@ class MP3DownloaderApp(tk.Tk):
 
     def _run_update(self, manifest, build):
         """Download + verify + stage in a worker, with a small progress dialog."""
+        self._update_in_progress = True
         ws = ucore.default_workspace()
         ucore.purge_dir(ws)
         os.makedirs(ws, exist_ok=True)
@@ -6186,6 +6205,7 @@ class MP3DownloaderApp(tk.Tk):
 
     def _update_failed(self, dlg, exc):
         """Close the progress dialog and tell the user the update didn't apply."""
+        self._update_in_progress = False
         try:
             dlg.destroy()
         except Exception:
