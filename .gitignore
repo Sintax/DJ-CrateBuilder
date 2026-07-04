@@ -82,7 +82,3 @@ scripts/
 tests/
 .github/workflows/
 CLAUDE.md
-
-# docs/ is local-only EXCEPT the screenshots the README embeds.
-docs/*
-!docs/screenshots/
