@@ -62,15 +62,34 @@ if ! command -v ffmpeg &>/dev/null; then
 fi
 echo "  ✓ FFmpeg: $(ffmpeg -version 2>&1 | head -1 | awk '{print $3}')"
 
-# ── Install Python dependencies ──────────────────────────────────────────
-# yt-dlp is the download engine; pystray + Pillow drive the system-tray icon.
+# ── Create an isolated virtual environment ────────────────────────────────
+# Modern Debian/Ubuntu/Mint mark the system Python as "externally managed"
+# (PEP 668), so pip refuses to install into it — even with --user. A dedicated
+# venv sidesteps that cleanly and keeps the app's deps isolated from the OS.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VENV_DIR="$INSTALL_DIR/venv"
+mkdir -p "$INSTALL_DIR"
+echo ""
+echo "  → Creating virtual environment"
+if ! "$PYTHON" -m venv "$VENV_DIR" 2>/dev/null; then
+    echo "  ✗ Could not create a virtual environment (the venv module is missing)."
+    echo "    Install it and re-run this script:"
+    echo "      Ubuntu/Debian/Mint:  sudo apt install python3-venv python3-full"
+    echo "      Fedora:              sudo dnf install python3-virtualenv"
+    echo "      Arch:                (bundled with the python package)"
+    exit 1
+fi
+VENV_PY="$VENV_DIR/bin/python"
+echo "  ✓ Virtual environment: $VENV_DIR"
+
+# ── Install Python dependencies into the venv ─────────────────────────────
+# yt-dlp is the download engine; pystray + Pillow drive the system-tray icon.
+echo "  → Installing Python dependencies (yt-dlp, pystray, Pillow)..."
+"$VENV_PY" -m pip install --upgrade pip -q
 if [ -f "$SCRIPT_DIR/requirements.txt" ]; then
-    echo "  → Installing Python dependencies (yt-dlp, pystray, Pillow)..."
-    $PYTHON -m pip install --user -r "$SCRIPT_DIR/requirements.txt" -q
+    "$VENV_PY" -m pip install -r "$SCRIPT_DIR/requirements.txt" -q
 else
-    echo "  → Installing yt-dlp, pystray, Pillow..."
-    $PYTHON -m pip install --user yt-dlp "pystray>=0.19" "Pillow>=10.0" -q
+    "$VENV_PY" -m pip install yt-dlp "pystray>=0.19" "Pillow>=10.0" send2trash "mutagen>=1.45" -q
 fi
 echo "  ✓ Python dependencies installed"
 
@@ -109,7 +128,7 @@ mkdir -p "$(dirname "$BIN_LINK")"
 cat > "$BIN_LINK" << EOF
 #!/bin/bash
 cd "$INSTALL_DIR"
-$PYTHON "$INSTALL_DIR/$SCRIPT_NAME" "\$@"
+exec "$VENV_DIR/bin/python" "$INSTALL_DIR/$SCRIPT_NAME" "\$@"
 EOF
 chmod +x "$BIN_LINK"
 echo "  ✓ Command: dj-cratebuilder"

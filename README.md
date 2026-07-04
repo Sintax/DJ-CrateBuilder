@@ -109,14 +109,16 @@ python DJ-CrateBuilder_v1.3.py
 
 ### Linux
 
-Prerequisites: Python 3.10+, tkinter, FFmpeg, yt-dlp.
+Prerequisites: Python 3.10+, tkinter, FFmpeg. The installer creates its own
+virtual environment and installs the Python packages (yt-dlp, pystray, Pillow)
+into it — so on modern Debian/Ubuntu/Mint you do **not** run `pip install`
+yourself (it would fail with `externally-managed-environment` / PEP 668).
 
 ```bash
-# Install dependencies (Ubuntu/Debian)
-sudo apt install python3 python3-tk ffmpeg
-pip install yt-dlp
+# Install system prerequisites (Ubuntu/Debian/Mint)
+sudo apt install python3 python3-tk python3-venv ffmpeg
 
-# Clone and install
+# Clone and install (the installer builds a venv for you)
 git clone https://github.com/Sintax/DJ-CrateBuilder.git
 cd DJ-CrateBuilder
 chmod +x install-linux.sh
