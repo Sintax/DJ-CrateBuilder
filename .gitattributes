@@ -1,0 +1,3 @@
+# Shell scripts must stay LF so they run on Linux even when edited on Windows.
+# A CRLF shebang breaks `bash install-linux.sh` with `$'\r': command not found`.
+*.sh text eol=lf
