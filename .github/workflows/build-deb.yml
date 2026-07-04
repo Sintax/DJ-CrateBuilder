@@ -1,0 +1,58 @@
+# Builds the Linux Mint / Debian / Ubuntu package and publishes it to the
+# `linux-v1.3` GitHub Release. Manual trigger only — completely separate from
+# the Windows nightly channel (scripts/release.py), which it never touches.
+name: build-deb
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y python3-pil
+
+      - name: Build the .deb
+        run: bash packaging/deb/build-deb.sh "${{ github.run_number }}"
+
+      - name: Smoke-test — install the package on this runner
+        run: |
+          sudo apt-get install -y ./dist/deb/dj-cratebuilder_*_all.deb
+          test -x /usr/bin/dj-cratebuilder
+          # Venv deps importable (pystray checked by spec only: importing its
+          # backend needs a display, which this runner doesn't have).
+          /opt/dj-cratebuilder/venv/bin/python - << 'PYEOF'
+          import importlib.util, sys
+          import yt_dlp, PIL, send2trash, mutagen
+          assert importlib.util.find_spec("pystray") is not None, "pystray missing"
+          print("deps OK:", yt_dlp.version.__version__)
+          PYEOF
+          /opt/dj-cratebuilder/venv/bin/python -m py_compile /opt/dj-cratebuilder/DJ-CrateBuilder_v1.3.py
+          echo "Smoke test passed"
+
+      - name: Publish to the linux-v1.3 release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="linux-v1.3"
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "DJ-CrateBuilder v1.3 — Linux package (.deb)" \
+              --notes "Debian / Ubuntu / Linux Mint package. Download the .deb below and double-click it (or run: sudo apt install ./dj-cratebuilder_*_all.deb). System dependencies are pulled in automatically; Python packages are installed into a private venv during install."
+          fi
+          # Keep exactly one .deb on the release: drop any previous asset first.
+          for asset in $(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name'); do
+            case "$asset" in
+              *.deb) gh release delete-asset "$TAG" "$asset" --repo "$GITHUB_REPOSITORY" -y ;;
+            esac
+          done
+          gh release upload "$TAG" dist/deb/*.deb --repo "$GITHUB_REPOSITORY"
