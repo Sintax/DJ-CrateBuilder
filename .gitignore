@@ -80,6 +80,9 @@ skills-lock.json
 # Kept out of the public repo (local-only project material)
 scripts/
 tests/
-docs/
 .github/workflows/
 CLAUDE.md
+
+# docs/ is local-only EXCEPT the screenshots the README embeds.
+docs/*
+!docs/screenshots/
