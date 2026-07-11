@@ -149,45 +149,6 @@ After installation, launch with `dj-cratebuilder` from terminal or find it in yo
 
 ---
 
-<a name="updates"></a>
-
-## Updates & Antivirus Notice&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
-
-DJ-CrateBuilder can update itself. The **About** tab shows your current build
-(for example `v1.3.1`) and a **Check for updates** button; the app also checks
-quietly in the background once every few hours. Small fixes ship as **nightly
-builds** that bump only the build number — the version stays `1.3`. When a newer
-build is found, the app downloads it, verifies it with a SHA-256 checksum, then
-closes, swaps the files, and relaunches itself — one click, like a normal update.
-
-### Windows SmartScreen & antivirus (please read)
-
-DJ-CrateBuilder is **not code-signed** — code-signing certificates are expensive
-for a small, free side project. Because of that, Windows may show warnings:
-
-- **SmartScreen on first install/run:** a blue *"Windows protected your PC"*
-  box. Click **More info → Run anyway**. (It looks scary; it just means the app
-  has no paid certificate.)
-- **Windows Defender / antivirus during updates:** the updater downloads a file
-  and replaces the app's program files, which some antivirus tools may flag as a
-  **false positive**.
-
-**This is expected and safe.** Every update comes straight from the official
-[GitHub repository](https://github.com/Sintax/DJ-CrateBuilder) and is verified
-with a SHA-256 checksum before anything is installed.
-
-If an update is blocked:
-
-1. Choose **Run anyway** / **Allow** if Windows or your antivirus prompts you.
-2. Or add DJ-CrateBuilder's install folder to your antivirus exclusions.
-3. Or download the latest build manually from the
-   [Releases page](https://github.com/Sintax/DJ-CrateBuilder/releases) and run it.
-
-> Running from source (not the installer)? There's nothing to self-update —
-> just `git pull` the latest changes.
-
----
-
 <a name="usage"></a>
 
 ## Usage&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
