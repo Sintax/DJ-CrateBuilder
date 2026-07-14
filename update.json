@@ -1,8 +1,8 @@
 {
   "version": "1.3",
-  "build": 23,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.23.zip",
-  "sha256": "d3fff81559ab461f8eaac97cba3f969bfdd989312467a9bd438850be49c6c938",
-  "notes": "Tracks now get cover art from the source thumbnail, with a Fetch Missing Artwork tool for your existing library. Plus Linux .deb install.",
+  "build": 24,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.24.zip",
+  "sha256": "2dad7823f117b01df2564b7fd9417b6ab20507311e8b1a5b256d693f10a88c87",
+  "notes": "New Artwork tab in the Database window - see every track's cover art, spot missing art, and preview it.",
   "base": 20
 }
