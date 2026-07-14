@@ -36,6 +36,7 @@ from cratebuilder.cleanup import (
 from cratebuilder import startup as cb_startup
 from cratebuilder import updater_core as ucore
 from cratebuilder.tagging import write_track_tags
+from cratebuilder import artwork as cb_artwork
 from cratebuilder.singleton import acquire_single_instance, SINGLE_INSTANCE_PORT
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -70,6 +71,17 @@ ABOUT_FIELDS = [
     ("Built with",   ABOUT_DESCRIPTION),
 ]
 # ══════════════════════════════════════════════════════════════════════════════
+
+# ── Cover art ─────────────────────────────────────────────────────────────────
+# The Settings combobox shows a friendly label; the config file stores the bare
+# mode string that cratebuilder.artwork understands. These two dicts are the
+# only place the two vocabularies meet.
+_COVER_ART_LABELS = {
+    "crop":     "Crop to square (recommended)",
+    "original": "Keep original aspect (16:9)",
+    "off":      "Off — no cover art",
+}
+_COVER_ART_MODES_BY_LABEL = {v: k for k, v in _COVER_ART_LABELS.items()}
 
 # ── Dependency check ──────────────────────────────────────────────────────────
 def check_dependencies():
@@ -3381,6 +3393,16 @@ class MP3DownloaderApp(tk.Tk):
         self._no_conversion = tk.BooleanVar(value=cfg.get("no_conversion", False))
         self._no_conversion.trace_add("write", self._autosave_bitrate_setting)
 
+        # Cover art — how the source thumbnail is fitted to the square art slot
+        # every player renders. Stored as one of cb_artwork.COVER_ART_MODES;
+        # presented in the UI as a friendly label via _COVER_ART_LABELS.
+        _cfg_mode = str(cfg.get("cover_art_mode",
+                                cb_artwork.DEFAULT_COVER_ART_MODE)).lower()
+        if _cfg_mode not in cb_artwork.COVER_ART_MODES:
+            _cfg_mode = cb_artwork.DEFAULT_COVER_ART_MODE
+        self._cover_art_mode = tk.StringVar(value=_COVER_ART_LABELS[_cfg_mode])
+        self._cover_art_mode.trace_add("write", self._autosave_cover_art_setting)
+
         # Log size limit — caps activity.log and debug.log (each) by trimming the
         # oldest lines; 0 = Unlimited. Default 2 MB keeps the logs from growing
         # without bound while preserving plenty of recent history.
@@ -3711,6 +3733,73 @@ class MP3DownloaderApp(tk.Tk):
                 self._dbg.debug(f"ID3 TAGGED   | {title!r}  {path}")
         except Exception as exc:  # pragma: no cover - defensive
             self._dbg.warning(f"ID3 TAG FAIL | {title!r}  {exc}")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Cover art
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _find_raw_thumbnail(self, audio_path):
+        """Locate the thumbnail yt-dlp wrote beside *audio_path*.
+
+        `writethumbnail` saves the image on the audio file's own outtmpl stem,
+        so it sits next to the track with an image extension — `.webp` from
+        YouTube, `.jpg` from SoundCloud, occasionally `.png`. Returns the first
+        one found, or None."""
+        if not audio_path:
+            return None
+        stem = os.path.splitext(audio_path)[0]
+        for ext in (".webp", ".jpg", ".jpeg", ".png"):
+            candidate = stem + ext
+            if os.path.isfile(candidate):
+                return candidate
+        return None
+
+    def _harvest_cover_art(self, audio_path, video_id, title):
+        """Turn the thumbnail yt-dlp just wrote into cover art for one track.
+
+        Converts the raw image into the channel folder's hidden `.artwork/`
+        sidecar as `<video_id>.jpg`, then embeds it as the MP3's front-cover
+        APIC frame — the embed is what actually makes the art appear in Windows
+        Explorer, media players and on Android; the sidecar is the archival copy
+        we can re-embed from later without going back to the network.
+
+        Non-MP3 tracks (the "keep original format" path) still get the sidecar;
+        only the embed is skipped, because Opus/MP4 cover art uses an entirely
+        different container frame.
+
+        Returns (artwork_path, embedded) — (None, False) when artwork is off,
+        unavailable, or anything at all went wrong. Never raises: a cover-art
+        failure must not fail a download."""
+        mode = self._cover_art_mode_value()
+        if mode == "off" or not cb_artwork.artwork_available():
+            return None, False
+
+        raw = self._find_raw_thumbnail(audio_path)
+        if not raw:
+            self._dbg.debug(f"COVER SKIP    | {title!r}  no thumbnail written")
+            return None, False
+
+        try:
+            art_dir = cb_artwork.thumbnail_dir(os.path.dirname(audio_path))
+            if not art_dir:
+                return None, False
+
+            art_path = cb_artwork.ingest_thumbnail(raw, art_dir, video_id, mode)
+            if not art_path:
+                self._dbg.warning(f"COVER FAIL    | {title!r}  ingest failed")
+                return None, False
+
+            embedded = cb_artwork.embed_cover(audio_path, art_path)
+            if embedded:
+                self._dbg.debug(f"COVER ART     | {title!r}  {art_path}")
+            else:
+                self._dbg.debug(
+                    f"COVER SIDECAR | {title!r}  saved, not embedded "
+                    f"(non-MP3 or tag write failed)")
+            return art_path, embedded
+        except Exception as exc:  # pragma: no cover - defensive
+            self._dbg.warning(f"COVER FAIL    | {title!r}  {exc}")
+            return None, False
 
     def _log_error(self, title, url, error):
         """Write one ERROR entry to the log file."""
@@ -4894,6 +4983,28 @@ class MP3DownloaderApp(tk.Tk):
         # Apply initial enabled/disabled state for the bitrate combo
         self._on_no_conversion_toggle()
 
+        # ── Cover art ─────────────────────────────────────────────────────────
+        cover_row = ttk.Frame(outer)
+        cover_row.pack(fill="x", pady=(10, 4))
+
+        tk.Label(cover_row, text="Cover Art:",
+                 font=("Segoe UI", 10, "bold"), fg=TEXT_MED, bg=BG
+                 ).pack(side="left", padx=(0, 12))
+
+        self._cover_art_combo = ttk.Combobox(
+            cover_row,
+            textvariable=self._cover_art_mode,
+            values=[_COVER_ART_LABELS[m] for m in cb_artwork.COVER_ART_MODES],
+            state="readonly", width=28)
+        self._cover_art_combo.pack(side="left", padx=(0, 14))
+        self._settings_help(
+            cover_row,
+            "Embeds the YouTube/SoundCloud thumbnail into each MP3 so cover art "
+            "shows in Windows Explorer, media players and on Android. A copy is "
+            "also kept in a hidden .artwork folder beside the tracks. Cropping "
+            "to square fills the art slot; keeping 16:9 letterboxes it.",
+            wraplength=400).pack(side="left", padx=(0, 0))
+
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 20))
 
         # ── Download Behavior ─────────────────────────────────────────────────
@@ -5368,6 +5479,7 @@ class MP3DownloaderApp(tk.Tk):
             "limit_minutes":  self._limit_minutes.get(),
             "bitrate_quality": self._bitrate_quality.get().split()[0],
             "no_conversion":  self._no_conversion.get(),
+            "cover_art_mode": self._cover_art_mode_value(),
             "log_max_mb":     self._log_max_mb,
             "skip_existing":  self._skip_existing.get(),
             "skip_mode":      self._skip_mode.get(),
@@ -5454,6 +5566,19 @@ class MP3DownloaderApp(tk.Tk):
         cfg = load_config()
         cfg["bitrate_quality"] = self._bitrate_quality.get().split()[0]
         cfg["no_conversion"]   = self._no_conversion.get()
+        save_config(cfg)
+
+    def _cover_art_mode_value(self):
+        """The bare cover-art mode string ('crop'/'original'/'off') behind the
+        friendly label the combobox displays. Falls back to the default when the
+        variable holds anything unrecognised."""
+        return _COVER_ART_MODES_BY_LABEL.get(
+            self._cover_art_mode.get(), cb_artwork.DEFAULT_COVER_ART_MODE)
+
+    def _autosave_cover_art_setting(self, *_):
+        """Auto-save the cover-art mode to config whenever the combobox changes."""
+        cfg = load_config()
+        cfg["cover_art_mode"] = self._cover_art_mode_value()
         save_config(cfg)
 
     def _autosave_log_limit(self, *_):
@@ -7772,6 +7897,13 @@ class MP3DownloaderApp(tk.Tk):
                 if _ffmpeg_dir:
                     ydl_opts["ffmpeg_location"] = _ffmpeg_dir
 
+                # Ask yt-dlp to save the thumbnail beside the audio. We embed it
+                # ourselves rather than using the EmbedThumbnail postprocessor,
+                # so we control the crop and keep the .artwork sidecar copy.
+                _cover_mode = self._cover_art_mode_value()
+                if _cover_mode != "off" and cb_artwork.artwork_available():
+                    ydl_opts["writethumbnail"] = True
+
                 # Only add the FFmpeg MP3 postprocessor if conversion is enabled.
                 # When "Keep original format" is checked, the file is saved
                 # as-is in whatever container YouTube/SoundCloud served
@@ -7861,9 +7993,14 @@ class MP3DownloaderApp(tk.Tk):
                     # Stamp ID3 tags (title / encoded-by / source URL) on the
                     # file just written. Resolve the real path first, since
                     # yt-dlp's sanitiser may differ from expected_path.
-                    self._tag_track(
-                        self._file_exists_on_disk(save_dir, item_title)
-                        or expected_path, item_title, item_url)
+                    _real_path = (self._file_exists_on_disk(save_dir, item_title)
+                                  or expected_path)
+                    self._tag_track(_real_path, item_title, item_url)
+                    # Embed the source thumbnail as cover art and keep the
+                    # sidecar copy. Runs after _tag_track so the APIC frame is
+                    # written onto the tag mutagen has already created.
+                    _art_path, _art_embedded = self._harvest_cover_art(
+                        _real_path, entry.get("id"), item_title)
                     # ── Record in the downloads database ──────────────
                     _vid_upload = entry.get("upload_date", "") or ""
                     self._db.add_download(
@@ -7875,7 +8012,10 @@ class MP3DownloaderApp(tk.Tk):
                         platform=platform, genre=genre or "(none)",
                         file_path=expected_path,
                         upload_date=_vid_upload,
-                        bitrate=src_str)
+                        bitrate=src_str,
+                        artwork_path=_art_path,
+                        artwork_embedded=_art_embedded,
+                        thumbnail_url=entry.get("thumbnail"))
                     if _vid_upload and (
                             _max_upload_date_this_run is None
                             or _vid_upload > _max_upload_date_this_run):
@@ -7931,6 +8071,8 @@ class MP3DownloaderApp(tk.Tk):
                             "quiet":       True,
                             "no_warnings": True,
                         }
+                        if _cover_mode != "off" and cb_artwork.artwork_available():
+                            retry_opts["writethumbnail"] = True
                         if self._geo_bypass.get():
                             retry_opts["geo_bypass"] = True
                         if session_ua:
@@ -7951,9 +8093,12 @@ class MP3DownloaderApp(tk.Tk):
                             self._log_download(
                                 item_title, expected_path, item_url,
                                 platform, genre, quality=src_str)
-                            self._tag_track(
+                            _real_path = (
                                 self._file_exists_on_disk(save_dir, item_title)
-                                or expected_path, item_title, item_url)
+                                or expected_path)
+                            self._tag_track(_real_path, item_title, item_url)
+                            _art_path, _art_embedded = self._harvest_cover_art(
+                                _real_path, entry.get("id"), item_title)
                             # ── Record retry success in DB ────────────
                             _vid_upload = entry.get("upload_date", "") or ""
                             self._db.add_download(
@@ -7967,7 +8112,10 @@ class MP3DownloaderApp(tk.Tk):
                                 genre=genre or "(none)",
                                 file_path=expected_path,
                                 upload_date=_vid_upload,
-                                bitrate=src_str)
+                                bitrate=src_str,
+                                artwork_path=_art_path,
+                                artwork_embedded=_art_embedded,
+                                thumbnail_url=entry.get("thumbnail"))
                             if _vid_upload and (
                                     _max_upload_date_this_run is None
                                     or _vid_upload
