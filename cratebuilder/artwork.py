@@ -1,6 +1,9 @@
 """Cover art: thumbnail sidecar ingest (Pillow) + ID3 APIC embedding. Tk-free."""
 import ctypes
 import os
+import urllib.request
+
+from cratebuilder.util import safe_filename
 
 try:
     from PIL import Image
@@ -186,3 +189,149 @@ def has_cover(audio_path):
         return bool(ID3(audio_path).getall("APIC"))
     except Exception:
         return False
+
+
+# ── backfill: locating art for a track that was downloaded before this feature ──
+
+# YouTube thumbnail endpoints, best quality first. maxresdefault only exists for
+# uploads whose source was at least 1280x720, so it 404s on a large slice of the
+# older catalogue; hqdefault is generated for every video ever uploaded and is
+# therefore the guaranteed fallback rather than an optional extra.
+_YT_THUMB_TEMPLATES = (
+    "https://i.ytimg.com/vi/{vid}/maxresdefault.jpg",
+    "https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+)
+
+# Fetch budget for a single thumbnail. Long enough for a slow CDN edge, short
+# enough that a backfill over a few thousand tracks cannot wedge on one bad URL.
+DOWNLOAD_TIMEOUT = 15
+
+
+def artwork_key(video_id, file_path):
+    """Return the stable filename stem for a track's sidecar JPEG.
+
+    Fresh downloads are keyed by *video_id* — stable, collision-free, and already
+    on the downloads row. Legacy rows rebuilt from disk have no video_id at all,
+    so the audio file's own basename stem is used instead, sanitised through
+    `util.safe_filename` because a track title can carry characters (`:`, `?`,
+    `|`) that are legal in a tag but not in a filename.
+
+    The fallback is deliberately derived from the *file* and not the title: it
+    stays in step with the track as long as the file is not renamed, and it is
+    what lets `existing_sidecar` find art we have already fetched.
+
+    Returns None when neither source yields a usable stem. Never raises.
+    """
+    if video_id:
+        return str(video_id)
+    if not file_path:
+        return None
+    try:
+        stem = os.path.splitext(os.path.basename(str(file_path)))[0]
+    except Exception:
+        return None
+    key = safe_filename(stem, strip=True)
+    return key or None
+
+
+def youtube_thumbnail_urls(video_id):
+    """Ordered candidate thumbnail URLs for a YouTube video id, best first.
+
+    maxresdefault is the 1280x720 original and is what we want, but it is only
+    generated for uploads that were HD to begin with — on an older or low-res
+    video it 404s. hqdefault (480x360) exists for every video, so it is the
+    always-present fallback the caller drops to.
+
+    Returns () for a falsy id.
+    """
+    if not video_id:
+        return ()
+    return tuple(t.format(vid=video_id) for t in _YT_THUMB_TEMPLATES)
+
+
+def thumbnail_url_candidates(platform, video_id, stored_url=None):
+    """Ordered direct-fetch thumbnail URLs to try for one track. No network.
+
+    Pure URL construction — the caller decides how many to actually fetch.
+
+    Order:
+      1. *stored_url* — the `thumbnail_url` column, when the row has one. It is
+         the exact URL yt-dlp reported at download time, so it is always the
+         best guess.
+      2. For YouTube with a video_id, the `youtube_thumbnail_urls` candidates,
+         which can be reconstructed from the id alone.
+
+    De-duplicated with order preserved, so a stored_url that happens to be one of
+    the ytimg URLs is not fetched twice.
+
+    A SoundCloud track with no stored_url yields an empty tuple: its artwork URL
+    is not derivable from the track id, and the caller must fall back to a yt-dlp
+    metadata lookup against the source page URL. Never raises.
+    """
+    candidates = []
+    if stored_url:
+        candidates.append(str(stored_url))
+    if platform and str(platform).strip().lower() == "youtube":
+        candidates.extend(youtube_thumbnail_urls(video_id))
+
+    seen = set()
+    ordered = []
+    for url in candidates:
+        if url and url not in seen:
+            seen.add(url)
+            ordered.append(url)
+    return tuple(ordered)
+
+
+def download_thumbnail(url, dest_path, opener=None, timeout=DOWNLOAD_TIMEOUT):
+    """Fetch the image at *url* to *dest_path*. Returns dest_path or None.
+
+    *opener* is the injection seam: a callable(url, timeout=...) returning a
+    file-like with `.read()`, defaulting to `urllib.request.urlopen`. Tests pass
+    a fake so the suite stays offline.
+
+    The body is read fully before anything is written, so an empty or failed
+    response leaves no zero-byte file behind for `existing_sidecar` to later
+    mistake for real art — an important property when a maxresdefault 404 is the
+    expected path for a large share of the catalogue.
+
+    Returns None on any failure (HTTP error, timeout, empty body, unwritable
+    destination). Never raises — a missing thumbnail must not fail a backfill.
+    """
+    if not url or not dest_path:
+        return None
+    fetch = opener or urllib.request.urlopen
+    try:
+        resp = fetch(url, timeout=timeout)
+        try:
+            data = resp.read()
+        finally:
+            closer = getattr(resp, "close", None)
+            if callable(closer):
+                closer()
+        if not data:
+            return None
+        with open(dest_path, "wb") as fh:
+            fh.write(data)
+        return dest_path
+    except Exception:
+        return None
+
+
+def existing_sidecar(art_dir, key):
+    """Return `<art_dir>/<key>.jpg` when that sidecar is already on disk.
+
+    The backfill's first move for every track: art fetched on a previous run (or
+    left behind by a re-encode that stripped the tag) can be re-embedded without
+    touching the network at all.
+
+    Returns None when *art_dir* or *key* is falsy or the file does not exist.
+    Never raises.
+    """
+    if not art_dir or not key:
+        return None
+    try:
+        path = os.path.join(str(art_dir), f"{key}.jpg")
+        return path if os.path.isfile(path) else None
+    except Exception:
+        return None

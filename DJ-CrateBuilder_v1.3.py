@@ -35,7 +35,7 @@ from cratebuilder.cleanup import (
     is_scan_trustworthy, classify_local_files, partition_trash)
 from cratebuilder import startup as cb_startup
 from cratebuilder import updater_core as ucore
-from cratebuilder.tagging import write_track_tags
+from cratebuilder.tagging import write_track_tags, read_source_url
 from cratebuilder import artwork as cb_artwork
 from cratebuilder.singleton import acquire_single_instance, SINGLE_INSTANCE_PORT
 
@@ -3324,6 +3324,247 @@ class DatabaseViewerWindow(tk.Toplevel):
                 cid, text=head + (arrow if self._wl_sort_col == cid else ""))
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# _ArtworkBackfillSession — bulk "fetch missing artwork" over the existing library
+# ══════════════════════════════════════════════════════════════════════════════
+class _ArtworkBackfillSession:
+    """Walks every downloads row that has no cover art yet and tries to find it.
+
+    Tracks grabbed before the cover-art feature existed have no APIC frame and
+    no sidecar. This session resolves art for them through a ladder that spends
+    the least possible network, stopping at the first rung that works:
+
+      1. the `thumbnail_url` recorded on the row (present for anything
+         downloaded since the feature landed),
+      2. a sidecar JPEG already sitting in `.artwork/` — embed it, no network,
+      3. for YouTube, the thumbnail rebuilt from the video id
+         (maxresdefault, falling back to hqdefault),
+      4. the source URL read back out of the track's own ID3 tag, handed to
+         yt-dlp for a metadata lookup. This is the only rung that rescues a
+         legacy SoundCloud track, whose art URL cannot be derived from its id.
+
+    Runs on one background thread with a modal progress dialog. Every failure is
+    counted and moved past — a track we cannot find art for is not an error, and
+    a bad row must never abort the run.
+    """
+
+    # Pause between network fetches. A backfill can walk thousands of tracks;
+    # this keeps a long run from looking like a scrape to either platform.
+    _FETCH_PAUSE_SEC = 0.25
+
+    def __init__(self, app, rows, mode):
+        self.app  = app
+        self.rows = list(rows)
+        self.mode = mode
+        self.total = len(self.rows)
+        self.embedded = 0        # art found and written onto the file
+        self.repaired = 0        # file already had art; only the DB was stale
+        self.not_found = 0       # no artwork available from any rung
+        self.missing = 0         # the row's file is no longer on disk
+        self.errors = 0
+        self._progress = None
+        self._cancel_event = threading.Event()
+        self.cancelled = False
+
+    # ── public entry ──────────────────────────────────────────────────────
+    def start(self):
+        self._cancel_event.clear()
+        self._show_progress()
+        self.app._run_bg(self._worker)
+
+    # ── background worker ─────────────────────────────────────────────────
+    def _worker(self):
+        """One pass over every row. Never raises: a row that blows up is counted
+        as an error and the walk continues."""
+        for i, row in enumerate(self.rows):
+            if self._cancel_event.is_set():
+                self.cancelled = True
+                break
+            title = row.get("title") or ""
+            self.app.after(0, lambda n=i, t=title: self._update_progress(n, t))
+            try:
+                self._process_row(row)
+            except Exception as exc:  # pragma: no cover - defensive
+                self.errors += 1
+                self.app._dbg.warning(
+                    f"ARTFILL FAIL  | {title!r}  {exc}")
+        self.app.after(0, self._finish)
+
+    def _process_row(self, row):
+        """Resolve and embed artwork for a single downloads row."""
+        path = row.get("file_path") or ""
+        if not os.path.isfile(path):
+            self.missing += 1
+            return
+
+        key = cb_artwork.artwork_key(row.get("video_id"), path)
+        if not key:
+            self.not_found += 1
+            return
+
+        art_dir = cb_artwork.thumbnail_dir(os.path.dirname(path))
+        if not art_dir:
+            self.errors += 1
+            return
+
+        # The file may already carry art from outside the app (or from a run
+        # whose DB write was lost). Nothing to fetch — just correct the row.
+        if cb_artwork.has_cover(path):
+            self.app._db.set_download_artwork(
+                path, cb_artwork.existing_sidecar(art_dir, key), 1,
+                row.get("thumbnail_url"))
+            self.repaired += 1
+            return
+
+        jpg = cb_artwork.existing_sidecar(art_dir, key)
+        thumb_url = row.get("thumbnail_url")
+
+        if not jpg:
+            raw = os.path.join(art_dir, f"{key}.raw")
+            thumb_url, jpg = self._fetch_sidecar(row, path, art_dir, key, raw)
+
+        if not jpg:
+            self.not_found += 1
+            self.app._dbg.debug(
+                f"ARTFILL NONE  | {row.get('title')!r}  no thumbnail found")
+            return
+
+        embedded = cb_artwork.embed_cover(path, jpg)
+        self.app._db.set_download_artwork(path, jpg, embedded, thumb_url)
+        if embedded:
+            self.embedded += 1
+            self.app._dbg.debug(f"ARTFILL OK    | {row.get('title')!r}  {jpg}")
+        else:
+            # Sidecar saved but not embedded — a non-MP3 (kept original format).
+            self.not_found += 1
+
+    def _fetch_sidecar(self, row, path, art_dir, key, raw):
+        """Walk the network rungs of the ladder. Returns (thumb_url, jpg_path),
+        either of which may be None."""
+        candidates = list(cb_artwork.thumbnail_url_candidates(
+            row.get("platform"), row.get("video_id"),
+            row.get("thumbnail_url")))
+
+        # Last rung: the source URL the app stamped into the track's own ID3
+        # tag. Resolving it costs a yt-dlp metadata call, so it is only tried
+        # when nothing cheaper produced a candidate.
+        if not candidates:
+            resolved = self._thumbnail_from_source_tag(path)
+            if resolved:
+                candidates = [resolved]
+
+        for url in candidates:
+            if self._cancel_event.is_set():
+                return None, None
+            got = cb_artwork.download_thumbnail(url, raw)
+            time.sleep(self._FETCH_PAUSE_SEC)
+            if not got:
+                continue
+            jpg = cb_artwork.ingest_thumbnail(raw, art_dir, key, self.mode)
+            if jpg:
+                return url, jpg
+        return None, None
+
+    def _thumbnail_from_source_tag(self, path):
+        """Read the source URL out of the track's ID3 tag and ask yt-dlp for its
+        thumbnail. The fallback for legacy SoundCloud tracks. Returns a URL or
+        None; never raises."""
+        source_url = read_source_url(path)
+        if not source_url:
+            return None
+        try:
+            import yt_dlp
+            opts = {"skip_download": True, "quiet": True, "no_warnings": True}
+            self.app._apply_cookie_opts(opts)
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(source_url, download=False) or {}
+            return info.get("thumbnail") or None
+        except Exception as exc:
+            self.app._dbg.debug(f"ARTFILL LOOKUP| {source_url}  {exc}")
+            return None
+
+    # ── progress dialog ───────────────────────────────────────────────────
+    def _show_progress(self):
+        dlg = tk.Toplevel(self.app)
+        dlg.title("Fetch Missing Artwork")
+        dlg.configure(bg=BG)
+        dlg.transient(self.app)
+        dlg.resizable(False, False)
+        head = tk.Label(dlg, text="Fetching artwork…",
+                        font=("Segoe UI", 11, "bold"), bg=BG, fg=TEXT)
+        head.pack(padx=24, pady=(18, 4))
+        sub = tk.Label(dlg, text=f"0 of {self.total}", font=("Segoe UI", 9),
+                       bg=BG, fg=TEXT_DIM, wraplength=300)
+        sub.pack(pady=(0, 8))
+        bar = ttk.Progressbar(dlg, mode="determinate", length=300,
+                              maximum=max(self.total, 1))
+        bar.pack(padx=24, pady=(0, 10))
+        tk.Button(dlg, text="Cancel", font=("Segoe UI", 9),
+                  relief="flat", bd=0, bg=SURFACE2, fg=TEXT,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  padx=12, pady=4, cursor="hand2",
+                  command=self._cancel).pack(pady=(0, 16))
+        dlg.protocol("WM_DELETE_WINDOW", self._cancel)
+        dlg.update_idletasks()
+        px = self.app.winfo_x() + (self.app.winfo_width() - dlg.winfo_width()) // 2
+        py = self.app.winfo_y() + (self.app.winfo_height() - dlg.winfo_height()) // 2
+        dlg.geometry(f"+{max(0, px)}+{max(0, py)}")
+        self._progress = (dlg, bar, sub)
+
+    def _update_progress(self, n, title):
+        if self._progress is None:
+            return
+        dlg, bar, sub = self._progress
+        try:
+            bar.config(value=n)
+            sub.config(text=f"{n} of {self.total}  —  {title[:60]}")
+        except Exception:
+            pass
+
+    def _hide_progress(self):
+        if self._progress is not None:
+            dlg, _bar, _sub = self._progress
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+            self._progress = None
+
+    def _cancel(self):
+        """Cancel button / dialog close: stop after the row in flight. Art
+        already embedded stays — every row is committed as it completes."""
+        self.cancelled = True
+        self._cancel_event.set()
+
+    # ── completion ────────────────────────────────────────────────────────
+    def _finish(self):
+        self._hide_progress()
+        summary = (
+            f"{self.embedded} track{'s' if self.embedded != 1 else ''} "
+            f"given cover art."
+        )
+        detail = []
+        if self.repaired:
+            detail.append(f"{self.repaired} already had art (database updated)")
+        if self.not_found:
+            detail.append(f"{self.not_found} had no artwork available")
+        if self.missing:
+            detail.append(f"{self.missing} no longer on disk")
+        if self.errors:
+            detail.append(f"{self.errors} failed")
+        if detail:
+            summary += "\n\n" + "\n".join(detail)
+        if self.cancelled:
+            summary = "Cancelled.\n\n" + summary
+
+        self.app._dbg.info(
+            f"ARTFILL DONE  | embedded={self.embedded} repaired={self.repaired} "
+            f"none={self.not_found} missing={self.missing} "
+            f"errors={self.errors} cancelled={self.cancelled}")
+        messagebox.showinfo("Fetch Missing Artwork", summary, parent=self.app)
+        self.app._artwork_session = None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ══════════════════════════════════════════════════════════════════════════════
 # MP3DownloaderApp — main application window (Tk root)
@@ -3402,6 +3643,9 @@ class MP3DownloaderApp(tk.Tk):
             _cfg_mode = cb_artwork.DEFAULT_COVER_ART_MODE
         self._cover_art_mode = tk.StringVar(value=_COVER_ART_LABELS[_cfg_mode])
         self._cover_art_mode.trace_add("write", self._autosave_cover_art_setting)
+        # In-flight artwork backfill, or None. Guards against a second run being
+        # started on top of one already walking the library.
+        self._artwork_session = None
 
         # Log size limit — caps activity.log and debug.log (each) by trimming the
         # oldest lines; 0 = Unlimited. Default 2 MB keeps the logs from growing
@@ -5439,6 +5683,20 @@ class MP3DownloaderApp(tk.Tk):
             "Scans the .mp3 files already in your library folders and "
             "rebuilds the database from them. This is safe to run at any "
             "time — it clears and rebuilds from scratch.").pack(
+                side="left", padx=(0, 16))
+
+        art_row = ttk.Frame(outer)
+        art_row.pack(fill="x", pady=(0, 4))
+
+        self._fetch_art_btn = ttk.Button(
+            art_row, text="🖼  Fetch Missing Artwork",
+            style="DlBtn.TButton",
+            command=self._fetch_missing_artwork)
+        self._fetch_art_btn.pack(side="left", padx=(0, 8))
+        self._settings_help(art_row,
+            "Finds cover art for tracks you downloaded before the Cover Art "
+            "feature existed, and embeds it into them. Re-uses artwork already "
+            "on disk where possible, so re-running it is cheap.").pack(
                 side="left", padx=(0, 16))
 
         self._db_path_lbl = tk.Label(
@@ -10499,6 +10757,57 @@ class MP3DownloaderApp(tk.Tk):
             self._watchlist_refresh()
 
     # ══════════════════════════════════════════════════════════════════════════
+    # Artwork backfill — find cover art for tracks that predate the feature
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _fetch_missing_artwork(self):
+        """Entry point for the 'Fetch Missing Artwork' button. Validates that
+        artwork is switched on and that there is anything to do, then hands off
+        to an _ArtworkBackfillSession."""
+        if getattr(self, "_artwork_session", None) is not None:
+            messagebox.showinfo(
+                "Fetch Missing Artwork",
+                "An artwork run is already in progress.", parent=self)
+            return
+
+        mode = self._cover_art_mode_value()
+        if mode == "off":
+            messagebox.showinfo(
+                "Fetch Missing Artwork",
+                "Cover Art is switched off.\n\nChoose a Cover Art mode in "
+                "Settings first, then run this again.", parent=self)
+            return
+        if not cb_artwork.artwork_available():
+            messagebox.showwarning(
+                "Fetch Missing Artwork",
+                "Cover art needs Pillow and mutagen, which are not available "
+                "in this install.", parent=self)
+            return
+
+        rows = self._db.get_downloads_missing_artwork()
+        if not rows:
+            messagebox.showinfo(
+                "Fetch Missing Artwork",
+                "Every track in your library already has cover art.",
+                parent=self)
+            return
+
+        n = len(rows)
+        ok = messagebox.askokcancel(
+            "Fetch Missing Artwork",
+            f"{n} track{'s' if n != 1 else ''} have no cover art.\n\n"
+            "Artwork will be downloaded where available and embedded into each "
+            "file. This can take a while for a large library, and you can "
+            "cancel at any point — tracks already done are kept.\n\nContinue?",
+            parent=self)
+        if not ok:
+            return
+
+        self._dbg.info(f"ARTFILL START | {n} tracks missing artwork, mode={mode}")
+        self._artwork_session = _ArtworkBackfillSession(self, rows, mode)
+        self._artwork_session.start()
+
+    # ══════════════════════════════════════════════════════════════════════════
     # Rebuild — rebuild the downloads table from the files already on disk
     # ══════════════════════════════════════════════════════════════════════════
 
@@ -10512,6 +10821,12 @@ class MP3DownloaderApp(tk.Tk):
             parent=self)
         if not ok:
             return
+
+        # A rebuild clears the table, which would otherwise orphan every
+        # track's cover-art bookkeeping (the sidecar JPEG and the APIC frame
+        # both survive on disk, but the rows pointing at them would not).
+        # Snapshot the artwork columns by file path and re-attach them below.
+        art_snapshot = self._db.get_artwork_by_path()
 
         rows = []
         for platform in ("YouTube", "SoundCloud"):
@@ -10547,6 +10862,8 @@ class MP3DownloaderApp(tk.Tk):
                         # Upload date / downloaded time aren't recorded in the
                         # file itself, so fall back to the file's mtime.
                         date_str = datetime.fromtimestamp(mtime).strftime("%Y%m%d")
+                        art_path, art_embedded, thumb_url = art_snapshot.get(
+                            full, (None, 0, None))
                         rows.append({
                             "video_id":     None,
                             "title":        os.path.splitext(name)[0],
@@ -10559,6 +10876,9 @@ class MP3DownloaderApp(tk.Tk):
                             "upload_date":  date_str,
                             "ts":           mtime,
                             "bitrate":      "",
+                            "artwork_path":     art_path,
+                            "artwork_embedded": art_embedded,
+                            "thumbnail_url":    thumb_url,
                         })
 
         self._db.clear_all_downloads()

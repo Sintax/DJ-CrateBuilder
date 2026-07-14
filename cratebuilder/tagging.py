@@ -66,3 +66,46 @@ def write_track_tags(path, title=None, source_url=None,
         return changed
     except Exception:
         return False
+
+
+def read_source_url(path):
+    """Read the source URL back out of the ID3 tags on the MP3 at *path*.
+
+    The inverse of the `source_url` half of `write_track_tags`, which stores the
+    URL in two places: the WOAS ("official audio source") frame and a
+    blank-description COMM frame. WOAS is checked first — it is the typed URL
+    frame and carries the value verbatim. When it is absent (a tag written by
+    another tool, or one where only the comment survived a re-encode) every COMM
+    frame is scanned and the first value that looks like a URL wins.
+
+    This is what makes the artwork backfill possible for legacy SoundCloud
+    tracks: their thumbnail URL cannot be derived from a track id the way a
+    YouTube one can, so the original page URL recovered from the file's own tags
+    is the only way back to the art.
+
+    Returns the URL string, or None (non-MP3, missing file, untagged file,
+    mutagen unavailable, or no URL present). Never raises.
+    """
+    if ID3 is None:
+        return None
+    if not path or not path.lower().endswith(".mp3") or not os.path.isfile(path):
+        return None
+    try:
+        try:
+            tags = ID3(path)
+        except ID3NoHeaderError:
+            return None
+
+        for frame in tags.getall("WOAS"):
+            url = (getattr(frame, "url", "") or "").strip()
+            if url:
+                return url
+
+        for frame in tags.getall("COMM"):
+            for value in (getattr(frame, "text", None) or []):
+                text = (value or "").strip()
+                if text.lower().startswith("http"):
+                    return text
+        return None
+    except Exception:
+        return None

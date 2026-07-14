@@ -231,6 +231,83 @@ class DownloadsDatabase:
                                f"{file_path!r}: {e}")
             return 0
 
+    def get_downloads_missing_artwork(self):
+        """Return every downloads row that still has no embedded cover art, as
+        a list of dicts, oldest first.
+
+        This is the worklist for the artwork backfill. "Missing" means
+        artwork_embedded is 0 or NULL — the art either was never fetched or was
+        fetched but never made it onto the file, and in both cases the track
+        still needs work. Rows with no file_path are skipped: there is nothing
+        on disk to tag, so they can never be backfilled.
+
+        Ordering is download_timestamp ASC (id ASC as a tiebreak for rows that
+        share a timestamp) so a long backfill walks the user's history from the
+        beginning and makes visible, sensible progress rather than jumping
+        around. Returns [] on failure."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute("""
+                    SELECT * FROM downloads
+                    WHERE (artwork_embedded IS NULL OR artwork_embedded = 0)
+                      AND file_path IS NOT NULL AND file_path != ''
+                    ORDER BY download_timestamp ASC, id ASC
+                """).fetchall()
+                return [dict(r) for r in rows]
+        except Exception as e:
+            self._log("error", f"get_downloads_missing_artwork failed: {e}")
+            return []
+
+    def count_downloads_missing_artwork(self):
+        """Count the rows get_downloads_missing_artwork would return, without
+        materialising any of them. Lets the UI show "N tracks need artwork"
+        cheaply on a large history. Returns 0 on failure."""
+        try:
+            with self._conn() as conn:
+                row = conn.execute("""
+                    SELECT COUNT(*) AS n FROM downloads
+                    WHERE (artwork_embedded IS NULL OR artwork_embedded = 0)
+                      AND file_path IS NOT NULL AND file_path != ''
+                """).fetchone()
+                return int(row["n"]) if row else 0
+        except Exception as e:
+            self._log("error", f"count_downloads_missing_artwork failed: {e}")
+            return 0
+
+    def get_artwork_by_path(self):
+        """Snapshot every row's cover-art bookkeeping, keyed by file_path:
+        {file_path: (artwork_path, artwork_embedded, thumbnail_url)}.
+
+        Only rows carrying some artwork data are included (an artwork_path, an
+        embedded flag, or a thumbnail_url); rows with no file_path are skipped
+        because the key would be meaningless.
+
+        WHY THIS EXISTS: "Rebuild Database from Files" wipes the downloads table
+        with clear_all_downloads() and re-derives it from disk via
+        backfill_downloads(). The rebuilt rows are reconstructed from filenames,
+        which carry no artwork bookkeeping — so a naive rebuild silently orphans
+        the cover art of every track the user ever downloaded. The rebuild takes
+        this snapshot *before* the clear and re-attaches the values to the
+        rebuilt rows by file_path, so the art survives. Returns {} on failure."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute("""
+                    SELECT file_path, artwork_path, artwork_embedded,
+                           thumbnail_url
+                    FROM downloads
+                    WHERE file_path IS NOT NULL AND file_path != ''
+                      AND (artwork_path IS NOT NULL
+                           OR artwork_embedded = 1
+                           OR thumbnail_url IS NOT NULL)
+                """).fetchall()
+                return {r["file_path"]: (r["artwork_path"],
+                                         r["artwork_embedded"],
+                                         r["thumbnail_url"])
+                        for r in rows}
+        except Exception as e:
+            self._log("error", f"get_artwork_by_path failed: {e}")
+            return {}
+
     def backfill_missing_download_timestamps(self, updates):
         """Persist download timestamps for rows that never had one (e.g. tracks
         imported before the database existed). `updates` is a list of
