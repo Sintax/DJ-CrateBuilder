@@ -7,7 +7,7 @@ from contextlib import contextmanager
 
 
 class DownloadsDatabase:
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 4
 
     def __init__(self, db_path, debug_logger=None):
         self.db_path = db_path
@@ -63,7 +63,10 @@ class DownloadsDatabase:
                         file_path           TEXT,
                         upload_date         TEXT,
                         download_timestamp  INTEGER NOT NULL,
-                        bitrate             TEXT
+                        bitrate             TEXT,
+                        artwork_path        TEXT,
+                        artwork_embedded    INTEGER DEFAULT 0,
+                        thumbnail_url       TEXT
                     );
                     CREATE INDEX IF NOT EXISTS idx_dl_video_id
                         ON downloads(video_id);
@@ -115,6 +118,21 @@ class DownloadsDatabase:
                 except sqlite3.OperationalError:
                     pass  # column already exists
 
+                # schema v4: cover art — sidecar JPEG path, whether the APIC
+                # frame actually landed on the file, and the source thumbnail
+                # URL (kept because SoundCloud art URLs can't be rebuilt from
+                # the track id, so a later backfill has no other way home).
+                for col, decl in (("artwork_path", "TEXT"),
+                                  ("artwork_embedded", "INTEGER DEFAULT 0"),
+                                  ("thumbnail_url", "TEXT")):
+                    try:
+                        conn.execute(
+                            f"ALTER TABLE downloads ADD COLUMN {col} {decl}")
+                        self._log("info",
+                                  f"migration: added {col} to downloads")
+                    except sqlite3.OperationalError:
+                        pass  # column already exists
+
                 conn.execute(
                     "INSERT OR REPLACE INTO schema_info (key, value) VALUES (?, ?)",
                     ("version", str(self.SCHEMA_VERSION))
@@ -126,42 +144,91 @@ class DownloadsDatabase:
 
     def add_download(self, *, video_id, title, channel_name, channel_url,
                      platform, genre, file_path, upload_date, bitrate,
-                     channel_id=None):
+                     channel_id=None, artwork_path=None, artwork_embedded=0,
+                     thumbnail_url=None):
         try:
             with self._conn() as conn:
                 conn.execute("""
                     INSERT INTO downloads
                       (video_id, title, channel_name, channel_url, channel_id,
                        platform, genre, file_path, upload_date,
-                       download_timestamp, bitrate)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       download_timestamp, bitrate,
+                       artwork_path, artwork_embedded, thumbnail_url)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (video_id or None, title or "", channel_name or "",
                       channel_url or "", channel_id or None, platform,
                       genre or "", file_path or "", upload_date or "",
-                      int(time.time()), bitrate or ""))
+                      int(time.time()), bitrate or "",
+                      artwork_path or None, int(bool(artwork_embedded)),
+                      thumbnail_url or None))
         except Exception as e:
             self._log("error", f"add_download failed for {title!r}: {e}")
 
     def backfill_downloads(self, rows):
         """Bulk-insert tracks discovered already-on-disk during a scan, so
         future dedup is exact and instant. `rows` is a list of dicts with the
-        download columns plus a 'ts' timestamp. Returns the count inserted."""
+        download columns plus a 'ts' timestamp. Returns the count inserted.
+
+        Rows are normalised before binding: callers predating the cover-art
+        columns omit them entirely, and sqlite3's named-style binding raises on
+        a missing key rather than substituting NULL."""
         if not rows:
             return 0
         try:
+            bound = [{
+                "video_id":         r.get("video_id"),
+                "title":            r.get("title") or "",
+                "channel_name":     r.get("channel_name") or "",
+                "channel_url":      r.get("channel_url") or "",
+                "channel_id":       r.get("channel_id"),
+                "platform":         r.get("platform"),
+                "genre":            r.get("genre") or "",
+                "file_path":        r.get("file_path") or "",
+                "upload_date":      r.get("upload_date") or "",
+                "ts":               r.get("ts") or 0,
+                "bitrate":          r.get("bitrate") or "",
+                "artwork_path":     r.get("artwork_path"),
+                "artwork_embedded": int(bool(r.get("artwork_embedded"))),
+                "thumbnail_url":    r.get("thumbnail_url"),
+            } for r in rows]
             with self._conn() as conn:
                 conn.executemany("""
                     INSERT INTO downloads
                       (video_id, title, channel_name, channel_url, channel_id,
                        platform, genre, file_path, upload_date,
-                       download_timestamp, bitrate)
+                       download_timestamp, bitrate,
+                       artwork_path, artwork_embedded, thumbnail_url)
                     VALUES (:video_id, :title, :channel_name, :channel_url,
                             :channel_id, :platform, :genre, :file_path,
-                            :upload_date, :ts, :bitrate)
-                """, rows)
-            return len(rows)
+                            :upload_date, :ts, :bitrate,
+                            :artwork_path, :artwork_embedded, :thumbnail_url)
+                """, bound)
+            return len(bound)
         except Exception as e:
             self._log("error", f"backfill_downloads failed: {e}")
+            return 0
+
+    def set_download_artwork(self, file_path, artwork_path, artwork_embedded,
+                             thumbnail_url=None):
+        """Record cover art against the download row(s) for *file_path*.
+        Returns the number of rows updated, 0 on failure or no match. Used by
+        the artwork backfill, which finds art for tracks downloaded before the
+        cover-art feature existed."""
+        if not file_path:
+            return 0
+        try:
+            with self._conn() as conn:
+                cur = conn.execute("""
+                    UPDATE downloads
+                    SET artwork_path = ?, artwork_embedded = ?,
+                        thumbnail_url = ?
+                    WHERE file_path = ?
+                """, (artwork_path or None, int(bool(artwork_embedded)),
+                      thumbnail_url or None, file_path))
+                return cur.rowcount or 0
+        except Exception as e:
+            self._log("error", f"set_download_artwork failed for "
+                               f"{file_path!r}: {e}")
             return 0
 
     def backfill_missing_download_timestamps(self, updates):
