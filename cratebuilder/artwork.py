@@ -191,6 +191,31 @@ def has_cover(audio_path):
         return False
 
 
+def extract_cover(audio_path):
+    """Return the raw bytes of the MP3's embedded cover image, or None.
+
+    Prefers the front-cover frame (APIC type 3) and falls back to whatever
+    picture is present. Lets the Database Viewer's preview still show art for a
+    track whose sidecar JPEG has been deleted off disk. Never raises.
+    """
+    if ID3 is None:
+        return None
+    if not audio_path or not audio_path.lower().endswith(".mp3"):
+        return None
+    if not os.path.isfile(audio_path):
+        return None
+    try:
+        frames = ID3(audio_path).getall("APIC")
+    except Exception:
+        return None
+    if not frames:
+        return None
+    for frame in frames:
+        if getattr(frame, "type", None) == 3 and getattr(frame, "data", None):
+            return frame.data
+    return getattr(frames[0], "data", None) or None
+
+
 # ── backfill: locating art for a track that was downloaded before this feature ──
 
 # YouTube thumbnail endpoints, best quality first. maxresdefault only exists for

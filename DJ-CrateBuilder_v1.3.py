@@ -5,6 +5,7 @@ import os
 import sys
 import subprocess
 import re
+import io
 import json
 import random
 import logging
@@ -2130,6 +2131,26 @@ class DatabaseViewerWindow(tk.Toplevel):
         "bitrate":    ("Bitrate",     70, "e"),
     }
 
+    # Artwork columns: id -> (heading, width, anchor)
+    _ART_COLS = {
+        "title":      ("Track",        260, "w"),
+        "channel":    ("Channel",      150, "w"),
+        "platform":   ("Platform",      80, "w"),
+        "embedded":   ("Embedded",      80, "center"),
+        "sidecar":    ("Sidecar",      170, "w"),
+        "on_disk":    ("On Disk",       70, "center"),
+        "thumb_url":  ("Thumbnail URL", 240, "w"),
+    }
+
+    # Artwork filter presets: label -> predicate over an (row, state) pair.
+    _ART_FILTERS = (
+        "All tracks",
+        "Has artwork",
+        "Missing artwork",
+        "Embedded only",
+        "Sidecar missing on disk",
+    )
+
     # Watch List columns: id -> (heading, width, anchor)
     _WL_COLS = {
         "sel":        ("",             34, "center"),
@@ -2165,6 +2186,16 @@ class DatabaseViewerWindow(tk.Toplevel):
         self._wl_sort_col  = "channel"
         self._wl_sort_desc = False
 
+        # Artwork view state
+        self._art_filter_var = tk.StringVar(value=self._ART_FILTERS[0])
+        self._art_search_var = tk.StringVar()
+        self._art_sort_col   = "title"
+        self._art_sort_desc  = False
+        self._art_row_data   = {}   # artwork tree: item_id -> download dict
+        self._art_ctx_item   = None
+        # Held to stop Tk garbage-collecting the PhotoImage out of the label.
+        self._art_preview_img = None
+
         self.title("🗂  Database  —  DJ CrateBuilder")
         self.geometry("1100x680")
         self.minsize(820, 460)
@@ -2186,8 +2217,9 @@ class DatabaseViewerWindow(tk.Toplevel):
     # ── Column-width persistence ───────────────────────────────────────────────
     # Remember each column's width between sessions so the viewer reopens laid
     # out the way the user left it.
-    _DL_WIDTH_KEY = "db_dl_col_widths"
-    _WL_WIDTH_KEY = "db_wl_col_widths"
+    _DL_WIDTH_KEY  = "db_dl_col_widths"
+    _WL_WIDTH_KEY  = "db_wl_col_widths"
+    _ART_WIDTH_KEY = "db_art_col_widths"
 
     @staticmethod
     def _saved_col_widths(key):
@@ -2210,6 +2242,8 @@ class DatabaseViewerWindow(tk.Toplevel):
             cfg[self._DL_WIDTH_KEY] = widths(
                 self._dl_tree, ["#0", *self._DL_COLS])
             cfg[self._WL_WIDTH_KEY] = widths(self._wl_tree, list(self._WL_COLS))
+            cfg[self._ART_WIDTH_KEY] = widths(self._art_tree,
+                                              list(self._ART_COLS))
             save_config(cfg)
         except Exception:
             pass   # column widths are a nicety; never block closing on them
@@ -2229,8 +2263,9 @@ class DatabaseViewerWindow(tk.Toplevel):
     # Drag a header onto another header to reorder columns; the order is
     # remembered between sessions. Reordering uses Treeview's displaycolumns, so
     # the underlying column ids (and saved widths) are untouched.
-    _DL_ORDER_KEY = "db_dl_col_order"
-    _WL_ORDER_KEY = "db_wl_col_order"
+    _DL_ORDER_KEY  = "db_dl_col_order"
+    _WL_ORDER_KEY  = "db_wl_col_order"
+    _ART_ORDER_KEY = "db_art_col_order"
 
     @staticmethod
     def _display_order(tree, all_cols):
@@ -2359,6 +2394,19 @@ class DatabaseViewerWindow(tk.Toplevel):
         "  to reveal the channel's folder in the system file manager.\n"
         "• ⟳ Refresh — reload from the database.\n"
         "\n"
+        "ARTWORK TAB\n"
+        "• Every track and the cover art the database has on record for it.\n"
+        "• Embedded — is the image actually written into the MP3's ID3 tag.\n"
+        "  This is the only thing Explorer and Android media players read.\n"
+        "• Sidecar — the archival JPEG in the channel's hidden .artwork folder.\n"
+        "• On Disk — whether that sidecar JPEG is still where the DB expects it.\n"
+        "• Filter — narrow to tracks missing art, or to sidecars that have gone\n"
+        "  missing off disk.\n"
+        "• Select a row to preview the image; right-click for Open Image,\n"
+        "  Open Containing Folder, Copy Image Path, or Copy Thumbnail URL.\n"
+        "• 🖼 Fetch Missing Artwork — find and embed art for every track that\n"
+        "  has none.\n"
+        "\n"
         "Column widths and order are remembered between sessions."
     )
 
@@ -2366,13 +2414,16 @@ class DatabaseViewerWindow(tk.Toplevel):
         self._notebook = ttk.Notebook(self)
         self._notebook.pack(fill="both", expand=True)
 
-        dl_tab = tk.Frame(self._notebook, bg=BG)
-        wl_tab = tk.Frame(self._notebook, bg=BG)
-        self._notebook.add(dl_tab, text="   ⬇  Downloads   ")
-        self._notebook.add(wl_tab, text="   👁  Watch List   ")
+        dl_tab  = tk.Frame(self._notebook, bg=BG)
+        wl_tab  = tk.Frame(self._notebook, bg=BG)
+        art_tab = tk.Frame(self._notebook, bg=BG)
+        self._notebook.add(dl_tab,  text="   ⬇  Downloads   ")
+        self._notebook.add(wl_tab,  text="   👁  Watch List   ")
+        self._notebook.add(art_tab, text="   🖼  Artwork   ")
 
         self._build_downloads_tab(dl_tab)
         self._build_watchlist_tab(wl_tab)
+        self._build_artwork_tab(art_tab)
 
         # Help button floats over the right end of the tab strip. place() on
         # the Toplevel + lift() puts it above the notebook's chrome at the
@@ -2617,6 +2668,415 @@ class DatabaseViewerWindow(tk.Toplevel):
                            lambda _e: self._hide_wl_celltip(), add="+")
         self._wl_celltip = None   # transient tooltip Toplevel for disabled cells
         self._wl_celltip_lbl = None
+
+    # ── Artwork tab ───────────────────────────────────────────────────────────
+    # A second view over the same downloads rows, keyed on their cover art. The
+    # DB records three artwork facts per track (sidecar path, embedded flag,
+    # source thumbnail URL); this tab surfaces them and flags the two states
+    # that need attention — no art at all, and a sidecar the DB points at that
+    # has since been deleted off disk.
+
+    # Preview box edge, in pixels. Square: art is centre-cropped to 1:1 in the
+    # default mode, and an 'original' 16:9 image letterboxes inside it.
+    _ART_PREVIEW_PX = 260
+
+    def _build_artwork_tab(self, parent):
+        toolbar = tk.Frame(parent, bg=SURFACE2,
+                           highlightthickness=1, highlightbackground=BORDER)
+        toolbar.pack(fill="x", side="top")
+
+        tk.Label(toolbar, text="Filter:", font=("Segoe UI", 9),
+                 fg=TEXT_DIM, bg=SURFACE2).pack(side="left", padx=(12, 6))
+        self._art_filter_combo = self._mk_combo(toolbar, self._art_filter_var, 22)
+        self._art_filter_combo["values"] = list(self._ART_FILTERS)
+        self._art_filter_combo.bind("<<ComboboxSelected>>",
+                                    lambda e: self._rebuild_artwork_tree())
+
+        tk.Label(toolbar, text="Search:", font=("Segoe UI", 9),
+                 fg=TEXT_DIM, bg=SURFACE2).pack(side="left", padx=(0, 6))
+        self._art_search_entry = tk.Entry(
+            toolbar, textvariable=self._art_search_var, font=("Segoe UI", 9),
+            bg=SURFACE, fg=TEXT, insertbackground=TEXT, relief="flat",
+            highlightthickness=1, highlightbackground=BORDER,
+            highlightcolor=YT_RED, width=18)
+        self._art_search_entry.pack(side="left", ipady=3, pady=6)
+        self._art_search_var.trace_add("write",
+                                       lambda *_: self._rebuild_artwork_tree())
+
+        self._tb_btn(toolbar, "⟳  Refresh", self.refresh, side="right",
+                     padx=(0, 10))
+        tk.Frame(toolbar, width=1, bg=BORDER).pack(side="right", fill="y",
+                                                   padx=4, pady=6)
+        fetch_btn = self._tb_btn(toolbar, "🖼  Fetch Missing Artwork",
+                                 self._art_fetch_missing, side="right")
+        Tooltip(fetch_btn,
+                "Finds cover art for every track that has none and embeds it "
+                "into the file. Uses the recorded thumbnail URL, an existing "
+                "sidecar, or the source page — whichever is cheapest. Cancel "
+                "any time; tracks already done are kept.", wraplength=360)
+
+        self._art_stats = tk.Label(parent, text="", font=("Segoe UI", 8),
+                                   fg=TEXT_DIM, bg=SURFACE2, anchor="w",
+                                   padx=12, pady=3, highlightthickness=1,
+                                   highlightbackground=BORDER)
+        self._art_stats.pack(fill="x", side="bottom")
+
+        body = tk.Frame(parent, bg=BG)
+        body.pack(fill="both", expand=True)
+
+        # ── Preview pane (right) ──────────────────────────────────────────────
+        # Packed before the tree so it keeps its width when the window shrinks;
+        # the tree is the elastic half.
+        side = tk.Frame(body, bg=SURFACE2, width=self._ART_PREVIEW_PX + 24,
+                        highlightthickness=1, highlightbackground=BORDER)
+        side.pack(side="right", fill="y")
+        side.pack_propagate(False)
+
+        tk.Label(side, text="PREVIEW", font=("Segoe UI", 8, "bold"),
+                 fg=TEXT_DIM, bg=SURFACE2).pack(anchor="w", padx=12, pady=(10, 6))
+
+        self._art_canvas = tk.Label(
+            side, bg=DB_FIELD, fg=TEXT_DIM, font=("Segoe UI", 9),
+            text="Select a track", width=self._ART_PREVIEW_PX,
+            height=self._ART_PREVIEW_PX, highlightthickness=1,
+            highlightbackground=DB_GRID)
+        self._art_canvas.pack(padx=12)
+        self._art_canvas.pack_propagate(False)
+
+        self._art_caption = tk.Label(
+            side, text="", font=("Segoe UI", 8), fg=TEXT_DIM, bg=SURFACE2,
+            justify="left", anchor="nw", wraplength=self._ART_PREVIEW_PX)
+        self._art_caption.pack(fill="x", padx=12, pady=(8, 12))
+
+        # ── Tree (left) ───────────────────────────────────────────────────────
+        frame = tk.Frame(body, bg=BG,
+                         highlightthickness=1, highlightbackground=DB_GRID)
+        frame.pack(side="left", fill="both", expand=True)
+
+        col_ids = list(self._ART_COLS)
+        self._art_tree = ttk.Treeview(
+            frame, columns=col_ids, show="headings",
+            style="DB.Treeview", selectmode="browse")
+        saved = self._saved_col_widths(self._ART_WIDTH_KEY)
+        for cid, (head, width, anchor) in self._ART_COLS.items():
+            self._art_tree.heading(
+                cid, text=head, command=lambda c=cid: self._sort_artwork(c))
+            self._art_tree.column(cid, width=saved.get(cid, width), minwidth=50,
+                                  anchor=anchor, stretch=False)
+
+        self._art_tree.tag_configure("oddrow", background=DB_STRIPE)
+        self._art_tree.tag_configure("evenrow", background=DB_FIELD)
+        # A row whose sidecar the DB points at but which is gone from disk — the
+        # one state here that is actually broken rather than merely absent.
+        self._art_tree.tag_configure("art_broken", foreground=YT_RED)
+        self._art_tree.tag_configure("art_none", foreground=TEXT_DIM)
+
+        vs = ttk.Scrollbar(frame, orient="vertical",
+                           command=self._art_tree.yview)
+        hs = ttk.Scrollbar(frame, orient="horizontal",
+                           command=self._art_tree.xview)
+        self._art_tree.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
+        hs.pack(side="bottom", fill="x")
+        vs.pack(side="right", fill="y")
+        self._art_tree.pack(side="left", fill="both", expand=True)
+
+        self._apply_saved_order(self._art_tree, col_ids, self._ART_ORDER_KEY)
+        self._enable_col_reorder(self._art_tree, col_ids, self._ART_ORDER_KEY)
+        self._bind_tree_wheel(self._art_tree)
+
+        self._art_tree.bind("<<TreeviewSelect>>", self._on_art_select)
+        self._art_tree.bind("<Double-1>", self._on_art_double_click)
+        self._art_tree.bind("<Button-3>", self._on_art_right_click)
+
+        self._art_menu = tk.Menu(self, tearoff=0, bg=SURFACE2, fg=TEXT,
+                                 activebackground=YT_DARK,
+                                 activeforeground="#ffffff", bd=0)
+        self._art_menu.add_command(
+            label="Open Image", command=lambda: self._art_ctx_action("image"))
+        self._art_menu.add_command(
+            label="Open Containing Folder",
+            command=lambda: self._art_ctx_action("folder"))
+        self._art_menu.add_separator()
+        self._art_menu.add_command(
+            label="Copy Image Path",
+            command=lambda: self._art_ctx_action("copy_path"))
+        self._art_menu.add_command(
+            label="Copy Thumbnail URL",
+            command=lambda: self._art_ctx_action("copy_url"))
+
+    # ── Artwork row state ─────────────────────────────────────────────────────
+    @staticmethod
+    def _art_state(row):
+        """Classify one download row's artwork into a state string.
+
+        'embedded' — art is written into the MP3 (what players actually read).
+        'sidecar'  — a sidecar JPEG is on record but nothing is embedded.
+        'broken'   — the DB names a sidecar that is no longer on disk.
+        'none'     — no artwork of any kind on record.
+
+        Reads the filesystem (one isfile per row); cheap enough for a library of
+        thousands and the only way to catch a sidecar deleted behind our back.
+        """
+        path = (row.get("artwork_path") or "").strip()
+        embedded = bool(row.get("artwork_embedded"))
+        on_disk = bool(path) and os.path.isfile(path)
+        if path and not on_disk:
+            return "broken"
+        if embedded:
+            return "embedded"
+        if on_disk:
+            return "sidecar"
+        return "none"
+
+    def _filtered_artwork(self):
+        """Rows for the artwork tree as (row, state) pairs, filter + search
+        applied."""
+        choice = self._art_filter_var.get()
+        needle = self._art_search_var.get().strip().lower()
+        out = []
+        for row in self._downloads:
+            state = self._art_state(row)
+            if choice == "Has artwork" and state == "none":
+                continue
+            if choice == "Missing artwork" and state != "none":
+                continue
+            # "Embedded" keys off the flag, not the state: a track whose sidecar
+            # has gone missing still has its art inside the file, and hiding it
+            # here would misreport that.
+            if choice == "Embedded only" and not row.get("artwork_embedded"):
+                continue
+            if choice == "Sidecar missing on disk" and state != "broken":
+                continue
+            if needle:
+                hay = (f"{row.get('title', '')} {row.get('channel_name', '')} "
+                       f"{row.get('artwork_path', '') or ''}").lower()
+                if needle not in hay:
+                    continue
+            out.append((row, state))
+        return out
+
+    def _art_sort_key(self, pair):
+        row, state = pair
+        col = self._art_sort_col
+        if col == "channel":
+            return (row.get("channel_name") or "").lower()
+        if col == "platform":
+            return (row.get("platform") or "").lower()
+        if col == "embedded":
+            return 1 if row.get("artwork_embedded") else 0
+        if col == "sidecar":
+            return os.path.basename(row.get("artwork_path") or "").lower()
+        if col == "on_disk":
+            return 0 if state in ("none", "broken") else 1
+        if col == "thumb_url":
+            return (row.get("thumbnail_url") or "").lower()
+        return (row.get("title") or "").lower()
+
+    def _rebuild_artwork_tree(self):
+        tree = self._art_tree
+        tree.delete(*tree.get_children())
+        self._art_row_data.clear()
+        self._art_clear_preview()
+
+        pairs = sorted(self._filtered_artwork(), key=self._art_sort_key,
+                       reverse=self._art_sort_desc)
+
+        for i, (row, state) in enumerate(pairs):
+            art_path = (row.get("artwork_path") or "").strip()
+            url = (row.get("thumbnail_url") or "").strip()
+            values = (
+                row.get("title") or "(untitled)",
+                row.get("channel_name") or "",
+                row.get("platform") or "",
+                "✔" if row.get("artwork_embedded") else "✘",
+                os.path.basename(art_path) if art_path else "—",
+                {"broken": "✘ gone", "none": "—"}.get(state, "✔"),
+                url or "—",
+            )
+            tags = ["oddrow" if i % 2 else "evenrow"]
+            if state == "broken":
+                tags.append("art_broken")
+            elif state == "none":
+                tags.append("art_none")
+            item = tree.insert("", "end", values=values, tags=tuple(tags))
+            self._art_row_data[item] = row
+
+        self._update_art_heading_arrows()
+        self._update_art_stats(len(pairs))
+
+    def _update_art_stats(self, shown):
+        """Summarise the library's artwork health.
+
+        'embedded' counts the flag directly rather than the exclusive state — a
+        track whose sidecar was deleted still carries its art inside the file,
+        and reporting it as un-embedded would understate what the user has.
+        """
+        total = len(self._downloads)
+        embedded = broken = none = 0
+        for row in self._downloads:
+            if row.get("artwork_embedded"):
+                embedded += 1
+            state = self._art_state(row)
+            if state == "broken":
+                broken += 1
+            elif state == "none":
+                none += 1
+        parts = [
+            f"{total} track{'s' if total != 1 else ''}",
+            f"{embedded} embedded",
+            f"{none} without artwork",
+        ]
+        if broken:
+            parts.append(f"{broken} sidecar{'s' if broken != 1 else ''} "
+                         "missing on disk")
+        if shown != total:
+            parts.append(f"showing {shown}")
+        self._art_stats.config(text="  ·  ".join(parts))
+
+    def _sort_artwork(self, col):
+        if self._art_sort_col == col:
+            self._art_sort_desc = not self._art_sort_desc
+        else:
+            self._art_sort_col = col
+            # Default direction: for the yes/no columns, show the interesting
+            # (missing) rows first rather than burying them under the healthy ones.
+            self._art_sort_desc = col not in ("embedded", "on_disk")
+        self._rebuild_artwork_tree()
+
+    def _update_art_heading_arrows(self):
+        arrow = " ▼" if self._art_sort_desc else " ▲"
+        for cid, (head, _w, _a) in self._ART_COLS.items():
+            self._art_tree.heading(
+                cid, text=head + (arrow if self._art_sort_col == cid else ""))
+
+    # ── Artwork preview ───────────────────────────────────────────────────────
+    def _art_clear_preview(self, message="Select a track"):
+        self._art_preview_img = None
+        self._art_canvas.config(image="", text=message)
+        self._art_caption.config(text="")
+
+    def _on_art_select(self, _event=None):
+        sel = self._art_tree.selection()
+        row = self._art_row_data.get(sel[0]) if sel else None
+        if not row:
+            self._art_clear_preview()
+            return
+        self._art_show_preview(row)
+
+    def _art_show_preview(self, row):
+        """Render the row's cover art into the preview box.
+
+        Prefers the sidecar JPEG; falls back to the bytes embedded in the MP3 so
+        a track whose sidecar was deleted still previews. Never raises — a
+        preview that cannot be drawn degrades to an explanatory message.
+        """
+        try:
+            from PIL import Image, ImageTk
+        except ImportError:
+            self._art_clear_preview("Preview needs Pillow")
+            return
+
+        art_path = (row.get("artwork_path") or "").strip()
+        source = None
+        note = ""
+        if art_path and os.path.isfile(art_path):
+            source = art_path
+            note = os.path.basename(art_path)
+        else:
+            data = cb_artwork.extract_cover(row.get("file_path") or "")
+            if data:
+                source = io.BytesIO(data)
+                note = ("embedded artwork (no sidecar on disk)" if art_path
+                        else "embedded artwork")
+
+        if source is None:
+            self._art_clear_preview(
+                "Sidecar file is gone" if art_path else "No artwork")
+            self._art_caption.config(text=art_path or "")
+            return
+
+        try:
+            with Image.open(source) as im:
+                px = self._ART_PREVIEW_PX
+                size = f"{im.width}×{im.height}"
+                im = im.convert("RGB")
+                im.thumbnail((px, px), Image.LANCZOS)
+                photo = ImageTk.PhotoImage(im)
+        except Exception:
+            self._art_clear_preview("Image could not be read")
+            return
+
+        self._art_preview_img = photo    # keep a reference or Tk drops it
+        self._art_canvas.config(image=photo, text="")
+        self._art_caption.config(text=f"{note}\n{size}" if note else size)
+
+    # ── Artwork actions ───────────────────────────────────────────────────────
+    def _on_art_double_click(self, event):
+        item = self._art_tree.identify_row(event.y)
+        row = self._art_row_data.get(item)
+        if row:
+            self._art_open_image(row)
+
+    def _on_art_right_click(self, event):
+        item = self._art_tree.identify_row(event.y)
+        if not item or item not in self._art_row_data:
+            return
+        self._art_tree.selection_set(item)
+        self._art_ctx_item = item
+        try:
+            self._art_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._art_menu.grab_release()
+
+    def _art_open_image(self, row):
+        path = (row.get("artwork_path") or "").strip()
+        if not path:
+            messagebox.showinfo(
+                "No Artwork",
+                "This track has no cover art on record.\n\nRun ‹Fetch Missing "
+                "Artwork› to try to find some.", parent=self)
+            return
+        self._open_path(path)
+
+    def _art_ctx_action(self, what):
+        row = self._art_row_data.get(self._art_ctx_item)
+        if not row:
+            return
+        art_path = (row.get("artwork_path") or "").strip()
+        if what == "image":
+            self._art_open_image(row)
+        elif what == "folder":
+            # No sidecar on record — fall back to revealing the track itself, so
+            # the menu item still does something useful for an art-less row.
+            self._reveal_path(art_path or (row.get("file_path") or ""))
+        elif what == "copy_path":
+            self.clipboard_clear()
+            self.clipboard_append(art_path)
+        elif what == "copy_url":
+            self.clipboard_clear()
+            self.clipboard_append((row.get("thumbnail_url") or "").strip())
+
+    def _art_fetch_missing(self):
+        """Hand off to the App's backfill, then reload so the tab reflects it.
+
+        The session runs on a background thread against a modal progress dialog,
+        so we cannot simply refresh on return — we poll for it to finish and
+        reload once it does.
+        """
+        app = self._parent
+        app._fetch_missing_artwork()
+        sess = getattr(app, "_artwork_session", None)
+        if sess is None:
+            return          # nothing to do, or the user cancelled the prompt
+
+        def poll():
+            if getattr(app, "_artwork_session", None) is None:
+                if self.winfo_exists():
+                    self.load_data()
+                return
+            self.after(500, poll)
+
+        self.after(500, poll)
 
     # ── Link / Folder column helpers ──────────────────────────────────────────
     @staticmethod
@@ -2896,6 +3356,7 @@ class DatabaseViewerWindow(tk.Toplevel):
 
         self._rebuild_downloads_tree()
         self._rebuild_watchlist_tree()
+        self._rebuild_artwork_tree()
 
     def _backfill_missing_timestamps(self):
         """Tracks imported before the database feature existed have no download
