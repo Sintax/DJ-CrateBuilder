@@ -136,7 +136,38 @@ def app_icon_path():
             p = os.path.join(cand, "icon.ico")
             if os.path.isfile(p):
                 return p
+    # Linux .deb ships the icon as a hicolor PNG rather than beside the script.
+    png = "/usr/share/icons/hicolor/256x256/apps/dj-cratebuilder.png"
+    if os.path.isfile(png):
+        return png
     return None
+
+
+def _wheel_delta(event):
+    """Normalise a mouse-wheel event to a Windows-style delta (±120 per notch).
+
+    Windows/macOS deliver <MouseWheel> carrying event.delta. Linux/X11 has no
+    <MouseWheel>: the wheel arrives as <Button-4> (up) / <Button-5> (down) with
+    event.delta == 0. Every wheel handler routes through this so a single delta
+    formula works on all platforms; pair it with _bind_wheel() for the events.
+    """
+    num = getattr(event, "num", None)
+    if num == 4:
+        return 120
+    if num == 5:
+        return -120
+    return event.delta
+
+
+def _bind_wheel(widget, handler, add=None):
+    """Bind *handler* to every mouse-wheel event across platforms.
+
+    Binds <MouseWheel> (Windows/macOS) plus <Button-4>/<Button-5> (Linux/X11)
+    so wheel scrolling works everywhere. Handlers must read the notch via
+    _wheel_delta(event), never event.delta directly.
+    """
+    for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+        widget.bind(seq, handler, add=add)
 
 # ── Color palette ─────────────────────────────────────────────────────────────
 BG        = "#0f0f0f"
@@ -852,8 +883,8 @@ class LogViewerWindow(_BaseLogViewerWindow):
             background="#fb923c", foreground=self._SEARCH_FG)   # orange for current hit
 
         # Bind mousewheel on the text widget
-        self._txt.bind("<MouseWheel>", lambda e: self._txt.yview_scroll(
-            int(-1*(e.delta/120)), "units"))
+        _bind_wheel(self._txt, lambda e: self._txt.yview_scroll(
+            int(-1*(_wheel_delta(e)/120)), "units"))
 
     # ── Log loading & rendering ───────────────────────────────────────────────
     def load_log(self):
@@ -1724,8 +1755,8 @@ class CookieHowToWindow(tk.Toplevel):
         self._txt.config(state="disabled")
 
         # Mousewheel
-        self._txt.bind("<MouseWheel>", lambda e: self._txt.yview_scroll(
-            int(-1*(e.delta/120)), "units"))
+        _bind_wheel(self._txt, lambda e: self._txt.yview_scroll(
+            int(-1*(_wheel_delta(e)/120)), "units"))
 
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.focus_force()
@@ -3502,9 +3533,9 @@ class DatabaseViewerWindow(tk.Toplevel):
         scrolling inside this viewer would also scroll the primary app behind
         it. We do the scroll ourselves so breaking the chain costs nothing."""
         def _on_wheel(e):
-            tree.yview_scroll(int(-1 * (e.delta / 120)), "units")
+            tree.yview_scroll(int(-1 * (_wheel_delta(e) / 120)), "units")
             return "break"
-        tree.bind("<MouseWheel>", _on_wheel)
+        _bind_wheel(tree, _on_wheel)
 
     def _insert_group(self, parent, rows, keys):
         """Recursively insert grouped nodes; leaves at the deepest level."""
@@ -4067,6 +4098,18 @@ class MP3DownloaderApp(tk.Tk):
         self.minsize(640, 620)
         self.configure(bg=BG)
         self.resizable(True, True)
+
+        # Titlebar / taskbar icon. Windows gets this from the packaged .exe, but
+        # Tk on Linux has no icon unless we set one explicitly — otherwise the
+        # window shows the default feather. Held on self so Tk can't GC it.
+        try:
+            _icon_path = app_icon_path()
+            if _icon_path:
+                from PIL import Image, ImageTk
+                self._window_icon = ImageTk.PhotoImage(Image.open(_icon_path))
+                self.iconphoto(True, self._window_icon)
+        except Exception:
+            pass
 
         self.update_idletasks()
         x = (self.winfo_screenwidth()  - 850) // 2
@@ -4749,8 +4792,8 @@ class MP3DownloaderApp(tk.Tk):
                 scrollregion=self._batch_canvas.bbox("all")))
         self._batch_canvas.bind("<Configure>", lambda e:
             self._batch_canvas.itemconfig(self._batch_cwin, width=e.width))
-        self._batch_canvas.bind("<MouseWheel>", lambda e: (
-            self._batch_canvas.yview_scroll(int(-1*(e.delta/120)), "units"),
+        _bind_wheel(self._batch_canvas, lambda e: (
+            self._batch_canvas.yview_scroll(int(-1*(_wheel_delta(e)/120)), "units"),
             "break")[-1])
 
         self._batch_rebuild_rows()
@@ -5250,19 +5293,21 @@ class MP3DownloaderApp(tk.Tk):
                 tab_idx = self._notebook.index(self._notebook.select())
             except Exception:
                 return
+            delta = _wheel_delta(event)
             if tab_idx == 0:
                 self._main_canvas.yview_scroll(
-                    int(-1 * (event.delta / 120)), "units")
+                    int(-1 * (delta / 120)), "units")
             elif tab_idx == 1:
                 self._wl_canvas.yview_scroll(
-                    int(-1 * (event.delta / 120)), "units")
+                    int(-1 * (delta / 120)), "units")
             elif tab_idx == 2:
                 self._settings_canvas.yview_scroll(
-                    int(-1 * (event.delta / 120)), "units")
+                    int(-1 * (delta / 120)), "units")
             elif tab_idx == 3:
                 self._about_canvas.yview_scroll(
-                    int(-1 * (event.delta / 120)), "units")
-        self.bind_all("<MouseWheel>", _on_global_mousewheel)
+                    int(-1 * (delta / 120)), "units")
+        for _seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.bind_all(_seq, _on_global_mousewheel)
 
         # ── Header ────────────────────────────────────────────────────────────
         hdr = ttk.Frame(outer)
@@ -5459,9 +5504,9 @@ class MP3DownloaderApp(tk.Tk):
 
         # Bind mousewheel — return "break" to prevent main canvas from intercepting
         def _on_queue_mousewheel(e):
-            self._qtxt.yview_scroll(int(-1*(e.delta/120)), "units")
+            self._qtxt.yview_scroll(int(-1*(_wheel_delta(e)/120)), "units")
             return "break"
-        self._qtxt.bind("<MouseWheel>", _on_queue_mousewheel)
+        _bind_wheel(self._qtxt, _on_queue_mousewheel)
 
         # Queue text tags for row states
         self._qtxt.tag_configure("q_pending",  foreground=TEXT_DIM)
