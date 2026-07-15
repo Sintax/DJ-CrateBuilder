@@ -66,6 +66,11 @@ UPDATE_MANIFEST_URL_LINUX = (
     "https://github.com/Sintax/DJ-CrateBuilder/releases/download/"
     "linux-v1.3/update-linux.json"
 )
+# About-tab updater button labels. The button doubles as the install trigger:
+# it reads "Check for updates" normally and flips to "Update Now" once a newer
+# build has been detected.
+UPDATE_BTN_CHECK  = "  ⟳  Check for updates  "
+UPDATE_BTN_UPDATE = "  ⟳  Update Now  "
 
 # Full version string shown to the user, e.g. "1.3.1".
 APP_VERSION_FULL = f"{APP_VERSION}.{APP_BUILD}"
@@ -6866,6 +6871,12 @@ class MP3DownloaderApp(tk.Tk):
         if var is not None:
             var.set(text)
 
+    def _set_update_btn_label(self, text):
+        """Flip the About-tab updater button between check / update-now."""
+        btn = getattr(self, "_update_btn", None)
+        if btn is not None:
+            btn.config(text=text)
+
     def _on_check_updates_clicked(self):
         """Manual 'Check for updates' button — always reports the outcome."""
         btn = getattr(self, "_update_btn", None)
@@ -6958,6 +6969,7 @@ class MP3DownloaderApp(tk.Tk):
             btn.config(state="normal")
 
         if manifest is None:
+            self._set_update_btn_label(UPDATE_BTN_CHECK)
             self._set_update_status("Couldn't reach the update server.")
             if manual:
                 messagebox.showinfo(
@@ -6968,6 +6980,7 @@ class MP3DownloaderApp(tk.Tk):
 
         ok, _reason = ucore.validate_manifest(manifest)
         if not ok:
+            self._set_update_btn_label(UPDATE_BTN_CHECK)
             self._set_update_status("Update info unavailable.")
             if manual:
                 messagebox.showinfo(
@@ -6977,6 +6990,7 @@ class MP3DownloaderApp(tk.Tk):
             return
 
         if not ucore.is_update_available(manifest, APP_BUILD):
+            self._set_update_btn_label(UPDATE_BTN_CHECK)
             self._set_update_status(f"You're on the latest build ({APP_BUILD}).")
             if manual:
                 messagebox.showinfo(
@@ -6986,8 +7000,9 @@ class MP3DownloaderApp(tk.Tk):
             return
 
         build = int(manifest["build"])
+        self._set_update_btn_label(UPDATE_BTN_UPDATE)
         self._set_update_status(
-            f"Update available: build {build}. (You're on build {APP_BUILD}.)")
+            f"Update available: build {build}.\nYou're on build {APP_BUILD}.")
         if manual:
             self._prompt_and_update(manifest, build)
             return
@@ -7035,7 +7050,7 @@ class MP3DownloaderApp(tk.Tk):
                 f"{APP_BUILD}).{note_line}\n\nDownload and install it now?",
                 parent=self):
             self._set_update_status(
-                f"Update available: build {build}. (You're on build {APP_BUILD}.)")
+                f"Update available: build {build}.\nYou're on build {APP_BUILD}.")
             return
 
         if ucore.is_linux() and not ucore.is_frozen():
@@ -7337,7 +7352,7 @@ class MP3DownloaderApp(tk.Tk):
                  font=("Segoe UI", 10, "bold"), fg=TEXT, bg=BG,
                  anchor="e", justify="right").pack(anchor="e", pady=(22, 4))
         self._update_btn = _about_btn(
-            btn_col, "  ⟳  Check for updates  ",
+            btn_col, UPDATE_BTN_CHECK,
             self._on_check_updates_clicked)
         self._update_btn.pack(anchor="e", pady=(0, 2))
         Tooltip(self._update_btn,
