@@ -1,8 +1,8 @@
 {
   "version": "1.3",
-  "build": 28,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.28.zip",
-  "sha256": "7e9dd0977ee11205f7459d1c382977dc327c2120405f117a956a706f3fc9cdfc",
-  "notes": "Artwork backfill dialogs now stay with the window you launched them from instead of surfacing the main window.",
+  "build": 29,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.29.zip",
+  "sha256": "9ea4cf475b6de8eff08b673bd189ca68e4f68862b9483ea182d112851c631126",
+  "notes": "Tidier Main tab: the skip-files option and Open Folder button now live under Settings > Audio Output.",
   "base": 20
 }
