@@ -1,8 +1,8 @@
 {
   "version": "1.3",
-  "build": 24,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.24.zip",
-  "sha256": "2dad7823f117b01df2564b7fd9417b6ab20507311e8b1a5b256d693f10a88c87",
-  "notes": "New Artwork tab in the Database window - see every track's cover art, spot missing art, and preview it.",
+  "build": 25,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.25.zip",
+  "sha256": "dfb030bb39eb31654edd12001e789baae120a061cb7d15f12291116fe10c2097",
+  "notes": "Linux: fix mouse-wheel scrolling and the app window icon; add in-app self-update for the .deb.",
   "base": 20
 }
