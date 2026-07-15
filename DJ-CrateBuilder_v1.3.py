@@ -5432,23 +5432,8 @@ class MP3DownloaderApp(tk.Tk):
         # ── Batch URL list ────────────────────────────────────────────────────
         self._build_batch_panel(outer)
 
-        # ── Options row ───────────────────────────────────────────────────────
-        opt = ttk.Frame(outer)
-        opt.pack(fill="x", pady=(0, 8))
-        ttk.Checkbutton(opt, text="Skip files already downloaded",
-                        variable=self._skip_existing,
-                        style="S.Bold.TCheckbutton").pack(side="left")
-
-        self._skip_mode_combo = ttk.Combobox(
-            opt,
-            textvariable=self._skip_mode,
-            values=["In Database ~ In Folder", "In Folder Only", "In Database Only"],
-            state="readonly", width=20)
-        self._skip_mode_combo.pack(side="left", padx=(14, 0))
-
-        ttk.Button(opt, text="📂  Open Folder", style="MainBrowse.TButton",
-                   command=self._open_download_dir).pack(side="right")
-
+        # (The 'Skip files already downloaded' option + Open Folder button now
+        # live in Settings → Audio Output, just above Cover Art.)
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(4, 10))
 
         # ── Action buttons ────────────────────────────────────────────────────
@@ -5765,6 +5750,21 @@ class MP3DownloaderApp(tk.Tk):
 
         # Apply initial enabled/disabled state for the bitrate combo
         self._on_no_conversion_toggle()
+
+        # ── Skip already-downloaded (moved here from the Main tab) ────────────
+        skip_row = ttk.Frame(outer)
+        skip_row.pack(fill="x", pady=(10, 4))
+        ttk.Checkbutton(skip_row, text="Skip files already downloaded",
+                        variable=self._skip_existing,
+                        style="S.Bold.TCheckbutton").pack(side="left")
+        self._skip_mode_combo = ttk.Combobox(
+            skip_row,
+            textvariable=self._skip_mode,
+            values=["In Database ~ In Folder", "In Folder Only", "In Database Only"],
+            state="readonly", width=20)
+        self._skip_mode_combo.pack(side="left", padx=(14, 0))
+        ttk.Button(skip_row, text="📂  Open Folder", style="MainBrowse.TButton",
+                   command=self._open_download_dir).pack(side="right")
 
         # ── Cover art ─────────────────────────────────────────────────────────
         cover_row = ttk.Frame(outer)
