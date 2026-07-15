@@ -80,5 +80,8 @@ skills-lock.json
 # Kept out of the public repo (local-only project material)
 scripts/
 tests/
-.github/workflows/
 CLAUDE.md
+
+# NOTE: .github/workflows/ is intentionally tracked — GitHub Actions can only
+# run a workflow that lives in the repo, so the Linux .deb build (build-deb.yml)
+# must be committed here.
