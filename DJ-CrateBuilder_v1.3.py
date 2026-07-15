@@ -60,6 +60,12 @@ UPDATE_MANIFEST_URL = (
     "https://raw.githubusercontent.com/Sintax/DJ-CrateBuilder/"
     "nightly/update.json"
 )
+# Linux .deb update manifest, published as an asset on the linux-v1.3 release
+# by .github/workflows/build-deb.yml. Same schema as update.json.
+UPDATE_MANIFEST_URL_LINUX = (
+    "https://github.com/Sintax/DJ-CrateBuilder/releases/download/"
+    "linux-v1.3/update-linux.json"
+)
 
 # Full version string shown to the user, e.g. "1.3.1".
 APP_VERSION_FULL = f"{APP_VERSION}.{APP_BUILD}"
@@ -6890,7 +6896,8 @@ class MP3DownloaderApp(tk.Tk):
 
     def _check_updates_worker(self, manual):
         """Background thread: fetch the manifest, then marshal back to the UI."""
-        manifest = ucore.fetch_manifest(UPDATE_MANIFEST_URL)
+        url = UPDATE_MANIFEST_URL_LINUX if ucore.is_linux() else UPDATE_MANIFEST_URL
+        manifest = ucore.fetch_manifest(url)
         try:
             cfg = load_config()
             cfg["last_update_check"] = time.time()
@@ -6942,7 +6949,7 @@ class MP3DownloaderApp(tk.Tk):
         # Automatic check: surface the update actively. Silent when running
         # from source (nothing to swap — prompting would only nag), while a
         # download is already in flight, or while a prompt is still open.
-        if (not ucore.is_frozen() or self._update_in_progress
+        if (not ucore.can_self_update() or self._update_in_progress
                 or self._update_prompt_open):
             return
         if self.state() == "withdrawn":
@@ -6958,9 +6965,16 @@ class MP3DownloaderApp(tk.Tk):
             self._update_prompt_open = False
 
     def _prompt_and_update(self, manifest, build):
-        """Offer the update, then (if accepted) show the AV note and apply."""
-        # Running from source: there's no installed exe to swap.
-        if not ucore.is_frozen():
+        """Offer the update, then (if accepted) download and apply it.
+
+        Three install shapes are handled: a genuine source/git checkout (no
+        installed payload to swap — point the user at git), a Linux ``.deb``
+        install (apt via pkexec), and the Windows packaged build (the separate
+        updater.exe swap). The yes/no prompt is shared; only the apply step
+        differs.
+        """
+        # No installable payload (plain source / git checkout): update via git.
+        if not ucore.can_self_update():
             messagebox.showinfo(
                 "Update available",
                 f"Build {build} is available, but you're running from source.\n\n"
@@ -6979,7 +6993,10 @@ class MP3DownloaderApp(tk.Tk):
                 f"Update available: build {build}. (You're on build {APP_BUILD}.)")
             return
 
-        self._run_update(manifest, build)
+        if ucore.is_linux() and not ucore.is_frozen():
+            self._run_update_linux(manifest, build)
+        else:
+            self._run_update(manifest, build)
 
     def _run_update(self, manifest, build):
         """Download + verify + stage in a worker, with a small progress dialog."""
@@ -7046,6 +7063,128 @@ class MP3DownloaderApp(tk.Tk):
                 self.after(0, lambda: self._update_failed(dlg, exc))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _run_update_linux(self, manifest, build):
+        """Download + verify the .deb, then install it via apt (pkexec prompt).
+
+        The Linux counterpart to _run_update. There's no separate swap process:
+        apt replaces the files under /opt while the app is still running (the
+        live process keeps its old file handles), so once the install returns
+        cleanly we just relaunch a fresh process to pick up the new build.
+
+        pkexec raises a graphical PolicyKit password dialog; the user cancelling
+        it is a non-zero exit, treated as a cancelled update with the app left
+        untouched. The blocking install runs off the UI thread so the window
+        stays responsive while the password dialog is up.
+        """
+        self._update_in_progress = True
+        if not ucore.pkexec_available():
+            self._update_in_progress = False
+            messagebox.showinfo(
+                "Update available",
+                f"Build {build} is available, but automatic installation isn't "
+                "possible here (pkexec was not found).\n\n"
+                "Download the latest .deb and install it manually:\n"
+                "https://github.com/Sintax/DJ-CrateBuilder/releases/tag/linux-v1.3",
+                parent=self)
+            return
+
+        ws = ucore.default_workspace()
+        ucore.purge_dir(ws)
+        os.makedirs(ws, exist_ok=True)
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Updating DJ-CrateBuilder")
+        dlg.transient(self)
+        dlg.resizable(False, False)
+        dlg.configure(bg=BG)
+        dlg.protocol("WM_DELETE_WINDOW", lambda: None)   # no close mid-update
+        status_var = tk.StringVar(value="Starting download…")
+        tk.Label(dlg, textvariable=status_var, font=("Segoe UI", 11),
+                 fg=TEXT, bg=BG, anchor="w", width=44, justify="left"
+                 ).pack(padx=20, pady=(18, 8), anchor="w")
+        bar = ttk.Progressbar(dlg, length=320, mode="determinate", maximum=100)
+        bar.pack(padx=20, pady=(0, 18))
+        dlg.update_idletasks()
+
+        w, h = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        px = self.winfo_x() + (self.winfo_width()  - w) // 2
+        py = self.winfo_y() + (self.winfo_height() - h) // 2
+        dlg.geometry(f"+{max(0, px)}+{max(0, py)}")
+
+        def set_status(text):
+            self.after(0, status_var.set, text)
+
+        def set_pct(pct):
+            self.after(0, lambda: bar.config(value=pct))
+
+        def worker():
+            try:
+                deb_path = os.path.join(ws, f"dj-cratebuilder-{build}.deb")
+
+                def prog(done, total):
+                    if total:
+                        set_pct(done * 100 // total)
+                        set_status(f"Downloading build {build}… "
+                                   f"{done // 1048576} / {total // 1048576} MB")
+                    else:
+                        set_status(f"Downloading build {build}… "
+                                   f"{done // 1048576} MB")
+
+                ucore.download(manifest["url"], deb_path, progress_cb=prog)
+
+                set_status("Verifying download…")
+                if not ucore.verify_sha256(deb_path, manifest["sha256"]):
+                    raise ValueError(
+                        "checksum mismatch — the download may be corrupt")
+
+                set_status("Waiting for authorization…")
+                result = subprocess.run(
+                    ucore.build_deb_install_cmd(deb_path))
+                if result.returncode != 0:
+                    # Non-zero includes the user cancelling the pkexec dialog
+                    # (126/127). Files are unchanged — treat as a failed update.
+                    raise RuntimeError(
+                        "installation was cancelled or did not complete "
+                        f"(exit code {result.returncode})")
+
+                self.after(0, lambda: self._relaunch_linux_and_quit(dlg))
+            except Exception as exc:   # noqa: BLE001 — report and recover
+                self.after(0, lambda: self._update_failed(dlg, exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _relaunch_linux_and_quit(self, dlg):
+        """Launch a fresh app process (post-apt swap) and exit the old one.
+
+        The single-instance loopback lock is released *before* spawning the
+        child so the new process can bind the port immediately — otherwise the
+        child could lose the single-instance race against this still-exiting
+        process and quit, leaving no window. (Windows avoids this by having
+        updater.exe wait for the old PID; the Linux path has no such handoff.)
+        """
+        launcher = "/usr/bin/dj-cratebuilder"
+        lock = getattr(self, "_instance_lock", None)
+        if lock is not None:
+            try:
+                lock.close()
+            except OSError:
+                pass
+        try:
+            if os.path.exists(launcher) and os.access(launcher, os.X_OK):
+                cmd = [launcher]
+            else:
+                cmd = [sys.executable, os.path.abspath(__file__)]
+            subprocess.Popen(cmd, close_fds=True)
+        except OSError as exc:
+            self._update_failed(dlg, exc)
+            return
+
+        try:
+            dlg.destroy()
+        except Exception:
+            pass
+        self._quit_app()
 
     def _update_failed(self, dlg, exc):
         """Close the progress dialog and tell the user the update didn't apply."""

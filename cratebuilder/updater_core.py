@@ -32,6 +32,54 @@ def is_frozen():
     return bool(getattr(sys, "frozen", False))
 
 
+def is_linux():
+    """True when running on a Linux platform."""
+    return sys.platform.startswith("linux")
+
+
+def linux_install_kind(module_path=None, deb_root="/opt/dj-cratebuilder"):
+    """Return "deb" when the app runs from the Debian package, else "source".
+
+    Detection is purely by location: the app installed via the ``.deb`` lives
+    under ``deb_root`` (``/opt/dj-cratebuilder``), whereas a git checkout or any
+    other layout does not. ``module_path`` defaults to this module's own file so
+    the running install is classified by where its code sits on disk; both
+    arguments are injectable so the logic stays platform-independent under test.
+    """
+    probe = os.path.realpath(module_path or __file__)
+    root = os.path.realpath(deb_root)
+    try:
+        return "deb" if os.path.commonpath([probe, root]) == root else "source"
+    except ValueError:
+        # commonpath raises when the paths live on different drives/roots.
+        return "source"
+
+
+def pkexec_available():
+    """True when the PolicyKit ``pkexec`` helper is on PATH (Linux privilege)."""
+    return shutil.which("pkexec") is not None
+
+
+def build_deb_install_cmd(deb_path):
+    """Return the privileged command to install a ``.deb`` via apt + pkexec.
+
+    Kept in one place so the exact argument list is unit-testable and the GUI
+    never hand-rolls it. ``pkexec`` raises a graphical PolicyKit prompt for the
+    user's password before apt runs.
+    """
+    return ["pkexec", "apt-get", "install", "-y", deb_path]
+
+
+def can_self_update():
+    """True when the running app can perform an in-app self-update.
+
+    That means either the Windows packaged (frozen) build, or a Linux install
+    that came from the ``.deb`` package. A plain source/git checkout can't
+    self-update (there's nothing to swap), so this returns False there.
+    """
+    return is_frozen() or (is_linux() and linux_install_kind() == "deb")
+
+
 def install_dir():
     """Directory the running executable lives in (the install folder when frozen)."""
     return os.path.dirname(os.path.abspath(sys.executable))
