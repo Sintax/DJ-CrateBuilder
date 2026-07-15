@@ -1,8 +1,8 @@
 {
   "version": "1.3",
-  "build": 25,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.25.zip",
-  "sha256": "dfb030bb39eb31654edd12001e789baae120a061cb7d15f12291116fe10c2097",
-  "notes": "Linux: fix mouse-wheel scrolling and the app window icon; add in-app self-update for the .deb.",
+  "build": 26,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.26.zip",
+  "sha256": "a3fc3f65838dc32a9cb25b2ef8644b740afa083be7b93ca00d76af521e0bc198",
+  "notes": "Clearer update status: 'Update Now' button when an update is available, plus a two-line build readout.",
   "base": 20
 }
