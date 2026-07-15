@@ -12,14 +12,20 @@
 # ============================================================================
 set -e
 
-REV="${1:-1}"
+BUILD_OVERRIDE="${1:-}"
 APP_VERSION="1.3"
-PKG_VERSION="${APP_VERSION}-${REV}"
 PKG_NAME="dj-cratebuilder"
 SCRIPT_NAME="DJ-CrateBuilder_v1.3.py"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
+
+# Package version mirrors the app's own version.build (e.g. 1.3.24): read
+# APP_BUILD straight from the source so the .deb filename, the About screen,
+# and update-linux.json all speak the same number. An optional CLI arg
+# overrides the derived build (used only for one-off manual builds).
+APP_BUILD="${BUILD_OVERRIDE:-$(grep -oP '^APP_BUILD\s*=\s*\K[0-9]+' "$ROOT/$SCRIPT_NAME")}"
+PKG_VERSION="${APP_VERSION}.${APP_BUILD}"
 OUT_DIR="$ROOT/dist/deb"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
