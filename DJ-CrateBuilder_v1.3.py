@@ -9511,9 +9511,26 @@ class MP3DownloaderApp(tk.Tk):
         top = tk.Frame(card, bg=SURFACE)
         top.pack(fill="x")
 
-        tk.Label(top, text=ch["display_name"],
-                 font=("Segoe UI", 12, "bold"), fg=TEXT, bg=SURFACE,
-                 anchor="w").pack(side="left")
+        # Channel title. When the channel has a resolved URL, render it as a
+        # clickable link that opens the channel's page; unresolved/sentinel
+        # channels (no real URL yet) stay plain text.
+        link_url = (ch.get("url") or "").strip()
+        if link_url and not link_url.startswith(UNRESOLVED_URL_PREFIX):
+            title_lbl = tk.Label(top, text=ch["display_name"],
+                                  font=("Segoe UI", 12, "bold"), fg=LINK_COL,
+                                  bg=SURFACE, anchor="w", cursor="hand2")
+            title_lbl.pack(side="left")
+            title_lbl.bind("<Button-1>",
+                           lambda _e, u=link_url: webbrowser.open(u))
+            title_lbl.bind("<Enter>", lambda _e, l=title_lbl: l.config(
+                font=("Segoe UI", 12, "bold", "underline")))
+            title_lbl.bind("<Leave>", lambda _e, l=title_lbl: l.config(
+                font=("Segoe UI", 12, "bold")))
+            Tooltip(title_lbl, f"Open channel page:\n{link_url}")
+        else:
+            tk.Label(top, text=ch["display_name"],
+                     font=("Segoe UI", 12, "bold"), fg=TEXT, bg=SURFACE,
+                     anchor="w").pack(side="left")
 
         plat_genre = f"{ch['platform']}  •  {ch.get('genre') or '(none)'}"
         tk.Label(top, text=plat_genre,
