@@ -3106,7 +3106,7 @@ class DatabaseViewerWindow(tk.Toplevel):
         reload once it does.
         """
         app = self._parent
-        app._fetch_missing_artwork()
+        app._fetch_missing_artwork(owner=self)
         sess = getattr(app, "_artwork_session", None)
         if sess is None:
             return          # nothing to do, or the user cancelled the prompt
@@ -3855,8 +3855,11 @@ class _ArtworkBackfillSession:
     # this keeps a long run from looking like a scrape to either platform.
     _FETCH_PAUSE_SEC = 0.25
 
-    def __init__(self, app, rows, mode):
+    def __init__(self, app, rows, mode, owner=None):
         self.app  = app
+        # Window that launched the run — dialogs parent to and centre over it,
+        # and it is re-focused when the run ends. Defaults to the main window.
+        self.owner = owner or app
         self.rows = list(rows)
         self.mode = mode
         self.total = len(self.rows)
@@ -3986,12 +3989,22 @@ class _ArtworkBackfillSession:
             self.app._dbg.debug(f"ARTFILL LOOKUP| {source_url}  {exc}")
             return None
 
+    def _owner_win(self):
+        """The launching window if it is still alive, else the main window."""
+        try:
+            if self.owner is not None and self.owner.winfo_exists():
+                return self.owner
+        except Exception:
+            pass
+        return self.app
+
     # ── progress dialog ───────────────────────────────────────────────────
     def _show_progress(self):
-        dlg = tk.Toplevel(self.app)
+        owner = self._owner_win()
+        dlg = tk.Toplevel(owner)
         dlg.title("Fetch Missing Artwork")
         dlg.configure(bg=BG)
-        dlg.transient(self.app)
+        dlg.transient(owner)
         dlg.resizable(False, False)
         head = tk.Label(dlg, text="Fetching artwork…",
                         font=("Segoe UI", 11, "bold"), bg=BG, fg=TEXT)
@@ -4009,8 +4022,8 @@ class _ArtworkBackfillSession:
                   command=self._cancel).pack(pady=(0, 16))
         dlg.protocol("WM_DELETE_WINDOW", self._cancel)
         dlg.update_idletasks()
-        px = self.app.winfo_x() + (self.app.winfo_width() - dlg.winfo_width()) // 2
-        py = self.app.winfo_y() + (self.app.winfo_height() - dlg.winfo_height()) // 2
+        px = owner.winfo_x() + (owner.winfo_width() - dlg.winfo_width()) // 2
+        py = owner.winfo_y() + (owner.winfo_height() - dlg.winfo_height()) // 2
         dlg.geometry(f"+{max(0, px)}+{max(0, py)}")
         self._progress = (dlg, bar, sub)
 
@@ -4064,7 +4077,16 @@ class _ArtworkBackfillSession:
             f"ARTFILL DONE  | embedded={self.embedded} repaired={self.repaired} "
             f"none={self.not_found} missing={self.missing} "
             f"errors={self.errors} cancelled={self.cancelled}")
-        messagebox.showinfo("Fetch Missing Artwork", summary, parent=self.app)
+        owner = self._owner_win()
+        messagebox.showinfo("Fetch Missing Artwork", summary, parent=owner)
+        # Return focus to the launching window (e.g. the Database window) so it
+        # doesn't get left behind the main window after the run.
+        if owner is not self.app:
+            try:
+                owner.lift()
+                owner.focus_force()
+            except Exception:
+                pass
         self.app._artwork_session = None
 
 
@@ -11437,14 +11459,21 @@ class MP3DownloaderApp(tk.Tk):
     # Artwork backfill — find cover art for tracks that predate the feature
     # ══════════════════════════════════════════════════════════════════════════
 
-    def _fetch_missing_artwork(self):
+    def _fetch_missing_artwork(self, owner=None):
         """Entry point for the 'Fetch Missing Artwork' button. Validates that
         artwork is switched on and that there is anything to do, then hands off
-        to an _ArtworkBackfillSession."""
+        to an _ArtworkBackfillSession.
+
+        ``owner`` is the window the action was launched from — the Database
+        window when triggered from its Artwork tab, else the main window. Every
+        dialog (prompts, progress, completion) parents to it so it stays in
+        front and keeps focus rather than surfacing the main window behind it.
+        """
+        owner = owner or self
         if getattr(self, "_artwork_session", None) is not None:
             messagebox.showinfo(
                 "Fetch Missing Artwork",
-                "An artwork run is already in progress.", parent=self)
+                "An artwork run is already in progress.", parent=owner)
             return
 
         mode = self._cover_art_mode_value()
@@ -11452,13 +11481,13 @@ class MP3DownloaderApp(tk.Tk):
             messagebox.showinfo(
                 "Fetch Missing Artwork",
                 "Cover Art is switched off.\n\nChoose a Cover Art mode in "
-                "Settings first, then run this again.", parent=self)
+                "Settings first, then run this again.", parent=owner)
             return
         if not cb_artwork.artwork_available():
             messagebox.showwarning(
                 "Fetch Missing Artwork",
                 "Cover art needs Pillow and mutagen, which are not available "
-                "in this install.", parent=self)
+                "in this install.", parent=owner)
             return
 
         rows = self._db.get_downloads_missing_artwork()
@@ -11466,7 +11495,7 @@ class MP3DownloaderApp(tk.Tk):
             messagebox.showinfo(
                 "Fetch Missing Artwork",
                 "Every track in your library already has cover art.",
-                parent=self)
+                parent=owner)
             return
 
         n = len(rows)
@@ -11476,12 +11505,13 @@ class MP3DownloaderApp(tk.Tk):
             "Artwork will be downloaded where available and embedded into each "
             "file. This can take a while for a large library, and you can "
             "cancel at any point — tracks already done are kept.\n\nContinue?",
-            parent=self)
+            parent=owner)
         if not ok:
             return
 
         self._dbg.info(f"ARTFILL START | {n} tracks missing artwork, mode={mode}")
-        self._artwork_session = _ArtworkBackfillSession(self, rows, mode)
+        self._artwork_session = _ArtworkBackfillSession(self, rows, mode,
+                                                        owner=owner)
         self._artwork_session.start()
 
     # ══════════════════════════════════════════════════════════════════════════
