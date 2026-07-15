@@ -9624,11 +9624,13 @@ class MP3DownloaderApp(tk.Tk):
             (f"⬇ Download New ({pending})",
                            lambda c=cid: self._watchlist_download_new(c), False),
         ]
+        WL_FIX_LINK_LABEL = "🛠 Fix Link"
         if is_unresolved_channel(ch):
             # Only unresolved channels need their link healed. Sits just left of
             # Edit so it reads as a per-channel link action.
             card_buttons.append(
-                ("🛠 Fix Link", lambda c=cid: self._watchlist_resolve_dialog(c), False))
+                (WL_FIX_LINK_LABEL,
+                 lambda c=cid: self._watchlist_resolve_dialog(c), False))
         card_buttons += [
             ("✏ Edit",     lambda c=cid: self._watchlist_edit_channel(c), False),
             ("✕ Remove",   lambda c=cid: self._watchlist_remove_channel(c), False),
@@ -9637,6 +9639,7 @@ class MP3DownloaderApp(tk.Tk):
         # only working Cancel on this tab is the top primary one, which stops
         # the whole batch/scan. The card button just signals "busy".
         WL_CARD_CANCEL = "#78350f"   # dark orange
+        WL_FIX_ORANGE  = "#ff7a00"   # bright orange — a link that MUST be fixed
         for btn_text, btn_cmd, is_cancel in card_buttons:
             if is_cancel:
                 b = tk.Button(btns, text=btn_text,
@@ -9645,6 +9648,14 @@ class MP3DownloaderApp(tk.Tk):
                               disabledforeground=TEXT_DIM,
                               relief="flat", bd=0, padx=8, pady=3,
                               state="disabled")
+            elif btn_text == WL_FIX_LINK_LABEL:
+                # Bright orange so an unresolved link reads as needing attention.
+                b = tk.Button(btns, text=btn_text,
+                              font=("Segoe UI", 9, "bold"),
+                              bg=WL_FIX_ORANGE, fg="#1a1a1a",
+                              activebackground="#e56e00", activeforeground="#000000",
+                              relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
+                              command=btn_cmd)
             else:
                 b = tk.Button(btns, text=btn_text,
                               font=("Segoe UI", 9),
