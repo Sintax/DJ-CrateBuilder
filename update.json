@@ -1,8 +1,8 @@
 {
   "version": "1.3",
-  "build": 27,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.27.zip",
-  "sha256": "98991408069670ad12a22466c63e79877b896bcdbdb36245170f0f23d617e86b",
-  "notes": "Watch List channel titles are now clickable links that open the channel's page; plus the clearer 'Update Now' update prompt.",
+  "build": 28,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.28.zip",
+  "sha256": "7e9dd0977ee11205f7459d1c382977dc327c2120405f117a956a706f3fc9cdfc",
+  "notes": "Artwork backfill dialogs now stay with the window you launched them from instead of surfacing the main window.",
   "base": 20
 }
