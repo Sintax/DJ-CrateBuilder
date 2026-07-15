@@ -48,7 +48,7 @@ APP_VERSION = "1.3"
 # Nightly build number. The display version stays pinned at APP_VERSION; only
 # this integer increments for small in-place updates. Bump it for every build
 # you publish to the nightly channel. Publish with: python scripts/release.py
-APP_BUILD   = 27
+APP_BUILD   = 28
 
 ABOUT_CREATED_BY  = "CorruptSintax@Gmail.com"
 ABOUT_DESCRIPTION = "Vibe-Coded entirely with Claude-AI"
