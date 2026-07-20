@@ -3,6 +3,7 @@ import os
 
 import pytest
 
+from cratebuilder import artwork as _artwork
 from cratebuilder import rebuild
 
 pytest.importorskip("mutagen")
@@ -101,6 +102,23 @@ def test_resolve_artwork_no_art_anywhere_is_blank(tmp_path):
     assert rebuild.resolve_artwork(audio, None, index) == (None, 0, None)
 
 
+def test_resolve_artwork_embedded_cover_assembles_tuple_from_snapshot(tmp_path):
+    audio = _make_mp3(tmp_path / "Some Track.mp3")
+    cover_src = tmp_path / "cover.jpg"
+    with open(cover_src, "wb") as fh:
+        fh.write(b"\xff\xd8\xff\xe0" + b"\x00" * 64)
+    assert _artwork.embed_cover(audio, str(cover_src))
+    os.remove(cover_src)
+
+    index = rebuild.index_artwork_dir(str(tmp_path))  # no .artwork dir -> {}
+    snapshot = {audio: ("/old/art.jpg", 0, "https://img/x.jpg")}
+
+    result = rebuild.resolve_artwork(
+        audio, "dQw4w9WgXcQ", index, snapshot=snapshot)
+
+    assert result == ("/old/art.jpg", 1, "https://img/x.jpg")
+
+
 def test_resolve_artwork_never_writes_or_deletes(tmp_path):
     """The core guarantee: rebuild only reads. It must not touch the disk."""
     audio = _make_mp3(tmp_path / "Some Track.mp3")
@@ -119,6 +137,38 @@ def test_resolve_artwork_never_writes_or_deletes(tmp_path):
     index = rebuild.index_artwork_dir(str(tmp_path))
     rebuild.resolve_artwork(audio, "dQw4w9WgXcQ", index)
     rebuild.resolve_artwork(audio, None, index)
+
+    assert snapshot_tree() == before
+
+
+def test_recover_and_embedded_resolve_never_write_or_delete(tmp_path):
+    """Extends the core guarantee to the paths that actually open files:
+    recover_video_id (reads ID3 tags) and the resolve_artwork branch that
+    detects an embedded APIC frame. Neither may write or delete anything."""
+    tagged = _make_mp3(tmp_path / "Tagged Track.mp3",
+                        "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+    embedded = _make_mp3(tmp_path / "Embedded Track.mp3")
+    cover_src = tmp_path / "cover.jpg"
+    with open(cover_src, "wb") as fh:
+        fh.write(b"\xff\xd8\xff\xe0" + b"\x00" * 64)
+    assert _artwork.embed_cover(embedded, str(cover_src))
+    os.remove(cover_src)
+    blank = _make_mp3(tmp_path / "Blank Track.mp3")
+
+    def snapshot_tree():
+        seen = {}
+        for root, _dirs, files in os.walk(str(tmp_path)):
+            for f in files:
+                fp = os.path.join(root, f)
+                seen[fp] = os.path.getsize(fp)
+        return seen
+
+    index = rebuild.index_artwork_dir(str(tmp_path))  # no .artwork dir present
+    before = snapshot_tree()
+
+    assert rebuild.recover_video_id(tagged) == "dQw4w9WgXcQ"
+    assert rebuild.resolve_artwork(embedded, None, index) == (None, 1, None)
+    assert rebuild.resolve_artwork(blank, None, index) == (None, 0, None)
 
     assert snapshot_tree() == before
 
