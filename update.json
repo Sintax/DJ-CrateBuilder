@@ -1,8 +1,8 @@
 {
   "version": "1.3",
-  "build": 31,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.31.zip",
-  "sha256": "0f4423b1457e5ddcd5553714fb2f8bede5cf32ad3ea8db9dd21bb79f41bb6eb6",
-  "notes": "Cover art now embeds with Keep original format (.webm saves as .opus); database rebuild keeps artwork; UI polish + tooltips.",
+  "build": 32,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.32.zip",
+  "sha256": "637ab9363271c6ee9b6b64a4a14a114a4c09eeeffff38cc4a5c6df203cbd62bd",
+  "notes": "Fetch Missing Artwork now recovers lost video ids and shows per-platform stats; Open Folder buttons polished on Main tab.",
   "base": 20
 }
