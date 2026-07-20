@@ -200,6 +200,52 @@ def test_has_cover_false_on_untagged_mp3(tmp_path):
     assert artwork.has_cover(mp3) is False
 
 
+# ── has_cover_any ────────────────────────────────────────────────────────────
+def test_has_cover_any_true_for_mp3(tmp_path):
+    mp3 = _make_mp3(tmp_path / "track.mp3")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+    artwork.embed_cover(mp3, jpg)
+    assert artwork.has_cover_any(mp3) is True
+
+
+def test_has_cover_any_false_for_untagged_mp3(tmp_path):
+    mp3 = _make_mp3(tmp_path / "track.mp3")
+    assert artwork.has_cover_any(mp3) is False
+
+
+@requires_ffmpeg
+def test_has_cover_any_true_for_mp4(tmp_path):
+    audio = make_silent(tmp_path / "t.m4a", "aac")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+    artwork.embed_cover_mp4(audio, jpg)
+    assert artwork.has_cover_any(audio) is True
+
+
+@requires_ffmpeg
+def test_has_cover_any_false_for_untagged_mp4(tmp_path):
+    audio = make_silent(tmp_path / "t.m4a", "aac")
+    assert artwork.has_cover_any(audio) is False
+
+
+@requires_ffmpeg
+def test_has_cover_any_true_for_ogg(tmp_path):
+    audio = make_silent(tmp_path / "t.opus", "libopus")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+    artwork.embed_cover_ogg(audio, jpg)
+    assert artwork.has_cover_any(audio) is True
+
+
+@requires_ffmpeg
+def test_has_cover_any_false_for_untagged_ogg(tmp_path):
+    audio = make_silent(tmp_path / "t.opus", "libopus")
+    assert artwork.has_cover_any(audio) is False
+
+
+def test_has_cover_any_false_for_missing_and_falsy(tmp_path):
+    assert artwork.has_cover_any(str(tmp_path / "ghost.m4a")) is False
+    assert artwork.has_cover_any(None) is False
+
+
 # ── extract_cover ─────────────────────────────────────────────────────────────
 def test_extract_cover_round_trips_embedded_bytes(tmp_path):
     mp3 = _make_mp3(tmp_path / "track.mp3")
@@ -545,6 +591,24 @@ def test_remux_succeeds_even_if_source_delete_fails(tmp_path, monkeypatch):
     assert out.lower().endswith(".opus")
     assert os.path.isfile(out)
     assert os.path.isfile(webm)
+
+
+@requires_ffmpeg
+def test_remux_rejects_non_opus_audio_and_keeps_source(tmp_path):
+    # yt-dlp's format fallback can hand back a WebM whose audio is Vorbis, not
+    # Opus. `-c:a copy -f ogg` would succeed on that too, producing an
+    # Ogg-framed file mis-named `.opus` that is actually Vorbis. The codec
+    # must be probed and refused before FFmpeg ever runs.
+    webm = make_silent(tmp_path / "t.webm", "libvorbis")
+
+    out = artwork.remux_webm_to_opus(webm)
+
+    assert out is None
+    assert os.path.isfile(webm)
+    part_path = os.path.splitext(webm)[0] + ".opus.part"
+    assert not os.path.exists(part_path)
+    opus_path = os.path.splitext(webm)[0] + ".opus"
+    assert not os.path.exists(opus_path)
 
 
 @requires_ffmpeg

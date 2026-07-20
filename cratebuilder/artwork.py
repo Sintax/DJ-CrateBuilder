@@ -304,6 +304,42 @@ def _ffmpeg_exe(ffmpeg_dir=None):
     return shutil.which("ffmpeg")
 
 
+def _ffprobe_exe(ffmpeg_dir=None):
+    """Absolute path to ffprobe, or None when it cannot be found.
+
+    Mirrors `_ffmpeg_exe`: prefers *ffmpeg_dir* (the bundled folder in a
+    packaged build) and falls back to PATH.
+    """
+    name = "ffprobe.exe" if os.name == "nt" else "ffprobe"
+    if ffmpeg_dir:
+        cand = os.path.join(str(ffmpeg_dir), name)
+        if os.path.isfile(cand):
+            return cand
+    return shutil.which("ffprobe")
+
+
+def _probe_audio_codec(audio_path, ffmpeg_dir=None):
+    """Return the lower-cased codec name of *audio_path*'s first audio stream,
+    or None on any failure (no ffprobe, no audio stream, a bad file). Never
+    raises.
+    """
+    exe = _ffprobe_exe(ffmpeg_dir)
+    if not exe:
+        return None
+    try:
+        proc = subprocess.run(
+            [exe, "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=codec_name",
+             "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
+            capture_output=True, creationflags=_NO_WINDOW)
+        if proc.returncode != 0:
+            return None
+        name = proc.stdout.decode("utf-8", "ignore").strip().lower()
+        return name or None
+    except Exception:
+        return None
+
+
 def remux_webm_to_opus(audio_path, ffmpeg_dir=None):
     """Rewrap the Opus stream inside a WebM file into an Ogg container.
 
@@ -312,11 +348,19 @@ def remux_webm_to_opus(audio_path, ffmpeg_dir=None):
     audio is stream-copied (`-c:a copy`), so this is lossless and fast — no
     re-encode, the samples are bit-identical.
 
+    `-c:a copy -f ogg` succeeds on ANY audio codec, not just Opus — yt-dlp's
+    format selection can hand back a WebM whose audio is Vorbis (e.g. via a
+    `best` fallback). Copying that into a file named `.opus` would produce an
+    Ogg-framed file that is actually Vorbis, which `embed_cover_ogg` then opens
+    with the wrong reader and silently fails. So the source's actual codec is
+    probed first, and anything other than Opus is refused before FFmpeg ever
+    runs.
+
     The source is deleted only after the output exists and is plausibly sized,
     so a failed remux leaves the original file intact.
 
-    Returns the new `.opus` path, or None when FFmpeg is unavailable or the
-    remux failed. Never raises.
+    Returns the new `.opus` path, or None when FFmpeg is unavailable, the
+    source audio is not Opus, or the remux failed. Never raises.
     """
     if not audio_path or not audio_path.lower().endswith(WEBM_EXTS):
         return None
@@ -325,6 +369,9 @@ def remux_webm_to_opus(audio_path, ffmpeg_dir=None):
 
     exe = _ffmpeg_exe(ffmpeg_dir)
     if not exe:
+        return None
+
+    if _probe_audio_codec(audio_path, ffmpeg_dir) != "opus":
         return None
 
     out_path = os.path.splitext(audio_path)[0] + ".opus"
@@ -410,6 +457,44 @@ def has_cover(audio_path):
         return bool(ID3(audio_path).getall("APIC"))
     except Exception:
         return False
+
+
+def has_cover_any(audio_path):
+    """True when *audio_path* already carries embedded cover art, whatever
+    container it is in.
+
+    Dispatches by extension the same way `embed_cover_any` does: MP3 delegates
+    to `has_cover`, MP4/M4A checks the `covr` atom, Ogg/Opus checks the
+    `metadata_block_picture` Vorbis comment. WebM has no readable art mechanism
+    (mutagen cannot parse a Matroska attachment element), so it is always False
+    here — the caller falls back to the remux-then-check path instead.
+
+    Returns False for a missing file, an untagged file, a container mutagen
+    cannot open, or when the relevant mutagen submodule is unavailable. Never
+    raises.
+    """
+    if not audio_path:
+        return False
+    lower = audio_path.lower()
+    if lower.endswith(".mp3"):
+        return has_cover(audio_path)
+    if not os.path.isfile(audio_path):
+        return False
+    try:
+        if lower.endswith(MP4_EXTS):
+            if MP4 is None:
+                return False
+            audio = MP4(audio_path)
+            return bool(audio.tags and audio.tags.get("covr"))
+        if lower.endswith(OGG_EXTS):
+            if Picture is None:
+                return False
+            opener = OggOpus if lower.endswith(".opus") else OggVorbis
+            audio = opener(audio_path)
+            return bool(audio.get("metadata_block_picture"))
+    except Exception:
+        return False
+    return False
 
 
 def extract_cover(audio_path):
