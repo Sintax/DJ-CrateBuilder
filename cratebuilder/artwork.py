@@ -1,9 +1,10 @@
 """Cover art: thumbnail sidecar ingest (Pillow) + ID3 APIC embedding. Tk-free."""
+import base64
 import ctypes
 import os
 import urllib.request
 
-from cratebuilder.util import safe_filename
+from cratebuilder.util import safe_filename, MP4_EXTS, OGG_EXTS
 
 try:
     from PIL import Image
@@ -14,6 +15,18 @@ try:
     from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 except ImportError:  # pragma: no cover - mutagen is a runtime dep
     ID3 = None
+
+try:
+    from mutagen.mp4 import MP4, MP4Cover
+except ImportError:  # pragma: no cover - mutagen is a runtime dep
+    MP4 = None
+
+try:
+    from mutagen.flac import Picture
+    from mutagen.oggopus import OggOpus
+    from mutagen.oggvorbis import OggVorbis
+except ImportError:  # pragma: no cover - mutagen is a runtime dep
+    Picture = None
 
 # The three values the `cover_art_mode` config key may take. 'crop' centre-crops
 # the 16:9 source to a square (real album-art look), 'original' embeds it as-is,
@@ -167,6 +180,87 @@ def embed_cover(audio_path, jpg_path):
         tags.add(APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover",
                       data=data))
         tags.save(audio_path, v2_version=3)
+        return True
+    except Exception:
+        return False
+
+
+def embed_cover_mp4(audio_path, jpg_path):
+    """Embed *jpg_path* as the cover atom on the MP4/M4A at *audio_path*.
+
+    MP4 stores cover art in the `covr` atom of the iTunes metadata box, not in
+    an ID3 frame — a completely different mechanism from `embed_cover`. Assigning
+    a single-element list replaces any existing art rather than appending, so
+    re-embedding never accumulates duplicates.
+
+    Returns True if the file was changed, False otherwise. Never raises.
+    """
+    if MP4 is None:
+        return False
+    if not audio_path or not audio_path.lower().endswith(MP4_EXTS):
+        return False
+    if not os.path.isfile(audio_path):
+        return False
+    if not jpg_path or not os.path.isfile(jpg_path):
+        return False
+    try:
+        with open(jpg_path, "rb") as fh:
+            data = fh.read()
+        if not data:
+            return False
+        audio = MP4(audio_path)
+        if audio.tags is None:
+            audio.add_tags()
+        audio.tags["covr"] = [MP4Cover(data, imageformat=MP4Cover.FORMAT_JPEG)]
+        audio.save()
+        return True
+    except Exception:
+        return False
+
+
+def embed_cover_ogg(audio_path, jpg_path):
+    """Embed *jpg_path* as the cover picture on the Ogg file at *audio_path*.
+
+    Ogg (Opus and Vorbis) carries art as a base64-encoded FLAC picture block in
+    the `metadata_block_picture` Vorbis comment. The comment is overwritten
+    wholesale, so re-embedding replaces the art.
+
+    Returns True if the file was changed, False otherwise. Never raises.
+    """
+    if Picture is None:
+        return False
+    if not audio_path or not audio_path.lower().endswith(OGG_EXTS):
+        return False
+    if not os.path.isfile(audio_path):
+        return False
+    if not jpg_path or not os.path.isfile(jpg_path):
+        return False
+    try:
+        with open(jpg_path, "rb") as fh:
+            data = fh.read()
+        if not data:
+            return False
+
+        pic = Picture()
+        pic.data = data
+        pic.type = 3
+        pic.mime = "image/jpeg"
+        pic.depth = 24
+        # Dimensions are advisory in a FLAC picture block; 0x0 is legal. Reading
+        # them needs Pillow, so a stripped install still embeds working art.
+        pic.width, pic.height = 0, 0
+        if Image is not None:
+            try:
+                with Image.open(jpg_path) as im:
+                    pic.width, pic.height = im.size
+            except Exception:
+                pass
+
+        opener = OggOpus if audio_path.lower().endswith(".opus") else OggVorbis
+        audio = opener(audio_path)
+        audio["metadata_block_picture"] = [
+            base64.b64encode(pic.write()).decode("ascii")]
+        audio.save()
         return True
     except Exception:
         return False
