@@ -3867,9 +3867,14 @@ class _ArtworkBackfillSession:
         self.total = len(self.rows)
         self.embedded = 0        # art found and written onto the file
         self.repaired = 0        # file already had art; only the DB was stale
+        self.recovered = 0       # lost video ids re-derived from channel listings
         self.not_found = 0       # no artwork available from any rung
         self.missing = 0         # the row's file is no longer on disk
         self.errors = 0
+        # One channel-listing fetch per folder per run, keyed by the folder
+        # path. Failures cache as {} so a dead channel costs one lookup, not
+        # one per track.
+        self._listing_cache = {}
         self._progress = None
         self._cancel_event = threading.Event()
         self.cancelled = False
@@ -3923,6 +3928,23 @@ class _ArtworkBackfillSession:
                 row.get("thumbnail_url"))
             self.repaired += 1
             return
+
+        # A YouTube row with no video id has no URL rungs at all — the id was
+        # lost when a rebuild recreated the row from a tagless file. The
+        # channel's upload listing can give it back: the filename is the title
+        # as yt-dlp sanitised it, so matching it against the listing recovers
+        # the id, which unlocks both the id-keyed sidecar cache and the
+        # reconstructable thumbnail URLs.
+        if (not row.get("video_id")
+                and str(row.get("platform") or "").strip().lower() == "youtube"):
+            vid = self._recover_video_id(row, path)
+            if vid:
+                row["video_id"] = vid
+                self.app._db.set_download_video_id(path, vid)
+                key = cb_artwork.artwork_key(vid, path)
+                self.recovered += 1
+                self.app._dbg.debug(
+                    f"ARTFILL IDREC | {row.get('title')!r}  -> {vid}")
 
         jpg = cb_artwork.existing_sidecar(art_dir, key)
         thumb_url = row.get("thumbnail_url")
@@ -3982,6 +4004,51 @@ class _ArtworkBackfillSession:
                 return url, jpg
         return None, None
 
+    def _recover_video_id(self, row, path):
+        """Re-derive a lost YouTube video id by matching *path*'s filename
+        against the channel's upload listing (fetched once per folder, cached
+        for the run — including failures). Returns the id or None; never
+        raises."""
+        folder = os.path.dirname(path)
+        if folder not in self._listing_cache:
+            self._listing_cache[folder] = self._fetch_channel_index(folder)
+        return cb_artwork.lookup_video_id(self._listing_cache[folder], path)
+
+    def _fetch_channel_index(self, folder):
+        """Fetch *folder*'s channel upload listing via its cratebuilder.json
+        sidecar and build the normalized-title -> video-id index. One flat
+        yt-dlp call per channel. Returns {} on any failure (no sidecar, no
+        URL, non-YouTube, network error); never raises."""
+        meta = read_channel_sidecar(folder) or {}
+        url = meta.get("channel_url")
+        platform = str(meta.get("platform") or "YouTube").strip().lower()
+        if not url or platform != "youtube" or self._cancel_event.is_set():
+            return {}
+        try:
+            import yt_dlp
+            opts = {"skip_download": True, "quiet": True, "no_warnings": True,
+                    "extract_flat": "in_playlist",
+                    "ignore_no_formats_error": True}
+            self.app._apply_cookie_opts(opts)
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False) or {}
+            entries = []
+            for e in info.get("entries") or []:
+                # A bare channel URL can come back as tabs, each carrying its
+                # own entries list — flatten one level so the index sees videos.
+                if isinstance(e, dict) and isinstance(e.get("entries"), list):
+                    entries.extend(e["entries"])
+                else:
+                    entries.append(e)
+            index = cb_artwork.build_title_index(entries)
+            self.app._dbg.info(
+                f"ARTFILL INDEX | {meta.get('display_name') or url}  "
+                f"{len(index)} titles")
+            return index
+        except Exception as exc:
+            self.app._dbg.debug(f"ARTFILL INDEX | {url}  {exc}")
+            return {}
+
     def _thumbnail_from_source_tag(self, path):
         """Read the source URL out of the track's ID3 tag and ask yt-dlp for its
         thumbnail. The fallback for legacy SoundCloud tracks. Returns a URL or
@@ -3991,7 +4058,11 @@ class _ArtworkBackfillSession:
             return None
         try:
             import yt_dlp
-            opts = {"skip_download": True, "quiet": True, "no_warnings": True}
+            # ignore_no_formats_error: format selection runs even though only
+            # metadata is wanted, and a video with no servable formats would
+            # otherwise abort the lookup that its thumbnail would have survived.
+            opts = {"skip_download": True, "quiet": True, "no_warnings": True,
+                    "ignore_no_formats_error": True}
             self.app._apply_cookie_opts(opts)
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(source_url, download=False) or {}
@@ -4073,6 +4144,9 @@ class _ArtworkBackfillSession:
         detail = []
         if self.repaired:
             detail.append(f"{self.repaired} already had art (database updated)")
+        if self.recovered:
+            detail.append(f"{self.recovered} lost video ids recovered from "
+                          f"channel listings")
         if self.not_found:
             detail.append(f"{self.not_found} had no artwork available")
         if self.missing:
@@ -4086,8 +4160,9 @@ class _ArtworkBackfillSession:
 
         self.app._dbg.info(
             f"ARTFILL DONE  | embedded={self.embedded} repaired={self.repaired} "
-            f"none={self.not_found} missing={self.missing} "
-            f"errors={self.errors} cancelled={self.cancelled}")
+            f"recovered={self.recovered} none={self.not_found} "
+            f"missing={self.missing} errors={self.errors} "
+            f"cancelled={self.cancelled}")
         owner = self._owner_win()
         messagebox.showinfo("Fetch Missing Artwork", summary, parent=owner)
         # Return focus to the launching window (e.g. the Database window) so it

@@ -448,6 +448,28 @@ def _add_backfill_row(db, title, ts, *, file_path=None, artwork_path=None,
     ])
 
 
+def test_set_download_video_id_updates_matching_row(tmp_path):
+    db = _new_db(tmp_path)
+    _add_backfill_row(db, "Lost Id", 1000, file_path="/x/Lost Id.mp3")
+    with db._conn() as conn:
+        conn.execute("UPDATE downloads SET video_id = NULL "
+                     "WHERE title = 'Lost Id'")
+
+    assert db.set_download_video_id("/x/Lost Id.mp3", "vidXYZ") == 1
+    with db._conn() as conn:
+        row = conn.execute("SELECT video_id FROM downloads "
+                           "WHERE title = 'Lost Id'").fetchone()
+    assert row["video_id"] == "vidXYZ"
+
+
+def test_set_download_video_id_rejects_falsy_inputs(tmp_path):
+    db = _new_db(tmp_path)
+    _add_backfill_row(db, "Row", 1000, file_path="/x/Row.mp3")
+    assert db.set_download_video_id(None, "vid") == 0
+    assert db.set_download_video_id("/x/Row.mp3", None) == 0
+    assert db.set_download_video_id("/x/NoSuch.mp3", "vid") == 0
+
+
 def test_get_downloads_missing_artwork_excludes_embedded(tmp_path):
     db = _new_db(tmp_path)
     _add_backfill_row(db, "Needs Art", 1000)
