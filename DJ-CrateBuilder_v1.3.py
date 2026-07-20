@@ -3871,6 +3871,9 @@ class _ArtworkBackfillSession:
         self.not_found = 0       # no artwork available from any rung
         self.missing = 0         # the row's file is no longer on disk
         self.errors = 0
+        # Per-platform tallies of the same outcomes ({platform: {outcome: n}}),
+        # so the completion dialog can split the run into YouTube vs SoundCloud.
+        self.by_platform = {}
         # One channel-listing fetch per folder per run, keyed by the folder
         # path. Failures cache as {} so a dead channel costs one lookup, not
         # one per track.
@@ -3899,25 +3902,35 @@ class _ArtworkBackfillSession:
                 self._process_row(row)
             except Exception as exc:  # pragma: no cover - defensive
                 self.errors += 1
+                self._tally(row, "errors")
                 self.app._dbg.warning(
                     f"ARTFILL FAIL  | {title!r}  {exc}")
         self.app.after(0, self._finish)
+
+    def _tally(self, row, outcome):
+        """Bump the per-platform counter for *outcome* alongside the totals."""
+        plat = str(row.get("platform") or "Other")
+        counts = self.by_platform.setdefault(plat, {})
+        counts[outcome] = counts.get(outcome, 0) + 1
 
     def _process_row(self, row):
         """Resolve and embed artwork for a single downloads row."""
         path = row.get("file_path") or ""
         if not os.path.isfile(path):
             self.missing += 1
+            self._tally(row, "missing")
             return
 
         key = cb_artwork.artwork_key(row.get("video_id"), path)
         if not key:
             self.not_found += 1
+            self._tally(row, "not_found")
             return
 
         art_dir = cb_artwork.thumbnail_dir(os.path.dirname(path))
         if not art_dir:
             self.errors += 1
+            self._tally(row, "errors")
             return
 
         # The file may already carry art from outside the app (or from a run
@@ -3927,6 +3940,7 @@ class _ArtworkBackfillSession:
                 path, cb_artwork.existing_sidecar(art_dir, key), 1,
                 row.get("thumbnail_url"))
             self.repaired += 1
+            self._tally(row, "repaired")
             return
 
         # A YouTube row with no video id has no URL rungs at all — the id was
@@ -3955,6 +3969,7 @@ class _ArtworkBackfillSession:
 
         if not jpg:
             self.not_found += 1
+            self._tally(row, "not_found")
             self.app._dbg.debug(
                 f"ARTFILL NONE  | {row.get('title')!r}  no thumbnail found")
             return
@@ -3970,12 +3985,14 @@ class _ArtworkBackfillSession:
         self.app._db.set_download_artwork(path, jpg, embedded, thumb_url)
         if embedded:
             self.embedded += 1
+            self._tally(row, "embedded")
             self.app._dbg.debug(f"ARTFILL OK    | {row.get('title')!r}  {jpg}")
         else:
             # Sidecar saved but embedding failed (unsupported container, a
             # WebM whose audio wasn't Opus, or a write error) — the JPEG is
             # kept on disk for a future retry.
             self.not_found += 1
+            self._tally(row, "not_found")
 
     def _fetch_sidecar(self, row, path, art_dir, key, raw):
         """Walk the network rungs of the ladder. Returns (thumb_url, jpg_path),
@@ -4155,6 +4172,25 @@ class _ArtworkBackfillSession:
             detail.append(f"{self.errors} failed")
         if detail:
             summary += "\n\n" + "\n".join(detail)
+
+        # Per-platform breakdown so a mixed library shows how YouTube and
+        # SoundCloud each fared rather than one blended total.
+        if len(self.by_platform) > 0:
+            labels = (("embedded", "given art"),
+                      ("repaired", "already had art"),
+                      ("not_found", "no art found"),
+                      ("missing", "file missing"),
+                      ("errors", "failed"))
+            lines = []
+            for plat in sorted(self.by_platform):
+                counts = self.by_platform[plat]
+                parts = [f"{counts[k]} {label}" for k, label in labels
+                         if counts.get(k)]
+                if parts:
+                    lines.append(f"{plat}:  " + ",  ".join(parts))
+            if lines:
+                summary += "\n\nBy platform:\n" + "\n".join(lines)
+
         if self.cancelled:
             summary = "Cancelled.\n\n" + summary
 
@@ -5531,13 +5567,25 @@ class MP3DownloaderApp(tk.Tk):
                    command=self._add_genre).pack(side="left", padx=(0, 16))
 
         # Root is declared first: with pack(side="right") the first-declared
-        # child sits furthest right, so this reads Genre, Root left-to-right.
+        # child sits furthest right, so this reads Open Folder:, Genre, Root
+        # left-to-right.
         ttk.Button(genre_row, text="📂  Root", style="MainBrowse.TButton",
                    command=self._open_download_dir).pack(side="right")
-        ttk.Button(genre_row, text="📂  Genre", style="MainBrowse.TButton",
-                   command=self._open_genre_dir).pack(side="right", padx=(0, 6))
+        self._open_genre_btn = ttk.Button(
+            genre_row, text="📂  Genre", style="MainBrowse.TButton",
+            command=self._open_genre_dir)
+        self._open_genre_btn.pack(side="right", padx=(0, 6))
+        ttk.Label(genre_row, text="Open Folder:",
+                  style="S.White.Section.TLabel").pack(side="right",
+                                                       padx=(0, 8))
+        # Any change to the selected genre — combobox pick, platform switch,
+        # newly created genre — re-evaluates whether the Genre button has a
+        # real folder to open.
+        self._genre_var.trace_add(
+            "write", lambda *_: self._update_open_genre_btn())
 
         self._refresh_genre_list()
+        self._update_open_genre_btn()
 
         # ── Batch URL list ────────────────────────────────────────────────────
         self._build_batch_panel(outer)
@@ -7800,8 +7848,9 @@ class MP3DownloaderApp(tk.Tk):
             )
 
     def _open_download_dir(self):
-        """Open the current platform's download directory in the system file manager."""
-        target = self._platform_dir()
+        """Open the default save directory (the root above the per-platform
+        folders) in the system file manager."""
+        target = self._base_dir
         os.makedirs(target, exist_ok=True)
         try:
             if sys.platform == "win32":
@@ -7816,6 +7865,19 @@ class MP3DownloaderApp(tk.Tk):
                 f"Unable to open the folder:\n{exc}\n\n"
                 f"Path: {target}"
             )
+
+    def _update_open_genre_btn(self):
+        """Enable the Main tab's Open Folder → Genre button only while a real
+        genre is selected; with '(none)' there is no genre folder to open."""
+        btn = getattr(self, "_open_genre_btn", None)
+        if btn is None:
+            return
+        genre = self._genre_var.get()
+        try:
+            btn.config(state="normal" if genre and genre != "(none)"
+                       else "disabled")
+        except Exception:
+            pass
 
     def _open_genre_dir(self):
         """Open the currently selected genre's folder in the system file manager."""
