@@ -39,6 +39,7 @@ from cratebuilder import updater_core as ucore
 from cratebuilder.tagging import (
     write_track_tags, write_track_tags_any, read_source_url)
 from cratebuilder import artwork as cb_artwork
+from cratebuilder import rebuild as cb_rebuild
 from cratebuilder.singleton import acquire_single_instance, SINGLE_INSTANCE_PORT
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -6229,9 +6230,10 @@ class MP3DownloaderApp(tk.Tk):
             command=self._rebuild_db_from_files)
         self._rebuild_db_btn.pack(side="left", padx=(0, 8))
         self._settings_help(db_row,
-            "Scans the .mp3 files already in your library folders and "
+            "Scans the audio files already in your library folders and "
             "rebuilds the database from them. This is safe to run at any "
-            "time — it clears and rebuilds from scratch.").pack(
+            "time — it clears and rebuilds from scratch. Cover art already "
+            "on disk is reused, never re-downloaded.").pack(
                 side="left", padx=(0, 16))
 
         art_row = ttk.Frame(outer)
@@ -11550,8 +11552,8 @@ class MP3DownloaderApp(tk.Tk):
     # ══════════════════════════════════════════════════════════════════════════
 
     def _rebuild_db_from_files(self):
-        """Rebuild the downloads table by scanning the actual .mp3 files in the
-        folder hierarchy (base/<Platform>/<Genre>/<Channel>/*.mp3), rather than
+        """Rebuild the downloads table by scanning the actual audio files in the
+        folder hierarchy (base/<Platform>/<Genre>/<Channel>/*.<ext>), rather than
         re-reading the activity log. The files on disk are the source of truth."""
         ok = messagebox.askokcancel(
             "Rebuild Database",
@@ -11566,68 +11568,99 @@ class MP3DownloaderApp(tk.Tk):
         # Snapshot the artwork columns by file path and re-attach them below.
         art_snapshot = self._db.get_artwork_by_path()
 
-        rows = []
-        for platform in ("YouTube", "SoundCloud"):
-            proot = self._platform_dir(platform)
-            if not os.path.isdir(proot):
-                continue
-            for genre_dir in sorted(os.listdir(proot)):
-                genre_path = os.path.join(proot, genre_dir)
-                if not os.path.isdir(genre_path):
-                    continue
-                genre = "(none)" if genre_dir == "_No Genre" else genre_dir
+        self._rebuild_db_btn.config(state="disabled")
 
-                for channel_dir in sorted(os.listdir(genre_path)):
-                    channel_path = os.path.join(genre_path, channel_dir)
-                    if not os.path.isdir(channel_path):
+        def _finish(rows):
+            self._db.clear_all_downloads()
+            count = self._db.backfill_downloads(rows)
+            self._db.refresh_watchlist_totals()
+            self._rebuild_db_btn.config(state="normal")
+            messagebox.showinfo(
+                "Rebuild Complete",
+                f"Indexed {count} track{'s' if count != 1 else ''} from the "
+                "files on disk.",
+                parent=self)
+            self._dbg.info(f"DB REBUILD | indexed {count} files from disk")
+
+        def _failed(exc):
+            self._rebuild_db_btn.config(state="normal")
+            messagebox.showerror(
+                "Rebuild Database", f"Rebuild failed:\n\n{exc}", parent=self)
+
+        def _work():
+            rows = []
+            try:
+                for platform in ("YouTube", "SoundCloud"):
+                    proot = self._platform_dir(platform)
+                    if not os.path.isdir(proot):
                         continue
-
-                    # Prefer the channel's canonical identity from its sidecar.
-                    sc = read_channel_sidecar(channel_path) or {}
-                    channel_name = sc.get("display_name") or channel_dir
-                    channel_id   = sc.get("channel_id")
-                    channel_url  = (sc.get("channel_url")
-                                    or channel_url_from_id(channel_id) or "")
-
-                    for name in sorted(os.listdir(channel_path)):
-                        if not name.lower().endswith(".mp3"):
+                    for genre_dir in sorted(os.listdir(proot)):
+                        genre_path = os.path.join(proot, genre_dir)
+                        if not os.path.isdir(genre_path):
                             continue
-                        full = os.path.join(channel_path, name)
-                        try:
-                            mtime = int(os.path.getmtime(full))
-                        except OSError:
-                            continue
-                        # Upload date / downloaded time aren't recorded in the
-                        # file itself, so fall back to the file's mtime.
-                        date_str = datetime.fromtimestamp(mtime).strftime("%Y%m%d")
-                        art_path, art_embedded, thumb_url = art_snapshot.get(
-                            full, (None, 0, None))
-                        rows.append({
-                            "video_id":     None,
-                            "title":        os.path.splitext(name)[0],
-                            "channel_name": channel_name,
-                            "channel_url":  channel_url,
-                            "channel_id":   channel_id,
-                            "platform":     platform,
-                            "genre":        genre,
-                            "file_path":    full,
-                            "upload_date":  date_str,
-                            "ts":           mtime,
-                            "bitrate":      "",
-                            "artwork_path":     art_path,
-                            "artwork_embedded": art_embedded,
-                            "thumbnail_url":    thumb_url,
-                        })
+                        genre = ("(none)" if genre_dir == "_No Genre"
+                                  else genre_dir)
 
-        self._db.clear_all_downloads()
-        count = self._db.backfill_downloads(rows)
-        self._db.refresh_watchlist_totals()
-        messagebox.showinfo(
-            "Rebuild Complete",
-            f"Indexed {count} track{'s' if count != 1 else ''} from the "
-            "files on disk.",
-            parent=self)
-        self._dbg.info(f"DB REBUILD | indexed {count} files from disk")
+                        for channel_dir in sorted(os.listdir(genre_path)):
+                            channel_path = os.path.join(genre_path, channel_dir)
+                            if not os.path.isdir(channel_path):
+                                continue
+
+                            # Prefer the channel's canonical identity from its
+                            # sidecar.
+                            sc = read_channel_sidecar(channel_path) or {}
+                            channel_name = sc.get("display_name") or channel_dir
+                            channel_id   = sc.get("channel_id")
+                            channel_url  = (sc.get("channel_url")
+                                            or channel_url_from_id(channel_id)
+                                            or "")
+
+                            art_index = cb_rebuild.index_artwork_dir(channel_path)
+
+                            for name in sorted(os.listdir(channel_path)):
+                                if not name.lower().endswith(cb_rebuild.AUDIO_EXTS):
+                                    continue
+                                full = os.path.join(channel_path, name)
+                                try:
+                                    mtime = int(os.path.getmtime(full))
+                                except OSError:
+                                    continue
+                                # Upload date / downloaded time aren't recorded
+                                # in the file itself, so fall back to the
+                                # file's mtime.
+                                date_str = datetime.fromtimestamp(
+                                    mtime).strftime("%Y%m%d")
+                                # Recovering the id keeps the <video_id>.jpg
+                                # artwork key stable, which is what stops the
+                                # backfill writing a second identical JPEG
+                                # under the filename stem.
+                                vid = cb_rebuild.recover_video_id(full)
+                                art_path, art_embedded, thumb_url = (
+                                    cb_rebuild.resolve_artwork(
+                                        full, vid, art_index,
+                                        snapshot=art_snapshot))
+                                rows.append({
+                                    "video_id":     vid,
+                                    "title":        os.path.splitext(name)[0],
+                                    "channel_name": channel_name,
+                                    "channel_url":  channel_url,
+                                    "channel_id":   channel_id,
+                                    "platform":     platform,
+                                    "genre":        genre,
+                                    "file_path":    full,
+                                    "upload_date":  date_str,
+                                    "ts":           mtime,
+                                    "bitrate":      "",
+                                    "artwork_path":     art_path,
+                                    "artwork_embedded": art_embedded,
+                                    "thumbnail_url":    thumb_url,
+                                })
+            except Exception as exc:   # noqa: BLE001 — report and recover
+                self.after(0, lambda: _failed(exc))
+                return
+            self.after(0, lambda: _finish(rows))
+
+        threading.Thread(target=_work, daemon=True).start()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
