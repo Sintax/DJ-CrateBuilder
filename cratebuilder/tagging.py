@@ -6,6 +6,19 @@ try:
 except ImportError:  # pragma: no cover - mutagen is a runtime dep
     ID3 = None
 
+try:
+    from mutagen.mp4 import MP4
+except ImportError:  # pragma: no cover - mutagen is a runtime dep
+    MP4 = None
+
+try:
+    from mutagen.oggopus import OggOpus
+    from mutagen.oggvorbis import OggVorbis
+except ImportError:  # pragma: no cover - mutagen is a runtime dep
+    OggOpus = None
+
+from cratebuilder.util import MP4_EXTS, OGG_EXTS
+
 ENCODED_BY = "DJ-CrateBuilder"
 
 
@@ -109,3 +122,66 @@ def read_source_url(path):
         return None
     except Exception:
         return None
+
+
+def write_track_tags_any(path, title=None, source_url=None,
+                         encoded_by=ENCODED_BY, overwrite=False):
+    """Write our standard tags onto *path*, whatever container it is in.
+
+    MP3 delegates to `write_track_tags`. MP4 uses the iTunes atoms
+    (`\\xa9nam` title, `\\xa9too` encoder, `\\xa9cmt` comment); Ogg uses the
+    Vorbis comments (`title`, `encoder`, `comment`). The comment field carries
+    the source URL in every container, which is what lets a database rebuild
+    recover a track's video id from the file itself.
+
+    *overwrite* False leaves an existing field alone, matching
+    `write_track_tags`, so this is safe to run as a bulk backfill.
+
+    Returns True if the file was changed, False otherwise. Never raises.
+    """
+    if not path or not os.path.isfile(path):
+        return False
+
+    lower = path.lower()
+    if lower.endswith(".mp3"):
+        return write_track_tags(path, title=title, source_url=source_url,
+                                encoded_by=encoded_by, overwrite=overwrite)
+
+    if lower.endswith(MP4_EXTS):
+        if MP4 is None:
+            return False
+        opener = MP4
+        fields = (("\xa9nam", title), ("\xa9too", encoded_by),
+                  ("\xa9cmt", source_url))
+    elif lower.endswith(OGG_EXTS):
+        if OggOpus is None:
+            return False
+        opener = OggOpus if lower.endswith(".opus") else OggVorbis
+        fields = (("title", title), ("encoder", encoded_by),
+                  ("comment", source_url))
+    else:
+        return False
+
+    try:
+        audio = opener(path)
+        if opener is MP4:
+            if audio.tags is None:
+                audio.add_tags()
+            container = audio.tags
+        else:
+            container = audio
+
+        changed = False
+        for key, value in fields:
+            if not value:
+                continue
+            if not overwrite and container.get(key):
+                continue
+            container[key] = [value]
+            changed = True
+
+        if changed:
+            audio.save()
+        return changed
+    except Exception:
+        return False

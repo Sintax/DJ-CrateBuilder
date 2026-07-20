@@ -5,6 +5,7 @@ import struct
 import pytest
 
 from cratebuilder import tagging
+from tests.conftest import make_silent, requires_ffmpeg
 
 mutagen = pytest.importorskip("mutagen")
 from mutagen.id3 import ID3  # noqa: E402
@@ -156,3 +157,40 @@ def test_read_source_url_non_mp3_and_missing_return_none(tmp_path):
     assert tagging.read_source_url(str(tmp_path / "ghost.mp3")) is None
     assert tagging.read_source_url(None) is None
     assert tagging.read_source_url("") is None
+
+
+# ── write_track_tags_any ────────────────────────────────────────────────────
+@requires_ffmpeg
+def test_write_tags_any_mp4_round_trips(tmp_path):
+    from mutagen.mp4 import MP4
+    audio = make_silent(tmp_path / "t.m4a", "aac")
+    assert tagging.write_track_tags_any(
+        audio, title="Track", source_url="https://youtu.be/abc123") is True
+    tags = MP4(audio).tags
+    assert tags["\xa9nam"] == ["Track"]
+    assert "https://youtu.be/abc123" in tags["\xa9cmt"][0]
+
+
+@requires_ffmpeg
+def test_write_tags_any_ogg_round_trips(tmp_path):
+    from mutagen.oggopus import OggOpus
+    audio = make_silent(tmp_path / "t.opus", "libopus")
+    assert tagging.write_track_tags_any(
+        audio, title="Track", source_url="https://youtu.be/abc123") is True
+    tags = OggOpus(audio)
+    assert tags["title"] == ["Track"]
+    assert tags["comment"] == ["https://youtu.be/abc123"]
+
+
+def test_write_tags_any_mp3_delegates_to_id3(tmp_path):
+    audio = str(tmp_path / "t.mp3")
+    _make_mp3(audio)
+    assert tagging.write_track_tags_any(
+        audio, title="Track", source_url="https://youtu.be/abc123") is True
+    assert ID3(audio).getall("TIT2")
+
+
+def test_write_tags_any_unknown_extension_is_false(tmp_path):
+    p = tmp_path / "t.wav"
+    p.write_bytes(b"RIFF0000WAVE")
+    assert tagging.write_track_tags_any(str(p), title="X") is False
