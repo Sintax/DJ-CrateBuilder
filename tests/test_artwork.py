@@ -11,6 +11,8 @@ pytest.importorskip("mutagen")
 from PIL import Image  # noqa: E402
 from mutagen.id3 import ID3  # noqa: E402
 
+from tests.conftest import make_silent, requires_ffmpeg
+
 
 # Same minimal silent MP3 frame tests/test_tagging.py uses: MPEG-1 Layer III,
 # 128kbps, 44.1kHz. Enough for mutagen to attach and read back an ID3 tag.
@@ -433,6 +435,53 @@ def test_existing_sidecar_pairs_with_artwork_key(tmp_path):
     written = artwork.ingest_thumbnail(raw, art_dir, key, mode="crop")
 
     assert artwork.existing_sidecar(art_dir, key) == written
+
+
+# ── embed_cover_mp4 / embed_cover_ogg ─────────────────────────────────────────
+@requires_ffmpeg
+def test_embed_cover_mp4_round_trips(tmp_path):
+    from mutagen.mp4 import MP4
+    audio = make_silent(tmp_path / "t.m4a", "aac")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+
+    assert artwork.embed_cover_mp4(audio, jpg) is True
+
+    covers = MP4(audio).tags.get("covr")
+    assert covers and len(bytes(covers[0])) > 0
+
+
+@requires_ffmpeg
+def test_embed_cover_ogg_round_trips(tmp_path):
+    from mutagen.oggopus import OggOpus
+    audio = make_silent(tmp_path / "t.opus", "libopus")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+
+    assert artwork.embed_cover_ogg(audio, jpg) is True
+
+    assert OggOpus(audio).get("metadata_block_picture")
+
+
+@requires_ffmpeg
+def test_embed_cover_mp4_replaces_rather_than_stacks(tmp_path):
+    from mutagen.mp4 import MP4
+    audio = make_silent(tmp_path / "t.m4a", "aac")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+
+    artwork.embed_cover_mp4(audio, jpg)
+    artwork.embed_cover_mp4(audio, jpg)
+
+    assert len(MP4(audio).tags.get("covr")) == 1
+
+
+def test_embed_cover_mp4_rejects_wrong_extension(tmp_path):
+    audio = _make_mp3(tmp_path / "t.mp3")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+    assert artwork.embed_cover_mp4(audio, jpg) is False
+
+
+def test_embed_cover_ogg_missing_image_is_false(tmp_path):
+    assert artwork.embed_cover_ogg(str(tmp_path / "nope.opus"),
+                                   str(tmp_path / "nope.jpg")) is False
 
 
 # ── module constants ──────────────────────────────────────────────────────────
