@@ -208,6 +208,25 @@ class DownloadsDatabase:
             self._log("error", f"backfill_downloads failed: {e}")
             return 0
 
+    def update_download_path(self, old_path, new_path):
+        """Repoint the download row(s) at *old_path* to *new_path*.
+        Returns the number of rows updated, 0 on failure or no match. Used by
+        the artwork backfill when embedding art forces a container change
+        (a WebM remuxed to Opus so mutagen can write the cover), so the row
+        does not keep pointing at the file that no longer exists."""
+        if not old_path or not new_path:
+            return 0
+        try:
+            with self._conn() as conn:
+                cur = conn.execute(
+                    "UPDATE downloads SET file_path = ? WHERE file_path = ?",
+                    (new_path, old_path))
+                return cur.rowcount or 0
+        except Exception as e:
+            self._log("error", f"update_download_path failed for "
+                               f"{old_path!r}: {e}")
+            return 0
+
     def set_download_artwork(self, file_path, artwork_path, artwork_embedded,
                              thumbnail_url=None):
         """Record cover art against the download row(s) for *file_path*.
@@ -276,11 +295,18 @@ class DownloadsDatabase:
 
     def get_artwork_by_path(self):
         """Snapshot every row's cover-art bookkeeping, keyed by file_path:
-        {file_path: (artwork_path, artwork_embedded, thumbnail_url)}.
+        {file_path: (artwork_path, artwork_embedded, thumbnail_url, video_id)}.
 
         Only rows carrying some artwork data are included (an artwork_path, an
         embedded flag, or a thumbnail_url); rows with no file_path are skipped
         because the key would be meaningless.
+
+        video_id is the 4th element, appended after the original 3-tuple so
+        existing positional access to (artwork_path, artwork_embedded,
+        thumbnail_url) is unaffected. It lets a rebuild recover a SoundCloud
+        track's sidecar (keyed on that id, not the filename stem) even though
+        SoundCloud URLs carry no id `recover_video_id` can read back off the
+        file itself.
 
         WHY THIS EXISTS: "Rebuild Database from Files" wipes the downloads table
         with clear_all_downloads() and re-derives it from disk via
@@ -293,7 +319,7 @@ class DownloadsDatabase:
             with self._conn() as conn:
                 rows = conn.execute("""
                     SELECT file_path, artwork_path, artwork_embedded,
-                           thumbnail_url
+                           thumbnail_url, video_id
                     FROM downloads
                     WHERE file_path IS NOT NULL AND file_path != ''
                       AND (artwork_path IS NOT NULL
@@ -302,7 +328,8 @@ class DownloadsDatabase:
                 """).fetchall()
                 return {r["file_path"]: (r["artwork_path"],
                                          r["artwork_embedded"],
-                                         r["thumbnail_url"])
+                                         r["thumbnail_url"],
+                                         r["video_id"])
                         for r in rows}
         except Exception as e:
             self._log("error", f"get_artwork_by_path failed: {e}")

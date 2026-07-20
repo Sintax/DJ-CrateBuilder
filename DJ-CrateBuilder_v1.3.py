@@ -36,8 +36,10 @@ from cratebuilder.cleanup import (
     is_scan_trustworthy, classify_local_files, partition_trash)
 from cratebuilder import startup as cb_startup
 from cratebuilder import updater_core as ucore
-from cratebuilder.tagging import write_track_tags, read_source_url
+from cratebuilder.tagging import (
+    write_track_tags, write_track_tags_any, read_source_url)
 from cratebuilder import artwork as cb_artwork
+from cratebuilder import rebuild as cb_rebuild
 from cratebuilder.singleton import acquire_single_instance, SINGLE_INSTANCE_PORT
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -78,7 +80,6 @@ APP_VERSION_FULL = f"{APP_VERSION}.{APP_BUILD}"
 # ── Add or remove lines below to customize the About tab content. ──────────
 # ── Each tuple is  ("Label", "Value")  and will display as a row. ──────────
 ABOUT_FIELDS = [
-    ("Application",  f"{APP_NAME}  v{APP_VERSION_FULL}"),
     ("Created by",   ABOUT_CREATED_BY),
     ("Built with",   ABOUT_DESCRIPTION),
 ]
@@ -205,6 +206,7 @@ WL_BLUE_DARK = "#2563eb"   # darker blue fill for buttons (carries white text)
 # Dark maroon for the global Cancel button while it's idle (nothing to cancel),
 # so the control reads as "armed but inactive" rather than a plain grey button.
 WL_CANCEL_IDLE = "#5e1414"
+WL_CANCEL_ACTIVE = YT_DARK   # live cancel on a card — matches the toolbar
 
 # ── Platform config ───────────────────────────────────────────────────────────
 PLATFORMS = {
@@ -3915,7 +3917,7 @@ class _ArtworkBackfillSession:
 
         # The file may already carry art from outside the app (or from a run
         # whose DB write was lost). Nothing to fetch — just correct the row.
-        if cb_artwork.has_cover(path):
+        if cb_artwork.has_cover_any(path):
             self.app._db.set_download_artwork(
                 path, cb_artwork.existing_sidecar(art_dir, key), 1,
                 row.get("thumbnail_url"))
@@ -3935,13 +3937,22 @@ class _ArtworkBackfillSession:
                 f"ARTFILL NONE  | {row.get('title')!r}  no thumbnail found")
             return
 
-        embedded = cb_artwork.embed_cover(path, jpg)
+        final_path, embedded = cb_artwork.embed_cover_any(
+            path, jpg, bundled_ffmpeg_dir())
+        if final_path != path:
+            # A WebM was remuxed to Opus so the art could be written at all —
+            # the row must follow the file or it is left pointing at a path
+            # that no longer exists.
+            self.app._db.update_download_path(path, final_path)
+            path = final_path
         self.app._db.set_download_artwork(path, jpg, embedded, thumb_url)
         if embedded:
             self.embedded += 1
             self.app._dbg.debug(f"ARTFILL OK    | {row.get('title')!r}  {jpg}")
         else:
-            # Sidecar saved but not embedded — a non-MP3 (kept original format).
+            # Sidecar saved but embedding failed (unsupported container, a
+            # WebM whose audio wasn't Opus, or a write error) — the JPEG is
+            # kept on disk for a future retry.
             self.not_found += 1
 
     def _fetch_sidecar(self, row, path, art_dir, key, raw):
@@ -4088,6 +4099,8 @@ class _ArtworkBackfillSession:
             except Exception:
                 pass
         self.app._artwork_session = None
+        if hasattr(self.app, "_rebuild_db_btn"):
+            self.app._rebuild_db_btn.config(state="normal")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4184,6 +4197,11 @@ class MP3DownloaderApp(tk.Tk):
         # In-flight artwork backfill, or None. Guards against a second run being
         # started on top of one already walking the library.
         self._artwork_session = None
+        # True while a background rebuild is between clear_all_downloads() and
+        # backfill_downloads(); _fetch_missing_artwork checks this directly so
+        # the guard holds no matter which button (main window or Database
+        # Viewer) launched the backfill.
+        self._rebuild_in_progress = False
 
         # Log size limit — caps activity.log and debug.log (each) by trimming the
         # oldest lines; 0 = Unlimited. Default 2 MB keeps the logs from growing
@@ -4505,13 +4523,14 @@ class MP3DownloaderApp(tk.Tk):
         )
 
     def _tag_track(self, path, title, url):
-        """Best-effort: stamp Title / Encoded-by / source-URL ID3 tags onto a
-        downloaded MP3 so the originating YouTube/SoundCloud link is later
-        recoverable from the file's Details. Used both for freshly downloaded
-        files and as a backfill on tracks that were skipped because they were
-        already on disk. Never raises; a tag failure must not break a batch."""
+        """Best-effort: stamp Title / Encoded-by / source-URL tags onto a
+        downloaded track, via `write_track_tags_any` so MP3, MP4/M4A and Ogg
+        all get the originating YouTube/SoundCloud link recoverable from the
+        file's Details. Used both for freshly downloaded files and as a
+        backfill on tracks that were skipped because they were already on
+        disk. Never raises; a tag failure must not break a batch."""
         try:
-            if write_track_tags(path, title=title, source_url=url):
+            if write_track_tags_any(path, title=title, source_url=url):
                 self._dbg.debug(f"ID3 TAGGED   | {title!r}  {path}")
         except Exception as exc:  # pragma: no cover - defensive
             self._dbg.warning(f"ID3 TAG FAIL | {title!r}  {exc}")
@@ -4536,52 +4555,60 @@ class MP3DownloaderApp(tk.Tk):
                 return candidate
         return None
 
-    def _harvest_cover_art(self, audio_path, video_id, title):
+    def _harvest_cover_art(self, audio_path, video_id, title, source_url=None):
         """Turn the thumbnail yt-dlp just wrote into cover art for one track.
 
         Converts the raw image into the channel folder's hidden `.artwork/`
-        sidecar as `<video_id>.jpg`, then embeds it as the MP3's front-cover
-        APIC frame — the embed is what actually makes the art appear in Windows
+        sidecar as `<video_id>.jpg`, then embeds it as the track's front-cover
+        art frame — the embed is what actually makes the art appear in Windows
         Explorer, media players and on Android; the sidecar is the archival copy
         we can re-embed from later without going back to the network.
 
-        Non-MP3 tracks (the "keep original format" path) still get the sidecar;
-        only the embed is skipped, because Opus/MP4 cover art uses an entirely
-        different container frame.
+        A `.webm` (the "keep original format" path) is remuxed to `.opus` when
+        that's needed to embed art in a container that supports it; the new
+        file is re-tagged since the Ogg container doesn't inherit the WebM's
+        tags.
 
-        Returns (artwork_path, embedded) — (None, False) when artwork is off,
-        unavailable, or anything at all went wrong. Never raises: a cover-art
-        failure must not fail a download."""
+        Returns (artwork_path, embedded, final_audio_path) — (None, False,
+        audio_path) when artwork is off, unavailable, or anything at all went
+        wrong. Never raises: a cover-art failure must not fail a download."""
         mode = self._cover_art_mode_value()
         if mode == "off" or not cb_artwork.artwork_available():
-            return None, False
+            return None, False, audio_path
 
         raw = self._find_raw_thumbnail(audio_path)
         if not raw:
             self._dbg.debug(f"COVER SKIP    | {title!r}  no thumbnail written")
-            return None, False
+            return None, False, audio_path
 
         try:
             art_dir = cb_artwork.thumbnail_dir(os.path.dirname(audio_path))
             if not art_dir:
-                return None, False
+                return None, False, audio_path
 
             art_path = cb_artwork.ingest_thumbnail(raw, art_dir, video_id, mode)
             if not art_path:
                 self._dbg.warning(f"COVER FAIL    | {title!r}  ingest failed")
-                return None, False
+                return None, False, audio_path
 
-            embedded = cb_artwork.embed_cover(audio_path, art_path)
+            final_path, embedded = cb_artwork.embed_cover_any(
+                audio_path, art_path, bundled_ffmpeg_dir())
             if embedded:
                 self._dbg.debug(f"COVER ART     | {title!r}  {art_path}")
             else:
                 self._dbg.debug(
                     f"COVER SIDECAR | {title!r}  saved, not embedded "
-                    f"(non-MP3 or tag write failed)")
-            return art_path, embedded
+                    f"(unsupported container or tag write failed)")
+            if final_path != audio_path:
+                self._dbg.info(
+                    f"REMUX         | {title!r}  {os.path.basename(audio_path)}"
+                    f" -> {os.path.basename(final_path)}")
+                write_track_tags_any(
+                    final_path, title=title, source_url=source_url)
+            return art_path, embedded, final_path
         except Exception as exc:  # pragma: no cover - defensive
             self._dbg.warning(f"COVER FAIL    | {title!r}  {exc}")
-            return None, False
+            return None, False, audio_path
 
     def _log_error(self, title, url, error):
         """Write one ERROR entry to the log file."""
@@ -5428,13 +5455,21 @@ class MP3DownloaderApp(tk.Tk):
         ttk.Button(genre_row, text="+ New", style="MainBrowse.TButton",
                    command=self._add_genre).pack(side="left", padx=(0, 16))
 
+        # Root is declared first: with pack(side="right") the first-declared
+        # child sits furthest right, so this reads Genre, Root left-to-right.
+        ttk.Button(genre_row, text="📂  Root", style="MainBrowse.TButton",
+                   command=self._open_download_dir).pack(side="right")
+        ttk.Button(genre_row, text="📂  Genre", style="MainBrowse.TButton",
+                   command=self._open_genre_dir).pack(side="right", padx=(0, 6))
+
         self._refresh_genre_list()
 
         # ── Batch URL list ────────────────────────────────────────────────────
         self._build_batch_panel(outer)
 
-        # (The 'Skip files already downloaded' option + Open Folder button now
-        # live in Settings → Audio Output, just above Cover Art.)
+        # (The 'Skip files already downloaded' option lives in Settings →
+        # File Output, below Cover Art. The Open Folder buttons for Genre
+        # and Root are on the genre row above.)
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(4, 10))
 
         # ── Action buttons ────────────────────────────────────────────────────
@@ -5712,7 +5747,7 @@ class MP3DownloaderApp(tk.Tk):
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 20))
 
         # ── MP3 Bitrate Selector ──────────────────────────────────────────────
-        ttk.Label(outer, text="Audio Output",
+        ttk.Label(outer, text="File Output",
                   style="S.White.Section.TLabel").pack(anchor="w", pady=(0, 8))
 
         bitrate_row = ttk.Frame(outer)
@@ -5752,21 +5787,6 @@ class MP3DownloaderApp(tk.Tk):
         # Apply initial enabled/disabled state for the bitrate combo
         self._on_no_conversion_toggle()
 
-        # ── Skip already-downloaded (moved here from the Main tab) ────────────
-        skip_row = ttk.Frame(outer)
-        skip_row.pack(fill="x", pady=(10, 4))
-        ttk.Checkbutton(skip_row, text="Skip files already downloaded",
-                        variable=self._skip_existing,
-                        style="S.Bold.TCheckbutton").pack(side="left")
-        self._skip_mode_combo = ttk.Combobox(
-            skip_row,
-            textvariable=self._skip_mode,
-            values=["In Database ~ In Folder", "In Folder Only", "In Database Only"],
-            state="readonly", width=20)
-        self._skip_mode_combo.pack(side="left", padx=(14, 0))
-        ttk.Button(skip_row, text="📂  Open Folder", style="MainBrowse.TButton",
-                   command=self._open_download_dir).pack(side="right")
-
         # ── Cover art ─────────────────────────────────────────────────────────
         cover_row = ttk.Frame(outer)
         cover_row.pack(fill="x", pady=(10, 4))
@@ -5788,6 +5808,19 @@ class MP3DownloaderApp(tk.Tk):
             "also kept in a hidden .artwork folder beside the tracks. Cropping "
             "to square fills the art slot; keeping 16:9 letterboxes it.",
             wraplength=400).pack(side="left", padx=(0, 0))
+
+        # ── Skip already-downloaded (Settings-only; not shown on Main tab) ────
+        skip_row = ttk.Frame(outer)
+        skip_row.pack(fill="x", pady=(10, 4))
+        ttk.Checkbutton(skip_row, text="Skip files already downloaded",
+                        variable=self._skip_existing,
+                        style="S.Opt.TCheckbutton").pack(side="left")
+        self._skip_mode_combo = ttk.Combobox(
+            skip_row,
+            textvariable=self._skip_mode,
+            values=["In Database ~ In Folder", "In Folder Only", "In Database Only"],
+            state="readonly", width=20)
+        self._skip_mode_combo.pack(side="left", padx=(14, 0))
 
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 20))
 
@@ -6220,9 +6253,10 @@ class MP3DownloaderApp(tk.Tk):
             command=self._rebuild_db_from_files)
         self._rebuild_db_btn.pack(side="left", padx=(0, 8))
         self._settings_help(db_row,
-            "Scans the .mp3 files already in your library folders and "
+            "Scans the audio files already in your library folders and "
             "rebuilds the database from them. This is safe to run at any "
-            "time — it clears and rebuilds from scratch.").pack(
+            "time — it clears and rebuilds from scratch. Cover art already "
+            "on disk is reused, never re-downloaded.").pack(
                 side="left", padx=(0, 16))
 
         art_row = ttk.Frame(outer)
@@ -7340,9 +7374,9 @@ class MP3DownloaderApp(tk.Tk):
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(0, 24))
 
         # ── Top section: info text on the left, action buttons on the right ───
-        # Two columns. The ABOUT_FIELDS rows (Application / Created by / Built
-        # with) plus the bug/suggestion note live on the left; the three action
-        # buttons stack on the right.
+        # Two columns. The ABOUT_FIELDS rows (Created by / Built with), the
+        # link buttons, and the bug/suggestion note live on the left; the
+        # update box stacks on the right.
         top_sec = ttk.Frame(outer)
         top_sec.pack(fill="x", pady=(0, 4))
 
@@ -7356,24 +7390,16 @@ class MP3DownloaderApp(tk.Tk):
                 command=command)
 
         # Right column — packed first so it claims the right edge. Stack:
-        # View on GitHub, a gap, then the current-build status text directly
-        # ABOVE the Check-for-Updates button.
+        # the current-build status text directly ABOVE the Check-for-Updates
+        # button.
         btn_col = tk.Frame(top_sec, bg=BG)
         btn_col.pack(side="right", anchor="n")
-
-        self._github_btn = _about_btn(
-            btn_col, "View on GitHub",
-            lambda: webbrowser.open(GITHUB_URL))
-        self._github_btn.pack(anchor="e", pady=(0, 6))
-        Tooltip(self._github_btn,
-                "Opens the DJ-CrateBuilder GitHub page in your browser. "
-                "Check here for the latest releases and update notes.")
 
         self._update_status_var = tk.StringVar(
             value=f"You're on build {APP_BUILD}.")
         tk.Label(btn_col, textvariable=self._update_status_var,
                  font=("Segoe UI", 10, "bold"), fg=TEXT, bg=BG,
-                 anchor="e", justify="right").pack(anchor="e", pady=(22, 4))
+                 anchor="e", justify="right").pack(anchor="e", pady=(0, 4))
         self._update_btn = _about_btn(
             btn_col, UPDATE_BTN_CHECK,
             self._on_check_updates_clicked)
@@ -7401,8 +7427,9 @@ class MP3DownloaderApp(tk.Tk):
                  anchor="e", justify="right").pack(anchor="e", pady=(2, 0))
         self._refresh_next_update_check_label()
 
-        # Left column — info rows (driven by ABOUT_FIELDS), then the Submit
-        # Issues / Suggestions button, then its accompanying note.
+        # Left column — info rows (driven by ABOUT_FIELDS), then the View on
+        # GitHub and Submit Issues / Suggestions buttons, then the
+        # accompanying note.
         info_col = tk.Frame(top_sec, bg=BG)
         info_col.pack(side="left", anchor="n")
 
@@ -7413,6 +7440,14 @@ class MP3DownloaderApp(tk.Tk):
                      fg=TEXT, bg=BG, width=14, anchor="w").pack(side="left")
             tk.Label(row, text=value, font=("Segoe UI", 11),
                      fg=TEXT, bg=BG, anchor="w").pack(side="left", padx=(8, 0))
+
+        self._github_btn = _about_btn(
+            info_col, "View on GitHub",
+            lambda: webbrowser.open(GITHUB_URL))
+        self._github_btn.pack(anchor="w", pady=(4, 6))
+        Tooltip(self._github_btn,
+                "Opens the DJ-CrateBuilder GitHub page in your browser. "
+                "Check here for the latest releases and update notes.")
 
         self._issues_btn = _about_btn(
             info_col, "  ↗  Submit Issues / Suggestions  ",
@@ -7692,6 +7727,26 @@ class MP3DownloaderApp(tk.Tk):
     def _open_download_dir(self):
         """Open the current platform's download directory in the system file manager."""
         target = self._platform_dir()
+        os.makedirs(target, exist_ok=True)
+        try:
+            if sys.platform == "win32":
+                os.startfile(target)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", target])
+            else:
+                subprocess.Popen(["xdg-open", target])
+        except Exception as exc:
+            messagebox.showerror(
+                "Could Not Open Folder",
+                f"Unable to open the folder:\n{exc}\n\n"
+                f"Path: {target}"
+            )
+
+    def _open_genre_dir(self):
+        """Open the currently selected genre's folder in the system file manager."""
+        genre = self._genre_var.get()
+        folder = "_No Genre" if not genre or genre == "(none)" else genre
+        target = os.path.join(self._platform_dir(), folder)
         os.makedirs(target, exist_ok=True)
         try:
             if sys.platform == "win32":
@@ -8946,8 +9001,10 @@ class MP3DownloaderApp(tk.Tk):
                     # Embed the source thumbnail as cover art and keep the
                     # sidecar copy. Runs after _tag_track so the APIC frame is
                     # written onto the tag mutagen has already created.
-                    _art_path, _art_embedded = self._harvest_cover_art(
-                        _real_path, entry.get("id"), item_title)
+                    _art_path, _art_embedded, _real_path = (
+                        self._harvest_cover_art(
+                            _real_path, entry.get("id"), item_title,
+                            source_url=item_url))
                     # ── Record in the downloads database ──────────────
                     _vid_upload = entry.get("upload_date", "") or ""
                     self._db.add_download(
@@ -8957,7 +9014,7 @@ class MP3DownloaderApp(tk.Tk):
                         channel_url=url if is_collection else "",
                         channel_id=coll_channel_id or None,
                         platform=platform, genre=genre or "(none)",
-                        file_path=expected_path,
+                        file_path=_real_path,
                         upload_date=_vid_upload,
                         bitrate=src_str,
                         artwork_path=_art_path,
@@ -9044,8 +9101,10 @@ class MP3DownloaderApp(tk.Tk):
                                 self._file_exists_on_disk(save_dir, item_title)
                                 or expected_path)
                             self._tag_track(_real_path, item_title, item_url)
-                            _art_path, _art_embedded = self._harvest_cover_art(
-                                _real_path, entry.get("id"), item_title)
+                            _art_path, _art_embedded, _real_path = (
+                                self._harvest_cover_art(
+                                    _real_path, entry.get("id"), item_title,
+                                    source_url=item_url))
                             # ── Record retry success in DB ────────────
                             _vid_upload = entry.get("upload_date", "") or ""
                             self._db.add_download(
@@ -9057,7 +9116,7 @@ class MP3DownloaderApp(tk.Tk):
                                 channel_id=coll_channel_id or None,
                                 platform=platform,
                                 genre=genre or "(none)",
-                                file_path=expected_path,
+                                file_path=_real_path,
                                 upload_date=_vid_upload,
                                 bitrate=src_str,
                                 artwork_path=_art_path,
@@ -9619,17 +9678,21 @@ class MP3DownloaderApp(tk.Tk):
         is_downloading = bool(self._downloading) and \
             cid in batch.get("channel_ids", [])
 
-        # (label, command, is_cancel)
+        # (label, command, is_cancel, tooltip_text)
         card_buttons = []
         if is_scanning or is_downloading:
             # Per-card Cancel — stops just this channel's scan/download.
             card_buttons.append(
-                ("✕ Cancel", lambda c=cid: self._watchlist_cancel_card(c), True))
+                ("✕ Cancel", lambda c=cid: self._watchlist_cancel_card(c), True,
+                 "Stop the scan or download running on this channel."))
         card_buttons += [
-            ("🔍 Scan",    lambda c=cid: self._watchlist_scan_channel(c), False),
-            ("⚡ Force Download", lambda c=cid: self._watchlist_force_download(c), False),
+            ("🔍 Scan",    lambda c=cid: self._watchlist_scan_channel(c), False,
+             "Check this channel for new uploads without downloading anything."),
+            ("⚡ Force Download", lambda c=cid: self._watchlist_force_download(c), False,
+             "Re-download every track from this channel, including ones "
+             "already in your library."),
             (f"⬇ Download New ({pending})",
-                           lambda c=cid: self._watchlist_download_new(c), False),
+                           lambda c=cid: self._watchlist_download_new(c), False, None),
         ]
         WL_FIX_LINK_LABEL = "🛠 Fix Link"
         if is_unresolved_channel(ch):
@@ -9637,24 +9700,22 @@ class MP3DownloaderApp(tk.Tk):
             # Edit so it reads as a per-channel link action.
             card_buttons.append(
                 (WL_FIX_LINK_LABEL,
-                 lambda c=cid: self._watchlist_resolve_dialog(c), False))
+                 lambda c=cid: self._watchlist_resolve_dialog(c), False, None))
         card_buttons += [
-            ("✏ Edit",     lambda c=cid: self._watchlist_edit_channel(c), False),
-            ("✕ Remove",   lambda c=cid: self._watchlist_remove_channel(c), False),
+            ("✏ Edit",     lambda c=cid: self._watchlist_edit_channel(c), False,
+             "Change this channel's genre, platform, or download settings."),
+            ("✕ Remove",   lambda c=cid: self._watchlist_remove_channel(c), False, None),
         ]
-        # Per-card Cancel is intentionally inert (disabled, dark orange): the
-        # only working Cancel on this tab is the top primary one, which stops
-        # the whole batch/scan. The card button just signals "busy".
-        WL_CARD_CANCEL = "#78350f"   # dark orange
         WL_FIX_ORANGE  = "#ff7a00"   # bright orange — a link that MUST be fixed
-        for btn_text, btn_cmd, is_cancel in card_buttons:
+        for btn_text, btn_cmd, is_cancel, tip in card_buttons:
             if is_cancel:
                 b = tk.Button(btns, text=btn_text,
-                              font=("Segoe UI", 9),
-                              bg=WL_CARD_CANCEL, fg=TEXT_DIM,
-                              disabledforeground=TEXT_DIM,
-                              relief="flat", bd=0, padx=8, pady=3,
-                              state="disabled")
+                              font=("Segoe UI", 9, "bold"),
+                              relief="flat", bd=0, cursor="hand2",
+                              bg=WL_CANCEL_ACTIVE, fg=TEXT,
+                              activebackground=YT_RED, activeforeground=TEXT,
+                              padx=10, pady=3,
+                              command=btn_cmd)
             elif btn_text == WL_FIX_LINK_LABEL:
                 # Bright orange so an unresolved link reads as needing attention.
                 b = tk.Button(btns, text=btn_text,
@@ -9671,6 +9732,8 @@ class MP3DownloaderApp(tk.Tk):
                               relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
                               command=btn_cmd)
             b.pack(side="left", padx=(0, 4))
+            if tip:
+                Tooltip(b, tip)
 
         # Show error if present
         if ch.get("last_error"):
@@ -11493,6 +11556,15 @@ class MP3DownloaderApp(tk.Tk):
                 "Fetch Missing Artwork",
                 "An artwork run is already in progress.", parent=owner)
             return
+        # Guards both entry points (the Settings tab button and the Database
+        # Viewer's Artwork tab button) in one place, closing the same
+        # clear/backfill race the rebuild's own button-disable covers.
+        if getattr(self, "_rebuild_in_progress", False):
+            messagebox.showinfo(
+                "Fetch Missing Artwork",
+                "A database rebuild is in progress. Try again once it "
+                "finishes.", parent=owner)
+            return
 
         mode = self._cover_art_mode_value()
         if mode == "off":
@@ -11528,6 +11600,12 @@ class MP3DownloaderApp(tk.Tk):
             return
 
         self._dbg.info(f"ARTFILL START | {n} tracks missing artwork, mode={mode}")
+        # Mirrors the disable in _rebuild_db_from_files: a rebuild's
+        # clear_all_downloads()/backfill_downloads() interleaved with this
+        # session's set_download_artwork() writes would silently drop one or
+        # the other. Re-enabled in _ArtworkBackfillSession._finish.
+        if hasattr(self, "_rebuild_db_btn"):
+            self._rebuild_db_btn.config(state="disabled")
         self._artwork_session = _ArtworkBackfillSession(self, rows, mode,
                                                         owner=owner)
         self._artwork_session.start()
@@ -11537,8 +11615,8 @@ class MP3DownloaderApp(tk.Tk):
     # ══════════════════════════════════════════════════════════════════════════
 
     def _rebuild_db_from_files(self):
-        """Rebuild the downloads table by scanning the actual .mp3 files in the
-        folder hierarchy (base/<Platform>/<Genre>/<Channel>/*.mp3), rather than
+        """Rebuild the downloads table by scanning the actual audio files in the
+        folder hierarchy (base/<Platform>/<Genre>/<Channel>/*.<ext>), rather than
         re-reading the activity log. The files on disk are the source of truth."""
         ok = messagebox.askokcancel(
             "Rebuild Database",
@@ -11553,68 +11631,145 @@ class MP3DownloaderApp(tk.Tk):
         # Snapshot the artwork columns by file path and re-attach them below.
         art_snapshot = self._db.get_artwork_by_path()
 
-        rows = []
-        for platform in ("YouTube", "SoundCloud"):
-            proot = self._platform_dir(platform)
-            if not os.path.isdir(proot):
-                continue
-            for genre_dir in sorted(os.listdir(proot)):
-                genre_path = os.path.join(proot, genre_dir)
-                if not os.path.isdir(genre_path):
-                    continue
-                genre = "(none)" if genre_dir == "_No Genre" else genre_dir
+        # The rebuild clears the downloads table then repopulates it from the
+        # scan (see _finish below); a concurrent artwork backfill writes to
+        # that same table via set_download_artwork(). Interleaved with the
+        # clear/backfill, those writes either land on rows that are about to
+        # be wiped or land between clear and backfill and silently update
+        # nothing — either way the backfill reports success for work that no
+        # longer exists. Disabling Fetch Missing Artwork for the duration
+        # closes that window; _rebuild_in_progress backs up that disable so
+        # the Database Viewer's own Fetch Missing Artwork button — which this
+        # disable doesn't reach — is covered too.
+        self._rebuild_in_progress = True
+        if hasattr(self, "_rebuild_db_btn"):
+            self._rebuild_db_btn.config(state="disabled")
+        if hasattr(self, "_fetch_art_btn"):
+            self._fetch_art_btn.config(state="disabled")
 
-                for channel_dir in sorted(os.listdir(genre_path)):
-                    channel_path = os.path.join(genre_path, channel_dir)
-                    if not os.path.isdir(channel_path):
+        def _finish(rows):
+            if not rows:
+                # An unmounted drive or a reconfigured download root scans as
+                # empty, not as an error — clearing the table on that result
+                # would wipe the user's entire history behind a success
+                # dialog. Leave the existing rows alone.
+                self._rebuild_in_progress = False
+                self._rebuild_db_btn.config(state="normal")
+                if hasattr(self, "_fetch_art_btn"):
+                    self._fetch_art_btn.config(state="normal")
+                messagebox.showwarning(
+                    "Rebuild Database",
+                    f"Found no audio files under {self._base_dir}.\n\n"
+                    "The database was left unchanged.",
+                    parent=self)
+                self._dbg.info(
+                    f"DB REBUILD | aborted, no audio files under {self._base_dir}")
+                return
+            self._db.clear_all_downloads()
+            count = self._db.backfill_downloads(rows)
+            self._db.refresh_watchlist_totals()
+            self._rebuild_in_progress = False
+            self._rebuild_db_btn.config(state="normal")
+            if hasattr(self, "_fetch_art_btn"):
+                self._fetch_art_btn.config(state="normal")
+            messagebox.showinfo(
+                "Rebuild Complete",
+                f"Indexed {count} track{'s' if count != 1 else ''} from the "
+                "files on disk.",
+                parent=self)
+            self._dbg.info(f"DB REBUILD | indexed {count} files from disk")
+
+        def _failed(exc):
+            self._rebuild_in_progress = False
+            self._rebuild_db_btn.config(state="normal")
+            if hasattr(self, "_fetch_art_btn"):
+                self._fetch_art_btn.config(state="normal")
+            messagebox.showerror(
+                "Rebuild Database", f"Rebuild failed:\n\n{exc}", parent=self)
+
+        def _work():
+            rows = []
+            try:
+                for platform in ("YouTube", "SoundCloud"):
+                    proot = self._platform_dir(platform)
+                    if not os.path.isdir(proot):
                         continue
-
-                    # Prefer the channel's canonical identity from its sidecar.
-                    sc = read_channel_sidecar(channel_path) or {}
-                    channel_name = sc.get("display_name") or channel_dir
-                    channel_id   = sc.get("channel_id")
-                    channel_url  = (sc.get("channel_url")
-                                    or channel_url_from_id(channel_id) or "")
-
-                    for name in sorted(os.listdir(channel_path)):
-                        if not name.lower().endswith(".mp3"):
+                    for genre_dir in sorted(os.listdir(proot)):
+                        genre_path = os.path.join(proot, genre_dir)
+                        if not os.path.isdir(genre_path):
                             continue
-                        full = os.path.join(channel_path, name)
-                        try:
-                            mtime = int(os.path.getmtime(full))
-                        except OSError:
-                            continue
-                        # Upload date / downloaded time aren't recorded in the
-                        # file itself, so fall back to the file's mtime.
-                        date_str = datetime.fromtimestamp(mtime).strftime("%Y%m%d")
-                        art_path, art_embedded, thumb_url = art_snapshot.get(
-                            full, (None, 0, None))
-                        rows.append({
-                            "video_id":     None,
-                            "title":        os.path.splitext(name)[0],
-                            "channel_name": channel_name,
-                            "channel_url":  channel_url,
-                            "channel_id":   channel_id,
-                            "platform":     platform,
-                            "genre":        genre,
-                            "file_path":    full,
-                            "upload_date":  date_str,
-                            "ts":           mtime,
-                            "bitrate":      "",
-                            "artwork_path":     art_path,
-                            "artwork_embedded": art_embedded,
-                            "thumbnail_url":    thumb_url,
-                        })
+                        genre = ("(none)" if genre_dir == "_No Genre"
+                                  else genre_dir)
 
-        self._db.clear_all_downloads()
-        count = self._db.backfill_downloads(rows)
-        self._db.refresh_watchlist_totals()
-        messagebox.showinfo(
-            "Rebuild Complete",
-            f"Indexed {count} track{'s' if count != 1 else ''} from the "
-            "files on disk.",
-            parent=self)
-        self._dbg.info(f"DB REBUILD | indexed {count} files from disk")
+                        for channel_dir in sorted(os.listdir(genre_path)):
+                            channel_path = os.path.join(genre_path, channel_dir)
+                            if not os.path.isdir(channel_path):
+                                continue
+
+                            # Prefer the channel's canonical identity from its
+                            # sidecar.
+                            sc = read_channel_sidecar(channel_path) or {}
+                            channel_name = sc.get("display_name") or channel_dir
+                            channel_id   = sc.get("channel_id")
+                            channel_url  = (sc.get("channel_url")
+                                            or channel_url_from_id(channel_id)
+                                            or "")
+
+                            art_index = cb_rebuild.index_artwork_dir(channel_path)
+
+                            for name in sorted(os.listdir(channel_path)):
+                                if not name.lower().endswith(cb_rebuild.AUDIO_EXTS):
+                                    continue
+                                full = os.path.join(channel_path, name)
+                                try:
+                                    mtime = int(os.path.getmtime(full))
+                                except OSError:
+                                    continue
+                                # Upload date / downloaded time aren't recorded
+                                # in the file itself, so fall back to the
+                                # file's mtime.
+                                date_str = datetime.fromtimestamp(
+                                    mtime).strftime("%Y%m%d")
+                                # Recovering the id keeps the <video_id>.jpg
+                                # artwork key stable, which is what stops the
+                                # backfill writing a second identical JPEG
+                                # under the filename stem.
+                                vid = cb_rebuild.recover_video_id(full)
+                                if not vid:
+                                    # SoundCloud ids aren't recoverable from
+                                    # the file — carry the one the old row
+                                    # held, or the NEXT rebuild would lose the
+                                    # id-keyed sidecar match this one just
+                                    # used.
+                                    _snap = art_snapshot.get(full)
+                                    if _snap and len(_snap) > 3:
+                                        vid = _snap[3]
+                                art_path, art_embedded, thumb_url = (
+                                    cb_rebuild.resolve_artwork(
+                                        full, vid, art_index,
+                                        snapshot=art_snapshot))
+                                rows.append({
+                                    "video_id":     vid,
+                                    "title":        os.path.splitext(name)[0],
+                                    "channel_name": channel_name,
+                                    "channel_url":  channel_url,
+                                    "channel_id":   channel_id,
+                                    "platform":     platform,
+                                    "genre":        genre,
+                                    "file_path":    full,
+                                    "upload_date":  date_str,
+                                    "ts":           mtime,
+                                    "bitrate":      "",
+                                    "artwork_path":     art_path,
+                                    "artwork_embedded": art_embedded,
+                                    "thumbnail_url":    thumb_url,
+                                })
+            except Exception as exc:   # noqa: BLE001 — report and recover
+                self.after(0, lambda: _failed(exc))
+                return
+            self.after(0, lambda: _finish(rows))
+
+        threading.Thread(target=_work, daemon=True).start()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
