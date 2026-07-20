@@ -496,6 +496,58 @@ def test_remux_webm_to_opus_produces_opus_and_removes_source(tmp_path):
 
 
 @requires_ffmpeg
+def test_remux_rejects_undersized_output_and_keeps_source(tmp_path, monkeypatch):
+    # Force the proportional size check to reject a perfectly valid remux, so
+    # the rejection branch is exercised deterministically regardless of the
+    # real byte counts ffmpeg happens to produce for the fixture.
+    webm = make_silent(tmp_path / "t.webm", "libopus")
+    monkeypatch.setattr(artwork, "_MIN_REMUX_SIZE_RATIO", 100.0)
+
+    out = artwork.remux_webm_to_opus(webm)
+
+    assert out is None
+    assert os.path.isfile(webm)
+    part_path = os.path.splitext(webm)[0] + ".opus.part"
+    assert not os.path.exists(part_path)
+
+
+@requires_ffmpeg
+def test_remux_invalid_webm_fails_and_keeps_source(tmp_path):
+    webm = str(tmp_path / "t.webm")
+    with open(webm, "wb") as fh:
+        fh.write(b"not a real webm container at all")
+
+    out = artwork.remux_webm_to_opus(webm)
+
+    assert out is None
+    assert os.path.isfile(webm)
+    part_path = os.path.splitext(webm)[0] + ".opus.part"
+    assert not os.path.exists(part_path)
+
+
+@requires_ffmpeg
+def test_remux_succeeds_even_if_source_delete_fails(tmp_path, monkeypatch):
+    webm = make_silent(tmp_path / "t.webm", "libopus")
+    real_remove = os.remove
+
+    def _flaky_remove(path):
+        if path == webm:
+            raise OSError("locked by AV scanner")
+        real_remove(path)
+
+    monkeypatch.setattr(artwork.os, "remove", _flaky_remove)
+
+    out = artwork.remux_webm_to_opus(webm)
+
+    # os.replace already committed the conversion before the delete ran, so
+    # a failure to delete the source must not be reported as a failed remux.
+    assert out is not None
+    assert out.lower().endswith(".opus")
+    assert os.path.isfile(out)
+    assert os.path.isfile(webm)
+
+
+@requires_ffmpeg
 def test_embed_cover_any_webm_remuxes_then_embeds(tmp_path):
     from mutagen.oggopus import OggOpus
     webm = make_silent(tmp_path / "t.webm", "libopus")

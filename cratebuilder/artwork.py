@@ -271,11 +271,23 @@ def embed_cover_ogg(audio_path, jpg_path):
 # Windows: keep the FFmpeg console window from flashing on every remux.
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
-# A remuxed Opus stream shorter than this is a truncated or failed write, not a
-# real track. A genuine 1-second silent Opus remux already runs ~400 bytes (Ogg
-# page + Opus header overhead dominates at that length), so the floor has to
-# sit below that while still catching an empty or header-only write.
-_MIN_REMUX_BYTES = 200
+# The remux is a lossless stream copy (`-c:a copy`) — no re-encode, so the
+# encoded audio payload in the output is essentially identical to the
+# source's, at any track length. That makes the check proportional to the
+# source rather than a flat byte count: an absolute floor can't tell
+# "truncated write of a 4 MB track" from "complete write of a tiny test
+# fixture", but a check scaled to the source works at any file size. The
+# ratio sits well under 1 because Matroska (WebM) framing carries noticeably
+# more per-frame overhead than Ogg's — on real, non-silent audio the two
+# containers end up within a couple of percent of each other, but on
+# near-silent audio (the 1-second fixtures this suite uses) that overhead
+# dominates and the true ratio can fall as low as ~0.42. 0.3 stays safely
+# under that floor while still rejecting anything an order of magnitude too
+# small — the actual truncated-write failure mode this guards against. The
+# tiny absolute floor alongside it exists only to reject a zero-byte or
+# near-zero output outright, in case the source itself is implausibly small.
+_MIN_REMUX_SIZE_RATIO = 0.3
+_MIN_REMUX_ABS_BYTES = 32
 
 
 def _ffmpeg_exe(ffmpeg_dir=None):
@@ -324,18 +336,29 @@ def remux_webm_to_opus(audio_path, ffmpeg_dir=None):
             capture_output=True, creationflags=_NO_WINDOW)
         if proc.returncode != 0:
             raise RuntimeError("ffmpeg exited non-zero")
-        if os.path.getsize(tmp_path) < _MIN_REMUX_BYTES:
+        src_size = os.path.getsize(audio_path)
+        out_size = os.path.getsize(tmp_path)
+        if out_size < _MIN_REMUX_ABS_BYTES or out_size < src_size * _MIN_REMUX_SIZE_RATIO:
             raise RuntimeError("remux output implausibly small")
 
         os.replace(tmp_path, out_path)
-        os.remove(audio_path)
-        return out_path
     except Exception:
         try:
             os.remove(tmp_path)
         except OSError:
             pass
         return None
+
+    # The replace above is the point of no return: a valid .opus now exists at
+    # out_path, so the conversion is complete. Deleting the source is best
+    # effort tidy-up, not part of success — on Windows an AV scanner or a
+    # lingering handle can make this fail even though nothing is actually
+    # wrong, and that must not discard a completed remux.
+    try:
+        os.remove(audio_path)
+    except OSError:
+        pass
+    return out_path
 
 
 def embed_cover_any(audio_path, jpg_path, ffmpeg_dir=None):
