@@ -4133,7 +4133,8 @@ class MP3DownloaderApp(tk.Tk):
             _icon_path = app_icon_path()
             if _icon_path:
                 from PIL import Image, ImageTk
-                self._window_icon = ImageTk.PhotoImage(Image.open(_icon_path))
+                with Image.open(_icon_path) as _icon_img:
+                    self._window_icon = ImageTk.PhotoImage(_icon_img)
                 self.iconphoto(True, self._window_icon)
         except Exception:
             pass
@@ -8023,12 +8024,18 @@ class MP3DownloaderApp(tk.Tk):
         """Check for yt-dlp/ffmpeg on a background thread; prompt if missing."""
         def _run():
             missing = check_dependencies()
-            if not self.winfo_exists():   # root torn down (e.g. test teardown)
-                return
-            if missing:
-                self.after(0, lambda: self._prompt_install(missing))
-            else:
-                self.after(0, lambda: self._set_status("✓ Ready"))
+            # Off the main thread, winfo_exists() and after() both raise once Tk
+            # has been torn down (e.g. test teardown) rather than returning False,
+            # so the teardown check has to be the exception itself.
+            try:
+                if not self.winfo_exists():
+                    return
+                if missing:
+                    self.after(0, lambda: self._prompt_install(missing))
+                else:
+                    self.after(0, lambda: self._set_status("✓ Ready"))
+            except (RuntimeError, tk.TclError):
+                return                    # root torn down mid-check
         self._run_bg(_run)
 
     def _prompt_install(self, missing):
