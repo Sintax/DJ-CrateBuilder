@@ -4108,8 +4108,12 @@ class _ArtworkBackfillSession:
         head = tk.Label(dlg, text="Fetching artwork…",
                         font=("Segoe UI", 11, "bold"), bg=BG, fg=TEXT)
         head.pack(padx=24, pady=(18, 4))
+        # height=2 pins the label to exactly two text lines whatever the
+        # current title wraps to, so the dialog never re-flows and the
+        # progress bar below stays put instead of strobing across thousands
+        # of rows.
         sub = tk.Label(dlg, text=f"0 of {self.total}", font=("Segoe UI", 9),
-                       bg=BG, fg=TEXT_DIM, wraplength=300)
+                       bg=BG, fg=TEXT_DIM, wraplength=300, height=2)
         sub.pack(pady=(0, 8))
         bar = ttk.Progressbar(dlg, mode="determinate", length=300,
                               maximum=max(self.total, 1))
