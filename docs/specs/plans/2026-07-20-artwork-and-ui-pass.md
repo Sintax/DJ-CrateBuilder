@@ -127,7 +127,7 @@ git commit -m "chore: share container extension tuples and ffmpeg test helpers"
 Add to `tests/test_artwork.py`. Import the shared helpers Task 0 added — do **not** redefine them here:
 
 ```python
-from conftest import make_silent, requires_ffmpeg
+from tests.conftest import make_silent, requires_ffmpeg
 ```
 
 Then add the tests. `make_silent` generates a real container because a hand-rolled byte literal cannot produce a valid MP4 or Ogg file.
@@ -536,7 +536,7 @@ Rationale: `recover_video_id` in Task 5 reads the source URL back off the file. 
 Add to `tests/test_tagging.py`. Import the shared helpers Task 0 added — do **not** redefine or duplicate them:
 
 ```python
-from conftest import make_silent, requires_ffmpeg
+from tests.conftest import make_silent, requires_ffmpeg
 ```
 
 ```python
