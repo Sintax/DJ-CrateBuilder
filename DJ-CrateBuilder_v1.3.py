@@ -5445,13 +5445,21 @@ class MP3DownloaderApp(tk.Tk):
         ttk.Button(genre_row, text="+ New", style="MainBrowse.TButton",
                    command=self._add_genre).pack(side="left", padx=(0, 16))
 
+        # Root is declared first: with pack(side="right") the first-declared
+        # child sits furthest right, so this reads Genre, Root left-to-right.
+        ttk.Button(genre_row, text="📂  Root", style="MainBrowse.TButton",
+                   command=self._open_download_dir).pack(side="right")
+        ttk.Button(genre_row, text="📂  Genre", style="MainBrowse.TButton",
+                   command=self._open_genre_dir).pack(side="right", padx=(0, 6))
+
         self._refresh_genre_list()
 
         # ── Batch URL list ────────────────────────────────────────────────────
         self._build_batch_panel(outer)
 
-        # (The 'Skip files already downloaded' option + Open Folder button now
-        # live in Settings → Audio Output, just above Cover Art.)
+        # (The 'Skip files already downloaded' option lives in Settings →
+        # File Output, below Cover Art. The Open Folder buttons for Genre
+        # and Root are on the genre row above.)
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(4, 10))
 
         # ── Action buttons ────────────────────────────────────────────────────
@@ -5729,7 +5737,7 @@ class MP3DownloaderApp(tk.Tk):
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 20))
 
         # ── MP3 Bitrate Selector ──────────────────────────────────────────────
-        ttk.Label(outer, text="Audio Output",
+        ttk.Label(outer, text="File Output",
                   style="S.White.Section.TLabel").pack(anchor="w", pady=(0, 8))
 
         bitrate_row = ttk.Frame(outer)
@@ -5769,21 +5777,6 @@ class MP3DownloaderApp(tk.Tk):
         # Apply initial enabled/disabled state for the bitrate combo
         self._on_no_conversion_toggle()
 
-        # ── Skip already-downloaded (moved here from the Main tab) ────────────
-        skip_row = ttk.Frame(outer)
-        skip_row.pack(fill="x", pady=(10, 4))
-        ttk.Checkbutton(skip_row, text="Skip files already downloaded",
-                        variable=self._skip_existing,
-                        style="S.Bold.TCheckbutton").pack(side="left")
-        self._skip_mode_combo = ttk.Combobox(
-            skip_row,
-            textvariable=self._skip_mode,
-            values=["In Database ~ In Folder", "In Folder Only", "In Database Only"],
-            state="readonly", width=20)
-        self._skip_mode_combo.pack(side="left", padx=(14, 0))
-        ttk.Button(skip_row, text="📂  Open Folder", style="MainBrowse.TButton",
-                   command=self._open_download_dir).pack(side="right")
-
         # ── Cover art ─────────────────────────────────────────────────────────
         cover_row = ttk.Frame(outer)
         cover_row.pack(fill="x", pady=(10, 4))
@@ -5805,6 +5798,19 @@ class MP3DownloaderApp(tk.Tk):
             "also kept in a hidden .artwork folder beside the tracks. Cropping "
             "to square fills the art slot; keeping 16:9 letterboxes it.",
             wraplength=400).pack(side="left", padx=(0, 0))
+
+        # ── Skip already-downloaded (Settings-only; not shown on Main tab) ────
+        skip_row = ttk.Frame(outer)
+        skip_row.pack(fill="x", pady=(10, 4))
+        ttk.Checkbutton(skip_row, text="Skip files already downloaded",
+                        variable=self._skip_existing,
+                        style="S.Opt.TCheckbutton").pack(side="left")
+        self._skip_mode_combo = ttk.Combobox(
+            skip_row,
+            textvariable=self._skip_mode,
+            values=["In Database ~ In Folder", "In Folder Only", "In Database Only"],
+            state="readonly", width=20)
+        self._skip_mode_combo.pack(side="left", padx=(14, 0))
 
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 20))
 
@@ -7711,6 +7717,26 @@ class MP3DownloaderApp(tk.Tk):
     def _open_download_dir(self):
         """Open the current platform's download directory in the system file manager."""
         target = self._platform_dir()
+        os.makedirs(target, exist_ok=True)
+        try:
+            if sys.platform == "win32":
+                os.startfile(target)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", target])
+            else:
+                subprocess.Popen(["xdg-open", target])
+        except Exception as exc:
+            messagebox.showerror(
+                "Could Not Open Folder",
+                f"Unable to open the folder:\n{exc}\n\n"
+                f"Path: {target}"
+            )
+
+    def _open_genre_dir(self):
+        """Open the currently selected genre's folder in the system file manager."""
+        genre = self._genre_var.get()
+        folder = "_No Genre" if not genre or genre == "(none)" else genre
+        target = os.path.join(self._platform_dir(), folder)
         os.makedirs(target, exist_ok=True)
         try:
             if sys.platform == "win32":
