@@ -10,6 +10,76 @@
 
 **Spec:** `docs/specs/2026-07-20-artwork-and-ui-pass-design.md`
 
+## Task 0: Shared constants and test fixtures
+
+**Files:**
+- Modify: `cratebuilder/util.py` — append the container extension tuples
+- Modify: `tests/conftest.py` — add the FFmpeg fixture helpers
+
+**Interfaces:**
+- Produces: `cratebuilder.util.MP4_EXTS`, `cratebuilder.util.OGG_EXTS`, `cratebuilder.util.WEBM_EXTS`. Tasks 1, 2, 3 import these rather than defining their own copies.
+- Produces: `tests/conftest.py` helpers `requires_ffmpeg` (a pytest mark) and `make_silent(path, codec, seconds=1)` (a plain function). Tasks 1, 2, 3 import them.
+
+Rationale: without this task, `MP4_EXTS`/`OGG_EXTS` would be defined identically in both `artwork.py` and `tagging.py`, and the FFmpeg test helpers would be copy-pasted between two test files. `artwork.py` already imports from `util.py`, so this follows the existing dependency direction and keeps `tagging.py` and `artwork.py` independent of each other.
+
+- [ ] **Step 1: Add the constants to `cratebuilder/util.py`**
+
+Append at the end of `cratebuilder/util.py`:
+
+```python
+# Container extension families, shared by the artwork and tagging modules so
+# the two never drift. Cover art and text tags use a different mechanism in
+# each family, which is what these tuples are dispatched on.
+MP4_EXTS  = (".m4a", ".mp4", ".m4b")
+OGG_EXTS  = (".opus", ".ogg", ".oga")
+WEBM_EXTS = (".webm", ".mkv")
+```
+
+- [ ] **Step 2: Add the shared test helpers to `tests/conftest.py`**
+
+Append at the end of `tests/conftest.py`:
+
+```python
+import shutil
+import subprocess
+
+_FFMPEG = shutil.which("ffmpeg")
+
+# Marks a test that needs a real audio container. A hand-rolled byte literal
+# cannot produce a valid MP4 or Ogg file, so these tests generate one.
+requires_ffmpeg = pytest.mark.skipif(
+    _FFMPEG is None, reason="FFmpeg not on PATH")
+
+
+def make_silent(path, codec, seconds=1):
+    """Generate a real, valid silent audio file for tagging tests."""
+    subprocess.run(
+        [_FFMPEG, "-y", "-loglevel", "error", "-f", "lavfi",
+         "-i", "anullsrc=r=44100:cl=stereo", "-t", str(seconds),
+         "-c:a", codec, str(path)],
+        check=True)
+    return str(path)
+```
+
+Confirm `import pytest` is already present at the top of `tests/conftest.py`; add it if not.
+
+- [ ] **Step 3: Verify nothing broke**
+
+Run: `python -m pytest -q`
+Expected: `249 passed, 1 failed` — the unchanged baseline. This task adds no tests; it only adds importable names.
+
+Run: `python -c "from cratebuilder.util import MP4_EXTS, OGG_EXTS, WEBM_EXTS; print(MP4_EXTS, OGG_EXTS, WEBM_EXTS)"`
+Expected: the three tuples print without error.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add cratebuilder/util.py tests/conftest.py
+git commit -m "chore: share container extension tuples and ffmpeg test helpers"
+```
+
+---
+
 ## Global Constraints
 
 - **Do not bump `APP_VERSION`** — it stays `"1.3"`. **Do not bump `APP_BUILD`** — it is owned by `scripts/release.py`.
@@ -54,31 +124,19 @@
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `tests/test_artwork.py`. Fixtures are generated with FFmpeg because a hand-rolled byte literal cannot produce a valid MP4 or Ogg container.
+Add to `tests/test_artwork.py`. Import the shared helpers Task 0 added — do **not** redefine them here:
 
 ```python
-import shutil
-import subprocess
+from conftest import make_silent, requires_ffmpeg
+```
 
-_FFMPEG = shutil.which("ffmpeg")
-requires_ffmpeg = pytest.mark.skipif(
-    _FFMPEG is None, reason="FFmpeg not on PATH")
+Then add the tests. `make_silent` generates a real container because a hand-rolled byte literal cannot produce a valid MP4 or Ogg file.
 
-
-def _make_silent(path, codec, seconds=1):
-    """Generate a real, valid audio file so mutagen has a container to tag."""
-    subprocess.run(
-        [_FFMPEG, "-y", "-loglevel", "error", "-f", "lavfi",
-         "-i", f"anullsrc=r=44100:cl=stereo", "-t", str(seconds),
-         "-c:a", codec, str(path)],
-        check=True)
-    return str(path)
-
-
+```python
 @requires_ffmpeg
 def test_embed_cover_mp4_round_trips(tmp_path):
     from mutagen.mp4 import MP4
-    audio = _make_silent(tmp_path / "t.m4a", "aac")
+    audio = make_silent(tmp_path / "t.m4a", "aac")
     jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
 
     assert artwork.embed_cover_mp4(audio, jpg) is True
@@ -90,7 +148,7 @@ def test_embed_cover_mp4_round_trips(tmp_path):
 @requires_ffmpeg
 def test_embed_cover_ogg_round_trips(tmp_path):
     from mutagen.oggopus import OggOpus
-    audio = _make_silent(tmp_path / "t.opus", "libopus")
+    audio = make_silent(tmp_path / "t.opus", "libopus")
     jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
 
     assert artwork.embed_cover_ogg(audio, jpg) is True
@@ -101,7 +159,7 @@ def test_embed_cover_ogg_round_trips(tmp_path):
 @requires_ffmpeg
 def test_embed_cover_mp4_replaces_rather_than_stacks(tmp_path):
     from mutagen.mp4 import MP4
-    audio = _make_silent(tmp_path / "t.m4a", "aac")
+    audio = make_silent(tmp_path / "t.m4a", "aac")
     jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
 
     artwork.embed_cover_mp4(audio, jpg)
@@ -146,15 +204,17 @@ except ImportError:  # pragma: no cover - mutagen is a runtime dep
 
 Add `import base64` to the stdlib import block at the top of the file (beside `import os`), **not** inside the try — it is stdlib and can never fail to import.
 
+Extend the existing `util` import (currently `from cratebuilder.util import safe_filename`) to pull in the shared extension tuples Task 0 added. Do **not** redefine them in this file:
+
+```python
+from cratebuilder.util import safe_filename, MP4_EXTS, OGG_EXTS
+```
+
 - [ ] **Step 4: Implement both functions**
 
 Add after `embed_cover()` (after line 172):
 
 ```python
-MP4_EXTS = (".m4a", ".mp4", ".m4b")
-OGG_EXTS = (".opus", ".ogg", ".oga")
-
-
 def embed_cover_mp4(audio_path, jpg_path):
     """Embed *jpg_path* as the cover atom on the MP4/M4A at *audio_path*.
 
@@ -267,7 +327,7 @@ git commit -m "feat(artwork): embed cover art into MP4 and Ogg containers"
 ```python
 @requires_ffmpeg
 def test_remux_webm_to_opus_produces_opus_and_removes_source(tmp_path):
-    webm = _make_silent(tmp_path / "t.webm", "libopus")
+    webm = make_silent(tmp_path / "t.webm", "libopus")
     out = artwork.remux_webm_to_opus(webm)
     assert out is not None
     assert out.lower().endswith(".opus")
@@ -278,7 +338,7 @@ def test_remux_webm_to_opus_produces_opus_and_removes_source(tmp_path):
 @requires_ffmpeg
 def test_embed_cover_any_webm_remuxes_then_embeds(tmp_path):
     from mutagen.oggopus import OggOpus
-    webm = _make_silent(tmp_path / "t.webm", "libopus")
+    webm = make_silent(tmp_path / "t.webm", "libopus")
     jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
 
     path, embedded = artwork.embed_cover_any(webm, jpg)
@@ -290,7 +350,7 @@ def test_embed_cover_any_webm_remuxes_then_embeds(tmp_path):
 
 @requires_ffmpeg
 def test_embed_cover_any_m4a_keeps_path(tmp_path):
-    audio = _make_silent(tmp_path / "t.m4a", "aac")
+    audio = make_silent(tmp_path / "t.m4a", "aac")
     jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
     path, embedded = artwork.embed_cover_any(audio, jpg)
     assert embedded is True
@@ -334,14 +394,17 @@ At the top of `cratebuilder/artwork.py`, add to the stdlib import block (after `
 ```python
 import shutil
 import subprocess
-import sys
+```
+
+Extend the `util` import again to add `WEBM_EXTS` (Task 1 already added `MP4_EXTS, OGG_EXTS`):
+
+```python
+from cratebuilder.util import safe_filename, MP4_EXTS, OGG_EXTS, WEBM_EXTS
 ```
 
 - [ ] **Step 4: Implement remux and dispatcher**
 
 ```python
-WEBM_EXTS = (".webm", ".mkv")
-
 # Windows: keep the FFmpeg console window from flashing on every remux.
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
@@ -470,13 +533,17 @@ Rationale: `recover_video_id` in Task 5 reads the source URL back off the file. 
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `tests/test_tagging.py` (reuse the `_make_silent` / `requires_ffmpeg` helpers — if they are not importable, duplicate them at the top of this file):
+Add to `tests/test_tagging.py`. Import the shared helpers Task 0 added — do **not** redefine or duplicate them:
+
+```python
+from conftest import make_silent, requires_ffmpeg
+```
 
 ```python
 @requires_ffmpeg
 def test_write_tags_any_mp4_round_trips(tmp_path):
     from mutagen.mp4 import MP4
-    audio = _make_silent(tmp_path / "t.m4a", "aac")
+    audio = make_silent(tmp_path / "t.m4a", "aac")
     assert tagging.write_track_tags_any(
         audio, title="Track", source_url="https://youtu.be/abc123") is True
     tags = MP4(audio).tags
@@ -487,7 +554,7 @@ def test_write_tags_any_mp4_round_trips(tmp_path):
 @requires_ffmpeg
 def test_write_tags_any_ogg_round_trips(tmp_path):
     from mutagen.oggopus import OggOpus
-    audio = _make_silent(tmp_path / "t.opus", "libopus")
+    audio = make_silent(tmp_path / "t.opus", "libopus")
     assert tagging.write_track_tags_any(
         audio, title="Track", source_url="https://youtu.be/abc123") is True
     tags = OggOpus(audio)
@@ -530,8 +597,12 @@ try:
 except ImportError:  # pragma: no cover - mutagen is a runtime dep
     OggOpus = None
 
-MP4_EXTS = (".m4a", ".mp4", ".m4b")
-OGG_EXTS = (".opus", ".ogg", ".oga")
+```
+
+Import the shared extension tuples from `util` rather than redefining them — `tagging.py` has no existing import from `util.py`, so add one:
+
+```python
+from cratebuilder.util import MP4_EXTS, OGG_EXTS
 ```
 
 - [ ] **Step 4: Implement**
