@@ -80,7 +80,6 @@ APP_VERSION_FULL = f"{APP_VERSION}.{APP_BUILD}"
 # ── Add or remove lines below to customize the About tab content. ──────────
 # ── Each tuple is  ("Label", "Value")  and will display as a row. ──────────
 ABOUT_FIELDS = [
-    ("Application",  f"{APP_NAME}  v{APP_VERSION_FULL}"),
     ("Created by",   ABOUT_CREATED_BY),
     ("Built with",   ABOUT_DESCRIPTION),
 ]
@@ -7359,9 +7358,9 @@ class MP3DownloaderApp(tk.Tk):
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(0, 24))
 
         # ── Top section: info text on the left, action buttons on the right ───
-        # Two columns. The ABOUT_FIELDS rows (Application / Created by / Built
-        # with) plus the bug/suggestion note live on the left; the three action
-        # buttons stack on the right.
+        # Two columns. The ABOUT_FIELDS rows (Created by / Built with), the
+        # link buttons, and the bug/suggestion note live on the left; the
+        # update box stacks on the right.
         top_sec = ttk.Frame(outer)
         top_sec.pack(fill="x", pady=(0, 4))
 
@@ -7375,24 +7374,16 @@ class MP3DownloaderApp(tk.Tk):
                 command=command)
 
         # Right column — packed first so it claims the right edge. Stack:
-        # View on GitHub, a gap, then the current-build status text directly
-        # ABOVE the Check-for-Updates button.
+        # the current-build status text directly ABOVE the Check-for-Updates
+        # button.
         btn_col = tk.Frame(top_sec, bg=BG)
         btn_col.pack(side="right", anchor="n")
-
-        self._github_btn = _about_btn(
-            btn_col, "View on GitHub",
-            lambda: webbrowser.open(GITHUB_URL))
-        self._github_btn.pack(anchor="e", pady=(0, 6))
-        Tooltip(self._github_btn,
-                "Opens the DJ-CrateBuilder GitHub page in your browser. "
-                "Check here for the latest releases and update notes.")
 
         self._update_status_var = tk.StringVar(
             value=f"You're on build {APP_BUILD}.")
         tk.Label(btn_col, textvariable=self._update_status_var,
                  font=("Segoe UI", 10, "bold"), fg=TEXT, bg=BG,
-                 anchor="e", justify="right").pack(anchor="e", pady=(22, 4))
+                 anchor="e", justify="right").pack(anchor="e", pady=(0, 4))
         self._update_btn = _about_btn(
             btn_col, UPDATE_BTN_CHECK,
             self._on_check_updates_clicked)
@@ -7420,8 +7411,9 @@ class MP3DownloaderApp(tk.Tk):
                  anchor="e", justify="right").pack(anchor="e", pady=(2, 0))
         self._refresh_next_update_check_label()
 
-        # Left column — info rows (driven by ABOUT_FIELDS), then the Submit
-        # Issues / Suggestions button, then its accompanying note.
+        # Left column — info rows (driven by ABOUT_FIELDS), then the View on
+        # GitHub and Submit Issues / Suggestions buttons, then the
+        # accompanying note.
         info_col = tk.Frame(top_sec, bg=BG)
         info_col.pack(side="left", anchor="n")
 
@@ -7432,6 +7424,14 @@ class MP3DownloaderApp(tk.Tk):
                      fg=TEXT, bg=BG, width=14, anchor="w").pack(side="left")
             tk.Label(row, text=value, font=("Segoe UI", 11),
                      fg=TEXT, bg=BG, anchor="w").pack(side="left", padx=(8, 0))
+
+        self._github_btn = _about_btn(
+            info_col, "View on GitHub",
+            lambda: webbrowser.open(GITHUB_URL))
+        self._github_btn.pack(anchor="w", pady=(4, 6))
+        Tooltip(self._github_btn,
+                "Opens the DJ-CrateBuilder GitHub page in your browser. "
+                "Check here for the latest releases and update notes.")
 
         self._issues_btn = _about_btn(
             info_col, "  ↗  Submit Issues / Suggestions  ",
