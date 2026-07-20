@@ -182,6 +182,62 @@ def test_write_tags_any_ogg_round_trips(tmp_path):
     assert tags["comment"] == ["https://youtu.be/abc123"]
 
 
+@requires_ffmpeg
+def test_write_tags_any_mp4_no_overwrite_preserves_existing(tmp_path):
+    from mutagen.mp4 import MP4
+    audio = make_silent(tmp_path / "t.m4a", "aac")
+    tagging.write_track_tags_any(audio, title="Original",
+                                 source_url="https://youtu.be/first")
+    changed = tagging.write_track_tags_any(audio, title="New",
+                                           source_url="https://youtu.be/second")
+    assert changed is False
+    tags = MP4(audio).tags
+    assert tags["\xa9nam"] == ["Original"]
+    assert tags["\xa9cmt"] == ["https://youtu.be/first"]
+
+    changed = tagging.write_track_tags_any(audio, title="New",
+                                           source_url="https://youtu.be/second",
+                                           overwrite=True)
+    assert changed is True
+    tags = MP4(audio).tags
+    assert tags["\xa9nam"] == ["New"]
+    assert tags["\xa9cmt"] == ["https://youtu.be/second"]
+
+
+@requires_ffmpeg
+def test_write_tags_any_ogg_no_overwrite_preserves_existing(tmp_path):
+    from mutagen.oggopus import OggOpus
+    audio = make_silent(tmp_path / "t.opus", "libopus")
+    tagging.write_track_tags_any(audio, title="Original",
+                                 source_url="https://youtu.be/first")
+    changed = tagging.write_track_tags_any(audio, title="New",
+                                           source_url="https://youtu.be/second")
+    assert changed is False
+    tags = OggOpus(audio)
+    assert tags["title"] == ["Original"]
+    assert tags["comment"] == ["https://youtu.be/first"]
+
+    changed = tagging.write_track_tags_any(audio, title="New",
+                                           source_url="https://youtu.be/second",
+                                           overwrite=True)
+    assert changed is True
+    tags = OggOpus(audio)
+    assert tags["title"] == ["New"]
+    assert tags["comment"] == ["https://youtu.be/second"]
+
+
+def test_write_tags_any_corrupt_m4a_returns_false(tmp_path):
+    p = tmp_path / "t.m4a"
+    p.write_bytes(b"not a real m4a file")
+    assert tagging.write_track_tags_any(str(p), title="X") is False
+
+
+def test_write_tags_any_corrupt_opus_returns_false(tmp_path):
+    p = tmp_path / "t.opus"
+    p.write_bytes(b"not a real opus file")
+    assert tagging.write_track_tags_any(str(p), title="X") is False
+
+
 def test_write_tags_any_mp3_delegates_to_id3(tmp_path):
     audio = str(tmp_path / "t.mp3")
     _make_mp3(audio)
