@@ -25,3 +25,24 @@ def _load_main():
 @pytest.fixture(scope="session")
 def cb():
     return _load_main()
+
+
+import shutil
+import subprocess
+
+_FFMPEG = shutil.which("ffmpeg")
+
+# Marks a test that needs a real audio container. A hand-rolled byte literal
+# cannot produce a valid MP4 or Ogg file, so these tests generate one.
+requires_ffmpeg = pytest.mark.skipif(
+    _FFMPEG is None, reason="FFmpeg not on PATH")
+
+
+def make_silent(path, codec, seconds=1):
+    """Generate a real, valid silent audio file for tagging tests."""
+    subprocess.run(
+        [_FFMPEG, "-y", "-loglevel", "error", "-f", "lavfi",
+         "-i", "anullsrc=r=44100:cl=stereo", "-t", str(seconds),
+         "-c:a", codec, str(path)],
+        check=True)
+    return str(path)
