@@ -36,7 +36,8 @@ from cratebuilder.cleanup import (
     is_scan_trustworthy, classify_local_files, partition_trash)
 from cratebuilder import startup as cb_startup
 from cratebuilder import updater_core as ucore
-from cratebuilder.tagging import write_track_tags, read_source_url
+from cratebuilder.tagging import (
+    write_track_tags, write_track_tags_any, read_source_url)
 from cratebuilder import artwork as cb_artwork
 from cratebuilder.singleton import acquire_single_instance, SINGLE_INSTANCE_PORT
 
@@ -4511,7 +4512,7 @@ class MP3DownloaderApp(tk.Tk):
         files and as a backfill on tracks that were skipped because they were
         already on disk. Never raises; a tag failure must not break a batch."""
         try:
-            if write_track_tags(path, title=title, source_url=url):
+            if write_track_tags_any(path, title=title, source_url=url):
                 self._dbg.debug(f"ID3 TAGGED   | {title!r}  {path}")
         except Exception as exc:  # pragma: no cover - defensive
             self._dbg.warning(f"ID3 TAG FAIL | {title!r}  {exc}")
@@ -4536,52 +4537,60 @@ class MP3DownloaderApp(tk.Tk):
                 return candidate
         return None
 
-    def _harvest_cover_art(self, audio_path, video_id, title):
+    def _harvest_cover_art(self, audio_path, video_id, title, source_url=None):
         """Turn the thumbnail yt-dlp just wrote into cover art for one track.
 
         Converts the raw image into the channel folder's hidden `.artwork/`
-        sidecar as `<video_id>.jpg`, then embeds it as the MP3's front-cover
-        APIC frame — the embed is what actually makes the art appear in Windows
+        sidecar as `<video_id>.jpg`, then embeds it as the track's front-cover
+        art frame — the embed is what actually makes the art appear in Windows
         Explorer, media players and on Android; the sidecar is the archival copy
         we can re-embed from later without going back to the network.
 
-        Non-MP3 tracks (the "keep original format" path) still get the sidecar;
-        only the embed is skipped, because Opus/MP4 cover art uses an entirely
-        different container frame.
+        A `.webm` (the "keep original format" path) is remuxed to `.opus` when
+        that's needed to embed art in a container that supports it; the new
+        file is re-tagged since the Ogg container doesn't inherit the WebM's
+        tags.
 
-        Returns (artwork_path, embedded) — (None, False) when artwork is off,
-        unavailable, or anything at all went wrong. Never raises: a cover-art
-        failure must not fail a download."""
+        Returns (artwork_path, embedded, final_audio_path) — (None, False,
+        audio_path) when artwork is off, unavailable, or anything at all went
+        wrong. Never raises: a cover-art failure must not fail a download."""
         mode = self._cover_art_mode_value()
         if mode == "off" or not cb_artwork.artwork_available():
-            return None, False
+            return None, False, audio_path
 
         raw = self._find_raw_thumbnail(audio_path)
         if not raw:
             self._dbg.debug(f"COVER SKIP    | {title!r}  no thumbnail written")
-            return None, False
+            return None, False, audio_path
 
         try:
             art_dir = cb_artwork.thumbnail_dir(os.path.dirname(audio_path))
             if not art_dir:
-                return None, False
+                return None, False, audio_path
 
             art_path = cb_artwork.ingest_thumbnail(raw, art_dir, video_id, mode)
             if not art_path:
                 self._dbg.warning(f"COVER FAIL    | {title!r}  ingest failed")
-                return None, False
+                return None, False, audio_path
 
-            embedded = cb_artwork.embed_cover(audio_path, art_path)
+            final_path, embedded = cb_artwork.embed_cover_any(
+                audio_path, art_path, bundled_ffmpeg_dir())
             if embedded:
                 self._dbg.debug(f"COVER ART     | {title!r}  {art_path}")
             else:
                 self._dbg.debug(
                     f"COVER SIDECAR | {title!r}  saved, not embedded "
-                    f"(non-MP3 or tag write failed)")
-            return art_path, embedded
+                    f"(unsupported container or tag write failed)")
+            if final_path != audio_path:
+                self._dbg.info(
+                    f"REMUX         | {title!r}  {os.path.basename(audio_path)}"
+                    f" -> {os.path.basename(final_path)}")
+                write_track_tags_any(
+                    final_path, title=title, source_url=source_url)
+            return art_path, embedded, final_path
         except Exception as exc:  # pragma: no cover - defensive
             self._dbg.warning(f"COVER FAIL    | {title!r}  {exc}")
-            return None, False
+            return None, False, audio_path
 
     def _log_error(self, title, url, error):
         """Write one ERROR entry to the log file."""
@@ -8946,8 +8955,10 @@ class MP3DownloaderApp(tk.Tk):
                     # Embed the source thumbnail as cover art and keep the
                     # sidecar copy. Runs after _tag_track so the APIC frame is
                     # written onto the tag mutagen has already created.
-                    _art_path, _art_embedded = self._harvest_cover_art(
-                        _real_path, entry.get("id"), item_title)
+                    _art_path, _art_embedded, _real_path = (
+                        self._harvest_cover_art(
+                            _real_path, entry.get("id"), item_title,
+                            source_url=item_url))
                     # ── Record in the downloads database ──────────────
                     _vid_upload = entry.get("upload_date", "") or ""
                     self._db.add_download(
@@ -8957,7 +8968,7 @@ class MP3DownloaderApp(tk.Tk):
                         channel_url=url if is_collection else "",
                         channel_id=coll_channel_id or None,
                         platform=platform, genre=genre or "(none)",
-                        file_path=expected_path,
+                        file_path=_real_path,
                         upload_date=_vid_upload,
                         bitrate=src_str,
                         artwork_path=_art_path,
@@ -9044,8 +9055,10 @@ class MP3DownloaderApp(tk.Tk):
                                 self._file_exists_on_disk(save_dir, item_title)
                                 or expected_path)
                             self._tag_track(_real_path, item_title, item_url)
-                            _art_path, _art_embedded = self._harvest_cover_art(
-                                _real_path, entry.get("id"), item_title)
+                            _art_path, _art_embedded, _real_path = (
+                                self._harvest_cover_art(
+                                    _real_path, entry.get("id"), item_title,
+                                    source_url=item_url))
                             # ── Record retry success in DB ────────────
                             _vid_upload = entry.get("upload_date", "") or ""
                             self._db.add_download(
@@ -9057,7 +9070,7 @@ class MP3DownloaderApp(tk.Tk):
                                 channel_id=coll_channel_id or None,
                                 platform=platform,
                                 genre=genre or "(none)",
-                                file_path=expected_path,
+                                file_path=_real_path,
                                 upload_date=_vid_upload,
                                 bitrate=src_str,
                                 artwork_path=_art_path,
