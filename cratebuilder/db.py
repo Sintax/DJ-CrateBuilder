@@ -227,6 +227,25 @@ class DownloadsDatabase:
                                f"{old_path!r}: {e}")
             return 0
 
+    def set_download_video_id(self, file_path, video_id):
+        """Record a recovered video id against the download row(s) for
+        *file_path*. Returns the number of rows updated, 0 on failure or no
+        match. Used by the artwork backfill when it re-derives an id (lost to
+        an earlier rebuild of a tagless file) from the channel's upload
+        listing, so later runs and rebuilds keep the match."""
+        if not file_path or not video_id:
+            return 0
+        try:
+            with self._conn() as conn:
+                cur = conn.execute(
+                    "UPDATE downloads SET video_id = ? WHERE file_path = ?",
+                    (video_id, file_path))
+                return cur.rowcount or 0
+        except Exception as e:
+            self._log("error", f"set_download_video_id failed for "
+                               f"{file_path!r}: {e}")
+            return 0
+
     def set_download_artwork(self, file_path, artwork_path, artwork_embedded,
                              thumbnail_url=None):
         """Record cover art against the download row(s) for *file_path*.

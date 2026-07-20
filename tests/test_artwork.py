@@ -658,6 +658,63 @@ def test_embed_cover_any_missing_image_is_noop(tmp_path):
     assert path == audio
 
 
+# ── video-id recovery: normalize_title_key / build_title_index / lookup ──────
+def test_normalize_title_key_strips_punctuation_and_case():
+    assert artwork.normalize_title_key("Foo - Bar (Official Audio)") \
+        == artwork.normalize_title_key("foo bar official audio")
+    assert artwork.normalize_title_key(None) == ""
+    assert artwork.normalize_title_key("") == ""
+
+
+def test_normalize_title_key_bridges_sanitiser_variants():
+    # yt-dlp writes `?` as fullwidth `？` and `"` as `＂` in filenames; the
+    # verbatim API title keeps the ASCII originals. Both collapse to one key.
+    assert artwork.normalize_title_key('What Time Is It? "Live"') \
+        == artwork.normalize_title_key("What Time Is It？ ＂Live＂")
+
+
+def test_build_title_index_maps_titles_to_ids():
+    idx = artwork.build_title_index([
+        {"id": "abc123", "title": "Foo - Bar"},
+        {"id": "def456", "title": "Baz (Remix)"},
+    ])
+    assert idx[artwork.normalize_title_key("Foo - Bar")] == "abc123"
+    assert idx[artwork.normalize_title_key("Baz (Remix)")] == "def456"
+
+
+def test_build_title_index_drops_ambiguous_titles():
+    idx = artwork.build_title_index([
+        {"id": "aaa", "title": "Same Title"},
+        {"id": "bbb", "title": "same title!"},
+        {"id": "ccc", "title": "Unique"},
+    ])
+    assert artwork.normalize_title_key("Same Title") not in idx
+    assert idx[artwork.normalize_title_key("Unique")] == "ccc"
+
+
+def test_build_title_index_skips_junk_entries():
+    idx = artwork.build_title_index([
+        None, {}, {"id": "x1"}, {"title": "No Id"},
+        {"id": "ok1", "title": "Good"},
+    ])
+    assert idx == {artwork.normalize_title_key("Good"): "ok1"}
+
+
+def test_lookup_video_id_matches_sanitised_filename():
+    idx = artwork.build_title_index(
+        [{"id": "vid42", "title": 'Who Are You? "Anthem"'}])
+    path = r"C:\music\Chan\Who Are You？ ＂Anthem＂.mp3"
+    assert artwork.lookup_video_id(idx, path) == "vid42"
+
+
+def test_lookup_video_id_none_on_no_match_or_bad_input():
+    idx = artwork.build_title_index([{"id": "v1", "title": "Something"}])
+    assert artwork.lookup_video_id(idx, "/x/Other Track.mp3") is None
+    assert artwork.lookup_video_id(idx, None) is None
+    assert artwork.lookup_video_id({}, "/x/Something.mp3") is None
+    assert artwork.lookup_video_id(None, "/x/Something.mp3") is None
+
+
 # ── module constants ──────────────────────────────────────────────────────────
 def test_mode_constants():
     assert artwork.COVER_ART_MODES == ("crop", "original", "off")

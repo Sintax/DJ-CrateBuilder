@@ -649,6 +649,65 @@ def download_thumbnail(url, dest_path, opener=None, timeout=DOWNLOAD_TIMEOUT):
         return None
 
 
+def normalize_title_key(text):
+    """Canonical form for matching a video title against a filename stem.
+
+    Filenames on disk were produced by yt-dlp's sanitiser (which swaps `?` for
+    the fullwidth `？`, `"` for `＂`, and so on) while titles come back verbatim
+    from the API — so a character-for-character comparison fails on exactly the
+    tracks that need matching. Stripping everything that is not a letter or a
+    digit and lowercasing makes both sides collapse to the same key regardless
+    of which sanitiser touched them. Returns '' for falsy input. Never raises.
+    """
+    if not text:
+        return ""
+    return "".join(ch for ch in str(text).lower() if ch.isalnum())
+
+
+def build_title_index(entries):
+    """Map normalized titles to video ids from a yt-dlp flat-playlist listing.
+
+    *entries* is an iterable of dicts carrying at least `id` and `title` (the
+    shape `extract_flat` returns). A title that normalizes to the same key as a
+    *different* video id is ambiguous — matching it would risk embedding the
+    wrong art onto a track, so both entries are dropped rather than guessed at.
+    Entries missing an id or a usable title are skipped. Never raises.
+    """
+    index = {}
+    ambiguous = set()
+    for entry in entries or ():
+        try:
+            vid = entry.get("id")
+            key = normalize_title_key(entry.get("title"))
+        except AttributeError:
+            continue
+        if not vid or not key or key in ambiguous:
+            continue
+        if key in index and index[key] != vid:
+            del index[key]
+            ambiguous.add(key)
+            continue
+        index[key] = vid
+    return index
+
+
+def lookup_video_id(index, file_path):
+    """Return the video id whose title matches *file_path*'s basename stem.
+
+    The recovery rung for a row whose video_id was lost: the filename is the
+    title as yt-dlp sanitised it, so normalizing the stem the same way the
+    index normalized its titles lines the two back up. Returns None when there
+    is no match or the inputs are unusable. Never raises.
+    """
+    if not index or not file_path:
+        return None
+    try:
+        stem = os.path.splitext(os.path.basename(str(file_path)))[0]
+    except Exception:
+        return None
+    return index.get(normalize_title_key(stem))
+
+
 def existing_sidecar(art_dir, key):
     """Return `<art_dir>/<key>.jpg` when that sidecar is already on disk.
 
