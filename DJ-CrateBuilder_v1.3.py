@@ -3917,7 +3917,7 @@ class _ArtworkBackfillSession:
 
         # The file may already carry art from outside the app (or from a run
         # whose DB write was lost). Nothing to fetch — just correct the row.
-        if cb_artwork.has_cover(path):
+        if cb_artwork.has_cover_any(path):
             self.app._db.set_download_artwork(
                 path, cb_artwork.existing_sidecar(art_dir, key), 1,
                 row.get("thumbnail_url"))
@@ -3937,13 +3937,22 @@ class _ArtworkBackfillSession:
                 f"ARTFILL NONE  | {row.get('title')!r}  no thumbnail found")
             return
 
-        embedded = cb_artwork.embed_cover(path, jpg)
+        final_path, embedded = cb_artwork.embed_cover_any(
+            path, jpg, bundled_ffmpeg_dir())
+        if final_path != path:
+            # A WebM was remuxed to Opus so the art could be written at all —
+            # the row must follow the file or it is left pointing at a path
+            # that no longer exists.
+            self.app._db.update_download_path(path, final_path)
+            path = final_path
         self.app._db.set_download_artwork(path, jpg, embedded, thumb_url)
         if embedded:
             self.embedded += 1
             self.app._dbg.debug(f"ARTFILL OK    | {row.get('title')!r}  {jpg}")
         else:
-            # Sidecar saved but not embedded — a non-MP3 (kept original format).
+            # Sidecar saved but embedding failed (unsupported container, a
+            # WebM whose audio wasn't Opus, or a write error) — the JPEG is
+            # kept on disk for a future retry.
             self.not_found += 1
 
     def _fetch_sidecar(self, row, path, art_dir, key, raw):
@@ -4514,11 +4523,12 @@ class MP3DownloaderApp(tk.Tk):
         )
 
     def _tag_track(self, path, title, url):
-        """Best-effort: stamp Title / Encoded-by / source-URL ID3 tags onto a
-        downloaded MP3 so the originating YouTube/SoundCloud link is later
-        recoverable from the file's Details. Used both for freshly downloaded
-        files and as a backfill on tracks that were skipped because they were
-        already on disk. Never raises; a tag failure must not break a batch."""
+        """Best-effort: stamp Title / Encoded-by / source-URL tags onto a
+        downloaded track, via `write_track_tags_any` so MP3, MP4/M4A and Ogg
+        all get the originating YouTube/SoundCloud link recoverable from the
+        file's Details. Used both for freshly downloaded files and as a
+        backfill on tracks that were skipped because they were already on
+        disk. Never raises; a tag failure must not break a batch."""
         try:
             if write_track_tags_any(path, title=title, source_url=url):
                 self._dbg.debug(f"ID3 TAGGED   | {title!r}  {path}")
@@ -11638,6 +11648,23 @@ class MP3DownloaderApp(tk.Tk):
             self._fetch_art_btn.config(state="disabled")
 
         def _finish(rows):
+            if not rows:
+                # An unmounted drive or a reconfigured download root scans as
+                # empty, not as an error — clearing the table on that result
+                # would wipe the user's entire history behind a success
+                # dialog. Leave the existing rows alone.
+                self._rebuild_in_progress = False
+                self._rebuild_db_btn.config(state="normal")
+                if hasattr(self, "_fetch_art_btn"):
+                    self._fetch_art_btn.config(state="normal")
+                messagebox.showwarning(
+                    "Rebuild Database",
+                    f"Found no audio files under {self._base_dir}.\n\n"
+                    "The database was left unchanged.",
+                    parent=self)
+                self._dbg.info(
+                    f"DB REBUILD | aborted, no audio files under {self._base_dir}")
+                return
             self._db.clear_all_downloads()
             count = self._db.backfill_downloads(rows)
             self._db.refresh_watchlist_totals()
@@ -11708,6 +11735,15 @@ class MP3DownloaderApp(tk.Tk):
                                 # backfill writing a second identical JPEG
                                 # under the filename stem.
                                 vid = cb_rebuild.recover_video_id(full)
+                                if not vid:
+                                    # SoundCloud ids aren't recoverable from
+                                    # the file — carry the one the old row
+                                    # held, or the NEXT rebuild would lose the
+                                    # id-keyed sidecar match this one just
+                                    # used.
+                                    _snap = art_snapshot.get(full)
+                                    if _snap and len(_snap) > 3:
+                                        vid = _snap[3]
                                 art_path, art_embedded, thumb_url = (
                                     cb_rebuild.resolve_artwork(
                                         full, vid, art_index,

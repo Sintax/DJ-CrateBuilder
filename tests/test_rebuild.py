@@ -96,6 +96,28 @@ def test_resolve_artwork_uses_snapshot_when_no_sidecar(tmp_path):
     assert thumb == "https://img/x.jpg"
 
 
+def test_resolve_artwork_soundcloud_falls_back_to_snapshot_video_id(tmp_path):
+    """SoundCloud URLs carry no recoverable id, so recover_video_id (and thus
+    the video_id argument here) is None for every SoundCloud track. But its
+    sidecar was written keyed on the numeric SoundCloud track id, not the
+    filename stem -- so without the snapshot fallback this would miss the
+    existing sidecar entirely and the caller would re-fetch a duplicate."""
+    audio = _make_mp3(tmp_path / "Artist - Title.mp3",
+                      "https://soundcloud.com/artist/title")
+    art_dir = os.path.join(str(tmp_path), ".artwork")
+    expected = _make_art(art_dir, "123456789")  # keyed by SC track id, not stem
+
+    index = rebuild.index_artwork_dir(str(tmp_path))
+    snapshot = {audio: (None, 0, None, "123456789")}
+
+    assert rebuild.recover_video_id(audio) is None
+
+    path, embedded, thumb = rebuild.resolve_artwork(
+        audio, None, index, snapshot=snapshot)
+
+    assert path == expected
+
+
 def test_resolve_artwork_no_art_anywhere_is_blank(tmp_path):
     audio = _make_mp3(tmp_path / "t.mp3")
     index = rebuild.index_artwork_dir(str(tmp_path))

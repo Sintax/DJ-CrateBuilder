@@ -3,6 +3,7 @@ import os
 import re
 
 from cratebuilder import artwork as _artwork
+from cratebuilder.util import MP4_EXTS, OGG_EXTS
 
 AUDIO_EXTS = (".mp3", ".m4a", ".webm", ".opus", ".ogg", ".oga", ".flac",
               ".wav", ".mp4", ".m4b")
@@ -36,12 +37,12 @@ def _source_url(path):
                 if text:
                     return text
             return None
-        if lower.endswith((".m4a", ".mp4", ".m4b")):
+        if lower.endswith(MP4_EXTS):
             from mutagen.mp4 import MP4
             tags = MP4(path).tags or {}
             vals = tags.get("\xa9cmt") or []
             return vals[0] if vals else None
-        if lower.endswith((".opus", ".ogg", ".oga")):
+        if lower.endswith(OGG_EXTS):
             from mutagen.oggopus import OggOpus
             from mutagen.oggvorbis import OggVorbis
             opener = OggOpus if lower.endswith(".opus") else OggVorbis
@@ -111,22 +112,31 @@ def resolve_artwork(path, video_id, art_index, snapshot=None):
       4. the pre-wipe database snapshot, keyed by exact file path
       5. nothing — left blank for the Fetch Missing Artwork button
 
+    *video_id* is normally `recover_video_id(path)`, which is always None for
+    SoundCloud (its URLs carry no recoverable id) — but SoundCloud sidecars are
+    keyed on yt-dlp's numeric track id, not the filename stem. Without a video
+    id, step 1 never fires and step 2's stem lookup misses an id-named JPEG,
+    so the backfill re-fetches and writes a second, byte-identical sidecar.
+    Falling back to the video_id carried on the pre-wipe snapshot (its 4th
+    element, when present) restores step 1 for that case on every platform.
+
     Returns (artwork_path, artwork_embedded, thumbnail_url), matching the three
     downloads columns. Never raises.
     """
     snap = (snapshot or {}).get(path) or (None, 0, None)
+    vid = video_id or (snap[3] if len(snap) > 3 else None)
 
-    if video_id and video_id in art_index:
-        return art_index[video_id], snap[1], snap[2]
+    if vid and vid in art_index:
+        return art_index[vid], snap[1], snap[2]
 
     stem_key = _artwork.artwork_key(None, path)
     if stem_key and stem_key in art_index:
         return art_index[stem_key], snap[1], snap[2]
 
     try:
-        if _artwork.has_cover(path):
+        if _artwork.has_cover_any(path):
             return snap[0], 1, snap[2]
     except Exception:
         pass
 
-    return snap
+    return snap[0], snap[1], snap[2]

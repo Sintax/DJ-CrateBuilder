@@ -529,10 +529,12 @@ def test_get_artwork_by_path_returns_only_arted_rows(tmp_path):
     snap = db.get_artwork_by_path()
     assert set(snap) == {"/x/Embedded.mp3", "/x/Fetched.mp3",
                          "/x/ThumbOnly.mp3"}
+    # video_id is the 4th element; _add_backfill_row stamps it as the title.
     assert snap["/x/Embedded.mp3"] == ("/x/.artwork/e.jpg", 1,
-                                       "https://img/e.jpg")
-    assert snap["/x/Fetched.mp3"] == ("/x/.artwork/f.jpg", 0, None)
-    assert snap["/x/ThumbOnly.mp3"] == (None, 0, "https://img/t.jpg")
+                                       "https://img/e.jpg", "Embedded")
+    assert snap["/x/Fetched.mp3"] == ("/x/.artwork/f.jpg", 0, None, "Fetched")
+    assert snap["/x/ThumbOnly.mp3"] == (None, 0, "https://img/t.jpg",
+                                        "ThumbOnly")
 
 
 def test_get_artwork_by_path_skips_pathless_rows(tmp_path):
@@ -580,7 +582,7 @@ def test_rebuild_from_files_preserves_artwork(tmp_path):
         art = snap.get(r["file_path"])
         if art:
             (r["artwork_path"], r["artwork_embedded"],
-             r["thumbnail_url"]) = art
+             r["thumbnail_url"], r["video_id"]) = art
     assert db.backfill_downloads(rediscovered) == 3
 
     # 4. The artwork survived the rebuild intact.
