@@ -79,8 +79,11 @@ skills-lock.json
 
 # Kept out of the public repo (local-only project material)
 scripts/
-tests/
 CLAUDE.md
+
+# NOTE: tests/ is intentionally tracked — the suite is the only way a
+# contributor (or CI) can verify a change. Bytecode stays out via the
+# __pycache__/ and *.pyc rules at the top of this file.
 
 # NOTE: .github/workflows/ is intentionally tracked — GitHub Actions can only
 # run a workflow that lives in the repo, so the Linux .deb build (build-deb.yml)
