@@ -444,3 +444,11 @@ def redact_ydl_opts(opts):
         else:
             safe[k] = v
     return safe
+
+
+# Container extension families, shared by the artwork and tagging modules so
+# the two never drift. Cover art and text tags use a different mechanism in
+# each family, which is what these tuples are dispatched on.
+MP4_EXTS  = (".m4a", ".mp4", ".m4b")
+OGG_EXTS  = (".opus", ".ogg", ".oga")
+WEBM_EXTS = (".webm", ".mkv")
