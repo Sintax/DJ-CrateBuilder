@@ -484,6 +484,64 @@ def test_embed_cover_ogg_missing_image_is_false(tmp_path):
                                    str(tmp_path / "nope.jpg")) is False
 
 
+# ── remux_webm_to_opus / embed_cover_any ──────────────────────────────────────
+@requires_ffmpeg
+def test_remux_webm_to_opus_produces_opus_and_removes_source(tmp_path):
+    webm = make_silent(tmp_path / "t.webm", "libopus")
+    out = artwork.remux_webm_to_opus(webm)
+    assert out is not None
+    assert out.lower().endswith(".opus")
+    assert os.path.isfile(out)
+    assert not os.path.exists(webm)
+
+
+@requires_ffmpeg
+def test_embed_cover_any_webm_remuxes_then_embeds(tmp_path):
+    from mutagen.oggopus import OggOpus
+    webm = make_silent(tmp_path / "t.webm", "libopus")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+
+    path, embedded = artwork.embed_cover_any(webm, jpg)
+
+    assert embedded is True
+    assert path.lower().endswith(".opus")
+    assert OggOpus(path).get("metadata_block_picture")
+
+
+@requires_ffmpeg
+def test_embed_cover_any_m4a_keeps_path(tmp_path):
+    audio = make_silent(tmp_path / "t.m4a", "aac")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+    path, embedded = artwork.embed_cover_any(audio, jpg)
+    assert embedded is True
+    assert path == audio
+
+
+def test_embed_cover_any_mp3_uses_apic(tmp_path):
+    audio = _make_mp3(tmp_path / "t.mp3")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+    path, embedded = artwork.embed_cover_any(audio, jpg)
+    assert embedded is True
+    assert path == audio
+    assert ID3(audio).getall("APIC")
+
+
+def test_embed_cover_any_unknown_extension_is_noop(tmp_path):
+    audio = tmp_path / "t.wav"
+    audio.write_bytes(b"RIFF0000WAVE")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+    path, embedded = artwork.embed_cover_any(str(audio), jpg)
+    assert embedded is False
+    assert path == str(audio)
+
+
+def test_embed_cover_any_missing_image_is_noop(tmp_path):
+    audio = _make_mp3(tmp_path / "t.mp3")
+    path, embedded = artwork.embed_cover_any(audio, None)
+    assert embedded is False
+    assert path == audio
+
+
 # ── module constants ──────────────────────────────────────────────────────────
 def test_mode_constants():
     assert artwork.COVER_ART_MODES == ("crop", "original", "off")

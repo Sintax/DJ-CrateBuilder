@@ -2,9 +2,11 @@
 import base64
 import ctypes
 import os
+import shutil
+import subprocess
 import urllib.request
 
-from cratebuilder.util import safe_filename, MP4_EXTS, OGG_EXTS
+from cratebuilder.util import safe_filename, MP4_EXTS, OGG_EXTS, WEBM_EXTS
 
 try:
     from PIL import Image
@@ -264,6 +266,108 @@ def embed_cover_ogg(audio_path, jpg_path):
         return True
     except Exception:
         return False
+
+
+# Windows: keep the FFmpeg console window from flashing on every remux.
+_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
+# A remuxed Opus stream shorter than this is a truncated or failed write, not a
+# real track. A genuine 1-second silent Opus remux already runs ~400 bytes (Ogg
+# page + Opus header overhead dominates at that length), so the floor has to
+# sit below that while still catching an empty or header-only write.
+_MIN_REMUX_BYTES = 200
+
+
+def _ffmpeg_exe(ffmpeg_dir=None):
+    """Absolute path to ffmpeg, or None when it cannot be found.
+
+    Prefers *ffmpeg_dir* (the bundled folder in a packaged build) and falls
+    back to PATH, mirroring how the app points yt-dlp at FFmpeg.
+    """
+    name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+    if ffmpeg_dir:
+        cand = os.path.join(str(ffmpeg_dir), name)
+        if os.path.isfile(cand):
+            return cand
+    return shutil.which("ffmpeg")
+
+
+def remux_webm_to_opus(audio_path, ffmpeg_dir=None):
+    """Rewrap the Opus stream inside a WebM file into an Ogg container.
+
+    WebM stores cover art as a Matroska attachment element, which mutagen cannot
+    write at all. Ogg carries it as a Vorbis comment, which mutagen can. The
+    audio is stream-copied (`-c:a copy`), so this is lossless and fast — no
+    re-encode, the samples are bit-identical.
+
+    The source is deleted only after the output exists and is plausibly sized,
+    so a failed remux leaves the original file intact.
+
+    Returns the new `.opus` path, or None when FFmpeg is unavailable or the
+    remux failed. Never raises.
+    """
+    if not audio_path or not audio_path.lower().endswith(WEBM_EXTS):
+        return None
+    if not os.path.isfile(audio_path):
+        return None
+
+    exe = _ffmpeg_exe(ffmpeg_dir)
+    if not exe:
+        return None
+
+    out_path = os.path.splitext(audio_path)[0] + ".opus"
+    tmp_path = out_path + ".part"
+    try:
+        proc = subprocess.run(
+            [exe, "-y", "-loglevel", "error", "-i", audio_path,
+             "-vn", "-c:a", "copy", "-f", "ogg", tmp_path],
+            capture_output=True, creationflags=_NO_WINDOW)
+        if proc.returncode != 0:
+            raise RuntimeError("ffmpeg exited non-zero")
+        if os.path.getsize(tmp_path) < _MIN_REMUX_BYTES:
+            raise RuntimeError("remux output implausibly small")
+
+        os.replace(tmp_path, out_path)
+        os.remove(audio_path)
+        return out_path
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        return None
+
+
+def embed_cover_any(audio_path, jpg_path, ffmpeg_dir=None):
+    """Embed *jpg_path* into *audio_path*, whatever container it is in.
+
+    Dispatches on extension: MP3 uses the ID3 APIC frame, MP4/M4A the `covr`
+    atom, Ogg/Opus a Vorbis-comment picture block. WebM has no writable art
+    mechanism, so it is first remuxed to Opus (lossless, see
+    `remux_webm_to_opus`) and then embedded — which is why the audio path can
+    change.
+
+    Returns (final_audio_path, embedded). The path is the input path unless a
+    remux occurred. Never raises.
+    """
+    if not audio_path:
+        return audio_path, False
+    if not jpg_path or not os.path.isfile(jpg_path):
+        return audio_path, False
+
+    lower = audio_path.lower()
+    if lower.endswith(".mp3"):
+        return audio_path, embed_cover(audio_path, jpg_path)
+    if lower.endswith(MP4_EXTS):
+        return audio_path, embed_cover_mp4(audio_path, jpg_path)
+    if lower.endswith(OGG_EXTS):
+        return audio_path, embed_cover_ogg(audio_path, jpg_path)
+    if lower.endswith(WEBM_EXTS):
+        remuxed = remux_webm_to_opus(audio_path, ffmpeg_dir)
+        if not remuxed:
+            return audio_path, False
+        return remuxed, embed_cover_ogg(remuxed, jpg_path)
+    return audio_path, False
 
 
 def has_cover(audio_path):
