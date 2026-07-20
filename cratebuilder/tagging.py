@@ -16,6 +16,7 @@ try:
     from mutagen.oggvorbis import OggVorbis
 except ImportError:  # pragma: no cover - mutagen is a runtime dep
     OggOpus = None
+    OggVorbis = None
 
 from cratebuilder.util import MP4_EXTS, OGG_EXTS
 
