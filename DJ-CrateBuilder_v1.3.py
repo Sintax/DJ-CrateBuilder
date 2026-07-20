@@ -4090,6 +4090,8 @@ class _ArtworkBackfillSession:
             except Exception:
                 pass
         self.app._artwork_session = None
+        if hasattr(self.app, "_rebuild_db_btn"):
+            self.app._rebuild_db_btn.config(state="normal")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -11543,6 +11545,12 @@ class MP3DownloaderApp(tk.Tk):
             return
 
         self._dbg.info(f"ARTFILL START | {n} tracks missing artwork, mode={mode}")
+        # Mirrors the disable in _rebuild_db_from_files: a rebuild's
+        # clear_all_downloads()/backfill_downloads() interleaved with this
+        # session's set_download_artwork() writes would silently drop one or
+        # the other. Re-enabled in _ArtworkBackfillSession._finish.
+        if hasattr(self, "_rebuild_db_btn"):
+            self._rebuild_db_btn.config(state="disabled")
         self._artwork_session = _ArtworkBackfillSession(self, rows, mode,
                                                         owner=owner)
         self._artwork_session.start()
@@ -11568,13 +11576,25 @@ class MP3DownloaderApp(tk.Tk):
         # Snapshot the artwork columns by file path and re-attach them below.
         art_snapshot = self._db.get_artwork_by_path()
 
+        # The rebuild clears the downloads table then repopulates it from the
+        # scan (see _finish below); a concurrent artwork backfill writes to
+        # that same table via set_download_artwork(). Interleaved with the
+        # clear/backfill, those writes either land on rows that are about to
+        # be wiped or land between clear and backfill and silently update
+        # nothing — either way the backfill reports success for work that no
+        # longer exists. Disabling Fetch Missing Artwork for the duration
+        # closes that window.
         self._rebuild_db_btn.config(state="disabled")
+        if hasattr(self, "_fetch_art_btn"):
+            self._fetch_art_btn.config(state="disabled")
 
         def _finish(rows):
             self._db.clear_all_downloads()
             count = self._db.backfill_downloads(rows)
             self._db.refresh_watchlist_totals()
             self._rebuild_db_btn.config(state="normal")
+            if hasattr(self, "_fetch_art_btn"):
+                self._fetch_art_btn.config(state="normal")
             messagebox.showinfo(
                 "Rebuild Complete",
                 f"Indexed {count} track{'s' if count != 1 else ''} from the "
@@ -11584,6 +11604,8 @@ class MP3DownloaderApp(tk.Tk):
 
         def _failed(exc):
             self._rebuild_db_btn.config(state="normal")
+            if hasattr(self, "_fetch_art_btn"):
+                self._fetch_art_btn.config(state="normal")
             messagebox.showerror(
                 "Rebuild Database", f"Rebuild failed:\n\n{exc}", parent=self)
 
