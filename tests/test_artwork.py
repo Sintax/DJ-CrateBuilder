@@ -11,6 +11,8 @@ pytest.importorskip("mutagen")
 from PIL import Image  # noqa: E402
 from mutagen.id3 import ID3  # noqa: E402
 
+from tests.conftest import make_silent, requires_ffmpeg
+
 
 # Same minimal silent MP3 frame tests/test_tagging.py uses: MPEG-1 Layer III,
 # 128kbps, 44.1kHz. Enough for mutagen to attach and read back an ID3 tag.
@@ -196,6 +198,52 @@ def test_has_cover_false_for_non_mp3_and_missing(tmp_path):
 def test_has_cover_false_on_untagged_mp3(tmp_path):
     mp3 = _make_mp3(tmp_path / "track.mp3")
     assert artwork.has_cover(mp3) is False
+
+
+# ── has_cover_any ────────────────────────────────────────────────────────────
+def test_has_cover_any_true_for_mp3(tmp_path):
+    mp3 = _make_mp3(tmp_path / "track.mp3")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+    artwork.embed_cover(mp3, jpg)
+    assert artwork.has_cover_any(mp3) is True
+
+
+def test_has_cover_any_false_for_untagged_mp3(tmp_path):
+    mp3 = _make_mp3(tmp_path / "track.mp3")
+    assert artwork.has_cover_any(mp3) is False
+
+
+@requires_ffmpeg
+def test_has_cover_any_true_for_mp4(tmp_path):
+    audio = make_silent(tmp_path / "t.m4a", "aac")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+    artwork.embed_cover_mp4(audio, jpg)
+    assert artwork.has_cover_any(audio) is True
+
+
+@requires_ffmpeg
+def test_has_cover_any_false_for_untagged_mp4(tmp_path):
+    audio = make_silent(tmp_path / "t.m4a", "aac")
+    assert artwork.has_cover_any(audio) is False
+
+
+@requires_ffmpeg
+def test_has_cover_any_true_for_ogg(tmp_path):
+    audio = make_silent(tmp_path / "t.opus", "libopus")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+    artwork.embed_cover_ogg(audio, jpg)
+    assert artwork.has_cover_any(audio) is True
+
+
+@requires_ffmpeg
+def test_has_cover_any_false_for_untagged_ogg(tmp_path):
+    audio = make_silent(tmp_path / "t.opus", "libopus")
+    assert artwork.has_cover_any(audio) is False
+
+
+def test_has_cover_any_false_for_missing_and_falsy(tmp_path):
+    assert artwork.has_cover_any(str(tmp_path / "ghost.m4a")) is False
+    assert artwork.has_cover_any(None) is False
 
 
 # ── extract_cover ─────────────────────────────────────────────────────────────
@@ -433,6 +481,181 @@ def test_existing_sidecar_pairs_with_artwork_key(tmp_path):
     written = artwork.ingest_thumbnail(raw, art_dir, key, mode="crop")
 
     assert artwork.existing_sidecar(art_dir, key) == written
+
+
+# ── embed_cover_mp4 / embed_cover_ogg ─────────────────────────────────────────
+@requires_ffmpeg
+def test_embed_cover_mp4_round_trips(tmp_path):
+    from mutagen.mp4 import MP4
+    audio = make_silent(tmp_path / "t.m4a", "aac")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+
+    assert artwork.embed_cover_mp4(audio, jpg) is True
+
+    covers = MP4(audio).tags.get("covr")
+    assert covers and len(bytes(covers[0])) > 0
+
+
+@requires_ffmpeg
+def test_embed_cover_ogg_round_trips(tmp_path):
+    from mutagen.oggopus import OggOpus
+    audio = make_silent(tmp_path / "t.opus", "libopus")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+
+    assert artwork.embed_cover_ogg(audio, jpg) is True
+
+    assert OggOpus(audio).get("metadata_block_picture")
+
+
+@requires_ffmpeg
+def test_embed_cover_mp4_replaces_rather_than_stacks(tmp_path):
+    from mutagen.mp4 import MP4
+    audio = make_silent(tmp_path / "t.m4a", "aac")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+
+    artwork.embed_cover_mp4(audio, jpg)
+    artwork.embed_cover_mp4(audio, jpg)
+
+    assert len(MP4(audio).tags.get("covr")) == 1
+
+
+def test_embed_cover_mp4_rejects_wrong_extension(tmp_path):
+    audio = _make_mp3(tmp_path / "t.mp3")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+    assert artwork.embed_cover_mp4(audio, jpg) is False
+
+
+def test_embed_cover_ogg_missing_image_is_false(tmp_path):
+    assert artwork.embed_cover_ogg(str(tmp_path / "nope.opus"),
+                                   str(tmp_path / "nope.jpg")) is False
+
+
+# ── remux_webm_to_opus / embed_cover_any ──────────────────────────────────────
+@requires_ffmpeg
+def test_remux_webm_to_opus_produces_opus_and_removes_source(tmp_path):
+    webm = make_silent(tmp_path / "t.webm", "libopus")
+    out = artwork.remux_webm_to_opus(webm)
+    assert out is not None
+    assert out.lower().endswith(".opus")
+    assert os.path.isfile(out)
+    assert not os.path.exists(webm)
+
+
+@requires_ffmpeg
+def test_remux_rejects_undersized_output_and_keeps_source(tmp_path, monkeypatch):
+    # Force the proportional size check to reject a perfectly valid remux, so
+    # the rejection branch is exercised deterministically regardless of the
+    # real byte counts ffmpeg happens to produce for the fixture.
+    webm = make_silent(tmp_path / "t.webm", "libopus")
+    monkeypatch.setattr(artwork, "_MIN_REMUX_SIZE_RATIO", 100.0)
+
+    out = artwork.remux_webm_to_opus(webm)
+
+    assert out is None
+    assert os.path.isfile(webm)
+    part_path = os.path.splitext(webm)[0] + ".opus.part"
+    assert not os.path.exists(part_path)
+
+
+@requires_ffmpeg
+def test_remux_invalid_webm_fails_and_keeps_source(tmp_path):
+    webm = str(tmp_path / "t.webm")
+    with open(webm, "wb") as fh:
+        fh.write(b"not a real webm container at all")
+
+    out = artwork.remux_webm_to_opus(webm)
+
+    assert out is None
+    assert os.path.isfile(webm)
+    part_path = os.path.splitext(webm)[0] + ".opus.part"
+    assert not os.path.exists(part_path)
+
+
+@requires_ffmpeg
+def test_remux_succeeds_even_if_source_delete_fails(tmp_path, monkeypatch):
+    webm = make_silent(tmp_path / "t.webm", "libopus")
+    real_remove = os.remove
+
+    def _flaky_remove(path):
+        if path == webm:
+            raise OSError("locked by AV scanner")
+        real_remove(path)
+
+    monkeypatch.setattr(artwork.os, "remove", _flaky_remove)
+
+    out = artwork.remux_webm_to_opus(webm)
+
+    # os.replace already committed the conversion before the delete ran, so
+    # a failure to delete the source must not be reported as a failed remux.
+    assert out is not None
+    assert out.lower().endswith(".opus")
+    assert os.path.isfile(out)
+    assert os.path.isfile(webm)
+
+
+@requires_ffmpeg
+def test_remux_rejects_non_opus_audio_and_keeps_source(tmp_path):
+    # yt-dlp's format fallback can hand back a WebM whose audio is Vorbis, not
+    # Opus. `-c:a copy -f ogg` would succeed on that too, producing an
+    # Ogg-framed file mis-named `.opus` that is actually Vorbis. The codec
+    # must be probed and refused before FFmpeg ever runs.
+    webm = make_silent(tmp_path / "t.webm", "libvorbis")
+
+    out = artwork.remux_webm_to_opus(webm)
+
+    assert out is None
+    assert os.path.isfile(webm)
+    part_path = os.path.splitext(webm)[0] + ".opus.part"
+    assert not os.path.exists(part_path)
+    opus_path = os.path.splitext(webm)[0] + ".opus"
+    assert not os.path.exists(opus_path)
+
+
+@requires_ffmpeg
+def test_embed_cover_any_webm_remuxes_then_embeds(tmp_path):
+    from mutagen.oggopus import OggOpus
+    webm = make_silent(tmp_path / "t.webm", "libopus")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+
+    path, embedded = artwork.embed_cover_any(webm, jpg)
+
+    assert embedded is True
+    assert path.lower().endswith(".opus")
+    assert OggOpus(path).get("metadata_block_picture")
+
+
+@requires_ffmpeg
+def test_embed_cover_any_m4a_keeps_path(tmp_path):
+    audio = make_silent(tmp_path / "t.m4a", "aac")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+    path, embedded = artwork.embed_cover_any(audio, jpg)
+    assert embedded is True
+    assert path == audio
+
+
+def test_embed_cover_any_mp3_uses_apic(tmp_path):
+    audio = _make_mp3(tmp_path / "t.mp3")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+    path, embedded = artwork.embed_cover_any(audio, jpg)
+    assert embedded is True
+    assert path == audio
+    assert ID3(audio).getall("APIC")
+
+
+def test_embed_cover_any_unknown_extension_is_noop(tmp_path):
+    audio = tmp_path / "t.wav"
+    audio.write_bytes(b"RIFF0000WAVE")
+    jpg = _make_image(tmp_path / "art.jpg", fmt="JPEG")
+    path, embedded = artwork.embed_cover_any(str(audio), jpg)
+    assert embedded is False
+    assert path == str(audio)
+
+
+def test_embed_cover_any_missing_image_is_noop(tmp_path):
+    audio = _make_mp3(tmp_path / "t.mp3")
+    path, embedded = artwork.embed_cover_any(audio, None)
+    assert embedded is False
+    assert path == audio
 
 
 # ── module constants ──────────────────────────────────────────────────────────
