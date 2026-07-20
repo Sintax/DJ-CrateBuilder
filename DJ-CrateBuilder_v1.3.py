@@ -4188,6 +4188,11 @@ class MP3DownloaderApp(tk.Tk):
         # In-flight artwork backfill, or None. Guards against a second run being
         # started on top of one already walking the library.
         self._artwork_session = None
+        # True while a background rebuild is between clear_all_downloads() and
+        # backfill_downloads(); _fetch_missing_artwork checks this directly so
+        # the guard holds no matter which button (main window or Database
+        # Viewer) launched the backfill.
+        self._rebuild_in_progress = False
 
         # Log size limit — caps activity.log and debug.log (each) by trimming the
         # oldest lines; 0 = Unlimited. Default 2 MB keeps the logs from growing
@@ -11510,6 +11515,15 @@ class MP3DownloaderApp(tk.Tk):
                 "Fetch Missing Artwork",
                 "An artwork run is already in progress.", parent=owner)
             return
+        # Guards both entry points (the Settings tab button and the Database
+        # Viewer's Artwork tab button) in one place, closing the same
+        # clear/backfill race the rebuild's own button-disable covers.
+        if getattr(self, "_rebuild_in_progress", False):
+            messagebox.showinfo(
+                "Fetch Missing Artwork",
+                "A database rebuild is in progress. Try again once it "
+                "finishes.", parent=owner)
+            return
 
         mode = self._cover_art_mode_value()
         if mode == "off":
@@ -11583,8 +11597,12 @@ class MP3DownloaderApp(tk.Tk):
         # be wiped or land between clear and backfill and silently update
         # nothing — either way the backfill reports success for work that no
         # longer exists. Disabling Fetch Missing Artwork for the duration
-        # closes that window.
-        self._rebuild_db_btn.config(state="disabled")
+        # closes that window; _rebuild_in_progress backs up that disable so
+        # the Database Viewer's own Fetch Missing Artwork button — which this
+        # disable doesn't reach — is covered too.
+        self._rebuild_in_progress = True
+        if hasattr(self, "_rebuild_db_btn"):
+            self._rebuild_db_btn.config(state="disabled")
         if hasattr(self, "_fetch_art_btn"):
             self._fetch_art_btn.config(state="disabled")
 
@@ -11592,6 +11610,7 @@ class MP3DownloaderApp(tk.Tk):
             self._db.clear_all_downloads()
             count = self._db.backfill_downloads(rows)
             self._db.refresh_watchlist_totals()
+            self._rebuild_in_progress = False
             self._rebuild_db_btn.config(state="normal")
             if hasattr(self, "_fetch_art_btn"):
                 self._fetch_art_btn.config(state="normal")
@@ -11603,6 +11622,7 @@ class MP3DownloaderApp(tk.Tk):
             self._dbg.info(f"DB REBUILD | indexed {count} files from disk")
 
         def _failed(exc):
+            self._rebuild_in_progress = False
             self._rebuild_db_btn.config(state="normal")
             if hasattr(self, "_fetch_art_btn"):
                 self._fetch_art_btn.config(state="normal")
