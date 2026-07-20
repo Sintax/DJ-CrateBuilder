@@ -207,6 +207,7 @@ WL_BLUE_DARK = "#2563eb"   # darker blue fill for buttons (carries white text)
 # Dark maroon for the global Cancel button while it's idle (nothing to cancel),
 # so the control reads as "armed but inactive" rather than a plain grey button.
 WL_CANCEL_IDLE = "#5e1414"
+WL_CANCEL_ACTIVE = YT_DARK   # live cancel on a card — matches the toolbar
 
 # ── Platform config ───────────────────────────────────────────────────────────
 PLATFORMS = {
@@ -9641,17 +9642,21 @@ class MP3DownloaderApp(tk.Tk):
         is_downloading = bool(self._downloading) and \
             cid in batch.get("channel_ids", [])
 
-        # (label, command, is_cancel)
+        # (label, command, is_cancel, tooltip_text)
         card_buttons = []
         if is_scanning or is_downloading:
             # Per-card Cancel — stops just this channel's scan/download.
             card_buttons.append(
-                ("✕ Cancel", lambda c=cid: self._watchlist_cancel_card(c), True))
+                ("✕ Cancel", lambda c=cid: self._watchlist_cancel_card(c), True,
+                 "Stop the scan or download running on this channel."))
         card_buttons += [
-            ("🔍 Scan",    lambda c=cid: self._watchlist_scan_channel(c), False),
-            ("⚡ Force Download", lambda c=cid: self._watchlist_force_download(c), False),
+            ("🔍 Scan",    lambda c=cid: self._watchlist_scan_channel(c), False,
+             "Check this channel for new uploads without downloading anything."),
+            ("⚡ Force Download", lambda c=cid: self._watchlist_force_download(c), False,
+             "Re-download every track from this channel, including ones "
+             "already in your library."),
             (f"⬇ Download New ({pending})",
-                           lambda c=cid: self._watchlist_download_new(c), False),
+                           lambda c=cid: self._watchlist_download_new(c), False, None),
         ]
         WL_FIX_LINK_LABEL = "🛠 Fix Link"
         if is_unresolved_channel(ch):
@@ -9659,24 +9664,22 @@ class MP3DownloaderApp(tk.Tk):
             # Edit so it reads as a per-channel link action.
             card_buttons.append(
                 (WL_FIX_LINK_LABEL,
-                 lambda c=cid: self._watchlist_resolve_dialog(c), False))
+                 lambda c=cid: self._watchlist_resolve_dialog(c), False, None))
         card_buttons += [
-            ("✏ Edit",     lambda c=cid: self._watchlist_edit_channel(c), False),
-            ("✕ Remove",   lambda c=cid: self._watchlist_remove_channel(c), False),
+            ("✏ Edit",     lambda c=cid: self._watchlist_edit_channel(c), False,
+             "Change this channel's genre, platform, or download settings."),
+            ("✕ Remove",   lambda c=cid: self._watchlist_remove_channel(c), False, None),
         ]
-        # Per-card Cancel is intentionally inert (disabled, dark orange): the
-        # only working Cancel on this tab is the top primary one, which stops
-        # the whole batch/scan. The card button just signals "busy".
-        WL_CARD_CANCEL = "#78350f"   # dark orange
         WL_FIX_ORANGE  = "#ff7a00"   # bright orange — a link that MUST be fixed
-        for btn_text, btn_cmd, is_cancel in card_buttons:
+        for btn_text, btn_cmd, is_cancel, tip in card_buttons:
             if is_cancel:
                 b = tk.Button(btns, text=btn_text,
-                              font=("Segoe UI", 9),
-                              bg=WL_CARD_CANCEL, fg=TEXT_DIM,
-                              disabledforeground=TEXT_DIM,
-                              relief="flat", bd=0, padx=8, pady=3,
-                              state="disabled")
+                              font=("Segoe UI", 9, "bold"),
+                              relief="flat", bd=0, cursor="hand2",
+                              bg=WL_CANCEL_ACTIVE, fg=TEXT,
+                              activebackground=YT_RED, activeforeground=TEXT,
+                              padx=10, pady=3,
+                              command=btn_cmd)
             elif btn_text == WL_FIX_LINK_LABEL:
                 # Bright orange so an unresolved link reads as needing attention.
                 b = tk.Button(btns, text=btn_text,
@@ -9693,6 +9696,8 @@ class MP3DownloaderApp(tk.Tk):
                               relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
                               command=btn_cmd)
             b.pack(side="left", padx=(0, 4))
+            if tip:
+                Tooltip(b, tip)
 
         # Show error if present
         if ch.get("last_error"):
