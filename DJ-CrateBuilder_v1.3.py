@@ -7675,7 +7675,9 @@ class MP3DownloaderApp(tk.Tk):
 
             ("Q: What is FFmpeg and why is it needed?",
              "A: FFmpeg is the audio conversion engine that converts downloaded audio streams into MP3 files. It runs "
-             "silently in the background. The installer includes it automatically."),
+             "silently in the background. The installer includes it automatically, and packaged builds keep it up to "
+             "date on their own — when a newer FFmpeg is available it's fetched and swapped in during a normal update "
+             "check, with no action needed from you."),
 
             ("Q: Why are some downloads marked \"login required\"?",
              "A: YouTube sometimes requires account authentication for certain content, especially when accessing from "
