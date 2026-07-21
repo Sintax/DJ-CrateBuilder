@@ -1,9 +1,9 @@
 {
   "version": "1.3",
-  "build": 36,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.36.zip",
-  "sha256": "b77dd94db75efdea3590c16fb106def6fd0cc2d6d69c32319adff7ae1800ea25",
-  "notes": "Fixed missing artwork and mislabeled titles for SoundCloud playlist/set downloads.",
+  "build": 37,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.37.zip",
+  "sha256": "6f09588b8445068a2140fd755dc51f082c71d82117a9a07c74676348ef1b6c94",
+  "notes": "UI polish: genre handling fix, button rename, Watch List edit tweak.",
   "base": 20,
   "ffmpeg": {
     "version": "8.1-essentials_build-www.gyan.dev+1a65d5b0",
