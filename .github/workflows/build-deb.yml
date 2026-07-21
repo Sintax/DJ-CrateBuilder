@@ -76,3 +76,8 @@ jobs:
           }
           JSONEOF
           gh release upload "$TAG" update-linux.json --repo "$GITHUB_REPOSITORY" --clobber
+
+          # Keep the release title in step with the shipped build, matching the
+          # Windows release title format.
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --title "DJ-CrateBuilder v1.3 (Build ${BUILD}) — Linux package (.deb)"
