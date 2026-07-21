@@ -5029,7 +5029,7 @@ class MP3DownloaderApp(tk.Tk):
             messagebox.showwarning("Invalid URL", "That doesn't look like a YouTube or SoundCloud URL.")
             return
 
-        genre = self._genre_var.get()
+        genre = self._selected_genre()
         if genre == "(none)":
             proceed = messagebox.askyesno(
                 "No Genre Selected",
@@ -7989,7 +7989,7 @@ class MP3DownloaderApp(tk.Tk):
         btn = getattr(self, "_open_genre_btn", None)
         if btn is None:
             return
-        genre = self._genre_var.get()
+        genre = self._selected_genre()
         try:
             btn.config(state="normal" if genre and genre != "(none)"
                        else "disabled")
@@ -7998,7 +7998,7 @@ class MP3DownloaderApp(tk.Tk):
 
     def _open_genre_dir(self):
         """Open the currently selected genre's folder in the system file manager."""
-        genre = self._genre_var.get()
+        genre = self._selected_genre()
         folder = "_No Genre" if not genre or genre == "(none)" else genre
         target = os.path.join(self._platform_dir(), folder)
         os.makedirs(target, exist_ok=True)
@@ -8110,21 +8110,46 @@ class MP3DownloaderApp(tk.Tk):
     # ══════════════════════════════════════════════════════════════════════════
     # ── Genre management ─────────────────────────────────────────────────────
     def _refresh_genre_list(self):
-        """Rebuild the genre combobox values for the current platform."""
-        genres = self._scan_genres()
+        """Rebuild the genre combobox: genres from BOTH platform folders, each
+        tagged " (YT)" / " (SC)" so the user can see which platform a folder
+        belongs to. The tag is display-only — _selected_genre() strips it, so
+        it never becomes part of a folder name."""
+        tagged = []
+        seen_clean = set()
+        for plat, tag in (("YouTube", "YT"), ("SoundCloud", "SC")):
+            for g in self._scan_genres(plat):
+                tagged.append(f"{g} ({tag})")
+                seen_clean.add(g)
         # A freshly added genre has no folder yet (created at download start),
         # so keep it selectable — and carried across platform auto-switches —
-        # until it exists on disk.
+        # until it exists on disk. Tag it with the currently detected platform.
         pending = getattr(self, "_pending_genre", None)
-        if pending in genres:
+        if pending in seen_clean:
             pending = self._pending_genre = None
         if pending:
-            genres = sorted(genres + [pending])
-        values = ["(none)"] + genres
+            cur_tag = "SC" if self._platform_var.get() == "SoundCloud" else "YT"
+            tagged.append(f"{pending} ({cur_tag})")
+        values = ["(none)"] + sorted(tagged, key=str.lower)
         self._genre_combo["values"] = values
         if self._genre_var.get() not in values:
-            self._genre_var.set("(none)")
+            # The same genre may still exist under the other platform's tag —
+            # keep the user's pick by clean name before falling back to (none).
+            want = self._strip_genre_tag(self._genre_var.get())
+            match = next((v for v in values[1:]
+                          if self._strip_genre_tag(v) == want), None)
+            self._genre_var.set(match or "(none)")
         self._update_save_preview()
+
+    @staticmethod
+    def _strip_genre_tag(value):
+        """Remove the display-only ' (YT)'/' (SC)' suffix from a combobox
+        value, returning the real folder name."""
+        return re.sub(r"\s+\((?:YT|SC)\)$", "", value or "")
+
+    def _selected_genre(self):
+        """The Main tab's selected genre as a clean folder name ('(none)'
+        passes through untouched)."""
+        return self._strip_genre_tag(self._genre_var.get())
 
     def _on_genre_selected(self, _event=None):
         self._update_save_preview()
@@ -8213,14 +8238,15 @@ class MP3DownloaderApp(tk.Tk):
         else:
             self._pending_genre = safe
         self._refresh_genre_list()
-        self._genre_var.set(safe)
+        cur_tag = "SC" if self._platform_var.get() == "SoundCloud" else "YT"
+        self._genre_var.set(f"{safe} ({cur_tag})")
         self._update_save_preview()
 
     def _update_save_preview(self):
         """Show a short preview of where files will land. Pure preview — must
         not create the directory, or merely selecting a genre would plant
         empty folders under a platform the download may never use."""
-        genre = self._genre_var.get()
+        genre = self._selected_genre()
         path  = self._channel_save_path(genre)
         short = path.replace(os.path.expanduser("~"), "~")
         if hasattr(self, "_save_dir_preview"):
@@ -8508,7 +8534,7 @@ class MP3DownloaderApp(tk.Tk):
             if not re.search(cfg["url_pattern"], url):
                 messagebox.showwarning("Invalid URL", "That doesn't look like a YouTube or SoundCloud URL.")
                 return
-            genre = self._genre_var.get()
+            genre = self._selected_genre()
             if genre == "(none)":
                 proceed = messagebox.askyesno(
                     "No Genre Selected",
