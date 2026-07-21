@@ -24,7 +24,7 @@ from cratebuilder.util import (
     detect_platform, redact_ydl_opts, build_cookie_opts,
     derive_collection_name, find_matching_watchlist_row,
     soundcloud_profile_handle, merge_soundcloud_candidates,
-    runtime_data_dir,
+    runtime_data_dir, classify_permanent_failure, download_result_facts,
 )
 from cratebuilder.sidecar import (
     channel_url_from_id, channel_id_from_url,
@@ -3995,8 +3995,21 @@ class _ArtworkBackfillSession:
             self._tally(row, "not_found")
 
     def _fetch_sidecar(self, row, path, art_dir, key, raw):
-        """Walk the network rungs of the ladder. Returns (thumb_url, jpg_path),
-        either of which may be None."""
+        """Walk the remaining rungs of the ladder. Returns (thumb_url,
+        jpg_path), either of which may be None."""
+        # First rung, zero network: an image yt-dlp left beside the track
+        # (`writethumbnail` saves on the audio's own stem). Legacy SoundCloud
+        # downloads resolved the wrong audio path, so the loose .jpg was never
+        # harvested — it is the one artwork asset those tracks still have.
+        # Ingest converts it into the sidecar and removes the loose file.
+        sibling = self.app._find_raw_thumbnail(path)
+        if sibling:
+            jpg = cb_artwork.ingest_thumbnail(sibling, art_dir, key, self.mode)
+            if jpg:
+                self.app._dbg.debug(
+                    f"ARTFILL LOCAL | {row.get('title')!r}  {sibling}")
+                return row.get("thumbnail_url"), jpg
+
         candidates = list(cb_artwork.thumbnail_url_candidates(
             row.get("platform"), row.get("video_id"),
             row.get("thumbnail_url")))
@@ -8836,7 +8849,7 @@ class MP3DownloaderApp(tk.Tk):
             self.after(0, lambda: self._ov_lbl.config(text=f"0 / {total}"))
             time.sleep(0.35)
 
-            done = skipped = errors = 0
+            done = skipped = errors = unavail = 0
 
             # Watch List downloads decide "already owned" with the SAME test the
             # scan used (DB video_id + EXACT normalized-title key), so they never
@@ -9153,11 +9166,13 @@ class MP3DownloaderApp(tk.Tk):
                     # the first raise.
                     _attempt = 0
                     _max_attempts = 3
+                    _dl_info = None
                     while True:
                         _attempt += 1
                         try:
                             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                                ydl.download([item_url])
+                                _dl_info = ydl.extract_info(
+                                    item_url, download=True)
                             break
                         except Exception as _net_exc:
                             _ne = str(_net_exc).lower()
@@ -9193,6 +9208,21 @@ class MP3DownloaderApp(tk.Tk):
                             raise
                     done += 1
                     self._grand_dl += 1
+                    # SoundCloud set flat-extraction returns no title or
+                    # thumbnail, so item_title may still be the "Track N"
+                    # placeholder and expected_path a guess that matches
+                    # nothing on disk. The info dict the download itself just
+                    # returned carries the real values — adopt them so the
+                    # log, tags, cover harvest, DB row, and queue label all
+                    # point at the file yt-dlp actually wrote.
+                    _r_title, _r_path, _r_thumb, _r_vid = (
+                        download_result_facts(_dl_info))
+                    if _r_title:
+                        item_title = _r_title
+                        if idx < len(self._queue):
+                            self._queue[idx]["title"] = _r_title
+                    if _r_path and os.path.isfile(_r_path):
+                        expected_path = _r_path
                     src_str = (f"{int(source_abr[0])} kbps src → "
                                f"{effective_kbps} kbps MP3"
                                if source_abr[0] else f"{effective_kbps} kbps MP3")
@@ -9211,12 +9241,14 @@ class MP3DownloaderApp(tk.Tk):
                     # written onto the tag mutagen has already created.
                     _art_path, _art_embedded, _real_path = (
                         self._harvest_cover_art(
-                            _real_path, entry.get("id"), item_title,
+                            _real_path, entry.get("id") or _r_vid, item_title,
                             source_url=item_url))
                     # ── Record in the downloads database ──────────────
-                    _vid_upload = entry.get("upload_date", "") or ""
+                    _vid_upload = (entry.get("upload_date", "")
+                                   or (_dl_info or {}).get("upload_date", "")
+                                   or "")
                     self._db.add_download(
-                        video_id=entry.get("id"),
+                        video_id=entry.get("id") or _r_vid,
                         title=item_title,
                         channel_name=channel_name_override or collection_name,
                         channel_url=url if is_collection else "",
@@ -9227,7 +9259,7 @@ class MP3DownloaderApp(tk.Tk):
                         bitrate=src_str,
                         artwork_path=_art_path,
                         artwork_embedded=_art_embedded,
-                        thumbnail_url=entry.get("thumbnail"))
+                        thumbnail_url=entry.get("thumbnail") or _r_thumb)
                     if _vid_upload and (
                             _max_upload_date_this_run is None
                             or _vid_upload > _max_upload_date_this_run):
@@ -9294,9 +9326,20 @@ class MP3DownloaderApp(tk.Tk):
                         try:
                             self._apply_js_runtime(retry_opts)
                             with yt_dlp.YoutubeDL(retry_opts) as ydl:
-                                ydl.download([item_url])
+                                _dl_info = ydl.extract_info(
+                                    item_url, download=True)
                             done += 1
                             self._grand_dl += 1
+                            # Same real-result adoption as the main path —
+                            # see the comment there.
+                            _r_title, _r_path, _r_thumb, _r_vid = (
+                                download_result_facts(_dl_info))
+                            if _r_title:
+                                item_title = _r_title
+                                if idx < len(self._queue):
+                                    self._queue[idx]["title"] = _r_title
+                            if _r_path and os.path.isfile(_r_path):
+                                expected_path = _r_path
                             src_str = (
                                 f"{int(source_abr[0])} kbps src → "
                                 f"{output_kbps} kbps MP3"
@@ -9311,12 +9354,15 @@ class MP3DownloaderApp(tk.Tk):
                             self._tag_track(_real_path, item_title, item_url)
                             _art_path, _art_embedded, _real_path = (
                                 self._harvest_cover_art(
-                                    _real_path, entry.get("id"), item_title,
-                                    source_url=item_url))
+                                    _real_path, entry.get("id") or _r_vid,
+                                    item_title, source_url=item_url))
                             # ── Record retry success in DB ────────────
-                            _vid_upload = entry.get("upload_date", "") or ""
+                            _vid_upload = (
+                                entry.get("upload_date", "")
+                                or (_dl_info or {}).get("upload_date", "")
+                                or "")
                             self._db.add_download(
-                                video_id=entry.get("id"),
+                                video_id=entry.get("id") or _r_vid,
                                 title=item_title,
                                 channel_name=(channel_name_override
                                               or collection_name),
@@ -9329,7 +9375,8 @@ class MP3DownloaderApp(tk.Tk):
                                 bitrate=src_str,
                                 artwork_path=_art_path,
                                 artwork_embedded=_art_embedded,
-                                thumbnail_url=entry.get("thumbnail"))
+                                thumbnail_url=entry.get("thumbnail")
+                                              or _r_thumb)
                             if _vid_upload and (
                                     _max_upload_date_this_run is None
                                     or _vid_upload
@@ -9371,7 +9418,13 @@ class MP3DownloaderApp(tk.Tk):
                         f"Title: {item_title} | "
                         f"URL: {item_url} | "
                         f"Full error: {raw_err}")
-                    if   "ffmpeg"        in clean_lower: err = "FFmpeg missing"
+                    # Permanently-unavailable causes (SoundCloud DRM,
+                    # removed/private 404s, geo-blocks) are nothing on our
+                    # side — surface an honest status and count them apart
+                    # from real errors so the batch summary isn't alarming.
+                    _perm = classify_permanent_failure(clean)
+                    if _perm:                            err = _perm
+                    elif "ffmpeg"        in clean_lower: err = "FFmpeg missing"
                     elif "sign in"       in clean_lower: err = "login required"
                     elif is_age:                         err = "age-restricted"
                     elif "unavailable"   in clean_lower: err = "unavailable"
@@ -9382,7 +9435,10 @@ class MP3DownloaderApp(tk.Tk):
                     elif "blocked"       in clean_lower: err = "blocked"
                     elif "not available" in clean_lower: err = "format unavailable"
                     else:                                err = clean[:60]
-                    errors += 1
+                    if _perm:
+                        unavail += 1
+                    else:
+                        errors += 1
                     done   += 1
                     self._grand_er += 1
                     self._log_error(item_title, item_url, err)
@@ -9396,16 +9452,18 @@ class MP3DownloaderApp(tk.Tk):
                 self.after(0, self._update_ov_stats)
 
             # Per-URL summary in status bar
-            actual = done - skipped - errors
+            actual = done - skipped - errors - unavail
             parts  = [f"✓ {actual} downloaded"]
             if skipped: parts.append(f"⊘ {skipped} skipped")
+            if unavail: parts.append(
+                f"∅ {unavail} unavailable (DRM/removed)")
             if errors:  parts.append(f"✗ {errors} failed")
             if self._cancel_flag.is_set():
                 parts.insert(0, "Cancelled.")
             self.after(0, lambda s="  ".join(parts): self._set_status(s))
 
             # ── Auto-add to Watch List (collections only) ─────────────
-            actual_downloaded = done - skipped - errors
+            actual_downloaded = done - skipped - errors - unavail
             if (is_collection and actual_downloaded > 0
                     and not channel_name_override):
                 # Only auto-add when this is a normal user download, not
@@ -9417,7 +9475,7 @@ class MP3DownloaderApp(tk.Tk):
                     _max_upload_date_this_run,
                     channel_id=coll_channel_id)
 
-            return actual_downloaded, skipped, errors
+            return actual_downloaded, skipped, errors + unavail
 
         except Exception as exc:
             err = str(exc)

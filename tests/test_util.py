@@ -360,3 +360,56 @@ def test_runtime_data_dir_falls_back_when_unwritable(monkeypatch, tmp_path):
     result = util.runtime_data_dir(str(tmp_path / "opt" / "app.py"))
     assert _os.path.basename(result) == "DJ-CrateBuilder"
     assert _os.path.isdir(result)
+
+
+def test_classify_permanent_failure_drm():
+    msg = ("ERROR: [soundcloud] 123: This video is DRM protected; "
+           "hls_mp3 format not found")
+    assert util.classify_permanent_failure(msg) == "DRM-protected"
+
+
+def test_classify_permanent_failure_404():
+    msg = "ERROR: unable to download webpage: HTTP Error 404: Not Found"
+    assert util.classify_permanent_failure(msg) == "Removed"
+
+
+def test_classify_permanent_failure_geo():
+    assert util.classify_permanent_failure(
+        "video not available in your country") == "Geo-blocked"
+    assert util.classify_permanent_failure(
+        "you might want to use a VPN or a proxy to work around geo restriction"
+    ) == "Geo-blocked"
+
+
+def test_classify_permanent_failure_transient_and_empty_are_none():
+    assert util.classify_permanent_failure(
+        "Connection reset by peer 10054") is None
+    assert util.classify_permanent_failure("") is None
+    assert util.classify_permanent_failure(None) is None
+
+
+def test_download_result_facts_full_info():
+    info = {
+        "id": "2179407447",
+        "title": "Artist - Real Title",
+        "thumbnail": "https://i1.sndcdn.com/artworks-abc-t500x500.jpg",
+        "requested_downloads": [
+            {"filepath": r"C:\Music\Artist - Real Title.mp3"}],
+    }
+    assert util.download_result_facts(info) == (
+        "Artist - Real Title", r"C:\Music\Artist - Real Title.mp3",
+        "https://i1.sndcdn.com/artworks-abc-t500x500.jpg", "2179407447")
+
+
+def test_download_result_facts_unwraps_single_entry_playlist():
+    info = {"entries": [{"id": "x1", "title": "T",
+                         "requested_downloads": [{"filepath": "/m/T.mp3"}]}]}
+    assert util.download_result_facts(info) == ("T", "/m/T.mp3", None, "x1")
+
+
+def test_download_result_facts_missing_fields_are_none():
+    assert util.download_result_facts({}) == (None, None, None, None)
+    assert util.download_result_facts(None) == (None, None, None, None)
+    assert util.download_result_facts(
+        {"title": "", "thumbnail": "", "requested_downloads": []}
+    ) == (None, None, None, None)
