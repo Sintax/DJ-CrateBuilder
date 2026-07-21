@@ -7134,6 +7134,66 @@ class MP3DownloaderApp(tk.Tk):
             self._auto_check_for_updates()
         self._reschedule_update_check()
 
+    def _maybe_update_ffmpeg(self, manifest):
+        """Piggyback the update check: bring bundled FFmpeg to the offered version.
+
+        Skip-proof by construction — the decision is the on-disk ``ffmpeg.version``
+        marker vs the manifest's offered version, never the app build, so it can't
+        be defeated by skipped builds or --full baseline resets. Windows packaged
+        builds only; a source/Linux run manages FFmpeg elsewhere and no-ops here.
+        The swap runs only while idle so it never fights a live yt-dlp file handle;
+        otherwise it silently defers to the next scheduled check.
+        """
+        if not ucore.is_frozen() or ucore.is_linux():
+            return
+        install_dir = bundled_ffmpeg_dir()
+        if not install_dir:
+            return
+        action = ucore.ffmpeg_update_action(
+            manifest, ucore.read_ffmpeg_version(install_dir))
+        block = manifest.get("ffmpeg") or {}
+        version = str(block.get("version", "")).strip()
+        if action == "adopt":
+            # No marker yet: trust the installer-shipped binary as current and
+            # record it, so we don't force a large download on first sight.
+            try:
+                ucore.write_ffmpeg_version(install_dir, version)
+            except OSError:
+                pass
+            return
+        if action != "update":
+            return
+        if self._downloading or self._wl_download_active or self._wl_scan_active:
+            return   # busy — retry on the next scheduled check
+        self._start_ffmpeg_update(install_dir, block, version)
+
+    def _start_ffmpeg_update(self, install_dir, block, version):
+        """Download + verify + swap the FFmpeg binaries on a background thread.
+
+        Any failure (network, checksum, or a swap that hit a locked binary and
+        rolled back) is logged and swallowed — the marker is untouched, so the
+        next update check simply tries again.
+        """
+        ws = ucore.default_workspace()
+
+        def worker():
+            try:
+                zip_path = os.path.join(ws, f"ffmpeg-{version}.zip")
+                ucore.download(block["url"], zip_path)
+                ucore.install_ffmpeg_from_zip(
+                    zip_path, block["sha256"], install_dir,
+                    os.path.join(ws, "ffmpeg_staged"),
+                    os.path.join(ws, "ffmpeg_backup"), version)
+                self.after(0, lambda: self._set_update_status(
+                    f"FFmpeg updated to {version}."))
+                self._dbg.debug(f"FFMPEG UPDATE | swapped to {version}")
+            except Exception as exc:   # noqa: BLE001 — retry on the next check
+                self._dbg.debug(f"FFMPEG UPDATE | deferred/failed: {exc}")
+            finally:
+                ucore.purge_dir(ws)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _check_updates_worker(self, manual):
         """Background thread: fetch the manifest, then marshal back to the UI."""
         url = UPDATE_MANIFEST_URL_LINUX if ucore.is_linux() else UPDATE_MANIFEST_URL
@@ -7172,6 +7232,11 @@ class MP3DownloaderApp(tk.Tk):
                     "The update information looks invalid right now. Please try "
                     "again later.", parent=self)
             return
+
+        # FFmpeg rides the same manifest but is decided independently of the app
+        # build (installed-on-disk vs offered), so it runs even when the app is
+        # already current — a user on the latest build can still need it.
+        self._maybe_update_ffmpeg(manifest)
 
         if not ucore.is_update_available(manifest, APP_BUILD):
             self._set_update_btn_label(UPDATE_BTN_CHECK)
