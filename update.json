@@ -1,9 +1,9 @@
 {
   "version": "1.3",
-  "build": 33,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.33.zip",
-  "sha256": "13f3132a11ea0a3c518afe88bfdb699b1b9742f167b59201a061d77776c6ffbf",
-  "notes": "Artwork progress dialog polish.",
+  "build": 34,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.34.zip",
+  "sha256": "49ba69c5b58e8e77a0985f42633deb24598df44353aa6b26f1ced97136bb5176",
+  "notes": "Automatic FFmpeg updates, plus internal release tooling improvements.",
   "base": 20,
   "ffmpeg": {
     "version": "8.1-essentials_build-www.gyan.dev+1a65d5b0",
