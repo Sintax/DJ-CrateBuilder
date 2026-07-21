@@ -4946,7 +4946,7 @@ class MP3DownloaderApp(tk.Tk):
             "own genre.\n"
             "•  Use the ▲ ▼ buttons on a row to reorder it, or ✕ to remove it; "
             "'Clear All' empties the whole queue.\n"
-            "•  When you press 'Downloads MP3's', every link in the queue is "
+            "•  When you press 'Start Downloads', every link in the queue is "
             "processed top to bottom.",
             wraplength=360).pack(side="left", padx=(8, 0))
         ttk.Button(hdr, text="Clear All", style="MainBrowse.TButton",
@@ -5531,7 +5531,7 @@ class MP3DownloaderApp(tk.Tk):
             "to line up as many as you like.\n"
             "4.  Optionally tick 'Skip files already downloaded' so tracks you "
             "already have aren't grabbed again.\n"
-            "5.  Press 'Downloads MP3's'. Each track is downloaded, converted "
+            "5.  Press 'Start Downloads'. Each track is downloaded, converted "
             "to MP3, tagged, and saved to your download folder — watch the "
             "Queue and progress bars below.",
             wraplength=360).pack(side="left", padx=(10, 0))
@@ -5615,7 +5615,7 @@ class MP3DownloaderApp(tk.Tk):
         # ── Action buttons ────────────────────────────────────────────────────
         btn_row = ttk.Frame(outer)
         btn_row.pack(fill="x", pady=(0, 14))
-        self._dl_btn = ttk.Button(btn_row, text="Downloads MP3's",
+        self._dl_btn = ttk.Button(btn_row, text="Start Downloads",
                                    style="Download.TButton", command=self._start)
         self._dl_btn.pack(side="left", fill="x", expand=True, padx=(0, 8))
         self._cancel_btn = ttk.Button(btn_row, text="Cancel",
@@ -7754,7 +7754,7 @@ class MP3DownloaderApp(tk.Tk):
 
             ("Q: Can I add URLs to the batch while a download is running?",
              "A: No. The URL field and Add to Batch button are disabled during downloads to prevent confusion. The "
-             "batch is locked when you press \"Downloads MP3's\" and processes only the URLs that were queued at that "
+             "batch is locked when you press \"Start Downloads\" and processes only the URLs that were queued at that "
              "moment. You can start a new batch after the current one finishes."),
 
             ("Q: Does pasting a YouTube channel URL download all videos?",
@@ -8079,6 +8079,14 @@ class MP3DownloaderApp(tk.Tk):
     def _refresh_genre_list(self):
         """Rebuild the genre combobox values for the current platform."""
         genres = self._scan_genres()
+        # A freshly added genre has no folder yet (created at download start),
+        # so keep it selectable — and carried across platform auto-switches —
+        # until it exists on disk.
+        pending = getattr(self, "_pending_genre", None)
+        if pending in genres:
+            pending = self._pending_genre = None
+        if pending:
+            genres = sorted(genres + [pending])
         values = ["(none)"] + genres
         self._genre_combo["values"] = values
         if self._genre_var.get() not in values:
@@ -8161,20 +8169,26 @@ class MP3DownloaderApp(tk.Tk):
             messagebox.showwarning("Invalid Name",
                                     "That name isn't usable as a folder.")
             return
+        # The folder is NOT created here — the platform can still change when
+        # the URL is pasted (YouTube vs SoundCloud), so creating it now would
+        # leave empty defunct folders under the wrong platform. The download
+        # itself creates it via _resolve_save_dir when it actually starts.
         target = os.path.join(self._platform_dir(), safe)
         if os.path.exists(target):
             messagebox.showinfo("Already Exists",
                                  f"'{safe}' already exists.")
         else:
-            os.makedirs(target, exist_ok=True)
+            self._pending_genre = safe
         self._refresh_genre_list()
         self._genre_var.set(safe)
         self._update_save_preview()
 
     def _update_save_preview(self):
-        """Show a short preview of where files will land."""
+        """Show a short preview of where files will land. Pure preview — must
+        not create the directory, or merely selecting a genre would plant
+        empty folders under a platform the download may never use."""
         genre = self._genre_var.get()
-        path  = self._resolve_save_dir(genre)
+        path  = self._channel_save_path(genre)
         short = path.replace(os.path.expanduser("~"), "~")
         if hasattr(self, "_save_dir_preview"):
             self._save_dir_preview.config(text=f"→  {short}")
@@ -11047,15 +11061,10 @@ class MP3DownloaderApp(tk.Tk):
                   relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
                   command=_open_folder).pack(side="left")
 
-        # Genre
-        tk.Label(outer, text="Genre",
-                 font=("Segoe UI", 10, "bold"), fg=TEXT, bg=BG
-                 ).pack(anchor="w", pady=(0, 4))
-        genres = self._scan_genres()
-        genre_var = tk.StringVar(value=ch.get("genre") or "(none)")
-        ttk.Combobox(outer, textvariable=genre_var,
-                     values=genres, state="readonly"
-                     ).pack(fill="x", pady=(0, 12))
+        # Genre is deliberately NOT editable here: the channel's folder, its
+        # sidecar, and every DB row already live under the original genre, so
+        # changing it after the fact would scatter the channel across two
+        # locations and break new-upload detection.
 
         # Cutoff date
         tk.Label(outer, text="Scan cutoff date (YYYY-MM-DD)",
@@ -11077,7 +11086,6 @@ class MP3DownloaderApp(tk.Tk):
         btn_row.pack(fill="x")
 
         def _save():
-            new_genre = genre_var.get()
             raw_date = cutoff_var.get().strip()
             try:
                 dt = datetime.strptime(raw_date, "%Y-%m-%d").date()
@@ -11087,7 +11095,7 @@ class MP3DownloaderApp(tk.Tk):
                                      parent=dlg)
                 return
             self._db.update_watchlist_channel_fields(
-                cid, genre=new_genre, scan_cutoff_date=new_cutoff)
+                cid, scan_cutoff_date=new_cutoff)
             # If the URL changed, re-point (and re-resolve) the channel.
             new_url = url_var.get().strip()
             if new_url and new_url != (ch.get("url") or ""):
@@ -11379,7 +11387,7 @@ class MP3DownloaderApp(tk.Tk):
     # ── Force a normal full download for one channel ──────────────────────────
     def _watchlist_force_download(self, cid):
         """Force a normal full download of a channel, exactly as if the user
-        pasted its URL into the Main tab and pressed "Download MP3's". Used when
+        pasted its URL into the Main tab and pressed "Start Downloads". Used when
         a scan finds nothing (cutoff / bad yt-dlp scan data) but the user still
         wants to pull the channel down. Runs through the standard Main-tab path
         (NOT a watchlist=True session) so the post-download auto-add/dedup in
