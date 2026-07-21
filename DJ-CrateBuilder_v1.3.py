@@ -8043,25 +8043,46 @@ class MP3DownloaderApp(tk.Tk):
                 f"Path: {target}"
             )
 
+    def _selected_genre_platform(self):
+        """The platform named by the selection's ' (YT)'/' (SC)' tag, or None
+        when untagged ('(none)' or a legacy value)."""
+        value = self._genre_var.get() or ""
+        if value.endswith("(SC)"):
+            return "SoundCloud"
+        if value.endswith("(YT)"):
+            return "YouTube"
+        return None
+
     def _update_open_genre_btn(self):
-        """Enable the Main tab's Open Folder → Genre button only while a real
-        genre is selected; with '(none)' there is no genre folder to open."""
+        """Enable the Main tab's Open Folder → Genre button only while the
+        selected genre's folder actually exists on disk — a freshly added
+        (pending) genre has no folder until a download creates it."""
         btn = getattr(self, "_open_genre_btn", None)
         if btn is None:
             return
         genre = self._selected_genre()
+        ok = bool(genre) and genre != "(none)" and os.path.isdir(
+            os.path.join(self._platform_dir(self._selected_genre_platform()),
+                         genre))
         try:
-            btn.config(state="normal" if genre and genre != "(none)"
-                       else "disabled")
+            btn.config(state="normal" if ok else "disabled")
         except Exception:
             pass
 
     def _open_genre_dir(self):
-        """Open the currently selected genre's folder in the system file manager."""
+        """Open the currently selected genre's folder in the system file
+        manager. Never creates it — genre folders only come into existence
+        when a download starts."""
         genre = self._selected_genre()
         folder = "_No Genre" if not genre or genre == "(none)" else genre
-        target = os.path.join(self._platform_dir(), folder)
-        os.makedirs(target, exist_ok=True)
+        target = os.path.join(
+            self._platform_dir(self._selected_genre_platform()), folder)
+        if not os.path.isdir(target):
+            messagebox.showinfo(
+                "Folder Not Created Yet",
+                f"'{folder}' has no folder on disk yet — it will be created "
+                f"when a download using it starts.")
+            return
         try:
             if sys.platform == "win32":
                 os.startfile(target)
