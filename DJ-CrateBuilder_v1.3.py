@@ -530,6 +530,39 @@ class Tooltip:
             self._tip = None
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# add_hover — hover shade for flat tk.Buttons.
+# Flat (relief="flat", bd=0) buttons give no visual cue that the pointer is on
+# them; this shades the background on <Enter> and restores it on <Leave>.
+# Usage:     add_hover(btn)                 # hover to the activebackground
+#            add_hover(btn, "#3a3a3a")      # hover to an explicit shade
+# ═════════════════════════════════════════════════════════════════════════════
+def add_hover(btn, hover_bg=None, hover_fg=None):
+    normal_bg = btn["background"]
+    normal_fg = btn["foreground"]
+    if hover_bg is None:
+        hover_bg = btn["activebackground"]
+    if hover_fg is None:
+        hover_fg = btn["activeforeground"]
+
+    def _enter(_e=None):
+        try:
+            if btn["state"] != "disabled":
+                btn.config(bg=hover_bg, fg=hover_fg)
+        except Exception:
+            pass
+
+    def _leave(_e=None):
+        try:
+            if btn["state"] != "disabled":
+                btn.config(bg=normal_bg, fg=normal_fg)
+        except Exception:
+            pass
+
+    btn.bind("<Enter>", _enter, add="+")
+    btn.bind("<Leave>", _leave, add="+")
+
+
 # DownloadsDatabase moved to cratebuilder.db (imported above)
 
 
@@ -9983,8 +10016,10 @@ class MP3DownloaderApp(tk.Tk):
                  lambda c=cid: self._watchlist_resolve_dialog(c), False, None))
         card_buttons += [
             ("✏ Edit",     lambda c=cid: self._watchlist_edit_channel(c), False,
-             "Change this channel's genre, platform, or download settings."),
-            ("✕ Remove",   lambda c=cid: self._watchlist_remove_channel(c), False, None),
+             "Change this channel's link or download settings."),
+            ("✕ Remove",   lambda c=cid: self._watchlist_remove_channel(c), False,
+             "Removes this channel entry from the Watch List only — "
+             "no downloaded files or folders are deleted."),
         ]
         WL_FIX_ORANGE  = "#ff7a00"   # bright orange — a link that MUST be fixed
         for btn_text, btn_cmd, is_cancel, tip in card_buttons:
@@ -10011,6 +10046,7 @@ class MP3DownloaderApp(tk.Tk):
                               activebackground=BORDER, activeforeground=TEXT,
                               relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
                               command=btn_cmd)
+            add_hover(b)
             b.pack(side="left", padx=(0, 4))
             if tip:
                 Tooltip(b, tip)
@@ -10948,18 +10984,23 @@ class MP3DownloaderApp(tk.Tk):
             dlg.destroy()
             self._watchlist_refresh()
 
-        tk.Button(btn_row, text="  Save  ",
+        save_btn = tk.Button(btn_row, text="  Save  ",
                   font=("Segoe UI", 10, "bold"),
                   bg=WL_BLUE_DARK, fg=TEXT,
                   activebackground=WL_BLUE, activeforeground=TEXT,
                   relief="flat", bd=0, padx=16, pady=6, cursor="hand2",
-                  command=_save).pack(side="left", padx=(0, 8))
-        tk.Button(btn_row, text="  Cancel  ",
+                  command=_save)
+        save_btn.pack(side="left", padx=(0, 8))
+        add_hover(save_btn)
+        # Medium gray, not SURFACE2 — the darker shade read as disabled.
+        cancel_btn = tk.Button(btn_row, text="  Cancel  ",
                   font=("Segoe UI", 10),
-                  bg=SURFACE2, fg=TEXT_DIM,
-                  activebackground=BORDER, activeforeground=TEXT,
+                  bg="#555555", fg=TEXT,
+                  activebackground="#6e6e6e", activeforeground=TEXT,
                   relief="flat", bd=0, padx=16, pady=6, cursor="hand2",
-                  command=dlg.destroy).pack(side="left")
+                  command=dlg.destroy)
+        cancel_btn.pack(side="left")
+        add_hover(cancel_btn)
 
     # ── Edit Channel dialog ───────────────────────────────────────────────────
     def _watchlist_edit_channel(self, cid):
@@ -11045,21 +11086,17 @@ class MP3DownloaderApp(tk.Tk):
 
         link_btn_row = tk.Frame(outer, bg=BG)
         link_btn_row.pack(fill="x", pady=(0, 12))
-        tk.Button(link_btn_row, text="  🌐 Open Link  ",
-                  font=("Segoe UI", 9), bg=SURFACE2, fg=TEXT_DIM,
-                  activebackground=BORDER, activeforeground=TEXT,
-                  relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
-                  command=_open_link).pack(side="left", padx=(0, 8))
-        tk.Button(link_btn_row, text="  🛠 Smart-Edit Link  ",
-                  font=("Segoe UI", 9), bg=SURFACE2, fg=TEXT_DIM,
-                  activebackground=BORDER, activeforeground=TEXT,
-                  relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
-                  command=_edit_link).pack(side="left", padx=(0, 8))
-        tk.Button(link_btn_row, text="  📂 Open Folder  ",
-                  font=("Segoe UI", 9), bg=SURFACE2, fg=TEXT_DIM,
-                  activebackground=BORDER, activeforeground=TEXT,
-                  relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
-                  command=_open_folder).pack(side="left")
+        for _txt, _cmd, _padx in (
+                ("  🌐 Open Link  ",       _open_link,   (0, 8)),
+                ("  🛠 Smart-Edit Link  ", _edit_link,   (0, 8)),
+                ("  📂 Open Folder  ",     _open_folder, (0, 0))):
+            _lb = tk.Button(link_btn_row, text=_txt,
+                      font=("Segoe UI", 9), bg=SURFACE2, fg=TEXT_DIM,
+                      activebackground=BORDER, activeforeground=TEXT,
+                      relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
+                      command=_cmd)
+            _lb.pack(side="left", padx=_padx)
+            add_hover(_lb)
 
         # Genre is deliberately NOT editable here: the channel's folder, its
         # sidecar, and every DB row already live under the original genre, so
@@ -11103,18 +11140,23 @@ class MP3DownloaderApp(tk.Tk):
             dlg.destroy()
             self._watchlist_refresh()
 
-        tk.Button(btn_row, text="  Save  ",
+        save_btn = tk.Button(btn_row, text="  Save  ",
                   font=("Segoe UI", 10, "bold"),
                   bg=WL_BLUE_DARK, fg=TEXT,
                   activebackground=WL_BLUE, activeforeground=TEXT,
                   relief="flat", bd=0, padx=16, pady=6, cursor="hand2",
-                  command=_save).pack(side="left", padx=(0, 8))
-        tk.Button(btn_row, text="  Cancel  ",
+                  command=_save)
+        save_btn.pack(side="left", padx=(0, 8))
+        add_hover(save_btn)
+        # Medium gray, not SURFACE2 — the darker shade read as disabled.
+        cancel_btn = tk.Button(btn_row, text="  Cancel  ",
                   font=("Segoe UI", 10),
-                  bg=SURFACE2, fg=TEXT_DIM,
-                  activebackground=BORDER, activeforeground=TEXT,
+                  bg="#555555", fg=TEXT,
+                  activebackground="#6e6e6e", activeforeground=TEXT,
                   relief="flat", bd=0, padx=16, pady=6, cursor="hand2",
-                  command=dlg.destroy).pack(side="left")
+                  command=dlg.destroy)
+        cancel_btn.pack(side="left")
+        add_hover(cancel_btn)
 
     # ── Remove channel ────────────────────────────────────────────────────────
     def _watchlist_remove_channel(self, cid):
@@ -11125,7 +11167,8 @@ class MP3DownloaderApp(tk.Tk):
         ok = messagebox.askyesno(
             "Remove Channel",
             f"Remove '{ch['display_name']}' from the Watch List?\n\n"
-            f"This does not delete any downloaded files.",
+            f"This only removes the channel entry from the list — "
+            f"no downloaded files or folders are deleted.",
             parent=self)
         if ok:
             self._db.remove_watchlist_channel(cid)
