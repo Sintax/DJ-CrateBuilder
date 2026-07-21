@@ -4,5 +4,10 @@
   "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.33.zip",
   "sha256": "13f3132a11ea0a3c518afe88bfdb699b1b9742f167b59201a061d77776c6ffbf",
   "notes": "Artwork progress dialog polish.",
-  "base": 20
+  "base": 20,
+  "ffmpeg": {
+    "version": "8.1-essentials_build-www.gyan.dev+1a65d5b0",
+    "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/ffmpeg-8.1-essentials_build-www.gyan.dev_1a65d5b0.zip",
+    "sha256": "b0879dad2e0c8392c595751d0140ab69a678c552f63a4606b632b2a09b221bfe"
+  }
 }
