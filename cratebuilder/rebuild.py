@@ -9,13 +9,18 @@ AUDIO_EXTS = (".mp3", ".m4a", ".webm", ".opus", ".ogg", ".oga", ".flac",
               ".wav", ".mp4", ".m4b")
 
 # The two YouTube URL shapes _tag_track writes into the comment/WOAS fields.
-# SoundCloud URLs carry no id in the path, so they deliberately do not match —
-# those tracks fall through to the filename-stem sidecar lookup instead.
 _YT_ID_PATTERNS = (
     re.compile(r"[?&]v=([A-Za-z0-9_-]{11})"),
     re.compile(r"youtu\.be/([A-Za-z0-9_-]{11})"),
     re.compile(r"/(?:embed|shorts|live)/([A-Za-z0-9_-]{11})"),
 )
+
+# SoundCloud set/playlist downloads tag the flat-extraction entry URL, which is
+# the API track endpoint carrying the numeric id yt-dlp uses as the track id.
+# Human-facing soundcloud.com/user/slug URLs carry no id and fall through to
+# the filename-stem sidecar lookup instead.
+_SC_ID_PATTERN = re.compile(
+    r"api(?:-v2|-mobi)?\.soundcloud\.com/tracks/(\d+)")
 
 
 def _source_url(path):
@@ -54,16 +59,18 @@ def _source_url(path):
 
 
 def recover_video_id(path):
-    """Recover a track's YouTube video id from the tags on the file itself.
+    """Recover a track's YouTube/SoundCloud id from the tags on the file itself.
 
     A rebuild derives every row from disk, so without this the video_id column
     is None for every track — which breaks the `<video_id>.jpg` artwork key and
     makes the backfill re-fetch art it already has, writing a second identical
     JPEG under the filename stem. Reading the source URL our own tagger wrote
-    keeps the key stable across a rebuild.
+    keeps the key stable across a rebuild. It also keeps the skip-existing DB
+    check working after a rebuild, so tracks are not re-downloaded.
 
-    Returns the 11-character id, or None when the file carries no source URL or
-    the URL is not a YouTube one. Never raises.
+    Returns the 11-character YouTube id or the numeric SoundCloud track id, or
+    None when the file carries no source URL or the URL matches neither shape.
+    Never raises.
     """
     if not path or not os.path.isfile(path):
         return None
@@ -74,6 +81,9 @@ def recover_video_id(path):
         match = pattern.search(url)
         if match:
             return match.group(1)
+    match = _SC_ID_PATTERN.search(url)
+    if match:
+        return match.group(1)
     return None
 
 

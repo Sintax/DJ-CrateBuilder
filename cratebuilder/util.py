@@ -428,6 +428,57 @@ def build_cookie_opts(method, cookie_file, browser, profile):
     return {"cookiesfrombrowser": (b, profile) if profile else (b,)}
 
 
+def download_result_facts(info):
+    """Distil yt-dlp's extract_info(download=True) return into the facts the
+    download loop records: (title, filepath, thumbnail_url, video_id).
+
+    SoundCloud set flat-extraction returns entries with no title/thumbnail, so
+    the queue falls back to a "Track N" placeholder — the real values only
+    exist on the full info dict the download itself returns. *filepath* is the
+    post-postprocessor path (the final .mp3), read from requested_downloads;
+    it is the authoritative on-disk name and may differ from any path guessed
+    from a placeholder title. Any missing fact is None. Never raises."""
+    if not isinstance(info, dict):
+        return (None, None, None, None)
+    if not info.get("title") and isinstance(info.get("entries"), list):
+        entries = [e for e in info["entries"] if isinstance(e, dict)]
+        if entries:
+            info = entries[0]
+    filepath = None
+    try:
+        rd = info.get("requested_downloads") or []
+        if rd and isinstance(rd[0], dict):
+            filepath = rd[0].get("filepath") or None
+    except Exception:
+        filepath = None
+    return (info.get("title") or None, filepath,
+            info.get("thumbnail") or None, info.get("id") or None)
+
+
+def classify_permanent_failure(error_text):
+    """Classify a yt-dlp download error as permanently unavailable, or None.
+
+    Permanent causes are tracks nothing on our side can recover: SoundCloud
+    DRM (only encrypted formats served — undecryptable even with login),
+    removed/private tracks (HTTP 404), and geo-restrictions. Returns a short
+    user-facing status label ("DRM-protected", "Removed", "Geo-blocked") so
+    callers can show an honest status instead of a generic error and skip
+    retries that cannot succeed. Returns None for anything transient or
+    unclassified. Case-insensitive; safe on None/empty input."""
+    text = (error_text or "").lower()
+    if not text:
+        return None
+    if "drm" in text:
+        return "DRM-protected"
+    if "http error 404" in text or "404 not found" in text:
+        return "Removed"
+    if ("geo restriction" in text or "geo-restricted" in text
+            or "not available in your country" in text
+            or "not available from your location" in text):
+        return "Geo-blocked"
+    return None
+
+
 def redact_ydl_opts(opts):
     """Return a shallow copy of a yt-dlp options dict made safe for debug
     logging. Auth-bearing values (cookie file path, browser-cookie source)

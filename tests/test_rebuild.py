@@ -53,10 +53,22 @@ def test_recover_video_id_untagged_file_is_none(tmp_path):
     assert rebuild.recover_video_id(p) is None
 
 
-def test_recover_video_id_soundcloud_url_is_none(tmp_path):
+def test_recover_video_id_soundcloud_page_url_is_none(tmp_path):
     p = _make_mp3(tmp_path / "t.mp3",
                   "https://soundcloud.com/artist/some-track")
     assert rebuild.recover_video_id(p) is None
+
+
+def test_recover_video_id_from_soundcloud_api_v2_url(tmp_path):
+    p = _make_mp3(tmp_path / "t.mp3",
+                  "https://api-v2.soundcloud.com/tracks/2179407447")
+    assert rebuild.recover_video_id(p) == "2179407447"
+
+
+def test_recover_video_id_from_soundcloud_api_url(tmp_path):
+    p = _make_mp3(tmp_path / "t.mp3",
+                  "https://api.soundcloud.com/tracks/123456789")
+    assert rebuild.recover_video_id(p) == "123456789"
 
 
 def test_resolve_artwork_prefers_video_id_sidecar(tmp_path):
