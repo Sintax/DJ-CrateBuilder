@@ -88,3 +88,7 @@ CLAUDE.md
 # NOTE: .github/workflows/ is intentionally tracked — GitHub Actions can only
 # run a workflow that lives in the repo, so the Linux .deb build (build-deb.yml)
 # must be committed here.
+
+# Machine-local editor/dev scratch — not project source
+.saves/
+ashton-issues/
