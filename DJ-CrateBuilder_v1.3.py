@@ -3913,6 +3913,8 @@ class _ArtworkBackfillSession:
         self._listing_cache = {}
         self._progress = None
         self._cancel_event = threading.Event()
+        self._skip_event = threading.Event()   # skip the row in flight only
+        self.skipped = 0         # rows abandoned via the Skip button
         self.cancelled = False
 
     # ── public entry ──────────────────────────────────────────────────────
@@ -3929,16 +3931,42 @@ class _ArtworkBackfillSession:
             if self._cancel_event.is_set():
                 self.cancelled = True
                 break
+            self._skip_event.clear()   # Skip only ever applies to one row
             title = row.get("title") or ""
             self.app.after(0, lambda n=i, t=title: self._update_progress(n, t))
             try:
                 self._process_row(row)
+                if self._skip_event.is_set():
+                    self.skipped += 1
+                    self._tally(row, "skipped")
+                    self.app._dbg.debug(f"ARTFILL SKIP  | {title!r}")
             except Exception as exc:  # pragma: no cover - defensive
                 self.errors += 1
                 self._tally(row, "errors")
                 self.app._dbg.warning(
                     f"ARTFILL FAIL  | {title!r}  {exc}")
         self.app.after(0, self._finish)
+
+    def _interruptible(self, fn, *args):
+        """Run a blocking call on a side thread and wait for it — unless Skip
+        or Cancel fires first, in which case control returns IMMEDIATELY with
+        None and the abandoned call finishes in the background with its result
+        discarded. This is what makes Skip instant even mid-download."""
+        box = {}
+
+        def _runner():
+            try:
+                box["r"] = fn(*args)
+            except Exception:
+                pass
+
+        t = threading.Thread(target=_runner, daemon=True)
+        t.start()
+        while t.is_alive():
+            t.join(0.1)
+            if self._skip_event.is_set() or self._cancel_event.is_set():
+                return None
+        return box.get("r")
 
     def _tally(self, row, outcome):
         """Bump the per-platform counter for *outcome* alongside the totals."""
@@ -4000,6 +4028,9 @@ class _ArtworkBackfillSession:
             raw = os.path.join(art_dir, f"{key}.raw")
             thumb_url, jpg = self._fetch_sidecar(row, path, art_dir, key, raw)
 
+        if self._skip_event.is_set():
+            return   # the worker loop tallies the row as skipped
+
         if not jpg:
             self.not_found += 1
             self._tally(row, "not_found")
@@ -4051,14 +4082,17 @@ class _ArtworkBackfillSession:
         # tag. Resolving it costs a yt-dlp metadata call, so it is only tried
         # when nothing cheaper produced a candidate.
         if not candidates:
-            resolved = self._thumbnail_from_source_tag(path)
+            resolved = self._interruptible(
+                self._thumbnail_from_source_tag, path)
             if resolved:
                 candidates = [resolved]
 
         for url in candidates:
-            if self._cancel_event.is_set():
+            if self._cancel_event.is_set() or self._skip_event.is_set():
                 return None, None
-            got = cb_artwork.download_thumbnail(url, raw)
+            got = self._interruptible(cb_artwork.download_thumbnail, url, raw)
+            if self._skip_event.is_set():
+                return None, None
             time.sleep(self._FETCH_PAUSE_SEC)
             if not got:
                 continue
@@ -4074,7 +4108,12 @@ class _ArtworkBackfillSession:
         raises."""
         folder = os.path.dirname(path)
         if folder not in self._listing_cache:
-            self._listing_cache[folder] = self._fetch_channel_index(folder)
+            index = self._interruptible(self._fetch_channel_index, folder)
+            if index is None:
+                # Skipped/cancelled mid-fetch — don't poison the cache with an
+                # empty index; the next row in this folder can retry.
+                return None
+            self._listing_cache[folder] = index
         return cb_artwork.lookup_video_id(self._listing_cache[folder], path)
 
     def _fetch_channel_index(self, folder):
@@ -4164,11 +4203,24 @@ class _ArtworkBackfillSession:
         bar = ttk.Progressbar(dlg, mode="determinate", length=300,
                               maximum=max(self.total, 1))
         bar.pack(padx=24, pady=(0, 10))
-        tk.Button(dlg, text="Cancel", font=("Segoe UI", 9),
+        btn_row = tk.Frame(dlg, bg=BG)
+        btn_row.pack(pady=(0, 16))
+        skip_btn = tk.Button(btn_row, text="Skip", font=("Segoe UI", 9),
                   relief="flat", bd=0, bg=SURFACE2, fg=TEXT,
                   activebackground=BORDER, activeforeground=TEXT,
                   padx=12, pady=4, cursor="hand2",
-                  command=self._cancel).pack(pady=(0, 16))
+                  command=self._skip)
+        skip_btn.pack(side="left", padx=(0, 8))
+        add_hover(skip_btn)
+        Tooltip(skip_btn, "Give up on the current track's artwork "
+                          "immediately and move to the next one.")
+        cancel_btn = tk.Button(btn_row, text="Cancel", font=("Segoe UI", 9),
+                  relief="flat", bd=0, bg=SURFACE2, fg=TEXT,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  padx=12, pady=4, cursor="hand2",
+                  command=self._cancel)
+        cancel_btn.pack(side="left")
+        add_hover(cancel_btn)
         dlg.protocol("WM_DELETE_WINDOW", self._cancel)
         dlg.update_idletasks()
         px = owner.winfo_x() + (owner.winfo_width() - dlg.winfo_width()) // 2
@@ -4195,6 +4247,11 @@ class _ArtworkBackfillSession:
                 pass
             self._progress = None
 
+    def _skip(self):
+        """Skip button: abandon the row in flight IMMEDIATELY — any download
+        or lookup underway is discarded — and move on to the next entry."""
+        self._skip_event.set()
+
     def _cancel(self):
         """Cancel button / dialog close: stop after the row in flight. Art
         already embedded stays — every row is committed as it completes."""
@@ -4216,6 +4273,8 @@ class _ArtworkBackfillSession:
                           f"channel listings")
         if self.not_found:
             detail.append(f"{self.not_found} had no artwork available")
+        if self.skipped:
+            detail.append(f"{self.skipped} skipped")
         if self.missing:
             detail.append(f"{self.missing} no longer on disk")
         if self.errors:
@@ -4229,6 +4288,7 @@ class _ArtworkBackfillSession:
             labels = (("embedded", "given art"),
                       ("repaired", "already had art"),
                       ("not_found", "no art found"),
+                      ("skipped", "skipped"),
                       ("missing", "file missing"),
                       ("errors", "failed"))
             lines = []
@@ -4247,8 +4307,8 @@ class _ArtworkBackfillSession:
         self.app._dbg.info(
             f"ARTFILL DONE  | embedded={self.embedded} repaired={self.repaired} "
             f"recovered={self.recovered} none={self.not_found} "
-            f"missing={self.missing} errors={self.errors} "
-            f"cancelled={self.cancelled}")
+            f"skipped={self.skipped} missing={self.missing} "
+            f"errors={self.errors} cancelled={self.cancelled}")
         owner = self._owner_win()
         messagebox.showinfo("Fetch Missing Artwork", summary, parent=owner)
         # Return focus to the launching window (e.g. the Database window) so it
