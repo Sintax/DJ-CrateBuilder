@@ -1,9 +1,9 @@
 {
   "version": "1.3",
-  "build": 38,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.38.zip",
-  "sha256": "95470de1b3be115c8cf68ba4e9ef824440b8f27f11c055d32008bfd82c561f31",
-  "notes": "UI polish: genre platform tags, hover feedback, Remove clarification.",
+  "build": 39,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.39.zip",
+  "sha256": "bfe2dfbfb94f641849cd510ea68ad18c8d46c278cfd48e31796cd158b88eefc2",
+  "notes": "Added a Skip button to Fetch Missing Artwork \u2014 instantly jump past a slow track.",
   "base": 20,
   "ffmpeg": {
     "version": "8.1-essentials_build-www.gyan.dev+1a65d5b0",
