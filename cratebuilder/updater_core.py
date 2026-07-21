@@ -133,6 +133,73 @@ def validate_manifest(manifest):
     return True, ""
 
 
+FFMPEG_VERSION_FILE = "ffmpeg.version"
+
+
+def validate_ffmpeg_block(block):
+    """Return (ok, reason) for the optional manifest ``ffmpeg`` sub-block.
+
+    Mirrors ``validate_manifest``: any non-dict, empty version/url, or malformed
+    sha256 is reported (ok=False) rather than raised, so a bad block is treated
+    as "no ffmpeg update" and can never crash the running app.
+    """
+    if not isinstance(block, dict):
+        return False, "ffmpeg block is not a JSON object"
+    if not str(block.get("version", "")).strip():
+        return False, "ffmpeg version is empty"
+    if not str(block.get("url", "")).strip():
+        return False, "ffmpeg url is empty"
+    sha = str(block.get("sha256", "")).strip()
+    if len(sha) != 64 or any(c not in "0123456789abcdefABCDEF" for c in sha):
+        return False, "ffmpeg sha256 is not a 64-character hex digest"
+    return True, ""
+
+
+def read_ffmpeg_version(install_dir):
+    """Return the recorded on-disk ffmpeg version string, or None if absent/blank."""
+    path = os.path.join(install_dir, FFMPEG_VERSION_FILE)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+def write_ffmpeg_version(install_dir, version):
+    """Record the installed ffmpeg version (write-then-rename for atomicity)."""
+    path = os.path.join(install_dir, FFMPEG_VERSION_FILE)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(str(version).strip())
+    os.replace(tmp, path)
+    return path
+
+
+def ffmpeg_update_action(manifest, installed_version):
+    """Classify the ffmpeg state as 'none', 'adopt', or 'update'.
+
+    'none'   → no valid ffmpeg block, or the installed marker already matches.
+    'adopt'  → valid block but no local marker yet: the caller records the
+               offered version WITHOUT downloading (the installer-shipped binary
+               is trusted as current), so the feature's debut doesn't force a
+               large download on every existing install.
+    'update' → valid block and the installed marker differs from the offer.
+
+    Decision is installed-vs-offered only — never build-number based — so it is
+    immune to skipped builds and to --full baseline resets.
+    """
+    if not isinstance(manifest, dict):
+        return "none"
+    block = manifest.get("ffmpeg")
+    ok, _reason = validate_ffmpeg_block(block)
+    if not ok:
+        return "none"
+    offered = str(block["version"]).strip()
+    if installed_version is None:
+        return "adopt"
+    return "update" if str(installed_version).strip() != offered else "none"
+
+
 def fetch_manifest(url, timeout=4.0, _opener=None):
     """GET the manifest JSON and return it as a dict, or None on any failure.
 
@@ -275,3 +342,26 @@ def apply_update(staged_dir, app_dir, backup_dir, _copyfn=shutil.copy2):
             except OSError:
                 pass
         raise
+
+
+def install_ffmpeg_from_zip(zip_path, expected_sha, install_dir,
+                            staged_dir, backup_dir, version):
+    """Verify, extract, and swap a downloaded ffmpeg zip into ``install_dir``.
+
+    The zip carries ``ffmpeg.exe``/``ffprobe.exe`` at its root. We reuse the
+    tested ``apply_update`` overlay (per-file move-aside + copy, with rollback)
+    so a swap that fails mid-way — e.g. a binary locked by a running yt-dlp
+    subprocess raising a Windows sharing violation — rolls back cleanly. The
+    version marker is only advanced after a fully successful swap.
+
+    The caller downloads the zip first (existing ``download``) and only calls
+    this while the app is idle. Raises on checksum/extract/swap failure; returns
+    True on success.
+    """
+    if not verify_sha256(zip_path, expected_sha):
+        raise ValueError("ffmpeg checksum mismatch — download may be corrupt")
+    purge_dir(staged_dir)
+    extract_zip(zip_path, staged_dir)
+    apply_update(staged_dir, install_dir, backup_dir)
+    write_ffmpeg_version(install_dir, version)
+    return True
