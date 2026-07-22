@@ -6537,24 +6537,24 @@ class MP3DownloaderApp(tk.Tk):
             command=self._open_database_viewer)
         self._open_db_btn.pack(side="left", padx=(0, 8))
 
+        art_row = ttk.Frame(outer)
+        art_row.pack(fill="x", pady=(0, 4))
+
         self._rebuild_db_btn = ttk.Button(
-            db_row, text="🔄  Rebuild Database from Files",
+            art_row, text="🔄  Rebuild Database from Files",
             style="Orange.TButton",
             command=self._rebuild_db_from_files)
         self._rebuild_db_btn.pack(side="left", padx=(0, 8))
-        self._settings_help(db_row,
+        self._settings_help(art_row,
             "Scans the audio files already in your library folders and "
             "rebuilds the database from them. This is safe to run at any "
             "time — it clears and rebuilds from scratch. Cover art already "
             "on disk is reused, never re-downloaded.").pack(
                 side="left", padx=(0, 16))
 
-        art_row = ttk.Frame(outer)
-        art_row.pack(fill="x", pady=(0, 4))
-
         self._fetch_art_btn = ttk.Button(
             art_row, text="🖼  Fetch Missing Artwork",
-            style="DlBtn.TButton",
+            style="Orange.TButton",
             command=self._fetch_missing_artwork)
         self._fetch_art_btn.pack(side="left", padx=(0, 8))
         self._settings_help(art_row,
@@ -10290,13 +10290,7 @@ class MP3DownloaderApp(tk.Tk):
             cid in batch.get("channel_ids", [])
 
         # (label, command, is_cancel, tooltip_text)
-        card_buttons = []
-        if is_scanning or is_downloading:
-            # Per-card Cancel — stops just this channel's scan/download.
-            card_buttons.append(
-                ("✕ Cancel", lambda c=cid: self._watchlist_cancel_card(c), True,
-                 "Stop the scan or download running on this channel."))
-        card_buttons += [
+        card_buttons = [
             ("🔍 Scan",    lambda c=cid: self._watchlist_scan_channel(c), False,
              "Check this channel for new uploads without downloading anything."),
             ("⚡ Force Download", lambda c=cid: self._watchlist_force_download(c), False,
@@ -10319,6 +10313,12 @@ class MP3DownloaderApp(tk.Tk):
              "Removes this channel entry from the Watch List only — "
              "no downloaded files or folders are deleted."),
         ]
+        if is_scanning or is_downloading:
+            # Per-card Cancel — stops just this channel's scan/download.
+            # Sits at the END of the row so the idle actions keep their spots.
+            card_buttons.append(
+                ("✕ Cancel", lambda c=cid: self._watchlist_cancel_card(c), True,
+                 "Stop the scan or download running on this channel."))
         WL_FIX_ORANGE  = "#ff7a00"   # bright orange — a link that MUST be fixed
         for btn_text, btn_cmd, is_cancel, tip in card_buttons:
             if is_cancel:
@@ -11556,8 +11556,57 @@ class MP3DownloaderApp(tk.Tk):
                   activebackground=BORDER, activeforeground=TEXT,
                   relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
                   command=_add_new_genre)
-        new_btn.pack(side="left")
+        new_btn.pack(side="left", padx=(0, 8))
         add_hover(new_btn)
+
+        def _remove_genre():
+            """Delete the selected genre's folder — only if it's empty."""
+            picked = genre_var.get()
+            if picked == "(none)":
+                messagebox.showinfo(
+                    "Remove Genre", "Select a genre to remove first.",
+                    parent=dlg)
+                return
+            gdir = os.path.join(self._platform_dir(ch_platform), picked)
+            if not os.path.isdir(gdir):
+                messagebox.showerror(
+                    "Remove Genre",
+                    f"No {ch_platform} folder named '{picked}' exists.",
+                    parent=dlg)
+                return
+            if os.listdir(gdir):
+                messagebox.showerror(
+                    "Remove Genre",
+                    f"'{picked}' isn't empty — a genre folder can only be "
+                    f"removed once every channel folder inside it has been "
+                    f"moved out or deleted.",
+                    parent=dlg)
+                return
+            if not messagebox.askyesno(
+                    "Remove Genre",
+                    f"Delete the empty {ch_platform} genre folder "
+                    f"'{picked}'?\n\nThis cannot be undone.",
+                    parent=dlg):
+                return
+            try:
+                os.rmdir(gdir)
+            except OSError as e:
+                messagebox.showerror(
+                    "Remove Genre", f"Couldn't delete the folder:\n{e}",
+                    parent=dlg)
+                return
+            genre_var.set("(none)")
+            genre_combo["values"] = _list_genre_values()
+            self._refresh_genre_list()
+            self._logger.info("Removed empty genre folder: %s", gdir)
+
+        remove_btn = tk.Button(genre_row, text="− Remove",
+                  font=("Segoe UI", 9), bg=WL_CANCEL_IDLE, fg=TEXT,
+                  activebackground=YT_DARK, activeforeground=TEXT,
+                  relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
+                  command=_remove_genre)
+        remove_btn.pack(side="left")
+        add_hover(remove_btn)
 
         if verify_state == "missing":
             tk.Label(outer,
