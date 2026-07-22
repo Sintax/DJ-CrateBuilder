@@ -1,7 +1,11 @@
 """Tests for the single-instance loopback lock."""
 import socket
+import threading
+import time
 
-from cratebuilder.singleton import acquire_single_instance, SINGLE_INSTANCE_PORT
+from cratebuilder.singleton import (
+    acquire_single_instance, request_show, listen_for_show_requests,
+    SINGLE_INSTANCE_PORT)
 
 
 def _free_port():
@@ -49,3 +53,41 @@ def test_lock_releases_when_socket_closed():
 
 def test_default_port_is_in_private_range():
     assert 49152 <= SINGLE_INSTANCE_PORT <= 65535
+
+
+def test_request_show_triggers_listener_callback():
+    port = _free_port()
+    holder = acquire_single_instance(port)
+    assert holder is not None
+    try:
+        event = threading.Event()
+        listen_for_show_requests(holder, event.set)
+
+        request_show(port)
+
+        assert event.wait(timeout=2), "listener callback was never invoked"
+    finally:
+        holder.close()
+
+
+def test_request_show_is_a_noop_when_nothing_is_listening():
+    port = _free_port()
+    # No instance holds the port — must not raise.
+    request_show(port, timeout=0.2)
+
+
+def test_listener_stops_when_socket_closed():
+    port = _free_port()
+    holder = acquire_single_instance(port)
+    assert holder is not None
+    listen_for_show_requests(holder, lambda: None)
+    holder.close()
+    time.sleep(0.2)
+    # The listener thread's accept() loop should have exited cleanly; a
+    # fresh acquire on the same port must succeed once it's released.
+    second = acquire_single_instance(port)
+    try:
+        assert second is not None
+    finally:
+        if second:
+            second.close()
