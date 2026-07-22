@@ -1,9 +1,9 @@
 {
   "version": "1.3",
-  "build": 42,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.42.zip",
-  "sha256": "94f57685104ef9581c715f864be1e25d781afac2176711086e37f3d5e4127478",
-  "notes": "Watch List Edit: change a channel's genre \u2014 folder + tracks + database move together. DB auto-heals if you moved a folder in Explorer.",
+  "build": 43,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.43.zip",
+  "sha256": "dcd037fc26f4d44f552bd86f3f3ac76ccaa0bb838aebd944369bed8b19200a8f",
+  "notes": "Settings button cleanup, Remove Genre in the Edit dialog, and a tidier Cancel button placement.",
   "base": 20,
   "ffmpeg": {
     "version": "8.1-essentials_build-www.gyan.dev+1a65d5b0",
