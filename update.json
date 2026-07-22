@@ -1,9 +1,9 @@
 {
   "version": "1.3",
-  "build": 41,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.41.zip",
-  "sha256": "b4a724dcac60fb1c89d5c8b79a5c442f1f2c5f204ae75707d1ddd611a0b3f362",
-  "notes": "Main tab and Settings UI improvements: Genre platform picker, relocated Skip option, clearer format-conversion wording",
+  "build": 42,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.42.zip",
+  "sha256": "94f57685104ef9581c715f864be1e25d781afac2176711086e37f3d5e4127478",
+  "notes": "Watch List Edit: change a channel's genre \u2014 folder + tracks + database move together. DB auto-heals if you moved a folder in Explorer.",
   "base": 20,
   "ffmpeg": {
     "version": "8.1-essentials_build-www.gyan.dev+1a65d5b0",
