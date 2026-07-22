@@ -1,9 +1,9 @@
 {
   "version": "1.3",
-  "build": 45,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.45.zip",
-  "sha256": "4f74c6bc8e07517c9f00b227d980759743f87bdc300259d033caa7d3faa246ef",
-  "notes": "Fixed: clicking the DJ-CrateBuilder icon while it's already running (minimized to tray) now brings the window back instead of doing nothing.",
+  "build": 46,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.46.zip",
+  "sha256": "bcf0a4253ab46a6fac3bd43e40f84df8d632291c0788fbc04ecc3cbb80ff8782",
+  "notes": "Locked settings during downloads now grey out visually, not just become unresponsive.",
   "base": 20,
   "ffmpeg": {
     "version": "8.1-essentials_build-www.gyan.dev+1a65d5b0",
