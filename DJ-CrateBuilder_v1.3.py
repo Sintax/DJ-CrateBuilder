@@ -40,6 +40,7 @@ from cratebuilder.tagging import (
     write_track_tags, write_track_tags_any, read_source_url)
 from cratebuilder import artwork as cb_artwork
 from cratebuilder import rebuild as cb_rebuild
+from cratebuilder import links as cb_links
 from cratebuilder.singleton import acquire_single_instance, SINGLE_INSTANCE_PORT
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -4656,6 +4657,12 @@ class MP3DownloaderApp(tk.Tk):
         self._db_path = os.path.join(app_dir, "cratebuilder.db")
         self._db = DownloadsDatabase(self._db_path, debug_logger=self._dbg)
 
+        # Durable, DB-independent mirror of watchlist channel links. Survives a
+        # lost/corrupt cratebuilder.db and feeds the Fix Link 'previous link'
+        # prefill. See cratebuilder/links.py.
+        self._links_path = os.path.join(app_dir,
+                                        cb_links.LINKS_FILE_NAME)
+
     def _dbg_cookie_config(self):
         """Log the current cookie configuration to debug.log."""
         enabled = self._use_cookies.get()
@@ -5700,10 +5707,23 @@ class MP3DownloaderApp(tk.Tk):
         # ── Batch URL list ────────────────────────────────────────────────────
         self._build_batch_panel(outer)
 
-        # (The 'Skip files already downloaded' option lives in Settings →
-        # File Output, below Cover Art. The Open Folder buttons for Genre
-        # and Root are on the genre row above.)
+        # (The Open Folder buttons for Genre and Root are on the genre row
+        # above; the 'Skip files already downloaded' option is just above the
+        # Start Downloads buttons.)
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(4, 10))
+
+        # ── Skip already-downloaded (sits just above Start Downloads) ─────────
+        skip_row = ttk.Frame(outer)
+        skip_row.pack(fill="x", pady=(0, 12))
+        ttk.Checkbutton(skip_row, text="Skip files already downloaded",
+                        variable=self._skip_existing,
+                        style="S.Opt.TCheckbutton").pack(side="left")
+        self._skip_mode_combo = ttk.Combobox(
+            skip_row,
+            textvariable=self._skip_mode,
+            values=["In Database ~ In Folder", "In Folder Only", "In Database Only"],
+            state="readonly", width=20)
+        self._skip_mode_combo.pack(side="left", padx=(14, 0))
 
         # ── Action buttons ────────────────────────────────────────────────────
         btn_row = ttk.Frame(outer)
@@ -6004,7 +6024,7 @@ class MP3DownloaderApp(tk.Tk):
         no_conv_row = ttk.Frame(outer)
         no_conv_row.pack(fill="x", pady=(0, 4))
         self._no_conv_cb = ttk.Checkbutton(no_conv_row,
-                        text="Keep original format (no conversion)",
+                        text="Do not convert to MP3! (Keeps downloaded format)",
                         variable=self._no_conversion,
                         command=self._on_no_conversion_toggle,
                         style="S.Opt.TCheckbutton")
@@ -6042,18 +6062,8 @@ class MP3DownloaderApp(tk.Tk):
             "to square fills the art slot; keeping 16:9 letterboxes it.",
             wraplength=400).pack(side="left", padx=(0, 0))
 
-        # ── Skip already-downloaded (Settings-only; not shown on Main tab) ────
-        skip_row = ttk.Frame(outer)
-        skip_row.pack(fill="x", pady=(10, 4))
-        ttk.Checkbutton(skip_row, text="Skip files already downloaded",
-                        variable=self._skip_existing,
-                        style="S.Opt.TCheckbutton").pack(side="left")
-        self._skip_mode_combo = ttk.Combobox(
-            skip_row,
-            textvariable=self._skip_mode,
-            values=["In Database ~ In Folder", "In Folder Only", "In Database Only"],
-            state="readonly", width=20)
-        self._skip_mode_combo.pack(side="left", padx=(14, 0))
+        # (The 'Skip files already downloaded' option lives on the Main tab,
+        # below the Start Downloads button row.)
 
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 20))
 
@@ -8055,8 +8065,7 @@ class MP3DownloaderApp(tk.Tk):
 
     def _update_open_genre_btn(self):
         """Enable the Main tab's Open Folder → Genre button only while the
-        selected genre's folder actually exists on disk — a freshly added
-        (pending) genre has no folder until a download creates it."""
+        selected genre's folder actually exists on disk."""
         btn = getattr(self, "_open_genre_btn", None)
         if btn is None:
             return
@@ -8071,17 +8080,16 @@ class MP3DownloaderApp(tk.Tk):
 
     def _open_genre_dir(self):
         """Open the currently selected genre's folder in the system file
-        manager. Never creates it — genre folders only come into existence
-        when a download starts."""
+        manager. Never creates it — the button is disabled unless the folder
+        already exists on disk."""
         genre = self._selected_genre()
         folder = "_No Genre" if not genre or genre == "(none)" else genre
         target = os.path.join(
             self._platform_dir(self._selected_genre_platform()), folder)
         if not os.path.isdir(target):
             messagebox.showinfo(
-                "Folder Not Created Yet",
-                f"'{folder}' has no folder on disk yet — it will be created "
-                f"when a download using it starts.")
+                "Folder Not Found",
+                f"'{folder}' has no folder on disk yet.")
             return
         try:
             if sys.platform == "win32":
@@ -8196,20 +8204,9 @@ class MP3DownloaderApp(tk.Tk):
         belongs to. The tag is display-only — _selected_genre() strips it, so
         it never becomes part of a folder name."""
         tagged = []
-        seen_clean = set()
         for plat, tag in (("YouTube", "YT"), ("SoundCloud", "SC")):
             for g in self._scan_genres(plat):
                 tagged.append(f"{g} ({tag})")
-                seen_clean.add(g)
-        # A freshly added genre has no folder yet (created at download start),
-        # so keep it selectable — and carried across platform auto-switches —
-        # until it exists on disk. Tag it with the currently detected platform.
-        pending = getattr(self, "_pending_genre", None)
-        if pending in seen_clean:
-            pending = self._pending_genre = None
-        if pending:
-            cur_tag = "SC" if self._platform_var.get() == "SoundCloud" else "YT"
-            tagged.append(f"{pending} ({cur_tag})")
         values = ["(none)"] + sorted(tagged, key=str.lower)
         self._genre_combo["values"] = values
         if self._genre_var.get() not in values:
@@ -8235,9 +8232,20 @@ class MP3DownloaderApp(tk.Tk):
     def _on_genre_selected(self, _event=None):
         self._update_save_preview()
 
+    # Platform picker labels for the New Genre dialog. The first entry is an
+    # inert prompt; the other two map to the internal platform keys below.
+    _GENRE_PLATFORM_PROMPT = "Choose Platform"
+    _GENRE_PLATFORM_CHOICES = ("YouTube", "Soundcloud")
+    _GENRE_PLATFORM_KEYS = {"YouTube": "YouTube", "Soundcloud": "SoundCloud"}
+
     def _add_genre(self):
-        """Prompt user for a new genre name via a custom dark-themed dialog."""
-        result = [None]
+        """Prompt for a new genre name AND its platform via a dark-themed
+        dialog, then create the folder immediately under the chosen platform.
+
+        The user picks YouTube or Soundcloud up front, so there is no longer any
+        ambiguity about where the folder lives — it is created on OK rather than
+        deferred to the first download."""
+        result = {"name": None, "platform": None}
 
         dlg = tk.Toplevel(self)
         dlg.title("New Genre")
@@ -8245,12 +8253,6 @@ class MP3DownloaderApp(tk.Tk):
         dlg.resizable(False, False)
         dlg.transient(self)
         dlg.grab_set()
-
-        # Centre over the main window
-        dlg.update_idletasks()
-        px = self.winfo_x() + (self.winfo_width()  - dlg.winfo_reqwidth())  // 2
-        py = self.winfo_y() + (self.winfo_height() - dlg.winfo_reqheight()) // 2
-        dlg.geometry(f"+{max(0,px)}+{max(0,py)}")
 
         outer = tk.Frame(dlg, bg=BG, padx=20, pady=16)
         outer.pack(fill="both", expand=True)
@@ -8267,25 +8269,55 @@ class MP3DownloaderApp(tk.Tk):
                           highlightthickness=1,
                           highlightbackground=TEXT_DIM,
                           highlightcolor=YT_RED)
-        entry.pack(fill="x", pady=(0, 14))
+        entry.pack(fill="x", pady=(0, 12))
         entry.focus_set()
 
+        tk.Label(outer, text="Platform for this genre folder:",
+                  font=("Segoe UI", 10), fg=TEXT_DIM, bg=BG
+                  ).pack(anchor="w", pady=(0, 6))
+
+        platform_var = tk.StringVar(value=self._GENRE_PLATFORM_PROMPT)
+        platform_combo = ttk.Combobox(
+            outer, textvariable=platform_var, state="readonly",
+            values=[self._GENRE_PLATFORM_PROMPT, *self._GENRE_PLATFORM_CHOICES])
+        platform_combo.pack(fill="x", pady=(0, 14))
+
+        btn_row = tk.Frame(outer, bg=BG)
+        btn_row.pack(fill="x")
+
+        # OK stays disabled (darker green) until a real platform is picked.
+        OK_ENABLED_BG  = "#1ba34e"
+        OK_DISABLED_BG = "#14532d"
+        ok_btn = tk.Button(btn_row, text="OK",
+                   font=("Segoe UI", 10, "bold"),
+                   bg=OK_DISABLED_BG, fg=TEXT_DIM, activebackground=SUCCESS,
+                   activeforeground=TEXT, relief="flat", padx=18, pady=6,
+                   state="disabled", cursor="arrow")
+        ok_btn.pack(side="left", padx=(0, 8))
+
+        def _platform_chosen():
+            return platform_var.get() in self._GENRE_PLATFORM_CHOICES
+
+        def _sync_ok(*_):
+            if _platform_chosen():
+                ok_btn.config(state="normal", bg=OK_ENABLED_BG, fg=TEXT,
+                              cursor="hand2")
+            else:
+                ok_btn.config(state="disabled", bg=OK_DISABLED_BG, fg=TEXT_DIM,
+                              cursor="arrow")
+
         def _confirm(_event=None):
-            result[0] = entry_var.get()
+            if not _platform_chosen():
+                return
+            result["name"] = entry_var.get()
+            result["platform"] = self._GENRE_PLATFORM_KEYS[platform_var.get()]
             dlg.destroy()
 
         def _cancel(_event=None):
             dlg.destroy()
 
-        btn_row = tk.Frame(outer, bg=BG)
-        btn_row.pack(fill="x")
-
-        tk.Button(btn_row, text="OK",
-                   font=("Segoe UI", 10, "bold"),
-                   bg="#1ba34e", fg=TEXT, activebackground=SUCCESS,
-                   activeforeground=TEXT, relief="flat", padx=18, pady=6,
-                   cursor="hand2", command=_confirm
-                   ).pack(side="left", padx=(0, 8))
+        ok_btn.config(command=_confirm)
+        platform_combo.bind("<<ComboboxSelected>>", _sync_ok)
 
         tk.Button(btn_row, text="Cancel",
                    font=("Segoe UI", 10),
@@ -8298,29 +8330,43 @@ class MP3DownloaderApp(tk.Tk):
         entry.bind("<Escape>", _cancel)
         dlg.protocol("WM_DELETE_WINDOW", _cancel)
 
+        # Centre over the main window once the layout is realised.
+        dlg.update_idletasks()
+        px = self.winfo_x() + (self.winfo_width()  - dlg.winfo_reqwidth())  // 2
+        py = self.winfo_y() + (self.winfo_height() - dlg.winfo_reqheight()) // 2
+        dlg.geometry(f"+{max(0,px)}+{max(0,py)}")
+
         self.wait_window(dlg)
 
-        name = result[0]
-        if not name:
+        name = result["name"]
+        platform = result["platform"]
+        if not name or not platform:
             return
         safe = safe_filename(name, strip=True)
         if not safe:
             messagebox.showwarning("Invalid Name",
                                     "That name isn't usable as a folder.")
             return
-        # The folder is NOT created here — the platform can still change when
-        # the URL is pasted (YouTube vs SoundCloud), so creating it now would
-        # leave empty defunct folders under the wrong platform. The download
-        # itself creates it via _resolve_save_dir when it actually starts.
-        target = os.path.join(self._platform_dir(), safe)
-        if os.path.exists(target):
+        # Create the folder now under the platform the user picked.
+        target = os.path.join(self._platform_dir(platform), safe)
+        existed = os.path.isdir(target)
+        try:
+            os.makedirs(target, exist_ok=True)
+        except OSError as exc:
+            messagebox.showerror("Could Not Create Folder",
+                                 f"Unable to create the genre folder:\n{exc}"
+                                 f"\n\nPath: {target}")
+            return
+        if existed:
             messagebox.showinfo("Already Exists",
-                                 f"'{safe}' already exists.")
-        else:
-            self._pending_genre = safe
+                                 f"'{safe}' already exists under {platform}.")
+        # Switch the Main tab to the chosen platform so the new genre shows
+        # with the matching tag and the save preview lines up.
+        if self._platform_var.get() != platform:
+            self._platform_var.set(platform)
         self._refresh_genre_list()
-        cur_tag = "SC" if self._platform_var.get() == "SoundCloud" else "YT"
-        self._genre_var.set(f"{safe} ({cur_tag})")
+        tag = "SC" if platform == "SoundCloud" else "YT"
+        self._genre_var.set(f"{safe} ({tag})")
         self._update_save_preview()
 
     def _update_save_preview(self):
@@ -10207,6 +10253,35 @@ class MP3DownloaderApp(tk.Tk):
         """Pull a UC… channel id straight out of a /channel/ URL, if present."""
         return channel_id_from_url(url)
 
+    def _mirror_channel_link(self, ch, url, channel_id=None):
+        """Best-effort: mirror a channel's resolved URL into the durable JSON
+        link store (keyed by Platform/Genre/DisplayName). Never raises — a
+        mirror-write failure must never break a resolve."""
+        if not url:
+            return
+        try:
+            cb_links.save_link(
+                self._links_path,
+                platform=ch.get("platform") or "YouTube",
+                genre=ch.get("genre") or "(none)",
+                display_name=ch.get("display_name") or "",
+                url=url, channel_id=channel_id,
+                updated=today_yyyymmdd())
+        except Exception as e:
+            self._dbg.warning(f"WL LINK MIRROR failed: {e}")
+
+    def _stored_channel_link(self, ch):
+        """The last-known URL for a channel from the durable link store, or ''.
+        Used to prefill Fix Link when the DB has lost/blanked the URL."""
+        try:
+            return cb_links.get_link(
+                self._links_path,
+                ch.get("platform") or "YouTube",
+                ch.get("genre") or "(none)",
+                ch.get("display_name") or "")
+        except Exception:
+            return ""
+
     def _persist_resolved_channel(self, ch, channel_id, handle="", url=None):
         """Commit a resolved identity. Returns True if the row was updated.
 
@@ -10239,7 +10314,10 @@ class MP3DownloaderApp(tk.Tk):
             self._watchlist_refresh()
             return False
 
-        # DB update succeeded — now (and only now) stamp the folder sidecar.
+        # DB update succeeded — mirror the link to the durable JSON store.
+        self._mirror_channel_link(ch, store_url, channel_id)
+
+        # ...and (now, and only now) stamp the folder sidecar.
         try:
             folder = self._resolve_save_dir(
                 ch.get("genre") or "(none)", ch.get("display_name"),
@@ -10310,6 +10388,7 @@ class MP3DownloaderApp(tk.Tk):
         # to look up the underlying channel_id without blocking the UI.
         self._db.update_watchlist_channel_fields(
             cid, url=new_url, status="idle", last_error=None)
+        self._mirror_channel_link(ch, new_url)
         self._watchlist_log(
             f"URL updated for {ch['display_name']} — resolving channel id…",
             "info")
@@ -10422,6 +10501,15 @@ class MP3DownloaderApp(tk.Tk):
                 on_done(False)
             return
 
+        # The channel's existing/last-known link — from the DB, falling back to
+        # the durable link store (so it survives a lost DB url). Offered as the
+        # pre-selected top candidate so the user can keep it in one click.
+        prev_url = (ch.get("url") or "").strip()
+        if not prev_url or prev_url.startswith(UNRESOLVED_URL_PREFIX):
+            prev_url = self._stored_channel_link(ch)
+        if "soundcloud.com" not in (prev_url or "").lower():
+            prev_url = ""
+
         dlg = tk.Toplevel(self)
         dlg.title("Fix Link — SoundCloud")
         dlg.geometry("600x560")
@@ -10473,8 +10561,31 @@ class MP3DownloaderApp(tk.Tk):
         def _render(candidates):
             for w in results_frame.winfo_children():
                 w.destroy()
+            # Existing link goes to the very top, pre-selected, so "keep it" is
+            # a single confirm. Any search match below can still override it.
+            if prev_url:
+                prev_row = tk.Frame(results_frame, bg=SURFACE, padx=10, pady=6,
+                                    highlightthickness=1,
+                                    highlightbackground=SC_ORANGE)
+                prev_row.pack(fill="x", pady=(0, 5))
+                tk.Radiobutton(
+                    prev_row, text="Keep current link", value=prev_url,
+                    variable=choice_var, bg=SURFACE, fg=TEXT,
+                    selectcolor=SURFACE, activebackground=SURFACE,
+                    activeforeground=TEXT, font=("Segoe UI", 10, "bold"),
+                    anchor="w", highlightthickness=0, bd=0
+                ).pack(anchor="w", fill="x")
+                prev_link = tk.Label(
+                    prev_row, text=f"    {prev_url}",
+                    font=("Segoe UI", 8, "underline"),
+                    fg=LINK_COL, bg=SURFACE, cursor="hand2", anchor="w")
+                prev_link.pack(anchor="w")
+                prev_link.bind("<Button-1>",
+                               lambda e, u=prev_url: webbrowser.open(u))
+                choice_var.set(prev_url)
             if candidates:
-                choice_var.set(candidates[0]["url"])
+                if not prev_url:
+                    choice_var.set(candidates[0]["url"])
                 for c in candidates:
                     cand_by_url[c["url"]] = c
                     conf = c.get("confidence")
@@ -10506,6 +10617,10 @@ class MP3DownloaderApp(tk.Tk):
                     link.pack(side="left")
                     link.bind("<Button-1>",
                               lambda e, u=c["url"]: webbrowser.open(u))
+            elif prev_url:
+                status_lbl.config(
+                    text="No new matches found — keep the current link, or "
+                         "paste a different profile URL.", fg=TEXT)
             else:
                 status_lbl.config(
                     text="No close matches found — paste the profile URL "
@@ -10526,7 +10641,7 @@ class MP3DownloaderApp(tk.Tk):
                      bg=BG, fg=TEXT, insertbackground=TEXT, relief="flat",
                      highlightthickness=1, highlightbackground=BORDER
                      ).pack(fill="x", ipady=3, pady=(4, 0))
-            if not candidates:
+            if not candidates and not prev_url:
                 choice_var.set("__manual__")
 
         def _show_page():
@@ -10609,7 +10724,7 @@ class MP3DownloaderApp(tk.Tk):
                   command=_toggle_more)
         skip_btn = tk.Button(
                   btn_row, text="  Skip  ",
-                  font=("Segoe UI", 10), bg=SURFACE2, fg=TEXT_DIM,
+                  font=("Segoe UI", 10), bg=SURFACE2, fg=LINK_COL,
                   activebackground=BORDER, activeforeground=TEXT,
                   relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
                   command=lambda: _close(False))
@@ -10875,7 +10990,7 @@ class MP3DownloaderApp(tk.Tk):
                   command=_toggle_more)
         skip_btn = tk.Button(
                   btn_row, text="  Skip  ",
-                  font=("Segoe UI", 10), bg=SURFACE2, fg=TEXT_DIM,
+                  font=("Segoe UI", 10), bg=SURFACE2, fg=LINK_COL,
                   activebackground=BORDER, activeforeground=TEXT,
                   relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
                   command=lambda: _close(False))
