@@ -42,7 +42,9 @@ from cratebuilder.tagging import (
 from cratebuilder import artwork as cb_artwork
 from cratebuilder import rebuild as cb_rebuild
 from cratebuilder import links as cb_links
-from cratebuilder.singleton import acquire_single_instance, SINGLE_INSTANCE_PORT
+from cratebuilder.singleton import (
+    acquire_single_instance, request_show, listen_for_show_requests,
+    SINGLE_INSTANCE_PORT)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Version & About — edit these values to update the app info
@@ -12737,15 +12739,21 @@ class MP3DownloaderApp(tk.Tk):
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Single-instance guard: a second launch (manual OR Windows --startup)
-    # can't bind the loopback port the running instance already holds, so it
-    # exits silently. The lock is parked on the app instance so it isn't
-    # garbage-collected — that would close the socket and release the lock.
+    # Single-instance guard: a second launch (manual, Windows --startup, or a
+    # click on the Taskbar/Start Menu/Desktop icon) can't bind the loopback
+    # port the running instance already holds. Instead of just exiting, it
+    # asks the running instance to restore its window (e.g. from the system
+    # tray) before exiting — so the icon "does something" instead of nothing.
+    # The lock is parked on the app instance so it isn't garbage-collected —
+    # that would close the socket and release the lock.
     _instance_lock = acquire_single_instance(SINGLE_INSTANCE_PORT)
     if _instance_lock is None:
+        request_show(SINGLE_INSTANCE_PORT)
         sys.exit(0)
     app = MP3DownloaderApp()
     app._instance_lock = _instance_lock
+    listen_for_show_requests(
+        _instance_lock, lambda: app.after(0, app._show_from_tray))
     # Purge any leftover update workspace from a prior update (e.g. the old
     # updater image that couldn't delete itself while running), then schedule a
     # throttled background update check once the UI has settled.
