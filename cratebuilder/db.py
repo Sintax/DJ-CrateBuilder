@@ -564,6 +564,47 @@ class DownloadsDatabase:
         except Exception as e:
             self._log("error", f"remove_watchlist_channel failed: {e}")
 
+    def move_channel_downloads(self, *, wl_id, old_dir, new_dir, new_genre):
+        """Rewrite downloads.file_path + artwork_path prefixes from old_dir to
+        new_dir and set downloads.genre = new_genre, PLUS set watchlist.genre for
+        wl_id — all in one transaction. Returns rows updated in downloads.
+
+        Prefix match is anchored with a trailing separator so partial-name
+        collisions can't leak. old_dir == new_dir is a valid genre-only patch
+        (used by verify-on-open when the folder was already found in the right
+        place but the DB rows still say the wrong genre). Never raises."""
+        if not old_dir or not new_dir:
+            return 0
+        sep = "\\" if "\\" in old_dir else "/"
+        old_pref = old_dir.rstrip("\\/") + sep
+        new_pref = new_dir.rstrip("\\/") + sep
+        start_idx = len(old_pref) + 1  # SQLite SUBSTR is 1-indexed
+        try:
+            with self._conn() as conn:
+                cur = conn.execute("""
+                    UPDATE downloads
+                    SET file_path = ? || SUBSTR(file_path, ?),
+                        artwork_path = CASE
+                            WHEN artwork_path IS NOT NULL AND artwork_path LIKE ?
+                            THEN ? || SUBSTR(artwork_path, ?)
+                            ELSE artwork_path
+                        END,
+                        genre = ?
+                    WHERE file_path LIKE ?
+                """, (new_pref, start_idx,
+                      old_pref + "%", new_pref, start_idx,
+                      new_genre,
+                      old_pref + "%"))
+                rows = cur.rowcount or 0
+                if wl_id is not None:
+                    conn.execute(
+                        "UPDATE watchlist SET genre = ? WHERE id = ?",
+                        (new_genre, wl_id))
+                return rows
+        except Exception as e:
+            self._log("error", f"move_channel_downloads failed: {e}")
+            return 0
+
     def delete_blank_watchlist_channels(self):
         """Delete watchlist rows whose display_name is NULL, empty, or only
         whitespace — the broken "blank cards" left by older auto-add bugs.

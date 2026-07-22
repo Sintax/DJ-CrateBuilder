@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 import threading
 import os
+import shutil
 import sys
 import subprocess
 import re
@@ -185,6 +186,7 @@ TEXT      = "#f0f0f0"
 TEXT_DIM  = "#888888"
 TEXT_MED  = "#bbbbbb"
 SUCCESS   = "#22c55e"
+WARN      = "#f59e0b"   # amber — inline warning notices in dialogs
 MAROON    = "#800000"   # Overall-progress bar fill
 SKIP_COL  = "#6b7280"
 LINK_COL  = "#60a5fa"   # light blue for clickable links
@@ -4598,6 +4600,51 @@ class MP3DownloaderApp(tk.Tk):
         os.makedirs(path, exist_ok=True)
         return path
 
+    _AUDIO_EXTS = frozenset({".mp3", ".m4a", ".opus", ".webm",
+                             ".flac", ".wav", ".ogg", ".aac"})
+
+    def _folder_has_audio(self, path):
+        """True iff *path* is a directory containing at least one audio file at
+        its top level. Used by the Watchlist Edit dialog to distinguish a real
+        channel folder ("has tracks in it") from an empty placeholder."""
+        if not path or not os.path.isdir(path):
+            return False
+        try:
+            for name in os.listdir(path):
+                if name.startswith("."):
+                    continue  # skip .artwork, dot-hidden metadata
+                ext = os.path.splitext(name)[1].lower()
+                if ext in self._AUDIO_EXTS and os.path.isfile(
+                        os.path.join(path, name)):
+                    return True
+        except OSError:
+            return False
+        return False
+
+    def _find_channel_folder(self, display_name, platform):
+        """Search every genre folder under *platform* for a channel folder
+        named safe_filename(display_name) that is non-empty (has audio). Return
+        (genre, path) on first non-empty match, else None. Skips the special
+        "_No Genre" bucket and empty candidates so verify-on-open never latches
+        onto a stale placeholder."""
+        safe = safe_filename(display_name or "", strip=True)
+        if not safe:
+            return None
+        pdir = self._platform_dir(platform)
+        if not os.path.isdir(pdir):
+            return None
+        try:
+            genres = [d for d in os.listdir(pdir)
+                      if os.path.isdir(os.path.join(pdir, d))
+                      and d != "_No Genre"]
+        except OSError:
+            return None
+        for genre in sorted(genres, key=str.lower):
+            candidate = os.path.join(pdir, genre, safe)
+            if self._folder_has_audio(candidate):
+                return (genre, candidate)
+        return None
+
     # ── Download logger ───────────────────────────────────────────────────────
     def _setup_logger(self):
         """Initialise (or re-initialise) the file logger.
@@ -8369,6 +8416,104 @@ class MP3DownloaderApp(tk.Tk):
         self._genre_var.set(f"{safe} ({tag})")
         self._update_save_preview()
 
+    def _add_genre_for_platform(self, platform, parent):
+        """Name-only 'New Genre' prompt for callers that already know the
+        platform (Watchlist Edit dialog). Returns the created folder's safe
+        name on success, or None on cancel / failure. Refreshes the Main tab's
+        genre list so the new folder is picked up there too, but does NOT
+        touch the Main tab's genre / platform selection — the caller is
+        working on a different channel."""
+        result = {"name": None}
+
+        dlg = tk.Toplevel(parent)
+        dlg.title("New Genre")
+        dlg.configure(bg=BG)
+        dlg.resizable(False, False)
+        dlg.transient(parent)
+        dlg.grab_set()
+
+        outer = tk.Frame(dlg, bg=BG, padx=20, pady=16)
+        outer.pack(fill="both", expand=True)
+
+        tk.Label(outer,
+                 text=f"Enter a genre / category name (under {platform}):",
+                 font=("Segoe UI", 10), fg=TEXT_DIM, bg=BG
+                 ).pack(anchor="w", pady=(0, 8))
+
+        entry_var = tk.StringVar()
+        entry = tk.Entry(outer, textvariable=entry_var, width=39,
+                          font=("Segoe UI", 11),
+                          bg=SURFACE2, fg=TEXT, insertbackground=TEXT,
+                          relief="flat",
+                          highlightthickness=1,
+                          highlightbackground=TEXT_DIM,
+                          highlightcolor=YT_RED)
+        entry.pack(fill="x", pady=(0, 14))
+        entry.focus_set()
+
+        btn_row = tk.Frame(outer, bg=BG)
+        btn_row.pack(fill="x")
+
+        def _confirm(_event=None):
+            result["name"] = entry_var.get()
+            dlg.destroy()
+
+        def _cancel(_event=None):
+            dlg.destroy()
+
+        tk.Button(btn_row, text="OK",
+                   font=("Segoe UI", 10, "bold"),
+                   bg="#1ba34e", fg=TEXT, activebackground=SUCCESS,
+                   activeforeground=TEXT, relief="flat", padx=18, pady=6,
+                   cursor="hand2", command=_confirm
+                   ).pack(side="left", padx=(0, 8))
+        tk.Button(btn_row, text="Cancel",
+                   font=("Segoe UI", 10),
+                   bg=SURFACE2, fg=TEXT_DIM, activebackground=BORDER,
+                   activeforeground=TEXT, relief="flat", padx=14, pady=6,
+                   cursor="hand2", command=_cancel
+                   ).pack(side="left")
+
+        entry.bind("<Return>", _confirm)
+        entry.bind("<Escape>", _cancel)
+        dlg.protocol("WM_DELETE_WINDOW", _cancel)
+
+        dlg.update_idletasks()
+        px = parent.winfo_x() + (parent.winfo_width() - dlg.winfo_reqwidth()) // 2
+        py = parent.winfo_y() + (parent.winfo_height() - dlg.winfo_reqheight()) // 2
+        dlg.geometry(f"+{max(0,px)}+{max(0,py)}")
+
+        parent.wait_window(dlg)
+
+        name = result["name"]
+        if not name:
+            return None
+        safe = safe_filename(name, strip=True)
+        if not safe:
+            messagebox.showwarning("Invalid Name",
+                                    "That name isn't usable as a folder.",
+                                    parent=parent)
+            return None
+        target = os.path.join(self._platform_dir(platform), safe)
+        existed = os.path.isdir(target)
+        try:
+            os.makedirs(target, exist_ok=True)
+        except OSError as exc:
+            messagebox.showerror("Could Not Create Folder",
+                                 f"Unable to create the genre folder:\n{exc}"
+                                 f"\n\nPath: {target}",
+                                 parent=parent)
+            return None
+        if existed:
+            messagebox.showinfo("Already Exists",
+                                 f"'{safe}' already exists under {platform}.",
+                                 parent=parent)
+        # Keep the Main tab's genre combobox in sync — the new folder must be
+        # discoverable there on the next open, even though we're not switching
+        # the Main tab's active selection.
+        self._refresh_genre_list()
+        return safe
+
     def _update_save_preview(self):
         """Show a short preview of where files will land. Pure preview — must
         not create the directory, or merely selecting a genre would plant
@@ -11225,15 +11370,65 @@ class MP3DownloaderApp(tk.Tk):
         add_hover(cancel_btn)
 
     # ── Edit Channel dialog ───────────────────────────────────────────────────
+    def _watchlist_verify_channel_location(self, ch):
+        """Reconcile a watchlist row's recorded genre with what's actually on
+        disk. Returns one of:
+          "ok"      — folder is at the expected location and non-empty.
+          "healed"  — folder was found (non-empty) under a different genre;
+                      the DB was silently re-linked to match. Caller should
+                      re-fetch the channel row before rendering.
+          "missing" — no non-empty folder exists anywhere under this platform.
+        Empty folders never count as valid: only a folder containing at least
+        one audio file at its top level is considered the channel's real home.
+        """
+        cid = ch.get("id")
+        platform = ch.get("platform") or "YouTube"
+        recorded_genre = ch.get("genre") or ""
+        display_name = ch.get("display_name") or ""
+        expected = self._channel_save_path(recorded_genre, display_name,
+                                           platform=platform)
+        if self._folder_has_audio(expected):
+            return "ok"
+        found = self._find_channel_folder(display_name, platform)
+        if not found:
+            return "missing"
+        new_genre, new_dir = found
+        if new_genre == recorded_genre:
+            # Same-genre match — no move needed, just a trailing state where
+            # expected == found. Treat as OK.
+            return "ok"
+        # Auto-heal: rewrite downloads rows for this channel to point at the
+        # location we actually found, and update the watchlist genre.
+        try:
+            self._db.move_channel_downloads(
+                wl_id=cid, old_dir=expected, new_dir=new_dir,
+                new_genre=new_genre)
+        except Exception:
+            pass
+        try:
+            self._logger.info(
+                f"Watchlist: '{display_name}' folder found under "
+                f"'{new_genre}' instead of '{recorded_genre}' — DB re-linked.")
+        except Exception:
+            pass
+        return "healed"
+
     def _watchlist_edit_channel(self, cid):
         """Open the dialog to edit an existing Watch List channel."""
         ch = self._db.get_watchlist_channel(cid)
         if not ch:
             return
 
+        # Verify-on-open: reconcile the DB's recorded genre with what actually
+        # lives on disk. If the folder is empty at the expected location but
+        # exists (with audio) under a different genre — because the user moved
+        # it in Explorer — auto-heal the DB silently and refresh `ch`.
+        verify_state = self._watchlist_verify_channel_location(ch)
+        ch = self._db.get_watchlist_channel(cid) or ch
+
         dlg = tk.Toplevel(self)
         dlg.title(f"Edit — {ch['display_name']}")
-        dlg.geometry("460x470")
+        dlg.geometry("460x540")
         dlg.configure(bg=BG)
         dlg.resizable(False, False)
         dlg.transient(self)
@@ -11241,7 +11436,7 @@ class MP3DownloaderApp(tk.Tk):
 
         dlg.update_idletasks()
         px = self.winfo_x() + (self.winfo_width() - 460) // 2
-        py = self.winfo_y() + (self.winfo_height() - 470) // 2
+        py = self.winfo_y() + (self.winfo_height() - 540) // 2
         dlg.geometry(f"+{max(0,px)}+{max(0,py)}")
 
         outer = tk.Frame(dlg, bg=BG, padx=24, pady=18)
@@ -11320,10 +11515,68 @@ class MP3DownloaderApp(tk.Tk):
             _lb.pack(side="left", padx=_padx)
             add_hover(_lb)
 
-        # Genre is deliberately NOT editable here: the channel's folder, its
-        # sidecar, and every DB row already live under the original genre, so
-        # changing it after the fact would scatter the channel across two
-        # locations and break new-upload detection.
+        # ── Genre picker (cloned from Main tab, filtered to this platform) ──
+        tk.Label(outer, text="Genre",
+                 font=("Segoe UI", 10, "bold"), fg=TEXT, bg=BG
+                 ).pack(anchor="w", pady=(0, 4))
+
+        genre_row = tk.Frame(outer, bg=BG)
+        genre_row.pack(fill="x", pady=(0, 4))
+
+        ch_platform = ch.get("platform") or "YouTube"
+        current_genre = ch.get("genre") or "(none)"
+
+        def _list_genre_values():
+            values = ["(none)"]
+            for g in self._scan_genres(ch_platform):
+                values.append(g)
+            return values
+
+        genre_var = tk.StringVar(value=current_genre)
+        genre_combo = ttk.Combobox(
+            genre_row, textvariable=genre_var, state="readonly",
+            values=_list_genre_values(), width=32)
+        genre_combo.pack(side="left", padx=(0, 8))
+        # If the DB-recorded genre isn't in the platform folder yet (no folder
+        # for it created — legit for a brand-new channel), keep the value
+        # visible anyway so the user sees what the row currently claims.
+        if current_genre not in genre_combo["values"]:
+            genre_combo["values"] = list(genre_combo["values"]) + [current_genre]
+            genre_var.set(current_genre)
+
+        def _add_new_genre():
+            created = self._add_genre_for_platform(ch_platform, dlg)
+            if not created:
+                return
+            genre_combo["values"] = _list_genre_values()
+            genre_var.set(created)
+
+        new_btn = tk.Button(genre_row, text="+ New",
+                  font=("Segoe UI", 9), bg=SURFACE2, fg=TEXT_DIM,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
+                  command=_add_new_genre)
+        new_btn.pack(side="left")
+        add_hover(new_btn)
+
+        if verify_state == "missing":
+            tk.Label(outer,
+                     text=(f"⚠ No {ch_platform} folder with tracks was found "
+                           f"for this channel yet — folder will be created on "
+                           f"the next download."),
+                     font=("Segoe UI", 8), fg=WARN, bg=BG, wraplength=400,
+                     justify="left"
+                     ).pack(anchor="w", pady=(0, 10))
+        elif verify_state == "healed":
+            tk.Label(outer,
+                     text=(f"✓ Folder was moved out of band — the "
+                           f"database has been re-linked to the current "
+                           f"location ({ch.get('genre')})."),
+                     font=("Segoe UI", 8), fg=TEXT_DIM, bg=BG, wraplength=400,
+                     justify="left"
+                     ).pack(anchor="w", pady=(0, 10))
+        else:
+            tk.Frame(outer, bg=BG, height=6).pack(fill="x")
 
         # Cutoff date
         tk.Label(outer, text="Scan cutoff date (YYYY-MM-DD)",
@@ -11353,6 +11606,90 @@ class MP3DownloaderApp(tk.Tk):
                 messagebox.showerror("Bad Date", "Use YYYY-MM-DD format.",
                                      parent=dlg)
                 return
+
+            # Genre change: physically move the channel folder, then rewrite
+            # all downloads rows for it. Abort on collision. Rollback the move
+            # if the DB rewrite fails so disk and DB never drift apart.
+            picked_genre = genre_var.get() or "(none)"
+            db_genre = ch.get("genre") or "(none)"
+            if picked_genre != db_genre:
+                src_dir = self._channel_save_path(
+                    db_genre, ch.get("display_name"),
+                    platform=ch_platform)
+                dst_dir = self._channel_save_path(
+                    picked_genre, ch.get("display_name"),
+                    platform=ch_platform)
+                have_src = self._folder_has_audio(src_dir)
+                if have_src:
+                    if os.path.exists(dst_dir):
+                        messagebox.showerror(
+                            "Destination Exists",
+                            f"Can't move — a folder named "
+                            f"'{os.path.basename(dst_dir)}' already exists "
+                            f"under '{picked_genre}':\n\n{dst_dir}\n\n"
+                            f"Resolve the collision manually, then try again.",
+                            parent=dlg)
+                        return
+                    n_tracks = sum(1 for n in os.listdir(src_dir)
+                                   if os.path.splitext(n)[1].lower()
+                                   in self._AUDIO_EXTS)
+                    ok = messagebox.askyesno(
+                        "Move Channel Folder",
+                        f"Move '{ch['display_name']}' from "
+                        f"'{db_genre}' → '{picked_genre}'?\n\n"
+                        f"This will move {n_tracks} track(s) (and cover art) "
+                        f"and update the database rows for this channel.",
+                        parent=dlg)
+                    if not ok:
+                        return
+                    # Ensure the destination genre folder exists before move.
+                    try:
+                        os.makedirs(os.path.dirname(dst_dir), exist_ok=True)
+                        shutil.move(src_dir, dst_dir)
+                    except Exception as exc:
+                        messagebox.showerror(
+                            "Move Failed",
+                            f"Unable to move the channel folder:\n\n{exc}",
+                            parent=dlg)
+                        return
+                    rows = self._db.move_channel_downloads(
+                        wl_id=cid, old_dir=src_dir, new_dir=dst_dir,
+                        new_genre=picked_genre)
+                    if rows == 0 and n_tracks > 0:
+                        # DB rewrite failed while we already moved files —
+                        # roll the move back to keep disk and DB in sync.
+                        try:
+                            shutil.move(dst_dir, src_dir)
+                        except Exception:
+                            pass
+                        messagebox.showerror(
+                            "Database Update Failed",
+                            "The folder move was rolled back because the "
+                            "database could not be updated. Please check "
+                            "debug.log and try again.",
+                            parent=dlg)
+                        return
+                    try:
+                        self._mirror_channel_link(
+                            {**ch, "genre": picked_genre},
+                            ch.get("url") or "",
+                            channel_id=ch.get("channel_id"))
+                    except Exception:
+                        pass
+                    try:
+                        self._logger.info(
+                            f"Watchlist: moved '{ch['display_name']}' from "
+                            f"'{db_genre}' to '{picked_genre}' — "
+                            f"{rows} DB row(s) rewritten.")
+                    except Exception:
+                        pass
+                else:
+                    # No folder to move (or empty placeholder). Just update
+                    # the recorded genre so the next download lands in the
+                    # right place.
+                    self._db.update_watchlist_channel_fields(
+                        cid, genre=picked_genre)
+
             self._db.update_watchlist_channel_fields(
                 cid, scan_cutoff_date=new_cutoff)
             # If the URL changed, re-point (and re-resolve) the channel.
