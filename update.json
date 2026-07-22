@@ -1,9 +1,9 @@
 {
   "version": "1.3",
-  "build": 43,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.43.zip",
-  "sha256": "dcd037fc26f4d44f552bd86f3f3ac76ccaa0bb838aebd944369bed8b19200a8f",
-  "notes": "Settings button cleanup, Remove Genre in the Edit dialog, and a tidier Cancel button placement.",
+  "build": 44,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.44.zip",
+  "sha256": "37a1a8235931b80554e990c55481118e4fe0b164dbcdcaeb49e799630db972c7",
+  "notes": "File Output, Time Limiter, Save Directory, and database/update buttons now lock while a download is running \u2014 cancel first to change them. Adding URLs and Genres still works mid-download.",
   "base": 20,
   "ffmpeg": {
     "version": "8.1-essentials_build-www.gyan.dev+1a65d5b0",
