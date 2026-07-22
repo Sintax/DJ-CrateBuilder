@@ -5989,8 +5989,9 @@ class MP3DownloaderApp(tk.Tk):
         # ── Time / Length Limiter ─────────────────────────────────────────────
         _row = ttk.Frame(outer)
         _row.pack(fill="x", pady=(0, 8))
-        ttk.Label(_row, text="Time / Length Limiter",
-                  style="S.White.Section.TLabel").pack(side="left")
+        self._limit_section_lbl = ttk.Label(_row, text="Time / Length Limiter",
+                  style="S.White.Section.TLabel")
+        self._limit_section_lbl.pack(side="left")
         self._settings_help(_row,
             "Skip any file whose duration exceeds the limit below. "
             "Uncheck to allow files of any length.").pack(side="left", padx=(8, 0))
@@ -6005,13 +6006,15 @@ class MP3DownloaderApp(tk.Tk):
                         style="S.Opt.TCheckbutton")
         self._limit_enable_cb.pack(side="left", padx=(0, 20))
 
-        tk.Label(limit_enable_row, text="Max Length:",
-                 font=("Segoe UI", 10, "bold"), fg=TEXT_MED, bg=BG
-                 ).pack(side="left", padx=(0, 10))
+        self._limit_maxlen_lbl = tk.Label(
+            limit_enable_row, text="Max Length:",
+            font=("Segoe UI", 10, "bold"), fg=TEXT_MED, bg=BG)
+        self._limit_maxlen_lbl.pack(side="left", padx=(0, 10))
 
         self._limit_minus_btn = tk.Button(
             limit_enable_row, text="−", font=("Segoe UI", 8, "bold"),
             bg=SURFACE2, fg=TEXT, activebackground=BORDER, activeforeground=TEXT,
+            disabledforeground=TEXT_DIM,
             relief="flat", bd=0, width=2, pady=0, cursor="hand2",
             command=self._limit_decrement)
         self._limit_minus_btn.pack(side="left", padx=(0, 2))
@@ -6039,6 +6042,7 @@ class MP3DownloaderApp(tk.Tk):
         self._limit_plus_btn = tk.Button(
             limit_enable_row, text="+", font=("Segoe UI", 8, "bold"),
             bg=SURFACE2, fg=TEXT, activebackground=BORDER, activeforeground=TEXT,
+            disabledforeground=TEXT_DIM,
             relief="flat", bd=0, width=2, pady=0, cursor="hand2",
             command=self._limit_increment)
         self._limit_plus_btn.pack(side="left", padx=(2, 10))
@@ -6051,15 +6055,17 @@ class MP3DownloaderApp(tk.Tk):
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 20))
 
         # ── MP3 Bitrate Selector ──────────────────────────────────────────────
-        ttk.Label(outer, text="File Output",
-                  style="S.White.Section.TLabel").pack(anchor="w", pady=(0, 8))
+        self._fileout_section_lbl = ttk.Label(
+            outer, text="File Output", style="S.White.Section.TLabel")
+        self._fileout_section_lbl.pack(anchor="w", pady=(0, 8))
 
         bitrate_row = ttk.Frame(outer)
         bitrate_row.pack(fill="x", pady=(0, 10))
 
-        tk.Label(bitrate_row, text="Output Quality:",
-                 font=("Segoe UI", 10, "bold"), fg=TEXT_MED, bg=BG
-                 ).pack(side="left", padx=(0, 12))
+        self._bitrate_lbl_static = tk.Label(
+            bitrate_row, text="Output Quality:",
+            font=("Segoe UI", 10, "bold"), fg=TEXT_MED, bg=BG)
+        self._bitrate_lbl_static.pack(side="left", padx=(0, 12))
 
         self._bitrate_combo = ttk.Combobox(
             bitrate_row,
@@ -6095,9 +6101,10 @@ class MP3DownloaderApp(tk.Tk):
         cover_row = ttk.Frame(outer)
         cover_row.pack(fill="x", pady=(10, 4))
 
-        tk.Label(cover_row, text="Cover Art:",
-                 font=("Segoe UI", 10, "bold"), fg=TEXT_MED, bg=BG
-                 ).pack(side="left", padx=(0, 12))
+        self._cover_art_lbl_static = tk.Label(
+            cover_row, text="Cover Art:",
+            font=("Segoe UI", 10, "bold"), fg=TEXT_MED, bg=BG)
+        self._cover_art_lbl_static.pack(side="left", padx=(0, 12))
 
         self._cover_art_combo = ttk.Combobox(
             cover_row,
@@ -6401,8 +6408,10 @@ class MP3DownloaderApp(tk.Tk):
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 20))
 
         # ── Base directory ────────────────────────────────────────────────────
-        ttk.Label(outer, text="Default Save Directory",
-                  style="S.White.Section.TLabel").pack(anchor="w", pady=(0, 8))
+        self._savedir_section_lbl = ttk.Label(
+            outer, text="Default Save Directory",
+            style="S.White.Section.TLabel")
+        self._savedir_section_lbl.pack(anchor="w", pady=(0, 8))
 
         dir_row = ttk.Frame(outer)
         dir_row.pack(fill="x", pady=(0, 8))
@@ -6526,8 +6535,10 @@ class MP3DownloaderApp(tk.Tk):
         # ── Database management ────────────────────────────────────────────────
         _hdr = ttk.Frame(outer)
         _hdr.pack(anchor="w", pady=(16, 6))
-        ttk.Label(_hdr, text="Downloads Database",
-                  style="S.White.Section.TLabel").pack(side="left")
+        self._db_section_lbl = ttk.Label(
+            _hdr, text="Downloads Database",
+            style="S.White.Section.TLabel")
+        self._db_section_lbl.pack(side="left")
         self._settings_help(_hdr,
             "The SQLite database tracks every download for fast "
             "lookups and Watch List history. If it gets corrupted "
@@ -7758,12 +7769,15 @@ class MP3DownloaderApp(tk.Tk):
 
         self._update_status_var = tk.StringVar(
             value=f"You're on build {APP_BUILD}.")
-        tk.Label(btn_col, textvariable=self._update_status_var,
-                 font=("Segoe UI", 10, "bold"), fg=TEXT, bg=BG,
-                 anchor="e", justify="right").pack(anchor="e", pady=(0, 4))
+        self._update_status_lbl = tk.Label(
+            btn_col, textvariable=self._update_status_var,
+            font=("Segoe UI", 10, "bold"), fg=TEXT, bg=BG,
+            anchor="e", justify="right")
+        self._update_status_lbl.pack(anchor="e", pady=(0, 4))
         self._update_btn = _about_btn(
             btn_col, UPDATE_BTN_CHECK,
             self._on_check_updates_clicked)
+        self._update_btn.config(disabledforeground=TEXT_DIM)
         self._update_btn.pack(anchor="e", pady=(0, 2))
         Tooltip(self._update_btn,
                 "Checks GitHub for a newer nightly build and, if one exists, "
@@ -8868,9 +8882,16 @@ class MP3DownloaderApp(tk.Tk):
         the Main tab's skip-existing option, the Settings tab's File Output
         section, Time/Length Limiter, save directory and database buttons,
         and the About tab's update button. Adding genres and queuing batch
-        URLs stay allowed; everything here needs Cancel first. Unlocking
-        re-applies the limiter/no-conversion dependent states rather than
-        blindly enabling their widgets."""
+        URLs stay allowed; everything here needs Cancel first.
+
+        Also greys out the section headers and inline labels around each
+        locked control so the whole section reads as locked, not just the
+        control itself. Original foreground colors are captured once on the
+        first lock so unlocking restores them exactly.
+
+        Unlocking re-applies the limiter/no-conversion dependent states
+        rather than blindly enabling their widgets — a control that was
+        disabled by another option stays disabled after unlock."""
         state = "disabled" if locked else "normal"
         for w in ("_skip_existing_cb", "_limit_enable_cb", "_limit_minus_btn",
                   "_limit_plus_btn", "_limit_slider", "_settings_dir_entry",
@@ -8889,6 +8910,42 @@ class MP3DownloaderApp(tk.Tk):
                     combo.config(state="disabled" if locked else "readonly")
                 except Exception:
                     pass
+
+        # Grey out (or restore) the labels + section headers around the
+        # locked controls. Cache each label's original foreground on the
+        # first call so it can be restored exactly on unlock, regardless of
+        # theme.
+        cache = getattr(self, "_lock_fg_cache", None)
+        if cache is None:
+            cache = {}
+            self._lock_fg_cache = cache
+        for name in ("_limit_section_lbl", "_limit_maxlen_lbl",
+                     "_limit_value_lbl", "_fileout_section_lbl",
+                     "_bitrate_lbl_static", "_cover_art_lbl_static",
+                     "_savedir_section_lbl", "_db_section_lbl",
+                     "_update_status_lbl"):
+            lbl = getattr(self, name, None)
+            if lbl is None:
+                continue
+            try:
+                if name not in cache:
+                    cache[name] = lbl.cget("foreground")
+                lbl.config(foreground=TEXT_DIM if locked else cache[name])
+            except Exception:
+                pass
+
+        # The tk.Scale doesn't grey its trough via state=disabled on our
+        # theme, so nudge it manually.
+        slider = getattr(self, "_limit_slider", None)
+        if slider is not None:
+            try:
+                if "_limit_slider" not in cache:
+                    cache["_limit_slider"] = slider.cget("troughcolor")
+                slider.config(troughcolor=BG if locked
+                              else cache["_limit_slider"])
+            except Exception:
+                pass
+
         if not locked:
             self._on_no_conversion_toggle()
             self._on_limiter_toggle()
