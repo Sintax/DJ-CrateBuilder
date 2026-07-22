@@ -5762,9 +5762,11 @@ class MP3DownloaderApp(tk.Tk):
         # ── Skip already-downloaded (sits just above Start Downloads) ─────────
         skip_row = ttk.Frame(outer)
         skip_row.pack(fill="x", pady=(0, 12))
-        ttk.Checkbutton(skip_row, text="Skip files already downloaded",
-                        variable=self._skip_existing,
-                        style="S.Opt.TCheckbutton").pack(side="left")
+        self._skip_existing_cb = ttk.Checkbutton(
+            skip_row, text="Skip files already downloaded",
+            variable=self._skip_existing,
+            style="S.Opt.TCheckbutton")
+        self._skip_existing_cb.pack(side="left")
         self._skip_mode_combo = ttk.Combobox(
             skip_row,
             textvariable=self._skip_mode,
@@ -5994,12 +5996,12 @@ class MP3DownloaderApp(tk.Tk):
         limit_enable_row = ttk.Frame(outer)
         limit_enable_row.pack(fill="x", pady=(0, 8))
 
-        ttk.Checkbutton(limit_enable_row,
+        self._limit_enable_cb = ttk.Checkbutton(limit_enable_row,
                         text="Enable",
                         variable=self._limit_enabled,
                         command=self._on_limiter_toggle,
-                        style="S.Opt.TCheckbutton"
-                        ).pack(side="left", padx=(0, 20))
+                        style="S.Opt.TCheckbutton")
+        self._limit_enable_cb.pack(side="left", padx=(0, 20))
 
         tk.Label(limit_enable_row, text="Max Length:",
                  font=("Segoe UI", 10, "bold"), fg=TEXT_MED, bg=BG
@@ -6412,8 +6414,10 @@ class MP3DownloaderApp(tk.Tk):
             lambda _: self._save_settings())
         self._settings_dir_entry.bind("<FocusOut>",
             lambda _: self._save_settings())
-        ttk.Button(dir_row, text="Browse…", style="Browse.TButton",
-                   command=self._settings_browse).pack(side="left")
+        self._settings_browse_btn = ttk.Button(
+            dir_row, text="Browse…", style="Browse.TButton",
+            command=self._settings_browse)
+        self._settings_browse_btn.pack(side="left")
 
         # Save confirmation sits inline beside Browse so it doesn't reserve an
         # empty row beneath the directory field.
@@ -7372,7 +7376,7 @@ class MP3DownloaderApp(tk.Tk):
     def _on_check_result(self, manifest, manual):
         """UI thread: interpret the manifest and react."""
         btn = getattr(self, "_update_btn", None)
-        if btn is not None:
+        if btn is not None and not self._downloading:
             btn.config(state="normal")
 
         if manifest is None:
@@ -7884,8 +7888,10 @@ class MP3DownloaderApp(tk.Tk):
              "Manual mode lets you set your own minimum and maximum delay in seconds."),
 
             ("Q: Can I change settings while a download is running?",
-             "A: Yes. The Time Limiter, MP3 Bitrate, and all Download Behavior settings can be changed mid-download "
-             "by switching to the Settings tab. Changes take effect starting with the next file in the queue."),
+             "A: Mostly no. Options that affect the files being written — Skip files already downloaded, "
+             "the Time Limiter, all File Output options, the save directory, the database tools, and app "
+             "updates — are locked while tracks are downloading; press Cancel first to change them. "
+             "You CAN still add URLs to the batch queue, create new Genres, and adjust Download Behavior."),
 
             ("Q: Where are my downloaded files saved?",
              "A: By default, files are saved to your Music folder under \"DJ-CrateBuilder,\" organized by "
@@ -8836,10 +8842,11 @@ class MP3DownloaderApp(tk.Tk):
         self._cancel_flag.clear()
         self._pause_flag.clear()
         self._dl_btn.config(state="disabled")
-        self._batch_add_btn.config(state="disabled")
-        self._url_entry.config(state="disabled")
+        # URL entry + Add to Batch stay ENABLED — queuing links for the next
+        # run is allowed mid-download; the running batch is a snapshot.
         self._cancel_btn.config(state="normal", style="CancelActive.TButton")
         self._pause_btn.config(state="normal", text="⏸  Pause", style="Pause.TButton")
+        self._set_download_lock(True)
         self._wl_update_cancel_btn_state()
         self._vid_progress["value"]     = 0
         self._overall_progress["value"] = 0
@@ -8853,6 +8860,36 @@ class MP3DownloaderApp(tk.Tk):
         self._last_fatal_error = None
         self._batch_start = time.time()
         self._clear_queue()
+
+    def _set_download_lock(self, locked):
+        """Freeze settings that must not change while tracks are downloading:
+        the Main tab's skip-existing option, the Settings tab's File Output
+        section, Time/Length Limiter, save directory and database buttons,
+        and the About tab's update button. Adding genres and queuing batch
+        URLs stay allowed; everything here needs Cancel first. Unlocking
+        re-applies the limiter/no-conversion dependent states rather than
+        blindly enabling their widgets."""
+        state = "disabled" if locked else "normal"
+        for w in ("_skip_existing_cb", "_limit_enable_cb", "_limit_minus_btn",
+                  "_limit_plus_btn", "_limit_slider", "_settings_dir_entry",
+                  "_settings_browse_btn", "_rebuild_db_btn", "_fetch_art_btn",
+                  "_no_conv_cb", "_update_btn"):
+            widget = getattr(self, w, None)
+            if widget is not None:
+                try:
+                    widget.config(state=state)
+                except Exception:
+                    pass
+        for c in ("_skip_mode_combo", "_bitrate_combo", "_cover_art_combo"):
+            combo = getattr(self, c, None)
+            if combo is not None:
+                try:
+                    combo.config(state="disabled" if locked else "readonly")
+                except Exception:
+                    pass
+        if not locked:
+            self._on_no_conversion_toggle()
+            self._on_limiter_toggle()
 
     def _cancel(self):
         """Signal the download worker to stop after the current track."""
@@ -9850,10 +9887,11 @@ class MP3DownloaderApp(tk.Tk):
         self._pause_flag.clear()
         self._dl_btn.config(state="normal")
         self._batch_add_btn.config(state="normal")
-        self._url_entry.config(state="normal")
+        self._url_entry.config(state="normal")   # no-op normally; kept for safety
         self._cancel_btn.config(state="disabled", style="Cancel.TButton")
         self._pause_btn.config(state="disabled", text="⏸  Pause", style="Pause.TButton")
         self._bitrate_lbl.config(text="")
+        self._set_download_lock(False)
         self._wl_update_cancel_btn_state()
 
     # ══════════════════════════════════════════════════════════════════════════
