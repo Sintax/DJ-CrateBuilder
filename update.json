@@ -1,9 +1,9 @@
 {
   "version": "1.3",
-  "build": 46,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.46.zip",
-  "sha256": "bcf0a4253ab46a6fac3bd43e40f84df8d632291c0788fbc04ecc3cbb80ff8782",
-  "notes": "Locked settings during downloads now grey out visually, not just become unresponsive.",
+  "build": 47,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.47.zip",
+  "sha256": "cfd6b3b0e6ee4870a1a6f04600d3096dab0a970a6a3edbbe9ff66358f6bafd18",
+  "notes": "Watch List remembers permanently-failed tracks; Main tab genre/folder cleanup",
   "base": 20,
   "ffmpeg": {
     "version": "8.1-essentials_build-www.gyan.dev+1a65d5b0",
