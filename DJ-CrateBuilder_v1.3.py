@@ -5730,20 +5730,16 @@ class MP3DownloaderApp(tk.Tk):
         self._genre_combo.bind("<<ComboboxSelected>>", self._on_genre_selected)
 
         ttk.Button(genre_row, text="+ New", style="MainBrowse.TButton",
-                   command=self._add_genre).pack(side="left", padx=(0, 16))
+                   command=self._add_genre).pack(side="left", padx=(0, 6))
+        self._remove_genre_btn = ttk.Button(
+            genre_row, text="− Remove", style="MainBrowse.TButton",
+            command=self._remove_selected_genre)
+        self._remove_genre_btn.pack(side="left", padx=(0, 16))
 
-        # Root is declared first: with pack(side="right") the first-declared
-        # child sits furthest right, so this reads Open Folder:, Genre, Root
-        # left-to-right.
-        ttk.Button(genre_row, text="📂  Root", style="MainBrowse.TButton",
-                   command=self._open_download_dir).pack(side="right")
         self._open_genre_btn = ttk.Button(
-            genre_row, text="📂  Genre", style="MainBrowse.TButton",
+            genre_row, text="📂  Open Genre Folder", style="MainBrowse.TButton",
             command=self._open_genre_dir)
-        self._open_genre_btn.pack(side="right", padx=(0, 6))
-        ttk.Label(genre_row, text="Open Folder:",
-                  style="S.White.Section.TLabel").pack(side="right",
-                                                       padx=(0, 8))
+        self._open_genre_btn.pack(side="right")
         # Any change to the selected genre — combobox pick, platform switch,
         # newly created genre — re-evaluates whether the Genre button has a
         # real folder to open.
@@ -5756,9 +5752,9 @@ class MP3DownloaderApp(tk.Tk):
         # ── Batch URL list ────────────────────────────────────────────────────
         self._build_batch_panel(outer)
 
-        # (The Open Folder buttons for Genre and Root are on the genre row
-        # above; the 'Skip files already downloaded' option is just above the
-        # Start Downloads buttons.)
+        # (Open Genre Folder sits on the genre row above; Open Main Folder is on
+        # the 'Skip files already downloaded' row just above the Start Downloads
+        # buttons.)
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(4, 10))
 
         # ── Skip already-downloaded (sits just above Start Downloads) ─────────
@@ -5773,8 +5769,27 @@ class MP3DownloaderApp(tk.Tk):
             skip_row,
             textvariable=self._skip_mode,
             values=["In Database ~ In Folder", "In Folder Only", "In Database Only"],
-            state="readonly", width=20)
+            state="readonly", width=24)
         self._skip_mode_combo.pack(side="left", padx=(14, 0))
+
+        _skip_help = tk.Label(skip_row, text="?", font=("Segoe UI", 9, "bold"),
+                              fg=TEXT_DIM, bg=SURFACE2, width=2,
+                              cursor="hand2", relief="flat")
+        _skip_help.pack(side="left", padx=(6, 0))
+        Tooltip(_skip_help,
+                "How an already-downloaded track is recognised:\n\n"
+                "• In Database ~ In Folder — skip if it's in the downloads "
+                "database OR already on disk (safest).\n"
+                "• In Folder Only — skip only if the file exists in the "
+                "destination folder.\n"
+                "• In Database Only — skip only if the database says it was "
+                "downloaded before, even if the file has since been moved or "
+                "deleted.",
+                wraplength=340)
+
+        ttk.Button(skip_row, text="📂  Open Main Folder",
+                   style="MainBrowse.TButton",
+                   command=self._open_download_dir).pack(side="right")
 
         # ── Action buttons ────────────────────────────────────────────────────
         btn_row = ttk.Frame(outer)
@@ -7898,7 +7913,7 @@ class MP3DownloaderApp(tk.Tk):
             ("Q: Where are my downloaded files saved?",
              "A: By default, files are saved to your Music folder under \"DJ-CrateBuilder,\" organized by "
              "platform (YouTube/SoundCloud), then by genre and channel name. You can change the base directory in the "
-             "Settings tab. The \"Open Folder\" button on the Main tab opens the current download directory."),
+             "Settings tab. The \"Open Main Folder\" button on the Main tab opens the current download directory."),
 
             ("Q: What is the Activity Log?",
              "A: A text file that records every downloaded, skipped, and failed file with timestamps. It lives in "
@@ -8119,7 +8134,7 @@ class MP3DownloaderApp(tk.Tk):
         return None
 
     def _update_open_genre_btn(self):
-        """Enable the Main tab's Open Folder → Genre button only while the
+        """Enable the Main tab's Open Genre Folder button only while the
         selected genre's folder actually exists on disk."""
         btn = getattr(self, "_open_genre_btn", None)
         if btn is None:
@@ -8159,6 +8174,50 @@ class MP3DownloaderApp(tk.Tk):
                 f"Unable to open the folder:\n{exc}\n\n"
                 f"Path: {target}"
             )
+
+    def _remove_selected_genre(self):
+        """Delete the selected genre's folder — only if it's empty.
+
+        The Main-tab counterpart to the Watch List edit dialog's '− Remove'
+        button. Refuses on '(none)', on a genre with no folder on disk, and on
+        any folder that still holds channel folders, so this can never destroy
+        downloaded audio."""
+        picked = self._selected_genre()
+        if not picked or picked == "(none)":
+            messagebox.showinfo(
+                "Remove Genre", "Select a genre to remove first.", parent=self)
+            return
+        platform = self._selected_genre_platform()
+        gdir = os.path.join(self._platform_dir(platform), picked)
+        label = platform or "genre"
+        if not os.path.isdir(gdir):
+            messagebox.showerror(
+                "Remove Genre",
+                f"No {label} folder named '{picked}' exists.", parent=self)
+            return
+        if os.listdir(gdir):
+            messagebox.showerror(
+                "Remove Genre",
+                f"'{picked}' isn't empty — a genre folder can only be "
+                f"removed once every channel folder inside it has been "
+                f"moved out or deleted.", parent=self)
+            return
+        if not messagebox.askyesno(
+                "Remove Genre",
+                f"Delete the empty {label} genre folder "
+                f"'{picked}'?\n\nThis cannot be undone.", parent=self):
+            return
+        try:
+            os.rmdir(gdir)
+        except OSError as e:
+            messagebox.showerror(
+                "Remove Genre", f"Couldn't delete the folder:\n{e}",
+                parent=self)
+            return
+        self._genre_var.set("(none)")
+        self._refresh_genre_list()
+        self._update_open_genre_btn()
+        self._logger.info("Removed empty genre folder: %s", gdir)
 
     def _browse_cookie_file(self):
         """Open a file dialog to select a Netscape cookie.txt file."""
