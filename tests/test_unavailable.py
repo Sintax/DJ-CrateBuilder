@@ -1,5 +1,5 @@
 """Tests for the permanently-unavailable track memory (unavailable_tracks)."""
-from cratebuilder.db import DownloadsDatabase
+from cratebuilder.db import DownloadsDatabase, GEO_RECHECK_SECONDS, is_suppressed
 
 
 def _new_db(tmp_path, name="test.db"):
@@ -88,3 +88,81 @@ def test_record_unavailable_ignores_empty_reason(tmp_path):
                                reason="", now=1000)
     assert ok is False
     assert _rows(db) == []
+
+
+DAY = 24 * 3600
+
+
+def test_geo_recheck_window_is_seven_days():
+    assert GEO_RECHECK_SECONDS == 7 * DAY
+
+
+def test_is_suppressed_drm_after_one_failure():
+    assert is_suppressed("DRM-protected", 1, 1000, 1000) is True
+
+
+def test_is_suppressed_removed_needs_two_failures():
+    assert is_suppressed("Removed", 1, 1000, 1000) is False
+    assert is_suppressed("Removed", 2, 1000, 1000) is True
+
+
+def test_is_suppressed_removed_never_expires():
+    assert is_suppressed("Removed", 2, 1000, 1000 + 999 * DAY) is True
+
+
+def test_is_suppressed_geo_needs_two_failures_and_expires():
+    # One failure is never enough.
+    assert is_suppressed("Geo-blocked", 1, 1000, 1000) is False
+    # Two failures, fresh -> suppressed.
+    assert is_suppressed("Geo-blocked", 2, 1000, 1000 + 6 * DAY) is True
+    # Two failures, older than the window -> eligible again.
+    assert is_suppressed("Geo-blocked", 2, 1000, 1000 + 8 * DAY) is False
+
+
+def test_is_suppressed_unknown_reason_is_never_suppressed():
+    assert is_suppressed("Something New", 99, 1000, 1000) is False
+
+
+def test_get_suppressed_reasons_maps_id_to_reason(tmp_path):
+    db = _new_db(tmp_path)
+    db.record_unavailable(platform="SoundCloud", video_id="drm",
+                          channel_url="", title="D",
+                          reason="DRM-protected", now=1000)
+    assert db.get_suppressed_reasons("SoundCloud", now=1000) == {
+        "drm": "DRM-protected"}
+
+
+def test_get_suppressed_reasons_honours_the_two_strike_rule(tmp_path):
+    db = _new_db(tmp_path)
+    db.record_unavailable(platform="YouTube", video_id="gone",
+                          channel_url="", title="G",
+                          reason="Removed", now=1000)
+    assert db.get_suppressed_reasons("YouTube", now=1000) == {}
+    db.record_unavailable(platform="YouTube", video_id="gone",
+                          channel_url="", title="G",
+                          reason="Removed", now=2000)
+    assert db.get_suppressed_reasons("YouTube", now=2000) == {
+        "gone": "Removed"}
+
+
+def test_get_suppressed_reasons_expires_geo_after_the_window(tmp_path):
+    db = _new_db(tmp_path)
+    for ts in (1000, 2000):
+        db.record_unavailable(platform="YouTube", video_id="geo",
+                              channel_url="", title="G",
+                              reason="Geo-blocked", now=ts)
+    assert db.get_suppressed_reasons("YouTube", now=2000 + 6 * DAY) == {
+        "geo": "Geo-blocked"}
+    assert db.get_suppressed_reasons("YouTube", now=2000 + 8 * DAY) == {}
+
+
+def test_get_suppressed_reasons_is_scoped_to_one_platform(tmp_path):
+    db = _new_db(tmp_path)
+    db.record_unavailable(platform="SoundCloud", video_id="x",
+                          channel_url="", title="X",
+                          reason="DRM-protected", now=1000)
+    assert db.get_suppressed_reasons("YouTube", now=1000) == {}
+
+
+def test_get_suppressed_reasons_empty_on_fresh_db(tmp_path):
+    assert _new_db(tmp_path).get_suppressed_reasons("YouTube") == {}
