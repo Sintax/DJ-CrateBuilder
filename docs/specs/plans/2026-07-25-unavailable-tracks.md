@@ -905,12 +905,26 @@ git commit -m "feat(watchlist): exclude permanently-unavailable tracks from scan
 
 ### Task 7: "Forget unavailable tracks" button
 
+> **AMENDED DURING EXECUTION.** As originally written this task counted and
+> cleared the memory with `ch["url"]`, but Task 5 records rows under the URL
+> `_process_one_url` actually received — which for a Watch List download is
+> `watch_fetch_url(platform, ch["url"])`, i.e. the base URL plus `/tracks`
+> (SoundCloud) or `/videos` (YouTube), percent-encoded. The DB methods match
+> `channel_url` exactly, so the button would have read `(0)` forever and cleared
+> nothing. The task was amended to add a pure `canonical_channel_url(url)` helper
+> in `cratebuilder/sidecar.py` — it strips the listing-tab suffix and
+> percent-decodes — applied at both the write site and the button, so the two
+> sides converge on one key. The as-built brief is
+> `.superpowers/sdd/2026-07-25-unavailable-tracks/task-7-brief.md`; the steps
+> below describe the original, unfixed shape and are kept only for the record.
+
 **Files:**
 - Modify: `DJ-CrateBuilder_v1.3.py:11471-11480` (dialog height) and `:11651` (new row before the verify-state notice, inside `_watchlist_edit_channel`)
+- (amended) Modify: `cratebuilder/sidecar.py` + `tests/test_sidecar.py` (the `canonical_channel_url` helper), and the Task 5 write site's `channel_url=` argument
 
 **Interfaces:**
 - Consumes: `count_unavailable_for_channel` / `forget_unavailable_for_channel` from Task 3
-- Produces: no new API — terminal UI wiring
+- Produces: (amended) `cratebuilder.sidecar.canonical_channel_url(url) -> str`
 
 - [ ] **Step 1: Grow the dialog to fit the new row**
 
