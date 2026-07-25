@@ -11536,7 +11536,7 @@ class MP3DownloaderApp(tk.Tk):
 
         dlg = tk.Toplevel(self)
         dlg.title(f"Edit — {ch['display_name']}")
-        dlg.geometry("460x596")
+        dlg.geometry("460x576")
         dlg.configure(bg=BG)
         dlg.resizable(False, False)
         dlg.transient(self)
@@ -11544,7 +11544,7 @@ class MP3DownloaderApp(tk.Tk):
 
         dlg.update_idletasks()
         px = self.winfo_x() + (self.winfo_width() - 460) // 2
-        py = self.winfo_y() + (self.winfo_height() - 596) // 2
+        py = self.winfo_y() + (self.winfo_height() - 576) // 2
         dlg.geometry(f"+{max(0,px)}+{max(0,py)}")
 
         outer = tk.Frame(dlg, bg=BG, padx=24, pady=18)
@@ -11741,7 +11741,7 @@ class MP3DownloaderApp(tk.Tk):
                 return
             removed = self._db.forget_unavailable_for_channel(_ch_url)
             forget_btn.config(text="  Forget unavailable tracks (0)  ",
-                              state="disabled")
+                              state="disabled", fg=TEXT_DIM, cursor="arrow")
             self._watchlist_log(
                 f"{ch['display_name']}: forgot {removed} unavailable track(s)",
                 "info")
@@ -11749,7 +11749,9 @@ class MP3DownloaderApp(tk.Tk):
         forget_btn = tk.Button(
             unavail_row,
             text=f"  Forget unavailable tracks ({_unavail_n})  ",
-            font=("Segoe UI", 9), bg=SURFACE2, fg=TEXT_DIM,
+            font=("Segoe UI", 9), bg=SURFACE2,
+            fg=(TEXT if _unavail_n else TEXT_DIM),
+            disabledforeground=TEXT_DIM,
             activebackground=BORDER, activeforeground=TEXT,
             relief="flat", bd=0, padx=10, pady=4,
             cursor=("hand2" if _unavail_n else "arrow"),
