@@ -270,13 +270,13 @@ def test_fresh_db_has_artwork_columns(tmp_path):
     assert _ARTWORK_COLUMNS <= _columns(db)
 
 
-def test_schema_version_is_4(tmp_path):
+def test_schema_version_is_5(tmp_path):
     db = _new_db(tmp_path)
     with db._conn() as conn:
         row = conn.execute(
             "SELECT value FROM schema_info WHERE key = 'version'").fetchone()
-    assert row["value"] == "4"
-    assert DownloadsDatabase.SCHEMA_VERSION == 4
+    assert row["value"] == "5"
+    assert DownloadsDatabase.SCHEMA_VERSION == 5
 
 
 def test_v3_database_migrates_to_v4_without_data_loss(tmp_path):

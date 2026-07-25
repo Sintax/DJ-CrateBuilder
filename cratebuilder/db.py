@@ -7,7 +7,7 @@ from contextlib import contextmanager
 
 
 class DownloadsDatabase:
-    SCHEMA_VERSION = 4
+    SCHEMA_VERSION = 5
 
     def __init__(self, db_path, debug_logger=None):
         self.db_path = db_path
@@ -94,6 +94,19 @@ class DownloadsDatabase:
                         status                   TEXT    DEFAULT 'idle',
                         last_error               TEXT
                     );
+                    CREATE TABLE IF NOT EXISTS unavailable_tracks (
+                        platform     TEXT NOT NULL,
+                        video_id     TEXT NOT NULL,
+                        channel_url  TEXT,
+                        title        TEXT,
+                        reason       TEXT NOT NULL,
+                        attempts     INTEGER NOT NULL DEFAULT 1,
+                        first_failed INTEGER NOT NULL,
+                        last_failed  INTEGER NOT NULL,
+                        PRIMARY KEY (platform, video_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_unavail_channel_url
+                        ON unavailable_tracks(channel_url);
                 """)
                 # ── Migrations for pre-existing databases ──────────────────
                 # Older DBs (schema v1) lack the channel_id columns. Add them
@@ -384,6 +397,40 @@ class DownloadsDatabase:
                 return row is not None
         except Exception as e:
             self._log("error", f"is_video_downloaded failed: {e}")
+            return False
+
+    def record_unavailable(self, *, platform, video_id, channel_url, title,
+                           reason, now=None):
+        """Remember that a track failed for a permanent reason.
+
+        Upsert keyed on (platform, video_id): a first failure inserts with
+        attempts=1, a repeat bumps attempts and refreshes last_failed and
+        reason. Returns True when a row was written. Tracks with no id or no
+        reason cannot be keyed or judged, so they are ignored (False)."""
+        if not video_id or not reason:
+            return False
+        ts = int(now if now is not None else time.time())
+        try:
+            with self._conn() as conn:
+                conn.execute("""
+                    INSERT INTO unavailable_tracks
+                      (platform, video_id, channel_url, title, reason,
+                       attempts, first_failed, last_failed)
+                    VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                    ON CONFLICT(platform, video_id) DO UPDATE SET
+                        attempts    = attempts + 1,
+                        last_failed = excluded.last_failed,
+                        reason      = excluded.reason,
+                        title       = COALESCE(NULLIF(excluded.title, ''),
+                                               title),
+                        channel_url = COALESCE(NULLIF(excluded.channel_url, ''),
+                                               channel_url)
+                """, (platform or "", video_id, channel_url or "",
+                      title or "", reason, ts, ts))
+            return True
+        except Exception as e:
+            self._log("error", f"record_unavailable failed for "
+                               f"{video_id!r}: {e}")
             return False
 
     def get_most_recent_upload_date(self, channel_url):
