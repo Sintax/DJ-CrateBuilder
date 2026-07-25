@@ -9821,6 +9821,14 @@ class MP3DownloaderApp(tk.Tk):
                     else:                                err = clean[:60]
                     if _perm:
                         unavail += 1
+                        # Remember it so the Watch List stops reporting a track
+                        # that can never be downloaded as "new" on every scan.
+                        self._db.record_unavailable(
+                            platform=platform,
+                            video_id=entry.get("id") or "",
+                            channel_url=url if is_collection else "",
+                            title=item_title,
+                            reason=_perm)
                     else:
                         errors += 1
                     done   += 1
