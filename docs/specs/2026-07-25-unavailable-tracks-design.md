@@ -120,7 +120,7 @@ An unrecognised reason returns False — the memory can only ever hide tracks it
 
 ### 4. Scan integration
 
-`DownloadsDatabase` gains `get_suppressed_ids(platform, now)` returning a `set` of `video_id`s currently suppressed for that platform. The scan fetches it **once** per channel — not one query per entry — and hands a closure to the classifier.
+`DownloadsDatabase` gains `get_suppressed_reasons(platform, now=None)` returning a `{video_id: reason}` dict of everything currently suppressed for that platform. The scan fetches it **once** per channel — not one query per entry — and hands `dict.get` to the classifier as the predicate. Returning the reason rather than a bare bool is what lets the classifier report *why* a track was skipped.
 
 `classify_scan_entries` gains one keyword-only parameter:
 
@@ -129,7 +129,7 @@ def classify_scan_entries(entries, *, is_downloaded, folder_keys, limit_sec,
                           platform, is_unavailable=None):
 ```
 
-`is_unavailable` defaults to `None`, treated as "never suppressed". Existing callers and tests are unaffected. The check sits immediately after the `is_downloaded` check, before the duration filter and the folder-key match.
+`is_unavailable(video_id)` returns a **reason string** when the track is suppressed, or a falsy value when it is not. It defaults to `None`, treated as "never suppressed", so existing callers are unaffected. The check sits immediately after the `is_downloaded` check, before the duration filter and the folder-key match.
 
 The return value gains a third bucket:
 
@@ -189,8 +189,9 @@ Pure-logic only; no tkinter. Run with `python -m pytest -q`.
 - A reason change on re-failure overwrites `reason`.
 - The same `video_id` on two platforms yields two independent rows.
 - An empty `video_id` records nothing.
-- `get_suppressed_ids` returns DRM after one failure, and Removed only after two.
-- `get_suppressed_ids` omits a geo-blocked row older than 7 days and includes one newer.
+- `get_suppressed_reasons` returns DRM after one failure, and Removed only after two.
+- `get_suppressed_reasons` omits a geo-blocked row older than 7 days and includes one newer.
+- `get_suppressed_reasons` maps each suppressed id to its reason string.
 - `count_unavailable_for_channel` / `forget_unavailable_for_channel` are scoped to one `channel_url`.
 - Schema v5 initialises cleanly on a fresh DB **and** on a DB created at v4.
 
