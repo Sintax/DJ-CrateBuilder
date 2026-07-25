@@ -196,14 +196,18 @@ LISTING_TAB_SUFFIXES = ("/tracks", "/videos")
 
 
 def canonical_channel_url(url):
-    """Strip the listing-tab suffix watch_scan_url appends, if present.
+    """Strip the listing-tab suffix watch_scan_url appends, if present, and
+    percent-decode.
 
-    The inverse of watch_scan_url: it maps both a channel's stored URL and the
-    /tracks or /videos listing URL a scan or download was actually run against
-    onto one key. Everything that records or looks up per-channel state uses
-    this, so a row written during a Watch List download is found again from the
-    channel's plain URL. Idempotent; returns "" for empty input."""
-    u = (url or "").rstrip("/")
+    The inverse of watch_scan_url/watch_fetch_url: it maps a channel's stored
+    URL and the /tracks or /videos listing URL a scan or download was actually
+    run against (which watch_fetch_url percent-encodes) onto one key.
+    Everything that records or looks up per-channel state uses this, so a row
+    written during a Watch List download is found again from the channel's
+    plain URL, even when the handle contains characters quote() encodes (e.g.
+    a space). Decoding an already-decoded URL is a no-op. Idempotent; returns
+    "" for empty input."""
+    u = urllib.parse.unquote((url or "").rstrip("/"))
     low = u.lower()
     for suffix in LISTING_TAB_SUFFIXES:
         if low.endswith(suffix):

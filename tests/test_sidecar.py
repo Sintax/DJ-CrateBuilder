@@ -158,7 +158,8 @@ def test_canonical_channel_url_matches_watch_fetch_url_round_trip():
     # The invariant the whole fix rests on: whatever watch_fetch_url produces
     # for a channel must canonicalise back to that channel's stored URL.
     for platform, base in (("SoundCloud", "https://soundcloud.com/ukg2025"),
-                           ("YouTube", "https://www.youtube.com/@UKFDnB")):
+                           ("YouTube", "https://www.youtube.com/@UKFDnB"),
+                           ("YouTube", "https://www.youtube.com/@BASS ENTITY")):
         fetched = sidecar.watch_fetch_url(platform, base)
         assert sidecar.canonical_channel_url(fetched) == base
 
@@ -166,3 +167,24 @@ def test_canonical_channel_url_matches_watch_fetch_url_round_trip():
 def test_canonical_channel_url_handles_empty_and_none():
     assert sidecar.canonical_channel_url("") == ""
     assert sidecar.canonical_channel_url(None) == ""
+
+
+def test_canonical_channel_url_decodes_percent_encoded_handle():
+    # watch_fetch_url percent-encodes the path (e.g. a space in a handle) so
+    # the encoded listing URL and the plain stored URL must canonicalise to
+    # the identical string, or count/forget lookups miss the recorded rows.
+    base = "https://www.youtube.com/@BASS ENTITY"
+    fetched = sidecar.watch_fetch_url("YouTube", base)
+    assert fetched == "https://www.youtube.com/@BASS%20ENTITY/videos"
+    assert sidecar.canonical_channel_url(fetched) == base
+
+
+def test_canonical_channel_url_key_agreement_for_space_handle():
+    # Pins key agreement, not just a string shape: the write-side key (from
+    # the encoded fetch URL) and the read-side key (from the plain stored
+    # URL) must be the exact same string.
+    base = "https://www.youtube.com/@BASS ENTITY"
+    fetched = sidecar.watch_fetch_url("YouTube", base)
+    write_key = sidecar.canonical_channel_url(fetched)
+    read_key = sidecar.canonical_channel_url(base)
+    assert write_key == read_key
