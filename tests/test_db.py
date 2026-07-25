@@ -338,6 +338,153 @@ def test_v3_database_migrates_to_v4_without_data_loss(tmp_path):
     assert len(db2.get_all_downloads()) == 1
 
 
+# ── schema v5: unavailable_tracks memory ───────────────────────────────────
+
+# The v4 downloads/watchlist tables, verbatim, as they exist on disk before
+# unavailable_tracks was introduced.
+_V4_SCHEMA = """
+    CREATE TABLE schema_info (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+    INSERT INTO schema_info (key, value) VALUES ('version', '4');
+    CREATE TABLE downloads (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        video_id            TEXT,
+        title               TEXT NOT NULL,
+        channel_name        TEXT,
+        channel_url         TEXT,
+        channel_id          TEXT,
+        platform            TEXT NOT NULL,
+        genre               TEXT,
+        file_path           TEXT,
+        upload_date         TEXT,
+        download_timestamp  INTEGER NOT NULL,
+        bitrate             TEXT,
+        artwork_path        TEXT,
+        artwork_embedded    INTEGER DEFAULT 0,
+        thumbnail_url       TEXT
+    );
+    CREATE TABLE watchlist (
+        id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+        url                      TEXT NOT NULL UNIQUE,
+        channel_id               TEXT,
+        display_name             TEXT NOT NULL,
+        platform                 TEXT NOT NULL,
+        genre                    TEXT,
+        scan_cutoff_date         TEXT NOT NULL,
+        date_added               INTEGER NOT NULL,
+        last_scanned_timestamp   INTEGER,
+        last_download_started    INTEGER,
+        pending_new_count        INTEGER DEFAULT 0,
+        pending_entries_json     TEXT    DEFAULT '[]',
+        total_downloaded         INTEGER DEFAULT 0,
+        auto_added               INTEGER DEFAULT 0,
+        status                   TEXT    DEFAULT 'idle',
+        last_error               TEXT
+    );
+"""
+
+
+def test_v4_database_migrates_to_v5_without_data_loss(tmp_path):
+    """A live v4 database on a user's disk must open cleanly at v5, keep every
+    existing row exactly as it was, and gain the unavailable_tracks table."""
+    path = str(tmp_path / "legacy_v4.db")
+
+    # Hand-build a v4 database: old downloads/watchlist shape, no
+    # unavailable_tracks table.
+    conn = sqlite3.connect(path)
+    conn.executescript(_V4_SCHEMA)
+    conn.execute("""
+        INSERT INTO downloads
+          (video_id, title, channel_name, channel_url, channel_id, platform,
+           genre, file_path, upload_date, download_timestamp, bitrate,
+           artwork_path, artwork_embedded, thumbnail_url)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, ("abc123", "V4 Track", "V4 Chan", "https://yt/v4", "UCv4",
+          "YouTube", "DnB", "/music/V4 Track.mp3", "20250314",
+          1700000000, "320", "/music/.artwork/abc123.jpg", 1,
+          "https://i.ytimg.com/vi/abc123/hq.jpg"))
+    conn.execute("""
+        INSERT INTO watchlist
+          (url, channel_id, display_name, platform, genre, scan_cutoff_date,
+           date_added, total_downloaded, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, ("https://www.youtube.com/channel/UCv4/videos", "UCv4", "V4 Chan",
+          "YouTube", "DnB", "20250101", 1700000000, 1, "idle"))
+    conn.commit()
+    conn.close()
+
+    conn = sqlite3.connect(path)
+    pre_migration_tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'")}
+    conn.close()
+    assert "unavailable_tracks" not in pre_migration_tables
+
+    # Opening it must migrate in place, not raise.
+    db = DownloadsDatabase(path)
+
+    # (a) the unavailable_tracks table and its index now exist...
+    with db._conn() as conn:
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        indexes = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index'")}
+    assert "unavailable_tracks" in tables
+    assert "idx_unavail_channel_url" in indexes
+
+    # (b) schema_info reports v5...
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT value FROM schema_info WHERE key = 'version'").fetchone()
+    assert row["value"] == "5"
+
+    # (c) ...and the pre-existing rows survived byte-for-byte.
+    dl_rows = db.get_all_downloads()
+    assert len(dl_rows) == 1
+    dl = dl_rows[0]
+    assert dl["video_id"] == "abc123"
+    assert dl["title"] == "V4 Track"
+    assert dl["channel_name"] == "V4 Chan"
+    assert dl["channel_url"] == "https://yt/v4"
+    assert dl["channel_id"] == "UCv4"
+    assert dl["platform"] == "YouTube"
+    assert dl["genre"] == "DnB"
+    assert dl["file_path"] == "/music/V4 Track.mp3"
+    assert dl["upload_date"] == "20250314"
+    assert dl["download_timestamp"] == 1700000000
+    assert dl["bitrate"] == "320"
+    assert dl["artwork_path"] == "/music/.artwork/abc123.jpg"
+    assert dl["artwork_embedded"] == 1
+    assert dl["thumbnail_url"] == "https://i.ytimg.com/vi/abc123/hq.jpg"
+
+    wl_rows = db.get_all_watchlist_channels()
+    assert len(wl_rows) == 1
+    wl = wl_rows[0]
+    assert wl["url"] == "https://www.youtube.com/channel/UCv4/videos"
+    assert wl["channel_id"] == "UCv4"
+    assert wl["display_name"] == "V4 Chan"
+    assert wl["platform"] == "YouTube"
+    assert wl["genre"] == "DnB"
+    assert wl["scan_cutoff_date"] == "20250101"
+    assert wl["date_added"] == 1700000000
+    assert wl["total_downloaded"] == 1
+    assert wl["status"] == "idle"
+
+    # (d) a record_unavailable upsert works against the migrated DB.
+    assert db.record_unavailable(
+        platform="YouTube", video_id="abc123",
+        channel_url="https://www.youtube.com/channel/UCv4",
+        title="V4 Track", reason="DRM-protected") is True
+    assert db.count_unavailable_for_channel(
+        "https://www.youtube.com/channel/UCv4") == 1
+
+    # The migration is idempotent: reopening must not raise or duplicate.
+    db2 = DownloadsDatabase(path)
+    assert len(db2.get_all_downloads()) == 1
+    assert len(db2.get_all_watchlist_channels()) == 1
+
+
 def test_add_download_without_artwork_args_still_works(tmp_path):
     # Every pre-cover-art call site omits the new kwargs and must keep working.
     db = _new_db(tmp_path)

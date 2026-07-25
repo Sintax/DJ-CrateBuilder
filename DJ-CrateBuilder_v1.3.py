@@ -9826,8 +9826,8 @@ class MP3DownloaderApp(tk.Tk):
                         self._db.record_unavailable(
                             platform=platform,
                             video_id=entry.get("id") or "",
-                            channel_url=(canonical_channel_url(url)
-                                         if is_collection else ""),
+                            channel_url=canonical_channel_url(
+                                url if is_collection else coll_channel_url),
                             title=item_title,
                             reason=_perm)
                     else:

@@ -183,13 +183,15 @@ def watch_fetch_url(platform, url):
     spaces (e.g. "@BASS ENTITY") isn't truncated at the first whitespace
     (which otherwise yields a 404). This is the exact URL both the Watch List
     scan and a Watch List "Download New" feed to yt-dlp, so each blows through
-    the channel's catalogue in a single extraction. Returns "" for empty url."""
+    the channel's catalogue in a single extraction. Idempotent — the path is
+    decoded before re-encoding, so an already percent-encoded stored URL is
+    never double-encoded. Returns "" for empty url."""
     scan = watch_scan_url(platform, url)
     if not scan:
         return scan
     parsed = urllib.parse.urlsplit(scan)
     return urllib.parse.urlunsplit(parsed._replace(
-        path=urllib.parse.quote(parsed.path, safe="/@&")))
+        path=urllib.parse.quote(urllib.parse.unquote(parsed.path), safe="/@&")))
 
 
 LISTING_TAB_SUFFIXES = ("/tracks", "/videos")
