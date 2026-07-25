@@ -117,3 +117,52 @@ def test_channel_id_from_url_delegator(cb):
     assert App._channel_id_from_url(
         "https://www.youtube.com/channel/UCabc/videos") == "UCabc"
     assert App._channel_id_from_url("https://www.youtube.com/@h") is None
+
+
+def test_canonical_channel_url_strips_soundcloud_tracks_tab():
+    assert (sidecar.canonical_channel_url(
+        "https://soundcloud.com/ukg2025/tracks")
+        == "https://soundcloud.com/ukg2025")
+
+
+def test_canonical_channel_url_strips_youtube_videos_tab():
+    assert (sidecar.canonical_channel_url(
+        "https://www.youtube.com/@UKFDnB/videos")
+        == "https://www.youtube.com/@UKFDnB")
+
+
+def test_canonical_channel_url_is_idempotent():
+    once = sidecar.canonical_channel_url(
+        "https://soundcloud.com/ukg2025/tracks")
+    assert sidecar.canonical_channel_url(once) == once
+
+
+def test_canonical_channel_url_strips_trailing_slash():
+    assert (sidecar.canonical_channel_url("https://soundcloud.com/ukg2025/")
+            == "https://soundcloud.com/ukg2025")
+
+
+def test_canonical_channel_url_leaves_plain_urls_alone():
+    assert (sidecar.canonical_channel_url("https://soundcloud.com/ukg2025")
+            == "https://soundcloud.com/ukg2025")
+
+
+def test_canonical_channel_url_does_not_strip_a_mid_path_segment():
+    # Only a trailing listing tab is a tab; "/videos" elsewhere is part of the
+    # channel's own path and must survive.
+    assert (sidecar.canonical_channel_url("https://example.com/videos/thing")
+            == "https://example.com/videos/thing")
+
+
+def test_canonical_channel_url_matches_watch_fetch_url_round_trip():
+    # The invariant the whole fix rests on: whatever watch_fetch_url produces
+    # for a channel must canonicalise back to that channel's stored URL.
+    for platform, base in (("SoundCloud", "https://soundcloud.com/ukg2025"),
+                           ("YouTube", "https://www.youtube.com/@UKFDnB")):
+        fetched = sidecar.watch_fetch_url(platform, base)
+        assert sidecar.canonical_channel_url(fetched) == base
+
+
+def test_canonical_channel_url_handles_empty_and_none():
+    assert sidecar.canonical_channel_url("") == ""
+    assert sidecar.canonical_channel_url(None) == ""

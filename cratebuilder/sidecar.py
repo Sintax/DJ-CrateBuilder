@@ -190,3 +190,22 @@ def watch_fetch_url(platform, url):
     parsed = urllib.parse.urlsplit(scan)
     return urllib.parse.urlunsplit(parsed._replace(
         path=urllib.parse.quote(parsed.path, safe="/@&")))
+
+
+LISTING_TAB_SUFFIXES = ("/tracks", "/videos")
+
+
+def canonical_channel_url(url):
+    """Strip the listing-tab suffix watch_scan_url appends, if present.
+
+    The inverse of watch_scan_url: it maps both a channel's stored URL and the
+    /tracks or /videos listing URL a scan or download was actually run against
+    onto one key. Everything that records or looks up per-channel state uses
+    this, so a row written during a Watch List download is found again from the
+    channel's plain URL. Idempotent; returns "" for empty input."""
+    u = (url or "").rstrip("/")
+    low = u.lower()
+    for suffix in LISTING_TAB_SUFFIXES:
+        if low.endswith(suffix):
+            return u[:-len(suffix)]
+    return u

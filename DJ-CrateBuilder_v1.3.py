@@ -30,7 +30,7 @@ from cratebuilder.util import (
 from cratebuilder.sidecar import (
     channel_url_from_id, channel_id_from_url,
     read_channel_sidecar, write_channel_sidecar, is_unresolved_channel,
-    watch_fetch_url, classify_scan_entries,
+    watch_fetch_url, classify_scan_entries, canonical_channel_url,
 )
 from cratebuilder.db import DownloadsDatabase
 from cratebuilder.cleanup import (
@@ -9826,7 +9826,8 @@ class MP3DownloaderApp(tk.Tk):
                         self._db.record_unavailable(
                             platform=platform,
                             video_id=entry.get("id") or "",
-                            channel_url=url if is_collection else "",
+                            channel_url=(canonical_channel_url(url)
+                                         if is_collection else ""),
                             title=item_title,
                             reason=_perm)
                     else:
@@ -11476,7 +11477,7 @@ class MP3DownloaderApp(tk.Tk):
 
         dlg = tk.Toplevel(self)
         dlg.title(f"Edit — {ch['display_name']}")
-        dlg.geometry("460x540")
+        dlg.geometry("460x596")
         dlg.configure(bg=BG)
         dlg.resizable(False, False)
         dlg.transient(self)
@@ -11484,7 +11485,7 @@ class MP3DownloaderApp(tk.Tk):
 
         dlg.update_idletasks()
         px = self.winfo_x() + (self.winfo_width() - 460) // 2
-        py = self.winfo_y() + (self.winfo_height() - 540) // 2
+        py = self.winfo_y() + (self.winfo_height() - 596) // 2
         dlg.geometry(f"+{max(0,px)}+{max(0,py)}")
 
         outer = tk.Frame(dlg, bg=BG, padx=24, pady=18)
@@ -11655,6 +11656,49 @@ class MP3DownloaderApp(tk.Tk):
                   command=_remove_genre)
         remove_btn.pack(side="left")
         add_hover(remove_btn)
+
+        # ── Unavailable-track memory ──────────────────────────────────────
+        # Tracks that failed permanently (DRM, removed, geo-blocked) stop being
+        # reported as new. This is the escape hatch: forgetting them makes the
+        # next scan offer them again and the next download re-attempt them.
+        unavail_row = tk.Frame(outer, bg=BG)
+        unavail_row.pack(fill="x", pady=(8, 0))
+        # Canonicalised so it matches the key the download loop recorded under
+        # (a Watch List run hands yt-dlp the /tracks or /videos listing URL).
+        _ch_url = canonical_channel_url(ch.get("url") or "")
+        _unavail_n = self._db.count_unavailable_for_channel(_ch_url)
+
+        def _forget_unavailable():
+            n = self._db.count_unavailable_for_channel(_ch_url)
+            if not n:
+                return
+            if not messagebox.askyesno(
+                    "Forget Unavailable Tracks",
+                    f"Forget {n} track(s) recorded as permanently unavailable "
+                    f"for '{ch['display_name']}'?\n\n"
+                    f"They will count as new again on the next scan and be "
+                    f"re-attempted on the next download.",
+                    parent=dlg):
+                return
+            removed = self._db.forget_unavailable_for_channel(_ch_url)
+            forget_btn.config(text="  Forget unavailable tracks (0)  ",
+                              state="disabled")
+            self._watchlist_log(
+                f"{ch['display_name']}: forgot {removed} unavailable track(s)",
+                "info")
+
+        forget_btn = tk.Button(
+            unavail_row,
+            text=f"  Forget unavailable tracks ({_unavail_n})  ",
+            font=("Segoe UI", 9), bg=SURFACE2, fg=TEXT_DIM,
+            activebackground=BORDER, activeforeground=TEXT,
+            relief="flat", bd=0, padx=10, pady=4,
+            cursor=("hand2" if _unavail_n else "arrow"),
+            state=("normal" if _unavail_n else "disabled"),
+            command=_forget_unavailable)
+        forget_btn.pack(side="left")
+        if _unavail_n:
+            add_hover(forget_btn)
 
         if verify_state == "missing":
             tk.Label(outer,
