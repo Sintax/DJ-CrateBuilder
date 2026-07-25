@@ -476,6 +476,42 @@ class DownloadsDatabase:
             self._log("error", f"get_suppressed_reasons failed: {e}")
             return {}
 
+    def count_unavailable_for_channel(self, channel_url):
+        """How many permanent failures are remembered for *channel_url*.
+
+        Counts every remembered row, not just the currently-suppressed ones,
+        because this is the number behind the Watch List "Forget unavailable
+        tracks" button and forgetting clears the lot. Returns 0 on failure or
+        an empty url."""
+        if not channel_url:
+            return 0
+        try:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS n FROM unavailable_tracks "
+                    "WHERE channel_url = ?", (channel_url,)).fetchone()
+                return int(row["n"]) if row else 0
+        except Exception as e:
+            self._log("error", f"count_unavailable_for_channel failed: {e}")
+            return 0
+
+    def forget_unavailable_for_channel(self, channel_url):
+        """Drop the unavailable-track memory for one channel and return the
+        number of rows removed. Scoped strictly to *channel_url* — no files
+        and no download history are touched. Returns 0 on failure or an empty
+        url."""
+        if not channel_url:
+            return 0
+        try:
+            with self._conn() as conn:
+                cur = conn.execute(
+                    "DELETE FROM unavailable_tracks WHERE channel_url = ?",
+                    (channel_url,))
+                return cur.rowcount or 0
+        except Exception as e:
+            self._log("error", f"forget_unavailable_for_channel failed: {e}")
+            return 0
+
     def get_most_recent_upload_date(self, channel_url):
         try:
             with self._conn() as conn:

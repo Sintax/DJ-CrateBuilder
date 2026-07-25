@@ -166,3 +166,55 @@ def test_get_suppressed_reasons_is_scoped_to_one_platform(tmp_path):
 
 def test_get_suppressed_reasons_empty_on_fresh_db(tmp_path):
     assert _new_db(tmp_path).get_suppressed_reasons("YouTube") == {}
+
+
+def _seed_two_channels(db):
+    db.record_unavailable(platform="SoundCloud", video_id="a",
+                          channel_url="https://sc/ukg", title="A",
+                          reason="DRM-protected", now=1000)
+    db.record_unavailable(platform="SoundCloud", video_id="b",
+                          channel_url="https://sc/ukg", title="B",
+                          reason="DRM-protected", now=1000)
+    db.record_unavailable(platform="SoundCloud", video_id="c",
+                          channel_url="https://sc/other", title="C",
+                          reason="Removed", now=1000)
+
+
+def test_count_unavailable_for_channel(tmp_path):
+    db = _new_db(tmp_path)
+    _seed_two_channels(db)
+    assert db.count_unavailable_for_channel("https://sc/ukg") == 2
+    assert db.count_unavailable_for_channel("https://sc/other") == 1
+    assert db.count_unavailable_for_channel("https://sc/nope") == 0
+
+
+def test_count_unavailable_counts_all_rows_not_just_suppressed(tmp_path):
+    # A single Removed failure is recorded but not yet suppressed; the button
+    # count reports what is remembered, so forgetting clears everything.
+    db = _new_db(tmp_path)
+    db.record_unavailable(platform="YouTube", video_id="one",
+                          channel_url="https://yt/c", title="O",
+                          reason="Removed", now=1000)
+    assert db.get_suppressed_reasons("YouTube", now=1000) == {}
+    assert db.count_unavailable_for_channel("https://yt/c") == 1
+
+
+def test_forget_unavailable_for_channel_is_scoped(tmp_path):
+    db = _new_db(tmp_path)
+    _seed_two_channels(db)
+    assert db.forget_unavailable_for_channel("https://sc/ukg") == 2
+    assert db.count_unavailable_for_channel("https://sc/ukg") == 0
+    assert db.count_unavailable_for_channel("https://sc/other") == 1
+
+
+def test_forget_unavailable_on_empty_url_is_a_noop(tmp_path):
+    db = _new_db(tmp_path)
+    _seed_two_channels(db)
+    assert db.forget_unavailable_for_channel("") == 0
+    assert db.count_unavailable_for_channel("https://sc/ukg") == 2
+
+
+def test_count_unavailable_on_empty_url_is_zero(tmp_path):
+    db = _new_db(tmp_path)
+    _seed_two_channels(db)
+    assert db.count_unavailable_for_channel("") == 0
