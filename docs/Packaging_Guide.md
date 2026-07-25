@@ -1,14 +1,15 @@
 # DJ-CrateBuilder v1.3 — Packaging Guide
 
-Two supported install flows:
+Supported install flows:
 
-| Platform     | Method                         | Target user         |
-|--------------|--------------------------------|---------------------|
-| Windows      | PyInstaller + Inno Setup       | End users on Windows |
-| Linux (native) | Bash installer (`install-linux.sh`) | Linux Mint / Ubuntu / Fedora / Arch |
-| Linux (Wine) | Inno Setup .exe run under Wine | Fallback only       |
+| Platform | Method | Target user |
+|----------|--------|-------------|
+| Windows | PyInstaller + Inno Setup | End users on Windows |
+| Debian / Ubuntu / Linux Mint | `.deb` package (CI-built) | **Recommended Linux path** |
+| Other Linux (Fedora / Arch / …) | Bash installer (`install-linux.sh`) | Distros `dpkg` can't serve |
 
-The **native Linux path** is now the recommended flow on Linux — no Wine required.
+Both platforms get **in-app updates**: Windows polls `update.json` on the
+`nightly` branch, Linux polls `update-linux.json` on the `linux-v1.3` release.
 
 ---
 
@@ -200,106 +201,135 @@ build.
 
 ---
 
-# LINUX (NATIVE) — Recommended
+# LINUX — `.deb` package (Debian / Ubuntu / Linux Mint)
 
-This is the "just as easy as Windows" path you tested on the Linux Mint VM. No Wine, no exe, no PyInstaller.
+There is no PyInstaller step on Linux and no Wine. The app runs on the distro's
+own Python 3; the package ships the source and provisions a private virtualenv
+at install time.
 
-## What you ship
-
-A single archive (zip or tar.gz) containing the launcher script, the
-`cratebuilder/` package it imports, the install/uninstall scripts, and the
-requirements file:
+## What the package contains
 
 ```
-DJ-CrateBuilder-v1.3-linux/
+/opt/dj-cratebuilder/
 ├── DJ-CrateBuilder_v1.3.py
-├── cratebuilder/            # required — the .py imports from this package
-│   ├── __init__.py
-│   ├── db.py
-│   ├── sidecar.py
-│   ├── startup.py
-│   ├── tray.py
-│   └── util.py
-├── requirements.txt         # yt-dlp, pystray, Pillow
-├── icon.ico                 # optional — used by the .desktop entry
-├── install-linux.sh
-└── uninstall-linux.sh
+├── cratebuilder/                     # the package the .py imports
+├── requirements.txt
+└── venv/                             # created by postinst, not shipped
+/usr/bin/dj-cratebuilder              # shim: exec venv/bin/python <app>
+/usr/share/applications/dj-cratebuilder.desktop
+/usr/share/icons/hicolor/256x256/apps/dj-cratebuilder.png
 ```
 
-`install-linux.sh` refuses to run if `cratebuilder/` is missing — v1.3 will not
-launch without it.
+System dependencies are declared in the control file and resolved by `apt`:
+`python3 (>= 3.10)`, `python3-tk`, `python3-venv`, `ffmpeg`. The Python
+dependencies (`yt-dlp`, `pystray`, `Pillow`, `send2trash`, `mutagen`) go into
+`/opt/dj-cratebuilder/venv` — PEP 668 forbids installing them into the system
+Python, so the venv is not optional.
 
-## Build the release archive
+Package version mirrors the app's own version: `build-deb.sh` greps `APP_BUILD`
+out of the source, so the `.deb` filename, the About tab, and
+`update-linux.json` all report the same `1.3.<build>`.
 
-From the repo root:
+## Publishing a release (the normal path)
+
+The `.deb` is built and published by CI, **manual trigger only**:
 
 ```bash
-mkdir -p release/DJ-CrateBuilder-v1.3-linux
-cp DJ-CrateBuilder_v1.3.py    release/DJ-CrateBuilder-v1.3-linux/
-cp -r cratebuilder            release/DJ-CrateBuilder-v1.3-linux/
-cp requirements.txt           release/DJ-CrateBuilder-v1.3-linux/
-cp icon.ico                   release/DJ-CrateBuilder-v1.3-linux/ 2>/dev/null || true
-cp install-linux.sh           release/DJ-CrateBuilder-v1.3-linux/
-cp uninstall-linux.sh         release/DJ-CrateBuilder-v1.3-linux/
-chmod +x release/DJ-CrateBuilder-v1.3-linux/*.sh
-
-# Strip any local __pycache__ so it doesn't ship
-find release/DJ-CrateBuilder-v1.3-linux -name __pycache__ -type d -exec rm -rf {} +
-
-cd release
-tar -czf DJ-CrateBuilder-v1.3-linux.tar.gz DJ-CrateBuilder-v1.3-linux/
-# or:
-zip -r DJ-CrateBuilder-v1.3-linux.zip DJ-CrateBuilder-v1.3-linux/
+gh workflow run build-deb.yml
 ```
 
-## What users do (Linux Mint / Ubuntu / Debian)
+Or: GitHub → Actions → **build-deb** → *Run workflow*.
 
-1. Download and extract the archive
-2. Open a terminal in the extracted folder
-3. Run:
-   ```bash
-   ./install-linux.sh
-   ```
+[`.github/workflows/build-deb.yml`](../.github/workflows/build-deb.yml) runs on
+`ubuntu-latest` and:
 
-The script:
-- Verifies Python 3.10+ and `tkinter`
-- Verifies `ffmpeg` is on PATH
-- Installs `yt-dlp`, `pystray`, and `Pillow` from `requirements.txt` (user pip)
-- Copies the `.py` and the `cratebuilder/` package into `~/.local/share/DJ-CrateBuilder/`
-- Creates the `dj-cratebuilder` command in `~/.local/bin/`
-- Creates a `.desktop` entry so it shows in the app menu
+1. Builds the package via `bash packaging/deb/build-deb.sh`
+2. **Smoke-tests it** — installs the `.deb` on the runner, asserts
+   `/usr/bin/dj-cratebuilder` exists, imports every venv dependency, and
+   byte-compiles the app
+3. Uploads the `.deb` to the `linux-v1.3` GitHub Release (creating it on first
+   run), replacing any previous `.deb` asset so exactly one is ever attached
+4. Generates `update-linux.json` (build number, download URL, SHA-256,
+   filename) and uploads it to the same release with `--clobber`
+5. Retitles the release to `DJ-CrateBuilder v1.3 (Build N) — Linux package (.deb)`
 
-If dependencies are missing it prints the exact apt/dnf/pacman command to fix it.
+This channel is **completely separate from the Windows nightly channel** — it
+never touches `scripts/release.py`, the `nightly` branch, or `update.json`.
 
-### Linux Mint specifics
+> **Bump `APP_BUILD` first.** The workflow reads it from the source on `main`;
+> it does not increment anything itself. Run the Windows nightly (which owns
+> the bump) or land the bump commit before dispatching the workflow, or the
+> `.deb` will ship under a build number that's already published.
 
-Mint 21/22 ships Python 3.10+ and tkinter by default. Only thing users typically need:
+## Building locally (optional)
+
+Requires a Linux machine or WSL with `dpkg-deb` and `python3-pil`:
 
 ```bash
-sudo apt install ffmpeg
+sudo apt-get install -y python3-pil
+bash packaging/deb/build-deb.sh          # → dist/deb/dj-cratebuilder_1.3.N_all.deb
+bash packaging/deb/build-deb.sh 99       # override the build number
 ```
 
-## Uninstall
+Sources live in [`packaging/deb/`](../packaging/deb/): `build-deb.sh`,
+`postinst` (creates the venv, refreshes desktop/icon caches), `prerm` (removes
+the venv and `__pycache__` so `dpkg` can clean out `/opt`), and
+`dj-cratebuilder.desktop`.
+
+## What users do
+
+Download the `.deb` from the
+[`linux-v1.3` release](https://github.com/Sintax/DJ-CrateBuilder/releases/tag/linux-v1.3)
+and double-click it, or:
 
 ```bash
-./uninstall-linux.sh
+sudo apt install ./dj-cratebuilder_1.3.*_all.deb
 ```
 
-Removes the install dir, launcher, and `.desktop` entry. Asks before deleting config. Downloaded MP3s in `~/Music/DJ-CrateBuilder/` are left alone.
+`apt` pulls in `ffmpeg`/`python3-tk` automatically; `postinst` then builds the
+venv (this is the slow part — it's `pip install` over the network). The app
+appears in the menu under Sound & Video and as the `dj-cratebuilder` command.
+
+### In-app updates
+
+The Linux build polls `update-linux.json` on the `linux-v1.3` release, the same
+way Windows polls `update.json`. On a newer build it downloads the `.deb`,
+verifies the SHA-256, and installs it via `apt` behind a **pkexec** PolicyKit
+password prompt, then relaunches. There's no separate swap process — `apt`
+replaces the files under `/opt` while the running process keeps its old file
+handles. If `pkexec` is absent the app just points the user at the release page.
+
+### Uninstall
+
+```bash
+sudo apt remove dj-cratebuilder       # keeps config
+sudo apt purge  dj-cratebuilder       # also removes package config
+```
+
+`prerm` deletes the venv it created. Config (`~/.dj_cratebuilder_config.json`)
+and downloaded MP3s in `~/Music/DJ-CrateBuilder/` are left alone either way.
 
 ---
 
-# LINUX (WINE) — Fallback only
+# LINUX — script installer (non-Debian distros)
 
-If a user can't run Python natively, the Wine path still works. See `docs/Linux_Wine_Setup.md`.
+For Fedora, Arch, openSUSE, and anything else `dpkg` can't serve, ship the repo
+contents plus [`install-linux.sh`](../install-linux.sh). It does the same job
+without a package manager: verifies Python 3.10+/`tkinter`/`ffmpeg`, pip-installs
+`requirements.txt`, copies the app and `cratebuilder/` into
+`~/.local/share/DJ-CrateBuilder/`, creates the `dj-cratebuilder` launcher in
+`~/.local/bin/`, and writes a `.desktop` entry. Missing dependencies produce the
+exact `apt`/`dnf`/`pacman` command to fix them.
 
-Build the Wine-targeted installer:
+The script refuses to run if `cratebuilder/` is missing — the app will not
+launch without it.
 
-1. Open `docs\DJ-CrateBuilder_Installer_Linux.iss` in Inno Setup Compiler
-2. Same GUID/path steps as Windows
-3. Ctrl+F9 → `Output\DJ-CrateBuilder_v1.3_Setup_Linux.exe`
+Uninstall with [`uninstall-linux.sh`](../uninstall-linux.sh): removes the
+install dir, launcher, and `.desktop` entry, asks before deleting config, and
+leaves downloaded MP3s alone.
 
-User runs: `wine DJ-CrateBuilder_v1.3_Setup_Linux.exe`
+> This path gets **no in-app updates** — the updater only knows the `.deb` and
+> the Windows nightly. Users re-run `install-linux.sh` to upgrade.
 
 ---
 
@@ -325,9 +355,11 @@ The **debug log** is new — it captures yt-dlp options, cookie config, and full
       updates" sees and installs it on a test machine. Commit the bump after.
 - [ ] (Fresh installer) `python scripts/release.py --build-only`, smoke-test, then build
       the Windows installer in Inno Setup
-- [ ] Linux `.tar.gz` archive built — contains `cratebuilder/` + `requirements.txt`
-- [ ] Tested `install-linux.sh` on Linux Mint VM
-- [ ] Tested `uninstall-linux.sh` (leaves MP3s intact)
+- [ ] (Linux) `APP_BUILD` bump landed on `main`, then `gh workflow run build-deb.yml`
+      — CI smoke-test green, `.deb` + `update-linux.json` on the `linux-v1.3` release
+- [ ] Installed the published `.deb` on a Linux Mint VM; venv built, app launches
+- [ ] About-tab "Check for updates" sees the new build on Linux and installs via pkexec
+- [ ] `sudo apt remove dj-cratebuilder` cleans up `/opt` and leaves MP3s intact
 - [ ] Debug log viewer opens and displays data after a download
 - [ ] Watch List startup auto-scan refreshes new-track counts on launch
 - [ ] Tray icon appears when "Minimize to system tray" is enabled
