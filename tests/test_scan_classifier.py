@@ -118,10 +118,67 @@ def test_empty_entries():
     out = sidecar.classify_scan_entries(
         [], is_downloaded=_never_downloaded, folder_keys={}, limit_sec=None,
         platform="YouTube")
-    assert out == {"new": [], "on_disk": []}
+    assert out == {"new": [], "on_disk": [], "unavailable": []}
 
 
 def test_classify_scan_entries_delegator(cb):
     # The monolith's _watchlist_scan_channel uses the same extracted function,
     # not a private copy.
     assert cb.classify_scan_entries is sidecar.classify_scan_entries
+
+
+def test_suppressed_entry_goes_to_unavailable_not_new():
+    out = sidecar.classify_scan_entries(
+        [{"id": "drm1", "title": "Locked Track"}],
+        is_downloaded=_never_downloaded, folder_keys={}, limit_sec=None,
+        platform="SoundCloud",
+        is_unavailable=lambda vid: "DRM-protected" if vid == "drm1" else None)
+    assert out["new"] == []
+    assert out["unavailable"] == [{"id": "drm1", "title": "Locked Track",
+                                   "reason": "DRM-protected"}]
+
+
+def test_unsuppressed_entry_still_passes_through():
+    out = sidecar.classify_scan_entries(
+        [{"id": "ok1", "title": "Fine"}],
+        is_downloaded=_never_downloaded, folder_keys={}, limit_sec=None,
+        platform="SoundCloud", is_unavailable=lambda _vid: None)
+    assert [e["id"] for e in out["new"]] == ["ok1"]
+    assert out["unavailable"] == []
+
+
+def test_downloaded_takes_precedence_over_suppressed():
+    # Once a track has downloaded it is a download, full stop — it must not
+    # reappear in the unavailable bucket.
+    out = sidecar.classify_scan_entries(
+        [{"id": "v1", "title": "Owned"}],
+        is_downloaded=lambda vid: vid == "v1", folder_keys={}, limit_sec=None,
+        platform="YouTube", is_unavailable=lambda _vid: "Removed")
+    assert out["new"] == []
+    assert out["on_disk"] == []
+    assert out["unavailable"] == []
+
+
+def test_suppression_is_skipped_for_entries_without_an_id():
+    # No id means nothing could have been recorded against it.
+    out = sidecar.classify_scan_entries(
+        [{"title": "No ID"}],
+        is_downloaded=_never_downloaded, folder_keys={}, limit_sec=None,
+        platform="YouTube", is_unavailable=lambda _vid: "Removed")
+    assert [e["title"] for e in out["new"]] == ["No ID"]
+    assert out["unavailable"] == []
+
+
+def test_suppression_beats_the_duration_filter_and_folder_match():
+    # A suppressed track is reported as unavailable regardless of how it
+    # would otherwise have been bucketed.
+    key = sidecar.normalize_track_key("On Disk")
+    out = sidecar.classify_scan_entries(
+        [{"id": "a", "title": "Too Long", "duration": 99999},
+         {"id": "b", "title": "On Disk"}],
+        is_downloaded=_never_downloaded,
+        folder_keys={key: r"C:\Music\On Disk.mp3"}, limit_sec=60,
+        platform="YouTube", is_unavailable=lambda _vid: "DRM-protected")
+    assert out["new"] == []
+    assert out["on_disk"] == []
+    assert {e["id"] for e in out["unavailable"]} == {"a", "b"}

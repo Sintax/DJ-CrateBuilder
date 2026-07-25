@@ -108,7 +108,7 @@ def watch_scan_url(platform, url):
 
 
 def classify_scan_entries(entries, *, is_downloaded, folder_keys, limit_sec,
-                          platform):
+                          platform, is_unavailable=None):
     """Bucket yt-dlp flat-playlist *entries* into new vs already-owned tracks.
 
     Pure (no DB / tkinter / filesystem): the DB membership check is injected as
@@ -124,15 +124,34 @@ def classify_scan_entries(entries, *, is_downloaded, folder_keys, limit_sec,
     A surviving entry whose normalised title matches a folder key is 'on_disk'
     (a legacy file to backfill then hide); otherwise it is 'new'.
 
-    Returns {"new": [...], "on_disk": [...]} where each new item is
-    {id, title, url, upload_date} and each on_disk item is
-    {id, title, upload_date, file_path}. The id is "" when the entry has none."""
+    *is_unavailable(video_id)* is the permanently-unavailable memory: it returns
+    a reason string ("DRM-protected", "Removed", "Geo-blocked") for a track that
+    can never be downloaded, or a falsy value otherwise. None (the default)
+    means "never suppressed". It is consulted after the DB check — a track that
+    has since downloaded is a download — and before every other rule, so a
+    suppressed track is reported as unavailable no matter how it would
+    otherwise have been bucketed.
+
+    Returns {"new": [...], "on_disk": [...], "unavailable": [...]} where each new
+    item is {id, title, url, upload_date}, each on_disk item is
+    {id, title, upload_date, file_path}, and each unavailable item is
+    {id, title, reason}. The id is "" when the entry has none."""
     new_entries = []
     on_disk = []
+    unavailable = []
     for e in entries:
         vid_id = e.get("id")
         if vid_id and is_downloaded(vid_id):
             continue
+        if vid_id and is_unavailable is not None:
+            reason = is_unavailable(vid_id)
+            if reason:
+                unavailable.append({
+                    "id":     vid_id,
+                    "title":  e.get("title") or "",
+                    "reason": reason,
+                })
+                continue
         if limit_sec is not None:
             dur = e.get("duration")
             if dur and dur > limit_sec:
@@ -155,7 +174,8 @@ def classify_scan_entries(entries, *, is_downloaded, folder_keys, limit_sec,
                                 if platform == "YouTube" else "")),
             "upload_date": e.get("upload_date") or "",
         })
-    return {"new": new_entries, "on_disk": on_disk}
+    return {"new": new_entries, "on_disk": on_disk,
+            "unavailable": unavailable}
 
 
 def watch_fetch_url(platform, url):
