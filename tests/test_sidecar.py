@@ -98,6 +98,32 @@ def test_watch_fetch_url():
     assert watch_fetch_url("YouTube", "") == ""
 
 
+def test_watch_fetch_url_is_idempotent():
+    from cratebuilder.sidecar import watch_fetch_url
+    # Applying watch_fetch_url twice must equal applying it once, or a stored
+    # URL that is already percent-encoded gets double-encoded on the next
+    # scan (garbling the path yt-dlp receives).
+    cases = [
+        ("YouTube", "https://www.youtube.com/channel/UCx"),
+        ("YouTube", "https://www.youtube.com/@BASS ENTITY"),
+        ("SoundCloud", "https://soundcloud.com/%D0%BC%D1%83%D0%B7"),
+    ]
+    for platform, url in cases:
+        once  = watch_fetch_url(platform, url)
+        twice = watch_fetch_url(platform, once)
+        assert twice == once
+
+
+def test_watch_fetch_url_key_agreement_for_percent_encoded_stored_url():
+    # A stored URL that already contains a % (e.g. a Cyrillic handle) must
+    # canonicalise to the same key whether read from the plain stored URL or
+    # from the fetch URL watch_fetch_url hands to yt-dlp.
+    base = "https://soundcloud.com/%D0%BC%D1%83%D0%B7"
+    fetched = sidecar.watch_fetch_url("SoundCloud", base)
+    assert sidecar.canonical_channel_url(fetched) == \
+        sidecar.canonical_channel_url(base)
+
+
 def test_channel_id_from_url():
     from cratebuilder.sidecar import channel_id_from_url
     # pulls the UC… id out of a /channel/ URL (word chars + hyphens)
