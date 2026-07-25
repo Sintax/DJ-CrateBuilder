@@ -5,6 +5,28 @@ import threading
 import time
 from contextlib import contextmanager
 
+# How long a geo-blocked track stays suppressed before the app gives it
+# another chance (the user's location or VPN may have changed since).
+GEO_RECHECK_SECONDS = 7 * 24 * 3600
+
+
+def is_suppressed(reason, attempts, last_failed, now):
+    """True if a remembered permanent failure should hide a track from 'new'.
+
+    DRM is deterministic proof on the first failure. Removed and Geo-blocked
+    need two, so a transient outage or 404 blip can't bury a live track.
+    Geo-blocked additionally expires after GEO_RECHECK_SECONDS. An unrecognised
+    reason is never suppressed, so a future reason string added to
+    classify_permanent_failure degrades to today's behaviour rather than
+    hiding tracks silently."""
+    if reason == "DRM-protected":
+        return attempts >= 1
+    if reason == "Removed":
+        return attempts >= 2
+    if reason == "Geo-blocked":
+        return attempts >= 2 and (now - last_failed) < GEO_RECHECK_SECONDS
+    return False
+
 
 class DownloadsDatabase:
     SCHEMA_VERSION = 5
@@ -432,6 +454,27 @@ class DownloadsDatabase:
             self._log("error", f"record_unavailable failed for "
                                f"{video_id!r}: {e}")
             return False
+
+    def get_suppressed_reasons(self, platform, now=None):
+        """Return {video_id: reason} for every track on *platform* currently
+        hidden by the unavailable-track memory.
+
+        Fetched once per scan and handed to classify_scan_entries as its
+        is_unavailable predicate (dict.get), so a scan costs one query rather
+        than one per entry. Returns {} on failure."""
+        ts = int(now if now is not None else time.time())
+        try:
+            with self._conn() as conn:
+                rows = conn.execute("""
+                    SELECT video_id, reason, attempts, last_failed
+                    FROM unavailable_tracks WHERE platform = ?
+                """, (platform or "",)).fetchall()
+            return {r["video_id"]: r["reason"] for r in rows
+                    if is_suppressed(r["reason"], r["attempts"],
+                                     r["last_failed"], ts)}
+        except Exception as e:
+            self._log("error", f"get_suppressed_reasons failed: {e}")
+            return {}
 
     def get_most_recent_upload_date(self, channel_url):
         try:
