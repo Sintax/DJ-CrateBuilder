@@ -11956,13 +11956,19 @@ class MP3DownloaderApp(tk.Tk):
                 now_ts = int(time.time())
                 limit_on  = bool(self._limit_enabled.get())
                 limit_sec = self._limit_minutes.get() * 60 if limit_on else None
+                # One query per scan, not one per entry: every track this
+                # platform has already proven undownloadable (DRM, removed,
+                # geo-blocked) so it is not offered as "new" again.
+                suppressed = self._db.get_suppressed_reasons(platform)
                 classified = classify_scan_entries(
                     entries,
                     is_downloaded=self._db.is_video_downloaded,
                     folder_keys=folder_keys,
                     limit_sec=limit_sec,
-                    platform=platform)
+                    platform=platform,
+                    is_unavailable=suppressed.get)
                 new_entries = classified["new"]
+                n_unavail = len(classified.get("unavailable") or [])
                 # Backfill already-on-disk (legacy) tracks so future scans dedup
                 # exactly by video_id; entries without an id can't be keyed, so
                 # they are simply hidden (matching the original `if vid_id`).
@@ -12000,9 +12006,16 @@ class MP3DownloaderApp(tk.Tk):
                     status=status)
 
                 tag = "ok" if count > 0 else "info"
-                self.after(0, lambda: self._watchlist_log(
-                    f"{ch['display_name']}: {count} new track{'s' if count != 1 else ''} found",
-                    tag))
+                scan_msg = (f"{ch['display_name']}: {count} new "
+                            f"track{'s' if count != 1 else ''} found")
+                if n_unavail:
+                    scan_msg += (f" ({n_unavail} permanently unavailable, "
+                                 f"skipped)")
+                    self._dbg.info(
+                        f"WL SCAN SUPPRESSED | {ch['display_name']}  "
+                        f"{n_unavail} track(s) hidden by the "
+                        f"unavailable-track memory")
+                self.after(0, lambda m=scan_msg: self._watchlist_log(m, tag))
 
             except Exception as exc:
                 err = str(exc)[:120]
