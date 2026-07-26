@@ -640,6 +640,11 @@ class _BaseLogViewerWindow(tk.Toplevel):
         self.geometry(f"+{max(0,px)}+{max(0,py)}")
 
         self._build_ui()
+        # Every toolbar control is fixed-size, so a window narrower than the
+        # toolbar's natural width can only clip buttons off the right-hand
+        # edge. Floor the minimum width at what the toolbar actually needs.
+        self.update_idletasks()
+        self.minsize(max(700, self._toolbar.winfo_reqwidth()), 400)
         self.load_log()
         # Open scrolled to the bottom so the most-recent entries are visible.
         self.after_idle(lambda: self._txt.yview_moveto(1.0))
@@ -659,6 +664,35 @@ class _BaseLogViewerWindow(tk.Toplevel):
                       cursor="hand2", command=cmd)
         b.pack(side=side, padx=padx, pady=6)
         return b
+
+    def _nav_group(self, parent, side="right"):
+        """Helper: Top/Bottom scroll buttons welded into one bordered pill.
+
+        The two jump buttons do the same kind of thing, so they read as a
+        single segmented control — a hairline box around the pair with a
+        divider between them — rather than two more buttons in the row.
+        Both viewers share the identical pill.
+        """
+        box = tk.Frame(parent, bg=SURFACE,
+                       highlightthickness=1, highlightbackground=BORDER)
+        box.pack(side=side, padx=(2, 6), pady=6)
+
+        def _seg(label, cmd, tip):
+            b = tk.Button(box, text=label,
+                          font=("Segoe UI", 9, "bold"), relief="flat", bd=0,
+                          bg=SURFACE, fg=TEXT_DIM, activebackground=BORDER,
+                          activeforeground=TEXT, padx=8, pady=3,
+                          cursor="hand2", command=cmd)
+            b.pack(side="left")
+            Tooltip(b, tip)
+            return b
+
+        _seg("⤒  Top", self._jump_top,
+             "Scroll to the oldest entries at the top.")
+        tk.Frame(box, width=1, bg=BORDER).pack(side="left", fill="y", pady=3)
+        _seg("⤓  Bottom", self._jump_end,
+             "Scroll to the newest entries at the bottom.")
+        return box
 
     # ── Search ────────────────────────────────────────────────────────────────
     def _run_search(self):
@@ -739,21 +773,6 @@ class _BaseLogViewerWindow(tk.Toplevel):
             self._txt.config(wrap="none")
             self._wrap_btn.config(text="Wrap: Off", bg=SURFACE2, fg=TEXT_DIM)
 
-    def _copy_all(self):
-        content = self._txt.get("1.0", "end").strip()
-        self.clipboard_clear()
-        self.clipboard_append(content)
-        self._stats_bar.config(text="  ✓  Copied to clipboard.")
-        self._after_copy()
-
-    def _after_copy(self):
-        """Restore the stats bar a moment after a Copy All.
-
-        Subclasses differ in how they recompute the bar, so this hook is
-        overridden rather than shared.
-        """
-        self.after(2000, self.refresh)
-
     def _open_external(self):
         try:
             if sys.platform == "win32":
@@ -785,28 +804,24 @@ class LogViewerWindow(_BaseLogViewerWindow):
         toolbar = tk.Frame(self, bg=SURFACE2,
                            highlightthickness=1, highlightbackground=BORDER)
         toolbar.pack(fill="x", side="top")
+        self._toolbar = toolbar
 
-        # Left cluster: filter buttons
-        tk.Label(toolbar, text="Show:", font=("Segoe UI", 9),
+        # Left cluster: filter dropdown
+        tk.Label(toolbar, text="Filter:", font=("Segoe UI", 9),
                  fg=TEXT_DIM, bg=SURFACE2).pack(side="left", padx=(12, 6), pady=8)
 
-        self._filter_btns = {}
-        _filter_tips = {
-            "All":        "Show every log entry.",
-            "Downloaded": "Show only successfully downloaded tracks.",
-            "Skipped":    "Show only tracks that were skipped.",
-            "Errors":     "Show only entries that failed with an error.",
-        }
-        for opt in FILTER_OPTIONS:
-            b = tk.Button(
-                toolbar, text=opt,
-                font=("Segoe UI", 9, "bold"),
-                relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
-                command=lambda o=opt: self._set_filter(o))
-            b.pack(side="left", padx=2, pady=6)
-            self._filter_btns[opt] = b
-            Tooltip(b, _filter_tips.get(opt, opt))
-        self._paint_filter_btns()
+        self._filter_combo = ttk.Combobox(
+            toolbar, textvariable=self._filter_var, state="readonly",
+            values=list(FILTER_OPTIONS), width=12,
+            style="LogFilter.TCombobox")
+        self._filter_combo.pack(side="left", padx=2, pady=6)
+        self._filter_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda e: (self._set_filter(self._filter_var.get()),
+                       self._txt.focus_set()))
+        Tooltip(self._filter_combo,
+                "Choose which log entries to show — all, downloaded, "
+                "skipped, or errors.")
 
         # Separator
         tk.Frame(toolbar, width=1, bg=BORDER).pack(side="left", fill="y",
@@ -853,8 +868,11 @@ class LogViewerWindow(_BaseLogViewerWindow):
         Tooltip(self._next_btn,  "Jump to the next search match.")
         Tooltip(self._clear_btn, "Clear the search and its highlights.")
 
+        # Fixed-width slot so the toolbar never reflows as the count changes;
+        # sized to the longest text it can hold ("no match").
         self._match_lbl = tk.Label(search_frame, text="", font=("Segoe UI", 8),
-                                   fg=TEXT_DIM, bg=SURFACE2, width=10)
+                                   fg=TEXT_DIM, bg=SURFACE2,
+                                   width=9, anchor="w")
         self._match_lbl.pack(side="left", padx=(4, 0))
 
         # Right cluster: action buttons
@@ -864,18 +882,10 @@ class LogViewerWindow(_BaseLogViewerWindow):
         Tooltip(_sysview_btn, "Open this log in your default text editor.")
         tk.Frame(toolbar, width=1, bg=BORDER).pack(side="right", fill="y",
                                                     padx=2, pady=6)
-        _copy_btn = self._tb_btn(toolbar, "⎘  Copy All", self._copy_all,
-                                 side="right")
         _refresh_btn = self._tb_btn(toolbar, "⟳  Refresh", self.refresh,
                                     side="right")
-        _end_btn = self._tb_btn(toolbar, "⤓  Jump to End", self._jump_end,
-                                side="right")
-        _top_btn = self._tb_btn(toolbar, "⤒  Jump to Top", self._jump_top,
-                                side="right")
-        Tooltip(_copy_btn,    "Copy the visible log text to the clipboard.")
         Tooltip(_refresh_btn, "Reload the log file from disk.")
-        Tooltip(_end_btn,     "Scroll to the newest entries at the bottom.")
-        Tooltip(_top_btn,     "Scroll to the oldest entries at the top.")
+        self._nav_group(toolbar)
 
         # ── Stats bar ─────────────────────────────────────────────────────────
         self._stats_bar = tk.Label(
@@ -1002,7 +1012,6 @@ class LogViewerWindow(_BaseLogViewerWindow):
     # ── Filter ────────────────────────────────────────────────────────────────
     def _set_filter(self, opt):
         self._filter_var.set(opt)
-        self._paint_filter_btns()
         self._render()
         self._run_search()
         # Selecting a new view should land on the most-recent entries, not jump
@@ -1011,29 +1020,7 @@ class LogViewerWindow(_BaseLogViewerWindow):
         if not self._match_idx:
             self.after_idle(lambda: self._txt.yview_moveto(1.0))
 
-    def _paint_filter_btns(self):
-        active = self._filter_var.get()
-        colours = {
-            "All":        (SURFACE,  TEXT),
-            "Downloaded": ("#14532d", LOG_COL["DOWNLOADED"]["fg"]),
-            "Skipped":    ("#1f2937", LOG_COL["SKIPPED"]["fg"]),
-            "Errors":     ("#3b0000", LOG_COL["ERROR"]["fg"]),
-        }
-        for opt, btn in self._filter_btns.items():
-            bg, fg = colours.get(opt, (SURFACE2, TEXT_DIM))
-            if opt == active:
-                btn.config(bg=bg, fg=fg,
-                           relief="solid", bd=1,
-                           highlightbackground=fg)
-            else:
-                btn.config(bg=SURFACE2, fg=TEXT_DIM,
-                           relief="flat", bd=0)
-
     # ── Actions ───────────────────────────────────────────────────────────────
-    def _after_copy(self):
-        # Restore the coloured activity-log stats line after a Copy All.
-        self.after(2000, lambda: self._update_stats(*self._count_stats()))
-
     def _count_stats(self):
         content = self._txt.get("1.0", "end")
         lines   = content.splitlines()
@@ -1063,29 +1050,25 @@ class DebugLogViewerWindow(_BaseLogViewerWindow):
         toolbar = tk.Frame(self, bg=SURFACE2,
                            highlightthickness=1, highlightbackground=BORDER)
         toolbar.pack(fill="x", side="top")
+        self._toolbar = toolbar
 
-        # Filter buttons
-        tk.Label(toolbar, text="Show:", font=("Segoe UI", 9),
+        # Filter dropdown
+        tk.Label(toolbar, text="Filter:", font=("Segoe UI", 9),
                  fg=TEXT_DIM, bg=SURFACE2).pack(side="left", padx=(12, 6), pady=8)
 
         self._filter_var = tk.StringVar(value="All")
-        self._filter_btns = {}
-        _filter_tips = {
-            "All":   "Show every debug log line.",
-            "INFO":  "Show only INFO-level lines.",
-            "ERROR": "Show only ERROR-level lines.",
-            "DEBUG": "Show only DEBUG-level lines.",
-        }
-        for opt in ["All", "INFO", "ERROR", "DEBUG"]:
-            b = tk.Button(
-                toolbar, text=opt,
-                font=("Segoe UI", 9, "bold"),
-                relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
-                command=lambda o=opt: self._set_filter(o))
-            b.pack(side="left", padx=2, pady=6)
-            self._filter_btns[opt] = b
-            Tooltip(b, _filter_tips.get(opt, opt))
-        self._paint_filter_btns()
+        self._filter_combo = ttk.Combobox(
+            toolbar, textvariable=self._filter_var, state="readonly",
+            values=["All", "INFO", "ERROR", "DEBUG"], width=10,
+            style="LogFilter.TCombobox")
+        self._filter_combo.pack(side="left", padx=2, pady=6)
+        self._filter_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda e: (self._set_filter(self._filter_var.get()),
+                       self._txt.focus_set()))
+        Tooltip(self._filter_combo,
+                "Choose which debug log lines to show — all, or a single "
+                "level (INFO, ERROR, DEBUG).")
 
         tk.Frame(toolbar, width=1, bg=BORDER).pack(side="left", fill="y",
                                                     padx=10, pady=6)
@@ -1136,23 +1119,20 @@ class DebugLogViewerWindow(_BaseLogViewerWindow):
             sb.pack(side="left", padx=1)
             Tooltip(sb, _search_tips[sym])
 
+        # Fixed-width slot so the toolbar never reflows as the count changes;
+        # sized to the longest text it can hold ("no match").
         self._match_lbl = tk.Label(search_frame, text="", font=("Segoe UI", 8),
-                                   fg=TEXT_DIM, bg=SURFACE2, width=10)
+                                   fg=TEXT_DIM, bg=SURFACE2,
+                                   width=9, anchor="w")
         self._match_lbl.pack(side="left", padx=(4, 0))
 
         # Right cluster
         _right_tips = {
             "↗  System Viewer": "Open this log in your default text editor.",
-            "⎘  Copy All":      "Copy the visible log text to the clipboard.",
             "⟳  Refresh":       "Reload the debug log from disk.",
-            "⤓  End":           "Scroll to the newest entries at the bottom.",
-            "⤒  Top":           "Scroll to the oldest entries at the top.",
         }
         for txt, cmd in [("↗  System Viewer", self._open_external),
-                         ("⎘  Copy All", self._copy_all),
-                         ("⟳  Refresh", self.refresh),
-                         ("⤓  End", self._jump_end),
-                         ("⤒  Top", self._jump_top)]:
+                         ("⟳  Refresh", self.refresh)]:
             rb = tk.Button(toolbar, text=txt, font=("Segoe UI", 9, "bold"),
                            relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
                            bg=SURFACE2, fg=TEXT_DIM,
@@ -1160,6 +1140,8 @@ class DebugLogViewerWindow(_BaseLogViewerWindow):
                            command=cmd)
             rb.pack(side="right", padx=2, pady=6)
             Tooltip(rb, _right_tips.get(txt, txt))
+
+        self._nav_group(toolbar)
 
         # ── Stats bar ─────────────────────────────────────────────────────────
         self._stats_bar = tk.Label(
@@ -1253,21 +1235,10 @@ class DebugLogViewerWindow(_BaseLogViewerWindow):
 
     def _set_filter(self, opt):
         self._filter_var.set(opt)
-        self._paint_filter_btns()
         self._clear_search(silent=True)
         self.load_log()
         # Land on the newest entries when switching views, not back at the top.
         self.after_idle(lambda: self._txt.yview_moveto(1.0))
-
-    def _paint_filter_btns(self):
-        cur = self._filter_var.get()
-        for name, btn in self._filter_btns.items():
-            if name == cur:
-                btn.config(bg=YT_RED, fg="#ffffff",
-                           activebackground="#b91c1c", activeforeground="#ffffff")
-            else:
-                btn.config(bg=SURFACE2, fg=TEXT_DIM,
-                           activebackground=BORDER, activeforeground=TEXT)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2541,6 +2512,7 @@ class DatabaseViewerWindow(tk.Toplevel):
         toolbar = tk.Frame(parent, bg=SURFACE2,
                            highlightthickness=1, highlightbackground=BORDER)
         toolbar.pack(fill="x", side="top")
+        self._toolbar = toolbar
 
         tk.Label(toolbar, text="Group by:", font=("Segoe UI", 9),
                  fg=TEXT_DIM, bg=SURFACE2).pack(side="left", padx=(12, 6))
@@ -2766,6 +2738,7 @@ class DatabaseViewerWindow(tk.Toplevel):
         toolbar = tk.Frame(parent, bg=SURFACE2,
                            highlightthickness=1, highlightbackground=BORDER)
         toolbar.pack(fill="x", side="top")
+        self._toolbar = toolbar
 
         tk.Label(toolbar, text="Filter:", font=("Segoe UI", 9),
                  fg=TEXT_DIM, bg=SURFACE2).pack(side="left", padx=(12, 6))
@@ -5103,6 +5076,10 @@ class MP3DownloaderApp(tk.Tk):
         self._batch_add_btn = ttk.Button(hdr, text="+ Add to Batch",
                    style="MainBrowse.TButton", command=self._batch_add)
         self._batch_add_btn.pack(side="right", padx=(0, 6))
+        Tooltip(self._batch_add_btn,
+                "Queue the link in the URL field above, tagged with the "
+                "genre you picked. Pressing Enter in the URL field does the "
+                "same thing.")
 
         outer = tk.Frame(parent, bg=SURFACE2,
                          highlightthickness=1, highlightbackground=YT_RED)
@@ -5491,6 +5468,19 @@ class MP3DownloaderApp(tk.Tk):
             font=("Segoe UI", 11), padding=(8, 6))
         s.map("TCombobox",
             fieldbackground=[("readonly", SURFACE2)],
+            foreground=[("readonly", TEXT)],
+            bordercolor=[("focus", BORDER)],
+            lightcolor=[("focus", BORDER)])
+        # Compact combobox for the log-viewer toolbars, which sit on SURFACE2
+        # and need to match the height of the flat toolbar buttons.
+        s.configure("LogFilter.TCombobox",
+            fieldbackground=SURFACE, foreground=TEXT,
+            background=SURFACE, bordercolor=BORDER,
+            lightcolor=BORDER, darkcolor=BORDER,
+            arrowcolor=TEXT_DIM,
+            font=("Segoe UI", 9), padding=(6, 2))
+        s.map("LogFilter.TCombobox",
+            fieldbackground=[("readonly", SURFACE)],
             foreground=[("readonly", TEXT)],
             bordercolor=[("focus", BORDER)],
             lightcolor=[("focus", BORDER)])
@@ -12241,6 +12231,15 @@ class MP3DownloaderApp(tk.Tk):
                 "No URL",
                 "This channel has no usable URL to download.",
                 parent=self)
+            return
+
+        if not messagebox.askyesno(
+                "Force Download",
+                f"Re-process the full catalogue of \"{ch['display_name']}\"?"
+                "\n\nTracks already on disk are skipped (and stamped with "
+                "their source-URL tag); only missing tracks download. This "
+                "can take a while on a large channel.",
+                parent=self):
             return
 
         # Show it in the Main tab so the user sees exactly what is downloading.
