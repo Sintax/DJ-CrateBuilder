@@ -39,6 +39,7 @@ cratebuilder.db
 cratebuilder.db-shm
 cratebuilder.db-wal
 cratebuilder.db.bak-*
+cratebuilder_links.json
 
 # Backups & archives
 _BACKUP/
