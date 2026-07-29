@@ -62,6 +62,27 @@ def test_set_watchlist_download_started(tmp_path):
     assert db.get_watchlist_channel(wid)["last_download_started"] == 4242
 
 
+def test_status_only_update_preserves_scan_results(tmp_path):
+    # A transient scan failure (offline) writes ONLY the status, so the pending
+    # tracks and last-scanned stamp a previous good scan found must survive.
+    db = _new_db(tmp_path)
+    wid = db.add_watchlist_channel(
+        url="https://www.youtube.com/channel/UCoff/videos",
+        display_name="Off", platform="YouTube", genre="(none)",
+        scan_cutoff_date="20260101")
+    db.update_watchlist_scan_result(
+        wid, timestamp=1000, pending_count=3,
+        pending_entries=[{"id": "a"}, {"id": "b"}, {"id": "c"}],
+        status="found")
+    db.update_watchlist_status(wid, "offline", "getaddrinfo failed")
+    row = db.get_watchlist_channel(wid)
+    assert row["status"] == "offline"
+    assert row["last_error"] == "getaddrinfo failed"
+    assert row["pending_new_count"] == 3
+    assert row["last_scanned_timestamp"] == 1000
+    assert row["url"] == "https://www.youtube.com/channel/UCoff/videos"
+
+
 def test_get_all_downloads_empty(tmp_path):
     db = _new_db(tmp_path)
     assert db.get_all_downloads() == []

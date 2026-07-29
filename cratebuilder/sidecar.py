@@ -70,14 +70,21 @@ def write_channel_sidecar(folder, *, channel_id, channel_url=None, handle=None,
 def is_unresolved_channel(ch):
     """True if a watchlist row has no usable scan identifier yet.
 
-    All platforms: explicit needs_resolve/error status, the unresolved://
+    All platforms: an explicit needs_resolve status, the unresolved://
     sentinel, or a space in the URL (a folder-name URL) is unresolved.
     SoundCloud additionally requires a soundcloud.com URL (usernames are
     stable; there is no channel-id resolution). YouTube keeps the historical
     permissive rule — any clean, space-free, non-sentinel URL is resolved —
-    so legacy /c/ and /user/ channel URLs are not falsely flagged."""
+    so legacy /c/ and /user/ channel URLs are not falsely flagged.
+
+    A failed scan is deliberately NOT unresolved. 'error'/'offline' mean the
+    last scan blew up — usually because the network was down — which says
+    nothing about the stored link. Treating them as unresolved is what used to
+    strand every card behind an orange "Fix Link" button after one offline
+    scan. Only classify_scan_error's needs_resolve verdict (a 404 / dead
+    channel) may move a row into that state."""
     url = (ch.get("url") or "")
-    if (ch.get("status") in ("needs_resolve", "error")
+    if (ch.get("status") == "needs_resolve"
             or url.startswith("unresolved://")
             or " " in url):
         return True
@@ -85,6 +92,52 @@ def is_unresolved_channel(ch):
     if platform == "SoundCloud":
         return "soundcloud.com" not in url.lower()
     return False
+
+
+# Substrings that identify a scan failure as permanent — the channel itself is
+# gone, private, or was never a valid target — so the link genuinely needs
+# fixing. Checked BEFORE the transient markers: yt-dlp wraps a 404 in its
+# generic "Unable to download webpage" text, and the 404 is the real signal.
+_PERMANENT_ERROR_MARKERS = (
+    "404", "does not exist", "not found", "unsupported url",
+    "is not a valid url", "unable to recognize tab page",
+    "incomplete youtube id", "no longer available", "has been removed",
+    "has been terminated", "is private", "this playlist is private",
+    "private video", "unavailable videos are hidden",
+)
+
+# Substrings that identify a scan failure as transient — no network, a blocked
+# or throttled request, a server-side wobble. The link is fine; retry later.
+_TRANSIENT_ERROR_MARKERS = (
+    "getaddrinfo", "name resolution", "name or service not known",
+    "nodename nor servname", "failed to resolve", "no address associated",
+    "network is unreachable", "network unreachable", "unreachable network",
+    "connection reset", "connection aborted", "connection refused",
+    "connection broken", "remote end closed", "timed out", "timeout",
+    "urlopen error", "ssl", "handshake", "incompleteread", "temporary failure",
+    "unable to download webpage", "unable to download api page",
+    "http error 429", "http error 500", "http error 502", "http error 503",
+    "http error 504", "too many requests", "service unavailable",
+    "errno 11001", "errno 11004", "errno 10054", "errno 10060", "errno 101",
+)
+
+
+def classify_scan_error(message):
+    """Map a scan failure message onto the status the row should take.
+
+    Returns 'offline' for a transient failure (network down, throttled,
+    server wobble — the link is fine, retry later), 'needs_resolve' for a
+    permanent one (channel gone/private/never valid — the link must be
+    fixed), or 'error' when the message matches neither and we shouldn't
+    guess. Only 'needs_resolve' surfaces the Fix Link button."""
+    text = (message or "").lower()
+    if not text:
+        return "error"
+    if any(m in text for m in _PERMANENT_ERROR_MARKERS):
+        return "needs_resolve"
+    if any(m in text for m in _TRANSIENT_ERROR_MARKERS):
+        return "offline"
+    return "error"
 
 
 def watch_scan_url(platform, url):

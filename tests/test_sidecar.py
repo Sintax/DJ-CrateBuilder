@@ -26,7 +26,6 @@ def test_read_sidecar_missing_returns_none(tmp_path):
 def test_is_unresolved_truth_table():
     f = sidecar.is_unresolved_channel
     assert f({"status": "needs_resolve", "url": "x"}) is True
-    assert f({"status": "error", "url": "x"}) is True
     assert f({"status": "idle", "url": "unresolved://YouTube/x"}) is True
     assert f({"status": "idle", "url": "has space"}) is True
     assert f(
@@ -61,6 +60,56 @@ def test_is_unresolved_platform_aware():
     assert is_unresolved_channel(
         {"platform": "SoundCloud", "status": "idle",
          "url": "https://example.com/not-sc"}) is True
+
+
+def test_failed_scan_never_makes_a_good_link_unresolved():
+    # A scan that blew up (offline, rate-limited, transient extractor fault)
+    # must not strand a perfectly good canonical URL as "needs Fix Link".
+    f = sidecar.is_unresolved_channel
+    good = "https://www.youtube.com/channel/UCx/videos"
+    assert f({"status": "error", "url": good}) is False
+    assert f({"status": "offline", "url": good}) is False
+    assert f({"platform": "SoundCloud", "status": "offline",
+              "url": "https://soundcloud.com/artist"}) is False
+    # …but a bad URL is still unresolved whatever the status says.
+    assert f({"status": "offline", "url": "unresolved://YouTube/x"}) is True
+
+
+def test_classify_scan_error_transient():
+    f = sidecar.classify_scan_error
+    # yt-dlp wraps a DNS failure like this when the connection is down.
+    assert f("ERROR: Unable to download webpage: <urlopen error "
+             "[Errno 11001] getaddrinfo failed>") == "offline"
+    assert f("Temporary failure in name resolution") == "offline"
+    assert f("[Errno 101] Network is unreachable") == "offline"
+    assert f("The read operation timed out") == "offline"
+    assert f("Remote end closed connection without response") == "offline"
+    assert f("HTTP Error 503: Service Unavailable") == "offline"
+    assert f("HTTP Error 429: Too Many Requests") == "offline"
+
+
+def test_classify_scan_error_permanent():
+    f = sidecar.classify_scan_error
+    assert f("ERROR: [youtube:tab] @gone: This channel does not exist.") \
+        == "needs_resolve"
+    assert f("HTTP Error 404: Not Found") == "needs_resolve"
+    assert f("ERROR: Unsupported URL: https://example.com/x") == "needs_resolve"
+    assert f("This playlist is private") == "needs_resolve"
+    assert f("This account has been terminated") == "needs_resolve"
+
+
+def test_classify_scan_error_permanent_wins_over_transient_wrapper():
+    # yt-dlp prefixes a 404 with its generic "Unable to download webpage"
+    # wrapper; the 404 is the real signal and must not read as offline.
+    assert sidecar.classify_scan_error(
+        "ERROR: Unable to download webpage: HTTP Error 404: Not Found") \
+        == "needs_resolve"
+
+
+def test_classify_scan_error_unknown_falls_back():
+    assert sidecar.classify_scan_error("something we've never seen") == "error"
+    assert sidecar.classify_scan_error("") == "error"
+    assert sidecar.classify_scan_error(None) == "error"
 
 
 def test_watch_scan_url():

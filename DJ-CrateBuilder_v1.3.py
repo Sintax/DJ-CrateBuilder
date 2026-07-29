@@ -31,6 +31,7 @@ from cratebuilder.sidecar import (
     channel_url_from_id, channel_id_from_url,
     read_channel_sidecar, write_channel_sidecar, is_unresolved_channel,
     watch_fetch_url, classify_scan_entries, canonical_channel_url,
+    classify_scan_error,
 )
 from cratebuilder.db import DownloadsDatabase
 from cratebuilder.cleanup import (
@@ -299,11 +300,12 @@ WATCHLIST_CUTOFF_BUFFER_DAYS = 5
 WATCHLIST_MAX_CONCURRENT_SCANS = 3
 
 # ── Cold-boot guard for the startup scan. When the app auto-launches at Windows
-# ── login the network is often a few seconds behind; scanning while offline
-# ── fails every channel and (per is_unresolved_channel) makes resolved cards
-# ── look like they "need a channel ID". So the startup scan waits for
+# ── login the network is often a few seconds behind, and a scan run while
+# ── offline just fails every channel for nothing. So the startup scan waits for
 # ── connectivity first: probe every _DELAY seconds, up to _TRIES times, then
-# ── give up quietly (scheduled / manual scans still run normally).
+# ── give up quietly (scheduled / manual scans still run normally). A failed
+# ── scan no longer damages a card's link — see classify_scan_error — this is
+# ── purely about not wasting a scan pass.
 WATCHLIST_STARTUP_NET_TRIES = 18      # ≈ 90 s window at the delay below
 WATCHLIST_STARTUP_NET_DELAY = 5.0     # seconds between connectivity probes
 
@@ -6917,10 +6919,12 @@ class MP3DownloaderApp(tk.Tk):
 
         Cold-boot guard: the scan is deferred until the network is reachable.
         When the app auto-starts at Windows login the connection is usually a
-        few seconds behind, and scanning while offline fails every channel —
-        which (per is_unresolved_channel) strands resolved cards as "needs
-        channel ID". We poll for connectivity off the UI thread, then run the
-        scan once the network is up (or give up quietly after the budget)."""
+        few seconds behind, and scanning while offline fails every channel for
+        nothing. We poll for connectivity off the UI thread, then run the scan
+        once the network is up (or give up quietly after the budget). An
+        offline scan is now harmless to a card's link (classify_scan_error
+        parks the row as 'offline' and leaves its URL alone) — waiting just
+        buys a scan that can actually succeed."""
         if not self._watchlist_scan_on_startup.get():
             return
         try:
@@ -10346,6 +10350,11 @@ class MP3DownloaderApp(tk.Tk):
         elif status == "needs_resolve":
             st_text = "⚠ needs channel ID"
             st_color = "#f59e0b"   # amber
+        elif status == "offline":
+            # Not actionable and not the channel's fault — grey, not red, so a
+            # network blip doesn't read as a broken link.
+            st_text = "⌁ offline"
+            st_color = TEXT_DIM
         elif status == "error":
             st_text = "✗ error"
             st_color = YT_RED
@@ -12114,17 +12123,42 @@ class MP3DownloaderApp(tk.Tk):
 
             except Exception as exc:
                 err = str(exc)[:120]
+                # Decide whether the LINK is at fault or the NETWORK was. A
+                # transient failure must leave the row exactly as it was —
+                # same URL, same pending tracks, no Fix Link button — or one
+                # offline scan strands the whole watch list. When the network
+                # is provably down we don't even trust the message: nothing
+                # yt-dlp says about a channel is meaningful with no route to
+                # it (a captive portal happily answers 404 for everything).
+                verdict = classify_scan_error(err)
+                if verdict == "needs_resolve" and not self._network_is_reachable():
+                    verdict = "offline"
                 self._dbg.error(
-                    f"WL SCAN FAIL | {ch['display_name']}  error: {err}")
-                self._db.update_watchlist_scan_result(
-                    cid,
-                    timestamp=int(time.time()),
-                    pending_count=0,
-                    pending_entries=[],
-                    status="error",
-                    last_error=err)
-                self.after(0, lambda: self._watchlist_log(
-                    f"Error scanning {ch['display_name']}: {err}", "err"))
+                    f"WL SCAN FAIL | {ch['display_name']}  "
+                    f"verdict={verdict}  error: {err}")
+                if verdict == "needs_resolve":
+                    # Genuinely gone/private/invalid — zero the pending list and
+                    # send the user to Fix Link.
+                    self._db.update_watchlist_scan_result(
+                        cid,
+                        timestamp=int(time.time()),
+                        pending_count=0,
+                        pending_entries=[],
+                        status="needs_resolve",
+                        last_error=err)
+                    msg = (f"{ch['display_name']}: channel link looks dead "
+                           f"— use 🛠 Fix Link ({err})")
+                else:
+                    # Transient (or unrecognised): touch ONLY the status. The
+                    # stored URL, the last-good scan timestamp and any pending
+                    # tracks a previous scan found all survive untouched.
+                    self._db.update_watchlist_status(cid, verdict, err)
+                    if verdict == "offline":
+                        msg = (f"{ch['display_name']}: skipped — no network. "
+                               f"Link kept; it'll scan next time you're online.")
+                    else:
+                        msg = f"Error scanning {ch['display_name']}: {err}"
+                self.after(0, lambda m=msg: self._watchlist_log(m, "err"))
             finally:
                 self._wl_cancel_cids.discard(cid)
                 self._wl_scan_active = max(0, self._wl_scan_active - 1)
@@ -12153,6 +12187,17 @@ class MP3DownloaderApp(tk.Tk):
         self._wl_update_cancel_btn_state()
 
         def _do_all():
+            # Pre-flight: one connectivity probe for the whole run. Without it
+            # an offline Scan All marches through every channel handing yt-dlp
+            # requests that cannot succeed, burning a minute and painting the
+            # list with failures. Covers every caller — the Scan All button,
+            # the startup scan, the scheduled auto-download and the tray item.
+            if not self._network_is_reachable():
+                self.after(0, lambda: self._watchlist_log(
+                    "Scan All skipped — no network. Every channel keeps its "
+                    "link; scan again once you're back online.", "err"))
+                return
+
             def _wait(deadline):
                 """Sleep until *deadline*, waking early on cancel. Returns
                 True if cancelled."""
