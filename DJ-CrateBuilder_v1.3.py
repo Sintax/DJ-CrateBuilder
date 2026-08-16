@@ -6586,41 +6586,28 @@ class MP3DownloaderApp(tk.Tk):
             command=self._open_database_viewer)
         self._open_db_btn.pack(side="left", padx=(0, 8))
 
-        art_row = ttk.Frame(outer)
-        art_row.pack(fill="x", pady=(0, 4))
+        # Row 1 works on the database; row 2 works on the files themselves.
+        db_tools_row = ttk.Frame(outer)
+        db_tools_row.pack(fill="x", pady=(0, 4))
 
         self._rebuild_db_btn = ttk.Button(
-            art_row, text="🔄  Rebuild Database from Files",
+            db_tools_row, text="🔄  Rebuild Database from Files",
             style="Orange.TButton",
             command=self._rebuild_db_from_files)
         self._rebuild_db_btn.pack(side="left", padx=(0, 8))
-        self._settings_help(art_row,
+        self._settings_help(db_tools_row,
             "Scans the audio files already in your library folders and "
             "rebuilds the database from them. This is safe to run at any "
             "time — it clears and rebuilds from scratch. Cover art already "
             "on disk is reused, never re-downloaded.").pack(
                 side="left", padx=(0, 16))
 
-        self._fetch_art_btn = ttk.Button(
-            art_row, text="🖼  Fetch Missing Artwork",
-            style="Orange.TButton",
-            command=self._fetch_missing_artwork)
-        self._fetch_art_btn.pack(side="left", padx=(0, 8))
-        self._settings_help(art_row,
-            "Finds cover art for tracks you downloaded before the Cover Art "
-            "feature existed, and embeds it into them. Re-uses artwork already "
-            "on disk where possible, so re-running it is cheap.").pack(
-                side="left", padx=(0, 16))
-
-        dedupe_row = ttk.Frame(outer)
-        dedupe_row.pack(fill="x", pady=(0, 4))
-
         self._dedupe_db_btn = ttk.Button(
-            dedupe_row, text="🧹  Remove Duplicate Rows",
+            db_tools_row, text="🧹  Remove Duplicates",
             style="Orange.TButton",
             command=self._dedupe_downloads_db)
         self._dedupe_db_btn.pack(side="left", padx=(0, 8))
-        self._settings_help(dedupe_row,
+        self._settings_help(db_tools_row,
             "Collapses repeated database rows that point at the same file — "
             "the history could show a track four or five times. Only the "
             "database is touched: no audio file, cover art or Watch List "
@@ -6629,11 +6616,22 @@ class MP3DownloaderApp(tk.Tk):
             "protection that stops them coming back.").pack(
                 side="left", padx=(0, 16))
 
-        genre_fix_row = ttk.Frame(outer)
-        genre_fix_row.pack(fill="x", pady=(0, 4))
+        file_tools_row = ttk.Frame(outer)
+        file_tools_row.pack(fill="x", pady=(0, 4))
+
+        self._fetch_art_btn = ttk.Button(
+            file_tools_row, text="🖼  Fetch Missing Artwork",
+            style="Orange.TButton",
+            command=self._fetch_missing_artwork)
+        self._fetch_art_btn.pack(side="left", padx=(0, 8))
+        self._settings_help(file_tools_row,
+            "Finds cover art for tracks you downloaded before the Cover Art "
+            "feature existed, and embeds it into them. Re-uses artwork already "
+            "on disk where possible, so re-running it is cheap.").pack(
+                side="left", padx=(0, 16))
 
         self._fix_genre_btn = ttk.Button(
-            genre_fix_row, text="🏷  Fix ID3 Genre Fields",
+            file_tools_row, text="🏷  Fix ID3 Genre Fields",
             style="Orange.TButton",
             command=self._fix_id3_genre_fields)
         self._fix_genre_btn.pack(side="left", padx=(0, 8))
@@ -6646,7 +6644,7 @@ class MP3DownloaderApp(tk.Tk):
                 "so re-running costs nothing; anything else is overwritten. "
                 "Cancel any time — tracks already fixed keep their new tag.",
                 wraplength=380)
-        self._settings_help(genre_fix_row,
+        self._settings_help(file_tools_row,
             "Backfills the Genre tag on tracks you downloaded before genres "
             "were written into files, and realigns any track whose tag no "
             "longer matches the genre folder it lives in.").pack(
