@@ -118,7 +118,7 @@ def test_empty_entries():
     out = sidecar.classify_scan_entries(
         [], is_downloaded=_never_downloaded, folder_keys={}, limit_sec=None,
         platform="YouTube")
-    assert out == {"new": [], "on_disk": [], "unavailable": []}
+    assert out == {"new": [], "on_disk": [], "unavailable": [], "upcoming": []}
 
 
 def test_classify_scan_entries_delegator(cb):

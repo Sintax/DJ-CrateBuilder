@@ -24,8 +24,8 @@ from cratebuilder.util import (
     detect_platform, redact_ydl_opts, build_cookie_opts,
     derive_collection_name, find_matching_watchlist_row,
     soundcloud_profile_handle, merge_soundcloud_candidates,
-    runtime_data_dir, classify_permanent_failure, download_result_facts,
-    ensure_usable_tempdir,
+    runtime_data_dir, classify_permanent_failure, classify_deferred_failure,
+    download_result_facts, ensure_usable_tempdir,
 )
 from cratebuilder.sidecar import (
     channel_url_from_id, channel_id_from_url,
@@ -4441,6 +4441,10 @@ class MP3DownloaderApp(tk.Tk):
         self._active_watchlist_batch = None   # set by _watchlist_download_*
         self._wl_download_active = False      # True while a Watch List batch runs
         self._wl_card_widgets = {}            # cid -> card frame, for in-place updates
+        # cid -> how many premieres/live streams the last scan held back. A
+        # scan result, not stored state: it is deliberately forgotten on
+        # restart rather than shown stale, and nothing else depends on it.
+        self._wl_upcoming_counts = {}
         self._wl_fix_abort = False            # set by Cancel to stop a Fix-Channels pass
         # While a Watch List batch runs, the Main tab's Batch Queue container
         # shows these channels with the active one highlighted.
@@ -9396,7 +9400,7 @@ class MP3DownloaderApp(tk.Tk):
             self.after(0, lambda: self._ov_lbl.config(text=f"0 / {total}"))
             time.sleep(0.35)
 
-            done = skipped = errors = unavail = 0
+            done = skipped = errors = unavail = deferred = 0
 
             # Watch List downloads decide "already owned" with the SAME test the
             # scan used (DB video_id + EXACT normalized-title key), so they never
@@ -9960,12 +9964,20 @@ class MP3DownloaderApp(tk.Tk):
                         f"Title: {item_title} | "
                         f"URL: {item_url} | "
                         f"Full error: {raw_err}")
+                    # Backstop for a premiere the scan let through (its
+                    # live_status was missing, e.g. YouTube changed the channel
+                    # markup). Checked FIRST so an upcoming track can never be
+                    # read as "Removed" and filed in the permanent memory,
+                    # which would bury it for good — it fails today and
+                    # succeeds by itself once it airs.
+                    _defer = classify_deferred_failure(clean)
                     # Permanently-unavailable causes (SoundCloud DRM,
                     # removed/private 404s, geo-blocks) are nothing on our
                     # side — surface an honest status and count them apart
                     # from real errors so the batch summary isn't alarming.
-                    _perm = classify_permanent_failure(clean)
-                    if _perm:                            err = _perm
+                    _perm = None if _defer else classify_permanent_failure(clean)
+                    if _defer:                           err = _defer
+                    elif _perm:                          err = _perm
                     elif "ffmpeg"        in clean_lower: err = "FFmpeg missing"
                     elif "sign in"       in clean_lower: err = "login required"
                     elif is_age:                         err = "age-restricted"
@@ -9977,7 +9989,13 @@ class MP3DownloaderApp(tk.Tk):
                     elif "blocked"       in clean_lower: err = "blocked"
                     elif "not available" in clean_lower: err = "format unavailable"
                     else:                                err = clean[:60]
-                    if _perm:
+                    if _defer:
+                        # Deliberately NOT remembered anywhere: the track stays
+                        # pending so the next run after it airs picks it up,
+                        # and it is not a failure, so it stays out of both the
+                        # error tally and the grand "Failed" count.
+                        deferred += 1
+                    elif _perm:
                         unavail += 1
                         # Remember it so the Watch List stops reporting a track
                         # that can never be downloaded as "new" on every scan.
@@ -9991,10 +10009,12 @@ class MP3DownloaderApp(tk.Tk):
                     else:
                         errors += 1
                     done   += 1
-                    self._grand_er += 1
+                    if not _defer:
+                        self._grand_er += 1
                     self._log_error(item_title, item_url, err)
-                    self.after(0, lambda i=idx, e=err:
-                        self._set_row_state(i, ST_ERROR, e))
+                    self.after(0, lambda i=idx, e=err, d=bool(_defer):
+                        self._set_row_state(
+                            i, ST_SKIPPED if d else ST_ERROR, e))
 
                 self.after(0, lambda d=done, t=total: (
                     self._overall_progress.config(value=d),
@@ -10003,18 +10023,19 @@ class MP3DownloaderApp(tk.Tk):
                 self.after(0, self._update_ov_stats)
 
             # Per-URL summary in status bar
-            actual = done - skipped - errors - unavail
+            actual = done - skipped - errors - unavail - deferred
             parts  = [f"✓ {actual} downloaded"]
             if skipped: parts.append(f"⊘ {skipped} skipped")
             if unavail: parts.append(
                 f"∅ {unavail} unavailable (DRM/removed)")
+            if deferred: parts.append(f"⏸ {deferred} not out yet")
             if errors:  parts.append(f"✗ {errors} failed")
             if self._cancel_flag.is_set():
                 parts.insert(0, "Cancelled.")
             self.after(0, lambda s="  ".join(parts): self._set_status(s))
 
             # ── Auto-add to Watch List (collections only) ─────────────
-            actual_downloaded = done - skipped - errors - unavail
+            actual_downloaded = done - skipped - errors - unavail - deferred
             if (is_collection and actual_downloaded > 0
                     and not channel_name_override):
                 # Only auto-add when this is a normal user download, not
@@ -10025,7 +10046,10 @@ class MP3DownloaderApp(tk.Tk):
                     genre,
                     channel_id=coll_channel_id)
 
-            return actual_downloaded, skipped, errors + unavail
+            # deferred counts toward the third slot purely so the caller does
+            # NOT mark this URL clean: an unretired pending list is what makes
+            # the premiere retry on the next run instead of being forgotten.
+            return actual_downloaded, skipped, errors + unavail + deferred
 
         except Exception as exc:
             err = str(exc)
@@ -10476,6 +10500,12 @@ class MP3DownloaderApp(tk.Tk):
                    f"Total downloaded: {ch.get('total_downloaded', 0)}")
         if ch.get("auto_added"):
             details += "  •  auto-added"
+        # Premieres the last scan held back. Explains a "0 new" card that the
+        # channel page says has fresh uploads on it, so the count doesn't just
+        # look wrong. Absent until this session has scanned the channel.
+        n_upcoming = self._wl_upcoming_counts.get(cid, 0)
+        if n_upcoming:
+            details += f"  •  {n_upcoming} scheduled"
 
         tk.Label(mid, text=details,
                  font=("Segoe UI", 9), fg=TEXT_DIM, bg=SURFACE,
@@ -12123,8 +12153,9 @@ class MP3DownloaderApp(tk.Tk):
                 # into the DB so the next scan is instant and exact.
                 # When the Time Limiter is on, also skip videos longer than the
                 # limit so the "+ N new" badge matches what would actually
-                # download. Entries with no duration (live, premiere, missing)
-                # are kept — the download step filters them again as a backstop.
+                # download. Premieres and in-progress streams are held back by
+                # live_status (see is_unreleased_entry) rather than by a
+                # missing duration, which proves nothing.
                 now_ts = int(time.time())
                 limit_on  = bool(self._limit_enabled.get())
                 limit_sec = self._limit_minutes.get() * 60 if limit_on else None
@@ -12138,9 +12169,12 @@ class MP3DownloaderApp(tk.Tk):
                     folder_keys=folder_keys,
                     limit_sec=limit_sec,
                     platform=platform,
-                    is_unavailable=suppressed.get)
+                    is_unavailable=suppressed.get,
+                    now=now_ts)
                 new_entries = classified["new"]
                 n_unavail = len(classified.get("unavailable") or [])
+                upcoming = classified.get("upcoming") or []
+                self._wl_upcoming_counts[cid] = len(upcoming)
                 # Backfill already-on-disk (legacy) tracks so future scans dedup
                 # exactly by video_id; entries without an id can't be keyed, so
                 # they are simply hidden (matching the original `if vid_id`).
@@ -12187,6 +12221,13 @@ class MP3DownloaderApp(tk.Tk):
                         f"WL SCAN SUPPRESSED | {ch['display_name']}  "
                         f"{n_unavail} track(s) hidden by the "
                         f"unavailable-track memory")
+                if upcoming:
+                    scan_msg += f" ({len(upcoming)} scheduled — not out yet)"
+                    for u in upcoming:
+                        self._dbg.info(
+                            f"WL SCAN SCHEDULED | {ch['display_name']}  "
+                            f"held back until release: "
+                            f"{u['title']!r} ({u['id'] or 'no id'})")
                 self.after(0, lambda m=scan_msg: self._watchlist_log(m, tag))
 
             except Exception as exc:

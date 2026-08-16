@@ -529,6 +529,39 @@ def download_result_facts(info):
             info.get("thumbnail") or None, info.get("id") or None)
 
 
+# Error wording meaning "this exists but has not been released yet". Matched
+# against yt-dlp's message ONLY, never a track title: "Premiere:" is an
+# ordinary SoundCloud naming convention for tracks that are fully released,
+# so matching titles would silently hide real music.
+_DEFERRED_ERROR_MARKERS = (
+    "premieres in",
+    "premiere will begin",
+    "live event will begin",
+    "this live stream recording is not available",
+    "is not yet available",
+    "waiting for the live stream",
+)
+
+
+def classify_deferred_failure(error_text):
+    """Classify a yt-dlp download error as not-released-yet, or None.
+
+    A premiere or scheduled stream is neither a permanent failure nor a real
+    error: it fails today and succeeds on its own once it airs. Callers use
+    this to keep the track pending and report it apart from genuine failures,
+    rather than burning it as an error or — worse — filing it in the
+    permanently-unavailable memory, from which it would never return. Check
+    this BEFORE classify_permanent_failure so an upcoming track can never be
+    mistaken for a removed one. Returns the label "Not out yet", or None.
+    Case-insensitive; safe on None/empty input."""
+    text = (error_text or "").lower()
+    if not text:
+        return None
+    if any(m in text for m in _DEFERRED_ERROR_MARKERS):
+        return "Not out yet"
+    return None
+
+
 def classify_permanent_failure(error_text):
     """Classify a yt-dlp download error as permanently unavailable, or None.
 
