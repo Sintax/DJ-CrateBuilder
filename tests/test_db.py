@@ -465,6 +465,40 @@ def test_v5_database_drops_scan_cutoff_without_data_loss(tmp_path):
     assert wl["status"] == "idle"
 
 
+def test_a_failing_column_drop_does_not_block_startup(tmp_path):
+    """The drop is cosmetic — nothing reads the column. When it cannot happen
+    (SQLite older than 3.35 has no DROP COLUMN; here, an index pins the
+    column) the app must still open the database rather than refusing to
+    start on a user's machine right after an auto-update."""
+    path = str(tmp_path / "olds.db")
+    conn = sqlite3.connect(path)
+    conn.executescript(_V4_SCHEMA)
+    # SQLite refuses to drop an indexed column — a real, reproducible failure
+    # of the same shape as the missing-DROP-COLUMN one.
+    conn.execute("CREATE INDEX idx_cutoff ON watchlist(scan_cutoff_date)")
+    conn.execute("""
+        INSERT INTO watchlist
+          (url, display_name, platform, genre, scan_cutoff_date, date_added)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, ("https://yt/x", "X", "YouTube", "DnB", "20250101", 1700000000))
+    conn.commit()
+    conn.close()
+
+    db = DownloadsDatabase(path)          # must not raise
+
+    with db._conn() as c:
+        cols = {r[1] for r in c.execute("PRAGMA table_info(watchlist)")}
+    assert "scan_cutoff_date" in cols     # the drop really did fail
+
+    rows = db.get_all_watchlist_channels()
+    assert len(rows) == 1
+    assert rows[0]["display_name"] == "X"
+    # The column survives, inert — and inserts that never mention it still work.
+    assert db.add_watchlist_channel(
+        url="https://yt/y", display_name="Y",
+        platform="YouTube", genre="DnB") is not None
+
+
 def test_migration_is_idempotent_on_an_already_v6_database(tmp_path):
     """Re-opening a migrated database must not raise on the DROP COLUMN that
     has nothing left to drop."""

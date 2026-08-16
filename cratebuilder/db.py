@@ -31,6 +31,12 @@ def is_suppressed(reason, attempts, last_failed, now):
 class DownloadsDatabase:
     SCHEMA_VERSION = 6
 
+    # True when the v6 migration could not drop watchlist.scan_cutoff_date and
+    # the legacy NOT NULL column is still there. Nothing reads it, but an
+    # INSERT that omits it would violate the constraint, so add_watchlist_
+    # channel has to keep feeding it a placeholder. See _init_schema.
+    _legacy_cutoff_column = False
+
     def __init__(self, db_path, debug_logger=None):
         self.db_path = db_path
         self._lock   = threading.Lock()
@@ -181,12 +187,21 @@ class DownloadsDatabase:
                                      "DROP COLUMN scan_cutoff_date")
                         self._log("info", "migration: dropped "
                                           "scan_cutoff_date from watchlist")
-                except sqlite3.OperationalError as e:
-                    # SQLite older than 3.35 has no DROP COLUMN. The column is
-                    # inert either way, so a failure here is not worth
-                    # aborting startup over.
+                except Exception as e:
+                    # SQLite older than 3.35 has no DROP COLUMN, and an index
+                    # pinning the column blocks it too. Letting this escape
+                    # would take schema init down and stop the app starting at
+                    # all, which is far worse than a dead column — so note it
+                    # and carry on. The column is NOT NULL with no default, so
+                    # inserts have to keep filling it; see _legacy_cutoff_column.
                     self._log("warning",
                               f"migration: could not drop scan_cutoff_date: {e}")
+                try:
+                    self._legacy_cutoff_column = "scan_cutoff_date" in {
+                        r[1] for r in conn.execute(
+                            "PRAGMA table_info(watchlist)")}
+                except Exception:
+                    self._legacy_cutoff_column = False
 
                 conn.execute(
                     "INSERT OR REPLACE INTO schema_info (key, value) VALUES (?, ?)",
@@ -608,17 +623,21 @@ class DownloadsDatabase:
     def add_watchlist_channel(self, *, url, display_name, platform, genre,
                                auto_added=False,
                                channel_id=None, status="idle"):
+        cols = ["url", "channel_id", "display_name", "platform", "genre",
+                "date_added", "auto_added", "total_downloaded", "status"]
+        vals = [url, channel_id or None, display_name, platform, genre,
+                int(time.time()), 1 if auto_added else 0, None, status]
+        if self._legacy_cutoff_column:
+            # The v6 drop didn't take on this database. The leftover column is
+            # NOT NULL with no default, so omitting it would fail every insert.
+            cols.append("scan_cutoff_date")
+            vals.append("")
         try:
-            total = self.get_channel_download_count(url)
+            vals[7] = self.get_channel_download_count(url)
             with self._conn() as conn:
-                cur = conn.execute("""
-                    INSERT INTO watchlist
-                      (url, channel_id, display_name, platform, genre,
-                       date_added, auto_added, total_downloaded, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (url, channel_id or None, display_name, platform, genre,
-                      int(time.time()),
-                      1 if auto_added else 0, total, status))
+                cur = conn.execute(
+                    f"INSERT INTO watchlist ({', '.join(cols)}) "
+                    f"VALUES ({', '.join('?' * len(cols))})", vals)
                 return cur.lastrowid
         except sqlite3.IntegrityError:
             return None
