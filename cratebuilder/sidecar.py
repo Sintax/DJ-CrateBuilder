@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import time
 import urllib.parse
 
 from cratebuilder.util import today_yyyymmdd, normalize_track_key
@@ -160,8 +161,36 @@ def watch_scan_url(platform, url):
     return url
 
 
+# yt-dlp live_status values meaning "no finished file exists to fetch yet".
+# is_upcoming: a scheduled premiere or stream. is_live: mid-broadcast, so a
+# download would capture a partial set. post_live: just ended, still being
+# processed into a VOD. 'was_live' is deliberately absent — a finished
+# archived stream is an ordinary downloadable video.
+UNRELEASED_LIVE_STATUSES = frozenset(("is_upcoming", "is_live", "post_live"))
+
+
+def is_unreleased_entry(entry, now=None):
+    """True when a flat-playlist *entry* is scheduled but not downloadable yet.
+
+    Judged on yt-dlp's live_status, falling back to a release_timestamp still
+    in the future. Deliberately NOT judged on two tempting signals: the title
+    (SoundCloud uses "Premiere:" for ordinary released tracks, so matching it
+    would hide real music) and a missing duration (plenty of flat entries
+    simply omit it). Unparseable timestamps count as released — this filter
+    hides tracks, so it errs toward showing them."""
+    if (entry.get("live_status") or "") in UNRELEASED_LIVE_STATUSES:
+        return True
+    ts = entry.get("release_timestamp")
+    if ts:
+        try:
+            return float(ts) > (now if now is not None else time.time())
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
 def classify_scan_entries(entries, *, is_downloaded, folder_keys, limit_sec,
-                          platform, is_unavailable=None):
+                          platform, is_unavailable=None, now=None):
     """Bucket yt-dlp flat-playlist *entries* into new vs already-owned tracks.
 
     Pure (no DB / tkinter / filesystem): the DB membership check is injected as
@@ -185,13 +214,24 @@ def classify_scan_entries(entries, *, is_downloaded, folder_keys, limit_sec,
     suppressed track is reported as unavailable no matter how it would
     otherwise have been bucketed.
 
-    Returns {"new": [...], "on_disk": [...], "unavailable": [...]} where each new
-    item is {id, title, url, upload_date}, each on_disk item is
-    {id, title, upload_date, file_path}, and each unavailable item is
-    {id, title, reason}. The id is "" when the entry has none."""
+    An entry that is_unreleased_entry judges scheduled-but-not-out (a premiere
+    or an in-progress stream) goes to 'upcoming' and is kept out of 'new', so
+    the pending count and the Download button only ever offer tracks that can
+    actually be fetched. Nothing is remembered about it: once it airs, the next
+    scan sees an ordinary entry and offers it normally. This is checked right
+    after the suppression memory, before every rule that could bucket it
+    elsewhere. *now* is the epoch seconds to judge release_timestamp against
+    (defaults to the wall clock; injectable for tests).
+
+    Returns {"new": [...], "on_disk": [...], "unavailable": [...],
+    "upcoming": [...]} where each new item is {id, title, url, upload_date},
+    each on_disk item is {id, title, upload_date, file_path}, each unavailable
+    item is {id, title, reason}, and each upcoming item is
+    {id, title, release_timestamp}. The id is "" when the entry has none."""
     new_entries = []
     on_disk = []
     unavailable = []
+    upcoming = []
     for e in entries:
         vid_id = e.get("id")
         if vid_id and is_downloaded(vid_id):
@@ -205,6 +245,13 @@ def classify_scan_entries(entries, *, is_downloaded, folder_keys, limit_sec,
                     "reason": reason,
                 })
                 continue
+        if is_unreleased_entry(e, now):
+            upcoming.append({
+                "id":                vid_id or "",
+                "title":             e.get("title") or "",
+                "release_timestamp": e.get("release_timestamp") or None,
+            })
+            continue
         if limit_sec is not None:
             dur = e.get("duration")
             if dur and dur > limit_sec:
@@ -228,7 +275,7 @@ def classify_scan_entries(entries, *, is_downloaded, folder_keys, limit_sec,
             "upload_date": e.get("upload_date") or "",
         })
     return {"new": new_entries, "on_disk": on_disk,
-            "unavailable": unavailable}
+            "unavailable": unavailable, "upcoming": upcoming}
 
 
 def watch_fetch_url(platform, url):
