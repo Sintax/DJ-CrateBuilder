@@ -63,3 +63,31 @@ def iter_library_tracks(platform_dirs):
 def count_library_tracks(platform_dirs):
     """How many audio files `iter_library_tracks` would yield."""
     return sum(1 for _ in iter_library_tracks(platform_dirs))
+
+
+def iter_channel_tracks(channel_dir, genre):
+    """Yield (track_path, genre) for one channel folder's own audio files.
+
+    The single-channel counterpart to `iter_library_tracks`, used after a
+    Watch List genre change so only the folder that actually moved is
+    retagged. Top level only — a channel folder's `.artwork/` sidecars are
+    not tracks. Sorted, and unreadable folders yield nothing rather than
+    raising.
+    """
+    if not channel_dir or not os.path.isdir(channel_dir):
+        return
+    try:
+        names = sorted(os.listdir(channel_dir))
+    except OSError:
+        return
+    for name in names:
+        if not name.lower().endswith(AUDIO_EXTS):
+            continue
+        full = os.path.join(channel_dir, name)
+        if os.path.isfile(full):
+            yield full, genre
+
+
+def count_channel_tracks(channel_dir):
+    """How many audio files `iter_channel_tracks` would yield."""
+    return sum(1 for _ in iter_channel_tracks(channel_dir, ""))
