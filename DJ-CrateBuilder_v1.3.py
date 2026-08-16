@@ -4509,6 +4509,9 @@ class MP3DownloaderApp(tk.Tk):
         # First-run: auto-populate the Watch List from existing channel folders
         self.after(1200, self._watchlist_populate_from_folders)
         self.after(1600, self._reschedule_auto_download)
+        # Offer to merge duplicate rows an older build left behind. Ahead of
+        # the startup scan so the user answers before the window gets busy.
+        self.after(1800, self._prompt_dedupe_after_update)
         # Actively refresh new-track counts for every entry on each launch.
         self.after(2200, self._watchlist_startup_scan)
 
@@ -13016,6 +13019,67 @@ class MP3DownloaderApp(tk.Tk):
     # De-dup — collapse repeated rows that point at the same file
     # ══════════════════════════════════════════════════════════════════════════
 
+    _DEDUPE_PROMPT_KEY = "dedupe_prompt_build"
+
+    def _prompt_dedupe_after_update(self):
+        """Offer the de-dup once, after an update lands on a database that
+        still holds duplicate rows.
+
+        The build that introduced the unique index wants one row per file, and
+        says so by failing to create that index — so has_unique_path_index is
+        the signal, not a version comparison: it is true exactly when there is
+        nothing to offer. Asking is all this does; the rows are only touched
+        after the user agrees.
+
+        Answered once per build. Declining is remembered against the current
+        APP_BUILD, so the prompt returns after the next update but never on
+        the next launch — and the Settings button is always there in between."""
+        try:
+            if self._db.has_unique_path_index:
+                return                      # nothing to clean, nothing to ask
+            if getattr(self, "_rebuild_in_progress", False) or \
+                    getattr(self, "_artwork_session", None) is not None:
+                return                      # busy; the button still works
+            cfg = load_config()
+            if cfg.get(self._DEDUPE_PROMPT_KEY) == APP_BUILD:
+                return                      # already answered for this build
+            files, extra = self._db.count_duplicate_downloads()
+            if not extra:
+                return
+        except Exception as e:              # never block startup over a prompt
+            self._dbg.warning(f"DEDUPE PROMPT | skipped: {e}")
+            return
+
+        # Record the answer before acting: if the run itself fails, the user
+        # still isn't asked again on every launch.
+        try:
+            cfg[self._DEDUPE_PROMPT_KEY] = APP_BUILD
+            save_config(cfg)
+        except Exception:
+            pass
+
+        self._dbg.info(f"DEDUPE PROMPT | {extra} redundant rows across "
+                       f"{files} files — asking the user")
+        ok = messagebox.askyesno(
+            "Duplicate Entries Found",
+            f"This update changes how the database records your library: one "
+            f"file on disk now means one entry, which stops the same track "
+            f"being logged twice.\n\n"
+            f"Your database still holds {extra:,} duplicate entr"
+            f"{'ies' if extra != 1 else 'y'} across {files:,} "
+            f"file{'s' if files != 1 else ''}, left by earlier builds. Until "
+            f"they are merged, the new protection stays switched off.\n\n"
+            f"Clean them up now?\n\n"
+            f"Your audio files, cover art and Watch List are not touched — "
+            f"only the duplicate database entries. Anything a removed entry "
+            f"knew is kept on the one that remains. This cannot be undone.\n\n"
+            f"You can also do this later from Settings ▸ Remove Duplicates.",
+            parent=self)
+        if not ok:
+            self._dbg.info("DEDUPE PROMPT | declined")
+            return
+        self._start_dedupe(files, extra)
+
     def _dedupe_downloads_db(self):
         """Entry point for the 'Remove Duplicate Rows' button.
 
@@ -13057,7 +13121,14 @@ class MP3DownloaderApp(tk.Tk):
             parent=self)
         if not ok:
             return
+        self._start_dedupe(files, extra)
 
+    def _start_dedupe(self, files, extra):
+        """Run the de-dup on a worker thread and report the result.
+
+        Split out of _dedupe_downloads_db so the post-update prompt can reuse
+        it without asking a second time — the caller owns the confirmation,
+        this owns the work. Never called without the user having agreed."""
         self._dbg.info(f"DEDUPE START | {extra} redundant rows across "
                        f"{files} files")
         self._dedupe_db_btn.config(state="disabled")
