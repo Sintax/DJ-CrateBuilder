@@ -26,6 +26,7 @@ from cratebuilder.util import (
     derive_collection_name, find_matching_watchlist_row,
     soundcloud_profile_handle, merge_soundcloud_candidates,
     runtime_data_dir, classify_permanent_failure, download_result_facts,
+    ensure_usable_tempdir,
 )
 from cratebuilder.sidecar import (
     channel_url_from_id, channel_id_from_url,
@@ -4675,6 +4676,21 @@ class MP3DownloaderApp(tk.Tk):
             self._dbg.info(f"yt-dlp version: {yt_dlp.version.__version__}")
         except Exception:
             self._dbg.info("yt-dlp version: unknown")
+        # Guard the process temp directory. A Run-key startup launch begins
+        # in C:\Windows\System32, and when the normal temp candidates fail
+        # their write probe CPython caches the CWD as the temp dir — after
+        # which every yt-dlp format check dies with 'Permission denied …
+        # System32\tmpXXXX.tmp'. Validate (and if needed relocate) it now,
+        # and log the outcome so a broken launch context is visible here.
+        try:
+            tmp_dir, relocated = ensure_usable_tempdir()
+            self._dbg.info(
+                f"TEMP DIR | {tmp_dir}"
+                + ("  (relocated — original temp dir was unusable)"
+                   if relocated else ""))
+            self._dbg.info(f"CWD | {os.getcwd()}")
+        except Exception as tmp_exc:
+            self._dbg.warning(f"TEMP DIR | guard failed: {tmp_exc}")
         self._dbg.info("═" * 80)
 
         # ── Downloads database (SQLite) ───────────────────────────────────────
@@ -12920,6 +12936,16 @@ if __name__ == "__main__":
     if _instance_lock is None:
         request_show(SINGLE_INSTANCE_PORT)
         sys.exit(0)
+    # Normalise the working directory before anything touches relative
+    # paths: a Run-key startup launch begins in C:\Windows\System32, which
+    # poisons CPython's last-resort temp-dir fallback (see
+    # ensure_usable_tempdir) and any other CWD-relative assumption.
+    # runtime_data_dir() resolves from sys.argv[0] first, so the chdir
+    # cannot shift where the logs/DB live.
+    try:
+        os.chdir(runtime_data_dir())
+    except OSError:
+        pass
     app = MP3DownloaderApp()
     app._instance_lock = _instance_lock
     listen_for_show_requests(

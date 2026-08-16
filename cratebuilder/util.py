@@ -6,8 +6,10 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 import urllib.parse
+import uuid
 from datetime import datetime, date, timedelta
 
 def detect_platform(url):
@@ -137,6 +139,78 @@ def runtime_data_dir(script_path=None):
     except OSError:
         return app_dir
     return path
+
+
+def _dir_is_writable(path):
+    """True only if a file can actually be created in *path*.
+
+    os.access() is useless for this on Windows — it checks the read-only
+    attribute, not ACLs — so probe with a real exclusive create + unlink."""
+    if not path or not os.path.isdir(path):
+        return False
+    probe = os.path.join(path, f".cb_probe_{uuid.uuid4().hex}.tmp")
+    try:
+        fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        os.unlink(probe)
+        return True
+    except OSError:
+        return False
+
+
+def _is_under(path, root):
+    """True if *path* is *root* or inside it. False on empty/cross-drive."""
+    if not path or not root:
+        return False
+    try:
+        return os.path.commonpath(
+            [os.path.abspath(path), os.path.abspath(root)]
+        ) == os.path.abspath(root)
+    except ValueError:
+        return False
+
+
+def ensure_usable_tempdir(base_dir=None):
+    """Guarantee this process a writable temp directory.
+
+    An app launched from the Windows Run key starts with CWD =
+    C:\\Windows\\System32; when the normal temp candidates fail their write
+    probe, CPython's last-resort fallback caches the CWD as the process temp
+    dir, and every later tempfile call (e.g. yt-dlp's format checking) dies
+    with 'Permission denied ...System32\\tmpXXXX.tmp'. This validates the
+    current temp dir with a real write probe — rejecting anything under
+    %SystemRoot% outright — and, when it is unusable, relocates to a private
+    dir under *base_dir* (default: %LOCALAPPDATA% on Windows, ~/.cache
+    elsewhere), pointing tempfile.tempdir and TEMP/TMP/TMPDIR at it so child
+    processes (FFmpeg, Node) inherit the fix.
+
+    Returns (tempdir, relocated). Never raises: if the fallback can't be
+    created either, the original dir is returned with relocated=False."""
+    try:
+        current = tempfile.gettempdir()
+    except Exception:
+        current = None
+    if (current
+            and not _is_under(current, os.environ.get("SystemRoot"))
+            and _dir_is_writable(current)):
+        return current, False
+    if base_dir is None:
+        if os.name == "nt":
+            base_dir = (os.environ.get("LOCALAPPDATA")
+                        or os.path.expanduser("~"))
+        else:
+            base_dir = os.path.join(os.path.expanduser("~"), ".cache")
+    fallback = os.path.join(base_dir, "DJ-CrateBuilder", "Temp")
+    try:
+        os.makedirs(fallback, exist_ok=True)
+    except OSError:
+        return current, False
+    if not _dir_is_writable(fallback):
+        return current, False
+    tempfile.tempdir = fallback
+    for var in ("TEMP", "TMP", "TMPDIR"):
+        os.environ[var] = fallback
+    return fallback, True
 
 
 # ── Config persistence ────────────────────────────────────────────────────────
