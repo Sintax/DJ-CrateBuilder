@@ -413,3 +413,75 @@ def test_download_result_facts_missing_fields_are_none():
     assert util.download_result_facts(
         {"title": "", "thumbnail": "", "requested_downloads": []}
     ) == (None, None, None, None)
+
+
+# ── ensure_usable_tempdir ─────────────────────────────────────────────────────
+
+import os
+import tempfile
+
+import pytest
+
+
+@pytest.fixture
+def _restore_tempdir():
+    """Snapshot and restore the process temp-dir state around a test."""
+    saved_tempdir = tempfile.tempdir
+    saved_env = {k: os.environ.get(k) for k in ("TEMP", "TMP", "TMPDIR")}
+    yield
+    tempfile.tempdir = saved_tempdir
+    for k, v in saved_env.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+
+def test_ensure_usable_tempdir_healthy_dir_untouched(tmp_path, _restore_tempdir):
+    good = tmp_path / "good"
+    good.mkdir()
+    tempfile.tempdir = str(good)
+    chosen, relocated = util.ensure_usable_tempdir(base_dir=str(tmp_path))
+    assert chosen == str(good)
+    assert relocated is False
+    assert tempfile.tempdir == str(good)
+
+
+def test_ensure_usable_tempdir_relocates_when_unwritable(
+        tmp_path, _restore_tempdir):
+    tempfile.tempdir = str(tmp_path / "missing")   # unusable: doesn't exist
+    chosen, relocated = util.ensure_usable_tempdir(base_dir=str(tmp_path))
+    assert relocated is True
+    assert chosen == os.path.join(str(tmp_path), "DJ-CrateBuilder", "Temp")
+    assert os.path.isdir(chosen)
+    assert tempfile.tempdir == chosen
+    assert os.environ["TEMP"] == chosen
+    assert os.environ["TMP"] == chosen
+    # tempfile actually creates files there now
+    with tempfile.NamedTemporaryFile(dir=None) as f:
+        assert f.name.startswith(chosen)
+
+
+def test_ensure_usable_tempdir_rejects_system_root(
+        tmp_path, _restore_tempdir, monkeypatch):
+    fake_sysroot = tmp_path / "WINDOWS"
+    sys32 = fake_sysroot / "System32"
+    sys32.mkdir(parents=True)
+    monkeypatch.setenv("SystemRoot", str(fake_sysroot))
+    tempfile.tempdir = str(sys32)      # writable, but under SystemRoot
+    chosen, relocated = util.ensure_usable_tempdir(base_dir=str(tmp_path))
+    assert relocated is True
+    assert chosen == os.path.join(str(tmp_path), "DJ-CrateBuilder", "Temp")
+
+
+def test_ensure_usable_tempdir_keeps_original_when_fallback_fails(
+        tmp_path, _restore_tempdir):
+    bad = str(tmp_path / "missing")
+    tempfile.tempdir = bad
+    # base_dir is a FILE, so the fallback dir can't be created
+    base_file = tmp_path / "blocker"
+    base_file.write_text("x")
+    chosen, relocated = util.ensure_usable_tempdir(
+        base_dir=str(base_file / "sub"))
+    assert relocated is False
+    assert chosen == bad
