@@ -101,6 +101,10 @@ _COVER_ART_LABELS = {
     "off":      "Off — no cover art",
 }
 _COVER_ART_MODES_BY_LABEL = {v: k for k, v in _COVER_ART_LABELS.items()}
+# 'off' is expressed by the "Attach cover art to files" checkbox, not by the
+# formatting dropdown — listing it in both places was redundant.
+_COVER_ART_FORMAT_MODES = tuple(m for m in cb_artwork.COVER_ART_MODES
+                                if m != "off")
 
 # ── Dependency check ──────────────────────────────────────────────────────────
 def check_dependencies():
@@ -214,6 +218,14 @@ WL_BLUE_DARK = "#2563eb"   # darker blue fill for buttons (carries white text)
 # so the control reads as "armed but inactive" rather than a plain grey button.
 WL_CANCEL_IDLE = "#5e1414"
 WL_CANCEL_ACTIVE = YT_DARK   # live cancel on a card — matches the toolbar
+
+
+def _wl_count_button_style(count, active_fg=LINK_COL):
+    """tk.Button kwargs for a "Download … (N)" control: live when N > 0, dimmed
+    and unclickable at zero so an empty queue can't be launched."""
+    if count:
+        return {"state": "normal", "fg": active_fg, "cursor": "hand2"}
+    return {"state": "disabled", "fg": TEXT_DIM, "cursor": "arrow"}
 
 # ── Platform config ───────────────────────────────────────────────────────────
 PLATFORMS = {
@@ -4390,12 +4402,21 @@ class MP3DownloaderApp(tk.Tk):
         # Cover art — how the source thumbnail is fitted to the square art slot
         # every player renders. Stored as one of cb_artwork.COVER_ART_MODES;
         # presented in the UI as a friendly label via _COVER_ART_LABELS.
+        # Whether artwork is fetched at all is the separate cover_art_enabled
+        # flag; a legacy config that only knows cover_art_mode == "off" seeds
+        # the checkbox off and leaves the dropdown on the default formatting.
         _cfg_mode = str(cfg.get("cover_art_mode",
                                 cb_artwork.DEFAULT_COVER_ART_MODE)).lower()
         if _cfg_mode not in cb_artwork.COVER_ART_MODES:
             _cfg_mode = cb_artwork.DEFAULT_COVER_ART_MODE
+        _cfg_art_on = bool(cfg.get("cover_art_enabled", _cfg_mode != "off"))
+        if _cfg_mode == "off":
+            _cfg_mode = cb_artwork.DEFAULT_COVER_ART_MODE
+        self._cover_art_enabled = tk.BooleanVar(value=_cfg_art_on)
         self._cover_art_mode = tk.StringVar(value=_COVER_ART_LABELS[_cfg_mode])
         self._cover_art_mode.trace_add("write", self._autosave_cover_art_setting)
+        self._cover_art_enabled.trace_add(
+            "write", self._autosave_cover_art_setting)
         # In-flight artwork backfill, or None. Guards against a second run being
         # started on top of one already walking the library.
         self._artwork_session = None
@@ -6115,17 +6136,30 @@ class MP3DownloaderApp(tk.Tk):
         self._on_no_conversion_toggle()
 
         # ── Cover art ─────────────────────────────────────────────────────────
-        cover_row = ttk.Frame(outer)
-        cover_row.pack(fill="x", pady=(10, 4))
+        cover_on_row = ttk.Frame(outer)
+        cover_on_row.pack(fill="x", pady=(10, 4))
+        self._cover_art_cb = ttk.Checkbutton(
+            cover_on_row, text="Attach cover art to files",
+            variable=self._cover_art_enabled,
+            style="S.Opt.TCheckbutton")
+        self._cover_art_cb.pack(side="left")
+        self._settings_help(
+            cover_on_row,
+            "Turn off to skip artwork entirely — no thumbnail download, no "
+            "hidden .artwork folder and no embedded image.",
+            wraplength=400).pack(side="left", padx=(8, 0))
 
-        tk.Label(cover_row, text="Cover Art:",
+        cover_row = ttk.Frame(outer)
+        cover_row.pack(fill="x", pady=(0, 4))
+
+        tk.Label(cover_row, text="Formatting:",
                  font=("Segoe UI", 10, "bold"), fg=TEXT_MED, bg=BG
                  ).pack(side="left", padx=(0, 12))
 
         self._cover_art_combo = ttk.Combobox(
             cover_row,
             textvariable=self._cover_art_mode,
-            values=[_COVER_ART_LABELS[m] for m in cb_artwork.COVER_ART_MODES],
+            values=[_COVER_ART_LABELS[m] for m in _COVER_ART_FORMAT_MODES],
             state="readonly", width=28)
         self._cover_art_combo.pack(side="left", padx=(0, 14))
         self._settings_help(
@@ -6135,6 +6169,9 @@ class MP3DownloaderApp(tk.Tk):
             "also kept in a hidden .artwork folder beside the tracks. Cropping "
             "to square fills the art slot; keeping 16:9 letterboxes it.",
             wraplength=400).pack(side="left", padx=(0, 0))
+
+        # Apply initial enabled/disabled state for the formatting combo
+        self._on_cover_art_toggle()
 
         # (The 'Skip files already downloaded' option lives on the Main tab,
         # below the Start Downloads button row.)
@@ -6630,7 +6667,8 @@ class MP3DownloaderApp(tk.Tk):
             "limit_minutes":  self._limit_minutes.get(),
             "bitrate_quality": self._bitrate_quality.get().split()[0],
             "no_conversion":  self._no_conversion.get(),
-            "cover_art_mode": self._cover_art_mode_value(),
+            "cover_art_enabled": self._cover_art_enabled.get(),
+            "cover_art_mode": self._cover_art_format_value(),
             "log_max_mb":     self._log_max_mb,
             "skip_existing":  self._skip_existing.get(),
             "skip_mode":      self._skip_mode.get(),
@@ -6719,18 +6757,41 @@ class MP3DownloaderApp(tk.Tk):
         cfg["no_conversion"]   = self._no_conversion.get()
         save_config(cfg)
 
-    def _cover_art_mode_value(self):
-        """The bare cover-art mode string ('crop'/'original'/'off') behind the
-        friendly label the combobox displays. Falls back to the default when the
-        variable holds anything unrecognised."""
-        return _COVER_ART_MODES_BY_LABEL.get(
+    def _cover_art_format_value(self):
+        """The bare formatting mode ('crop'/'original') behind the friendly
+        label the combobox displays, ignoring the enable checkbox. Falls back to
+        the default when the variable holds anything unrecognised."""
+        mode = _COVER_ART_MODES_BY_LABEL.get(
             self._cover_art_mode.get(), cb_artwork.DEFAULT_COVER_ART_MODE)
+        return (cb_artwork.DEFAULT_COVER_ART_MODE if mode == "off" else mode)
+
+    def _cover_art_mode_value(self):
+        """The effective cover-art mode the download path acts on: 'off' when
+        the 'Attach cover art to files' checkbox is clear, otherwise the chosen
+        formatting."""
+        if not self._cover_art_enabled.get():
+            return "off"
+        return self._cover_art_format_value()
 
     def _autosave_cover_art_setting(self, *_):
-        """Auto-save the cover-art mode to config whenever the combobox changes."""
+        """Auto-save the cover-art checkbox + formatting whenever either
+        changes, and grey the dropdown out while artwork is disabled."""
         cfg = load_config()
-        cfg["cover_art_mode"] = self._cover_art_mode_value()
+        cfg["cover_art_enabled"] = bool(self._cover_art_enabled.get())
+        cfg["cover_art_mode"] = self._cover_art_format_value()
         save_config(cfg)
+        self._on_cover_art_toggle()
+
+    def _on_cover_art_toggle(self):
+        """Enable the formatting dropdown only while cover art is switched on."""
+        combo = getattr(self, "_cover_art_combo", None)
+        if combo is None:
+            return
+        try:
+            combo.config(state=("readonly" if self._cover_art_enabled.get()
+                                else "disabled"))
+        except tk.TclError:
+            pass
 
     def _autosave_log_limit(self, *_):
         """Persist the log size limit and apply it to the live handlers,
@@ -8991,6 +9052,12 @@ class MP3DownloaderApp(tk.Tk):
         # Pick a consistent User-Agent for this entire batch session
         session_ua = random.choice(USER_AGENT_POOL) if self._rotate_ua.get() else None
 
+        # Per-batch-item outcome, indexed the same way as run_batch (and, for a
+        # Watch List run, as _active_watchlist_batch["channel_ids"]). The
+        # cleanup below only retires a channel's pending list once its item has
+        # actually run clean — see the finally block.
+        clean_urls = set()
+
         try:
             n = len(run_batch)
             self._log_separator(
@@ -9027,6 +9094,9 @@ class MP3DownloaderApp(tk.Tk):
                     fatal_error = self._last_fatal_error
                     self._wl_dl_log(f"✗ Stopped: {fatal_error}", "err")
                     break
+
+                if not er and not self._cancel_flag.is_set():
+                    clean_urls.add(url_idx)
 
                 # Mirror this track's outcome into the Watch List scan log
                 # (only fires while a Watch List batch is active).
@@ -9101,9 +9171,18 @@ class MP3DownloaderApp(tk.Tk):
             wl_batch = self._active_watchlist_batch
             if wl_batch:
                 try:
-                    for cid in wl_batch.get("channel_ids", []):
+                    for idx, cid in enumerate(wl_batch.get("channel_ids", [])):
                         ch = self._db.get_watchlist_channel(cid)
                         if not ch:
+                            continue
+                        self._db.update_watchlist_status(cid, "idle")
+                        if idx not in clean_urls:
+                            # Failed, cancelled, or never reached. Retiring the
+                            # pending list here would forget tracks that were
+                            # never downloaded — the next scan re-finds them and
+                            # the count silently resets on every run. Leave the
+                            # pending list and the cutoff exactly as they were
+                            # so the retry is real.
                             continue
                         # Advance cutoff to today minus buffer
                         new_cutoff = subtract_days_from_yyyymmdd(
@@ -9111,7 +9190,6 @@ class MP3DownloaderApp(tk.Tk):
                         self._db.update_watchlist_cutoff(
                             ch["url"], new_cutoff)
                         self._db.clear_pending_for_channel(cid)
-                        self._db.update_watchlist_status(cid, "idle")
                 except Exception as wle:
                     self._dbg.error(
                         f"WL BATCH CLEANUP | error: {wle}")
@@ -10071,21 +10149,9 @@ class MP3DownloaderApp(tk.Tk):
             command=self._watchlist_open_add_dialog)
         self._wl_add_btn.pack(side="left", padx=(0, 6))
 
-        self._wl_scan_all_btn = tk.Button(
-            toolbar, text="  🔍  Scan All  ",
-            font=("Segoe UI", 10, "bold"),
-            bg=SURFACE2, fg=LINK_COL,
-            activebackground=BORDER, activeforeground=TEXT,
-            relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
-            command=self._watchlist_scan_all)
-        self._wl_scan_all_btn.pack(side="left", padx=(0, 6))
-        Tooltip(self._wl_scan_all_btn,
-                "Check every channel for new uploads since the last scan.")
-
-        # Check Links / Force Download All share one toolbar slot: Check Links
-        # shows only while a channel still needs its URL resolved; otherwise
-        # Force Download All takes its place. _wl_update_toolbar_buttons()
-        # (driven from _wl_update_dl_all_count) packs the right one.
+        # Check Links occupies its own toolbar slot, shown only while a channel
+        # still needs its URL resolved. _wl_update_toolbar_buttons() (driven
+        # from _wl_update_dl_all_count) packs and unpacks it.
         self._wl_fix_btn = tk.Button(
             toolbar, text="  🛠  Check Links  ",
             font=("Segoe UI", 10, "bold"),
@@ -10098,28 +10164,32 @@ class MP3DownloaderApp(tk.Tk):
                 "needs one, so it can be scanned. Shows the top matches to "
                 "choose from.")
 
-        self._wl_force_btn = tk.Button(
-            toolbar, text="  ⤓  Force Download All  ",
-            font=("Segoe UI", 10, "bold"),
-            bg=SURFACE2, fg=LINK_COL,
-            activebackground=BORDER, activeforeground=TEXT,
-            relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
-            command=self._watchlist_force_download_all)
-        Tooltip(self._wl_force_btn,
-                "Run every channel's full catalogue, not just new uploads. "
-                "Tracks already on disk are skipped — and stamped with their "
-                "source-URL ID3 tag — while anything missing is downloaded.")
+        # Force Download All is retired from the toolbar but
+        # _watchlist_force_download_all() is kept — the button may come back.
 
         self._wl_dl_all_btn = tk.Button(
             toolbar, text="  ⬇  Download All New (0)  ",
             font=("Segoe UI", 10, "bold"),
-            bg=SURFACE2, fg=LINK_COL,
+            bg=SURFACE2, fg=TEXT_DIM,
             activebackground=BORDER, activeforeground=TEXT,
-            relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
+            disabledforeground=TEXT_DIM,
+            relief="flat", bd=0, padx=12, pady=4, cursor="arrow",
+            state="disabled",
             command=self._watchlist_download_all_new)
         self._wl_dl_all_btn.pack(side="left", padx=(0, 6))
         Tooltip(self._wl_dl_all_btn,
                 "Download all pending new tracks across every channel.")
+
+        self._wl_scan_all_btn = tk.Button(
+            toolbar, text="  🔍  Scan for new  ",
+            font=("Segoe UI", 10, "bold"),
+            bg=SURFACE2, fg=LINK_COL,
+            activebackground=BORDER, activeforeground=TEXT,
+            relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
+            command=self._watchlist_scan_all)
+        self._wl_scan_all_btn.pack(side="left", padx=(0, 6))
+        Tooltip(self._wl_scan_all_btn,
+                "Check every channel for new uploads since the last scan.")
 
         self._wl_cancel_btn = tk.Button(
             toolbar, text="  ✕  Cancel  ",
@@ -10227,11 +10297,13 @@ class MP3DownloaderApp(tk.Tk):
 
     def _wl_update_dl_all_count(self):
         """Refresh just the 'Download All New (N)' button count from the DB,
-        without rebuilding any cards."""
+        without rebuilding any cards. Nothing pending means nothing to press,
+        so the button greys out until a scan turns something up."""
         try:
             total_pending = self._db.get_total_pending_count()
             self._wl_dl_all_btn.config(
-                text=f"  ⬇  Download All New ({total_pending})  ")
+                text=f"  ⬇  Download All New ({total_pending})  ",
+                **_wl_count_button_style(total_pending))
             # Mirror the count into the tray menu label (plain str read on the
             # tray thread; safe because it's only ever assigned from here).
             self._tray_dl_label = f"Download All New ({total_pending})"
@@ -10241,23 +10313,23 @@ class MP3DownloaderApp(tk.Tk):
 
     def _wl_update_toolbar_buttons(self):
         """Show Check Links only while at least one channel still needs its URL
-        resolved; otherwise show Force Download All in that same slot. Both are
-        packed just before the Download All New button so the slot stays put."""
+        resolved. It's packed just before the Download All New button so the
+        slot stays put."""
         fix = getattr(self, "_wl_fix_btn", None)
-        force = getattr(self, "_wl_force_btn", None)
         anchor = getattr(self, "_wl_dl_all_btn", None)
-        if fix is None or force is None or anchor is None:
+        if fix is None or anchor is None:
             return
         try:
             has_broken = any(self._is_unresolved_channel(c)
                              for c in self._db.get_all_watchlist_channels())
         except Exception:
             has_broken = False
-        show, hide = (fix, force) if has_broken else (force, fix)
         try:
-            hide.pack_forget()
-            if not show.winfo_ismapped():
-                show.pack(side="left", padx=(0, 6), before=anchor)
+            if has_broken:
+                if not fix.winfo_ismapped():
+                    fix.pack(side="left", padx=(0, 6), before=anchor)
+            else:
+                fix.pack_forget()
         except Exception:
             pass
 
@@ -10413,13 +10485,14 @@ class MP3DownloaderApp(tk.Tk):
             cid in batch.get("channel_ids", [])
 
         # (label, command, is_cancel, tooltip_text)
+        WL_DL_NEW_LABEL = f"⬇ Download New ({pending})"
         card_buttons = [
             ("🔍 Scan",    lambda c=cid: self._watchlist_scan_channel(c), False,
              "Check this channel for new uploads without downloading anything."),
             ("⚡ Force Download", lambda c=cid: self._watchlist_force_download(c), False,
              "Re-download every track from this channel, including ones "
              "already in your library."),
-            (f"⬇ Download New ({pending})",
+            (WL_DL_NEW_LABEL,
                            lambda c=cid: self._watchlist_download_new(c), False, None),
         ]
         WL_FIX_LINK_LABEL = "🛠 Fix Link"
@@ -10464,10 +10537,15 @@ class MP3DownloaderApp(tk.Tk):
                 b = tk.Button(btns, text=btn_text,
                               font=("Segoe UI", 9),
                               bg=SURFACE2, fg=TEXT_MED,
+                              disabledforeground=TEXT_DIM,
                               activebackground=BORDER, activeforeground=TEXT,
                               relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
                               command=btn_cmd)
-            add_hover(b)
+                if btn_text == WL_DL_NEW_LABEL:
+                    b.config(**_wl_count_button_style(pending,
+                                                      active_fg=TEXT_MED))
+            if str(b.cget("state")) != "disabled":
+                add_hover(b)
             b.pack(side="left", padx=(0, 4))
             if tip:
                 Tooltip(b, tip)
@@ -10537,6 +10615,35 @@ class MP3DownloaderApp(tk.Tk):
                 updated=today_yyyymmdd())
         except Exception as e:
             self._dbg.warning(f"WL LINK MIRROR failed: {e}")
+
+    def _repoint_channel_genre(self, ch, platform, old_genre, new_genre,
+                               folder=None):
+        """Carry a channel's out-of-database identity across a genre change.
+
+        The link store is keyed by Platform/Genre/DisplayName, so a genre move
+        has to re-file the entry and drop the old key or the stale one lingers
+        and Fix Link can prefill from the wrong record. The channel folder's
+        cratebuilder.json travels with the files but still names the old genre,
+        so it is rewritten too. Both are best-effort mirrors — a failure here
+        must never undo a move the database has already committed."""
+        display = ch.get("display_name") or ""
+        url = ch.get("url") or ""
+        try:
+            self._mirror_channel_link({**ch, "genre": new_genre}, url,
+                                      channel_id=ch.get("channel_id"))
+            if (old_genre or "(none)") != (new_genre or "(none)"):
+                cb_links.remove_link(self._links_path, platform, old_genre,
+                                     display)
+        except Exception as e:
+            self._dbg.warning(f"WL GENRE MOVE | link store: {e}")
+        if folder:
+            try:
+                write_channel_sidecar(
+                    folder, channel_id=ch.get("channel_id"),
+                    channel_url=url or None, display_name=display,
+                    platform=platform, genre=new_genre)
+            except Exception as e:
+                self._dbg.warning(f"WL GENRE MOVE | sidecar: {e}")
 
     def _stored_channel_link(self, ch):
         """The last-known URL for a channel from the durable link store, or ''.
@@ -11627,9 +11734,9 @@ class MP3DownloaderApp(tk.Tk):
         link_btn_row = tk.Frame(outer, bg=BG)
         link_btn_row.pack(fill="x", pady=(0, 12))
         for _txt, _cmd, _padx in (
+                ("  📂 Open Folder  ",     _open_folder, (0, 8)),
                 ("  🌐 Open Link  ",       _open_link,   (0, 8)),
-                ("  🛠 Smart-Edit Link  ", _edit_link,   (0, 8)),
-                ("  📂 Open Folder  ",     _open_folder, (0, 0))):
+                ("  🛠 Smart-Edit Link  ", _edit_link,   (0, 0))):
             _lb = tk.Button(link_btn_row, text=_txt,
                       font=("Segoe UI", 9), bg=SURFACE2, fg=TEXT_DIM,
                       activebackground=BORDER, activeforeground=TEXT,
@@ -11886,13 +11993,9 @@ class MP3DownloaderApp(tk.Tk):
                             "debug.log and try again.",
                             parent=dlg)
                         return
-                    try:
-                        self._mirror_channel_link(
-                            {**ch, "genre": picked_genre},
-                            ch.get("url") or "",
-                            channel_id=ch.get("channel_id"))
-                    except Exception:
-                        pass
+                    self._repoint_channel_genre(
+                        ch, ch_platform, db_genre, picked_genre,
+                        folder=dst_dir)
                     try:
                         self._logger.info(
                             f"Watchlist: moved '{ch['display_name']}' from "
@@ -11901,11 +12004,24 @@ class MP3DownloaderApp(tk.Tk):
                     except Exception:
                         pass
                 else:
-                    # No folder to move (or empty placeholder). Just update
-                    # the recorded genre so the next download lands in the
-                    # right place.
+                    # No tracks to move. An empty placeholder folder still
+                    # travels — silently, since there is nothing to lose — so
+                    # the old genre isn't left holding a hollow shell and its
+                    # sidecar. Only the recorded genre changes otherwise.
+                    if (os.path.isdir(src_dir)
+                            and not os.path.exists(dst_dir)):
+                        try:
+                            os.makedirs(os.path.dirname(dst_dir),
+                                        exist_ok=True)
+                            shutil.move(src_dir, dst_dir)
+                        except Exception as exc:
+                            self._dbg.warning(
+                                f"WL GENRE MOVE | empty folder: {exc}")
                     self._db.update_watchlist_channel_fields(
                         cid, genre=picked_genre)
+                    self._repoint_channel_genre(
+                        ch, ch_platform, db_genre, picked_genre,
+                        folder=(dst_dir if os.path.isdir(dst_dir) else None))
 
             self._db.update_watchlist_channel_fields(
                 cid, scan_cutoff_date=new_cutoff)

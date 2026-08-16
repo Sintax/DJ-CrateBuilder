@@ -71,6 +71,29 @@ def test_save_link_preserves_unicode(tmp_path):
         "https://soundcloud.com/cafe"
 
 
+def test_remove_link_drops_only_the_named_identity(tmp_path):
+    p = _path(tmp_path)
+    links.save_link(p, platform="YouTube", genre="Old", display_name="Foo",
+                    url="https://foo")
+    links.save_link(p, platform="YouTube", genre="New", display_name="Foo",
+                    url="https://foo")
+    assert links.remove_link(p, "YouTube", "Old", "Foo") is True
+    assert links.get_link(p, "YouTube", "Old", "Foo") == ""
+    assert links.get_link(p, "YouTube", "New", "Foo") == "https://foo"
+
+
+def test_remove_link_unknown_key_is_false(tmp_path):
+    p = _path(tmp_path)
+    links.save_link(p, platform="YouTube", genre="A", display_name="One",
+                    url="https://one")
+    assert links.remove_link(p, "YouTube", "B", "One") is False
+    assert links.get_link(p, "YouTube", "A", "One") == "https://one"
+
+
+def test_remove_link_missing_file_is_false(tmp_path):
+    assert links.remove_link(_path(tmp_path), "YouTube", "A", "One") is False
+
+
 def test_multiple_channels_coexist(tmp_path):
     p = _path(tmp_path)
     links.save_link(p, platform="YouTube", genre="A", display_name="One",
