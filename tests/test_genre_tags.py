@@ -177,6 +177,59 @@ def test_walk_order_is_stable_across_passes(tmp_path):
     assert first == second
 
 
+# ── genrefix: one channel folder, after a Watch List genre change ─────────────
+
+def test_iter_channel_tracks_covers_only_that_folder(tmp_path):
+    dirs = _library(tmp_path)
+    folder = str(tmp_path / "YouTube" / "Drum & Bass" / "DnB Portal")
+    got = list(genrefix.iter_channel_tracks(folder, "Drum & Bass"))
+    assert {os.path.basename(p) for p, _ in got} == {"a.mp3", "b.mp3"}
+    assert {g for _, g in got} == {"Drum & Bass"}
+    # The rest of the library is untouched by a single-channel sweep.
+    assert len(list(genrefix.iter_library_tracks(dirs))) == 4
+
+
+def test_iter_channel_tracks_skips_the_artwork_sidecar_folder(tmp_path):
+    folder = tmp_path / "YouTube" / "House" / "DJ Foo"
+    _make_mp3(folder / "a.mp3")
+    _make_mp3(folder / ".artwork" / "nested.mp3")
+    got = list(genrefix.iter_channel_tracks(str(folder), "House"))
+    assert [os.path.basename(p) for p, _ in got] == ["a.mp3"]
+
+
+def test_iter_channel_tracks_missing_folder_yields_nothing(tmp_path):
+    assert list(genrefix.iter_channel_tracks(str(tmp_path / "nope"), "X")) == []
+    assert list(genrefix.iter_channel_tracks(None, "X")) == []
+    assert genrefix.count_channel_tracks(str(tmp_path / "nope")) == 0
+
+
+def test_channel_retag_after_a_genre_move(tmp_path):
+    """The Watch List move relocates the files; this is the pass that makes the
+    tag inside each one agree with where it now lives."""
+    folder = tmp_path / "YouTube" / "Techno" / "DJ Foo"
+    a = _make_mp3(folder / "a.mp3")
+    b = _make_mp3(folder / "b.mp3")
+    tagging.set_track_genre(a, "House")      # the genre it moved out of
+    tagging.set_track_genre(b, "House")
+
+    assert genrefix.count_channel_tracks(str(folder)) == 2
+    fixed = sum(1 for p, g in genrefix.iter_channel_tracks(str(folder), "Techno")
+                if tagging.set_track_genre(p, g))
+
+    assert fixed == 2
+    assert tagging.read_track_genre(a) == "Techno"
+    assert tagging.read_track_genre(b) == "Techno"
+
+
+def test_channel_retag_to_no_genre_clears_the_tag(tmp_path):
+    folder = tmp_path / "YouTube" / genrefix.NO_GENRE_DIR / "DJ Foo"
+    a = _make_mp3(folder / "a.mp3")
+    tagging.set_track_genre(a, "House")
+    for p, g in genrefix.iter_channel_tracks(str(folder), ""):
+        tagging.set_track_genre(p, g)
+    assert tagging.read_track_genre(a) is None
+
+
 def test_end_to_end_repair_aligns_tags_with_folders(tmp_path):
     dirs = _library(tmp_path)
     # Seed a wrong tag and a correct one, leaving the rest untagged.

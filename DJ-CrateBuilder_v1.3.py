@@ -11968,6 +11968,9 @@ class MP3DownloaderApp(tk.Tk):
             # Genre change: physically move the channel folder, then rewrite
             # all downloads rows for it. Abort on collision. Rollback the move
             # if the DB rewrite fails so disk and DB never drift apart.
+            # Set once the files have landed, so the genre tags inside them can
+            # be realigned after the dialog closes.
+            retag = None
             picked_genre = genre_var.get() or "(none)"
             db_genre = ch.get("genre") or "(none)"
             if picked_genre != db_genre:
@@ -11995,8 +11998,9 @@ class MP3DownloaderApp(tk.Tk):
                         "Move Channel Folder",
                         f"Move '{ch['display_name']}' from "
                         f"'{db_genre}' → '{picked_genre}'?\n\n"
-                        f"This will move {n_tracks} track(s) (and cover art) "
-                        f"and update the database rows for this channel.",
+                        f"This will move {n_tracks} track(s) (and cover art), "
+                        f"update the database rows for this channel, and set "
+                        f"the Genre tag inside each file to match.",
                         parent=dlg)
                     if not ok:
                         return
@@ -12030,6 +12034,12 @@ class MP3DownloaderApp(tk.Tk):
                     self._repoint_channel_genre(
                         ch, ch_platform, db_genre, picked_genre,
                         folder=dst_dir)
+                    # The tag inside each moved file still names the old genre.
+                    # Deferred until the dialog is gone so the progress window
+                    # isn't parented behind a modal that's about to close.
+                    retag = (dst_dir,
+                             "" if picked_genre == "(none)" else picked_genre,
+                             ch.get("display_name") or "")
                     try:
                         self._logger.info(
                             f"Watchlist: moved '{ch['display_name']}' from "
@@ -12065,6 +12075,8 @@ class MP3DownloaderApp(tk.Tk):
                 self._watchlist_apply_url(cid, new_url)
             dlg.destroy()
             self._watchlist_refresh()
+            if retag:
+                self._watchlist_retag_genre(*retag)
 
         save_btn = tk.Button(btn_row, text="  Save  ",
                   font=("Segoe UI", 10, "bold"),
@@ -12889,28 +12901,101 @@ class MP3DownloaderApp(tk.Tk):
                 parent=self):
             return
 
+        self._start_genre_fix(
+            lambda: cb_genrefix.iter_library_tracks(platform_dirs), total,
+            scope="library")
+
+    def _watchlist_retag_genre(self, folder, genre, display_name):
+        """Realign one channel folder's genre tags after its genre changed.
+
+        A Watch List genre change moves the files and rewrites the database,
+        but the tag inside each file still names the genre it left — so a
+        player reading the files directly disagrees with CrateBuilder until
+        this runs. Reports into the Watch List log rather than a dialog: the
+        user just answered the move prompt and doesn't need a second one.
+
+        Silently does nothing when a genre fix is already running or the
+        folder has no tracks; neither is worth interrupting a save for."""
+        if getattr(self, "_genre_fix_active", False):
+            self._watchlist_log(
+                f"{display_name}: genre tags not updated — a genre fix is "
+                f"already running. Use Settings ▸ Fix ID3 Genre Fields later.",
+                "err")
+            return
+        total = cb_genrefix.count_channel_tracks(folder)
+        if not total:
+            return
+        self._watchlist_log(
+            f"{display_name}: updating genre tags on {total} track"
+            f"{'s' if total != 1 else ''}…", "info")
+
+        def _done(fixed, skipped, errors, done, cancelled):
+            note = (f"{display_name}: {fixed} genre tag"
+                    f"{'s' if fixed != 1 else ''} updated")
+            if errors:
+                note += f", {errors} failed"
+            if cancelled:
+                note += f" (cancelled after {done} of {total})"
+            self._watchlist_log(note, "err" if errors else "ok")
+
+        self._start_genre_fix(
+            lambda: cb_genrefix.iter_channel_tracks(folder, genre), total,
+            scope=display_name, on_done=_done)
+
+    def _start_genre_fix(self, tracks_factory, total, *, scope,
+                         on_done=None):
+        """Run a genre-tag sweep on a worker thread behind a progress dialog.
+
+        *tracks_factory* is called on the worker to produce (path, genre)
+        pairs — a factory rather than an iterator so the count and the sweep
+        are separate walks and neither is consumed by the other. *total* is
+        what the counting walk found; it only drives the progress bar, so a
+        file appearing or vanishing in between cannot break the run.
+
+        With *on_done* the caller reports the result itself; without it a
+        completion dialog is shown. Tags written before a cancel are kept —
+        each file is complete the moment it is saved."""
         self._genre_fix_active = True
         self._genre_fix_cancel = threading.Event()
-        self._fix_genre_btn.config(state="disabled")
+        try:
+            self._fix_genre_btn.config(state="disabled")
+        except (AttributeError, tk.TclError):
+            pass
         dlg, bar, sub = self._genre_fix_progress(total)
 
         def _work():
             fixed = skipped = errors = 0
             done = 0
-            for path, genre in cb_genrefix.iter_library_tracks(platform_dirs):
-                if self._genre_fix_cancel.is_set():
-                    break
-                try:
-                    if set_track_genre(path, genre):
-                        fixed += 1
-                    else:
-                        skipped += 1
-                except Exception:   # pragma: no cover - set_track_genre eats it
-                    errors += 1
-                done += 1
-                if done % 25 == 0 or done == total:
-                    self.after(0, lambda d=done, f=fixed: _tick(d, f))
-            self.after(0, lambda: _finish(fixed, skipped, errors, done))
+            try:
+                for path, genre in tracks_factory():
+                    if self._genre_fix_cancel.is_set():
+                        break
+                    try:
+                        if set_track_genre(path, genre):
+                            fixed += 1
+                        else:
+                            skipped += 1
+                    except Exception:  # pragma: no cover - set_track_genre eats it
+                        errors += 1
+                    done += 1
+                    if done % 25 == 0 or done == total:
+                        _post(lambda d=done, f=fixed: _tick(d, f))
+            finally:
+                # Whatever went wrong, the run has to be marked finished — a
+                # stuck _genre_fix_active would lock the button out for the
+                # rest of the session.
+                if not _post(lambda: _finish(fixed, skipped, errors, done)):
+                    self._genre_fix_active = False
+
+        def _post(fn):
+            """Hand *fn* to the Tk thread. False if Tk is already gone (the
+            window closed mid-sweep), which is not an error worth raising on
+            a worker thread."""
+            try:
+                self.after(0, fn)
+                return True
+            except (RuntimeError, tk.TclError):
+                return False
 
         def _tick(done, fixed):
             try:
@@ -12921,23 +13006,27 @@ class MP3DownloaderApp(tk.Tk):
 
         def _finish(fixed, skipped, errors, done):
             self._genre_fix_active = False
+            cancelled = self._genre_fix_cancel.is_set()
             try:
                 dlg.destroy()
             except tk.TclError:
                 pass
             try:
                 self._fix_genre_btn.config(state="normal")
-            except tk.TclError:
+            except (AttributeError, tk.TclError):
                 pass
             self._dbg.info(
-                f"GENRE FIX | scanned={done}/{total} fixed={fixed} "
-                f"already-correct={skipped} errors={errors} "
-                f"cancelled={self._genre_fix_cancel.is_set()}")
+                f"GENRE FIX | scope={scope} scanned={done}/{total} "
+                f"fixed={fixed} already-correct={skipped} errors={errors} "
+                f"cancelled={cancelled}")
+            if on_done is not None:
+                on_done(fixed, skipped, errors, done, cancelled)
+                return
             summary = (f"{fixed} track{'s' if fixed != 1 else ''} updated.\n"
                        f"{skipped} already had the right genre.")
             if errors:
                 summary += f"\n{errors} could not be written."
-            if self._genre_fix_cancel.is_set():
+            if cancelled:
                 summary = (f"Cancelled after {done} of {total}.\n\n" + summary)
             messagebox.showinfo("Fix ID3 Genre Fields", summary, parent=self)
 
