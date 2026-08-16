@@ -286,13 +286,13 @@ def test_fresh_db_has_artwork_columns(tmp_path):
     assert _ARTWORK_COLUMNS <= _columns(db)
 
 
-def test_schema_version_is_6(tmp_path):
+def test_schema_version_is_7(tmp_path):
     db = _new_db(tmp_path)
     with db._conn() as conn:
         row = conn.execute(
             "SELECT value FROM schema_info WHERE key = 'version'").fetchone()
-    assert row["value"] == "6"
-    assert DownloadsDatabase.SCHEMA_VERSION == 6
+    assert row["value"] == "7"
+    assert DownloadsDatabase.SCHEMA_VERSION == 7
 
 
 def test_fresh_watchlist_has_no_scan_cutoff_column(tmp_path):
@@ -444,7 +444,7 @@ def test_v5_database_drops_scan_cutoff_without_data_loss(tmp_path):
             "SELECT value FROM schema_info WHERE key = 'version'"
         ).fetchone()["value"]
     assert "scan_cutoff_date" not in cols
-    assert version == "6"
+    assert version == "7"
 
     rows = db.get_all_watchlist_channels()
     assert len(rows) == 1
@@ -561,7 +561,7 @@ def test_v4_database_migrates_to_v5_without_data_loss(tmp_path):
     with db._conn() as conn:
         row = conn.execute(
             "SELECT value FROM schema_info WHERE key = 'version'").fetchone()
-    assert row["value"] == "6"
+    assert row["value"] == "7"
 
     # (c) ...and the pre-existing rows survived byte-for-byte.
     dl_rows = db.get_all_downloads()

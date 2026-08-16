@@ -4289,8 +4289,9 @@ class _ArtworkBackfillSession:
             except Exception:
                 pass
         self.app._artwork_session = None
-        if hasattr(self.app, "_rebuild_db_btn"):
-            self.app._rebuild_db_btn.config(state="normal")
+        for _btn in ("_rebuild_db_btn", "_dedupe_db_btn"):
+            if hasattr(self.app, _btn):
+                getattr(self.app, _btn).config(state="normal")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -6609,6 +6610,23 @@ class MP3DownloaderApp(tk.Tk):
             "Finds cover art for tracks you downloaded before the Cover Art "
             "feature existed, and embeds it into them. Re-uses artwork already "
             "on disk where possible, so re-running it is cheap.").pack(
+                side="left", padx=(0, 16))
+
+        dedupe_row = ttk.Frame(outer)
+        dedupe_row.pack(fill="x", pady=(0, 4))
+
+        self._dedupe_db_btn = ttk.Button(
+            dedupe_row, text="🧹  Remove Duplicate Rows",
+            style="Orange.TButton",
+            command=self._dedupe_downloads_db)
+        self._dedupe_db_btn.pack(side="left", padx=(0, 8))
+        self._settings_help(dedupe_row,
+            "Collapses repeated database rows that point at the same file — "
+            "the history could show a track four or five times. Only the "
+            "database is touched: no audio file, cover art or Watch List "
+            "entry is removed, and everything the repeated rows knew is "
+            "merged onto the single row that remains. It also switches on the "
+            "protection that stops them coming back.").pack(
                 side="left", padx=(0, 16))
 
         genre_fix_row = ttk.Frame(outer)
@@ -9010,7 +9028,7 @@ class MP3DownloaderApp(tk.Tk):
         for w in ("_skip_existing_cb", "_limit_enable_cb", "_limit_minus_btn",
                   "_limit_plus_btn", "_limit_slider", "_settings_dir_entry",
                   "_settings_browse_btn", "_rebuild_db_btn", "_fetch_art_btn",
-                  "_no_conv_cb", "_update_btn"):
+                  "_dedupe_db_btn", "_no_conv_cb", "_update_btn"):
             widget = getattr(self, w, None)
             if widget is not None:
                 try:
@@ -12990,9 +13008,93 @@ class MP3DownloaderApp(tk.Tk):
         # the other. Re-enabled in _ArtworkBackfillSession._finish.
         if hasattr(self, "_rebuild_db_btn"):
             self._rebuild_db_btn.config(state="disabled")
+        if hasattr(self, "_dedupe_db_btn"):
+            self._dedupe_db_btn.config(state="disabled")
         self._artwork_session = _ArtworkBackfillSession(self, rows, mode,
                                                         owner=owner)
         self._artwork_session.start()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # De-dup — collapse repeated rows that point at the same file
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _dedupe_downloads_db(self):
+        """Entry point for the 'Remove Duplicate Rows' button.
+
+        Deliberate and user-driven: the count is shown first, nothing runs
+        without an explicit OK, and no other code path calls the de-dup. Older
+        databases can hold a second row for a file because every write path
+        used to INSERT rather than upsert — a rebuild loses the video_ids it
+        can't recover from the files, and the next Watch List scan then reads
+        every already-owned track as an unknown id sitting on disk and records
+        it again."""
+        if getattr(self, "_rebuild_in_progress", False) or \
+                getattr(self, "_artwork_session", None) is not None:
+            messagebox.showinfo(
+                "Remove Duplicate Rows",
+                "A rebuild or artwork backfill is still running. Let it "
+                "finish, then try again.",
+                parent=self)
+            return
+
+        files, extra = self._db.count_duplicate_downloads()
+        if not extra:
+            messagebox.showinfo(
+                "Remove Duplicate Rows",
+                "No duplicate rows found — every file in the database is "
+                "recorded exactly once.",
+                parent=self)
+            return
+
+        ok = messagebox.askokcancel(
+            "Remove Duplicate Rows",
+            f"{extra:,} redundant row{'s' if extra != 1 else ''} "
+            f"across {files:,} file{'s' if files != 1 else ''} will be "
+            f"merged down to one row each.\n\n"
+            "Your audio files, cover art and Watch List are not touched — "
+            "only the duplicate database rows. Anything the removed rows "
+            "knew (video id, upload date, cover art) is kept on the row that "
+            "remains.\n\n"
+            "This cannot be undone. Continue?",
+            parent=self)
+        if not ok:
+            return
+
+        self._dbg.info(f"DEDUPE START | {extra} redundant rows across "
+                       f"{files} files")
+        self._dedupe_db_btn.config(state="disabled")
+        if hasattr(self, "_rebuild_db_btn"):
+            self._rebuild_db_btn.config(state="disabled")
+        if hasattr(self, "_fetch_art_btn"):
+            self._fetch_art_btn.config(state="disabled")
+
+        def _finish(result):
+            self._dedupe_db_btn.config(state="normal")
+            if hasattr(self, "_rebuild_db_btn"):
+                self._rebuild_db_btn.config(state="normal")
+            if hasattr(self, "_fetch_art_btn"):
+                self._fetch_art_btn.config(state="normal")
+            self._db.refresh_watchlist_totals()
+            removed, groups = result["removed"], result["groups"]
+            tail = ("\n\nDuplicate protection is now on: the database will "
+                    "keep one row per file from here on."
+                    if result["indexed"] else
+                    "\n\nSome duplicates could not be removed, so the "
+                    "protection stayed off. See the debug log.")
+            messagebox.showinfo(
+                "Remove Duplicate Rows",
+                f"Removed {removed:,} redundant row"
+                f"{'s' if removed != 1 else ''} across {groups:,} "
+                f"file{'s' if groups != 1 else ''}.{tail}",
+                parent=self)
+            self._dbg.info(f"DEDUPE DONE | removed {removed} rows across "
+                           f"{groups} files, indexed={result['indexed']}")
+
+        def _work():
+            result = self._db.dedupe_downloads_by_path()
+            self.after(0, lambda: _finish(result))
+
+        threading.Thread(target=_work, daemon=True).start()
 
     # ══════════════════════════════════════════════════════════════════════════
     # Rebuild — rebuild the downloads table from the files already on disk
@@ -13030,6 +13132,8 @@ class MP3DownloaderApp(tk.Tk):
             self._rebuild_db_btn.config(state="disabled")
         if hasattr(self, "_fetch_art_btn"):
             self._fetch_art_btn.config(state="disabled")
+        if hasattr(self, "_dedupe_db_btn"):
+            self._dedupe_db_btn.config(state="disabled")
 
         def _finish(rows):
             if not rows:
@@ -13041,6 +13145,8 @@ class MP3DownloaderApp(tk.Tk):
                 self._rebuild_db_btn.config(state="normal")
                 if hasattr(self, "_fetch_art_btn"):
                     self._fetch_art_btn.config(state="normal")
+                if hasattr(self, "_dedupe_db_btn"):
+                    self._dedupe_db_btn.config(state="normal")
                 messagebox.showwarning(
                     "Rebuild Database",
                     f"Found no audio files under {self._base_dir}.\n\n"
@@ -13056,6 +13162,8 @@ class MP3DownloaderApp(tk.Tk):
             self._rebuild_db_btn.config(state="normal")
             if hasattr(self, "_fetch_art_btn"):
                 self._fetch_art_btn.config(state="normal")
+            if hasattr(self, "_dedupe_db_btn"):
+                self._dedupe_db_btn.config(state="normal")
             messagebox.showinfo(
                 "Rebuild Complete",
                 f"Indexed {count} track{'s' if count != 1 else ''} from the "
@@ -13068,6 +13176,8 @@ class MP3DownloaderApp(tk.Tk):
             self._rebuild_db_btn.config(state="normal")
             if hasattr(self, "_fetch_art_btn"):
                 self._fetch_art_btn.config(state="normal")
+            if hasattr(self, "_dedupe_db_btn"):
+                self._dedupe_db_btn.config(state="normal")
             messagebox.showerror(
                 "Rebuild Database", f"Rebuild failed:\n\n{exc}", parent=self)
 
