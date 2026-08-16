@@ -28,6 +28,9 @@ env/
 .DS_Store
 Thumbs.db
 desktop.ini
+# Scratch files various tools drop in the repo root (two were committed once
+# by accident).
+*.tmp
 
 # App-generated
 DJ-CrateBuilder.log
