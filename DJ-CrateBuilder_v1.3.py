@@ -18,10 +18,9 @@ from datetime import datetime, timedelta, date
 
 from cratebuilder.util import (
     load_config, save_config, today_yyyymmdd,
-    days_ago_yyyymmdd, subtract_days_from_yyyymmdd,
     format_yyyymmdd_readable, format_timestamp_relative,
     interval_label_to_seconds,
-    normalize_track_key, scan_folder_newest_mp3, safe_filename, push_mru,
+    normalize_track_key, safe_filename, push_mru,
     detect_platform, redact_ydl_opts, build_cookie_opts,
     derive_collection_name, find_matching_watchlist_row,
     soundcloud_profile_handle, merge_soundcloud_candidates,
@@ -302,12 +301,6 @@ THROTTLE_PRESETS = {
     "Aggressive  (5–15 s)": (5, 15),
 }
 
-# ── Watch List: how many days to subtract from the detected cutoff to cushion
-# ── against approximate_date imprecision. If the latest download was on the
-# ── 10th, we scan for anything uploaded after the 5th. Any overlap is caught
-# ── by skip-existing, so over-scanning is safe but under-scanning is not.
-WATCHLIST_CUTOFF_BUFFER_DAYS = 5
-
 # ── Maximum number of channel scans allowed to run concurrently during
 # ── "Scan All". Caps how hard we hit YouTube at once so large watch lists
 # ── don't pile up dozens of simultaneous yt-dlp requests and time out.
@@ -322,17 +315,6 @@ WATCHLIST_MAX_CONCURRENT_SCANS = 3
 # ── purely about not wasting a scan pass.
 WATCHLIST_STARTUP_NET_TRIES = 18      # ≈ 90 s window at the delay below
 WATCHLIST_STARTUP_NET_DELAY = 5.0     # seconds between connectivity probes
-
-# ── "Since" date preset options used in the Add Channel dialog ───────────────
-SINCE_DATE_OPTIONS = [
-    "Today  (only future uploads)",
-    "Last 30 days",
-    "Last 90 days",
-    "Last 6 months",
-    "Last 1 year",
-    "Custom date…",
-    "Scan my music folder",
-]
 
 # ── Config persistence ────────────────────────────────────────────────────────
 # _config_path, load_config, save_config moved to cratebuilder.util (imported above)
@@ -587,7 +569,6 @@ def add_hover(btn, hover_bg=None, hover_fg=None):
 # DownloadsDatabase moved to cratebuilder.db (imported above)
 
 
-# scan_folder_newest_mp3 moved to cratebuilder.util (imported above)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2228,7 +2209,6 @@ class DatabaseViewerWindow(tk.Toplevel):
         "folder":     ("Folder",       260, "w"),
         "platform":   ("Platform",      80, "w"),
         "genre":      ("Genre",        110, "w"),
-        "cutoff":     ("Cutoff",       130, "w"),
         "last_scan":  ("Last scan",    120, "w"),
         "pending":    ("Pending new",   90, "e"),
         "total":      ("Total dl'd",    80, "e"),
@@ -3782,8 +3762,6 @@ class DatabaseViewerWindow(tk.Toplevel):
             return (ch.get("platform") or "").lower()
         if col == "genre":
             return (ch.get("genre") or "").lower()
-        if col == "cutoff":
-            return ch.get("scan_cutoff_date") or ""
         if col == "last_scan":
             return int(ch.get("last_scanned_timestamp") or 0)
         if col == "pending":
@@ -3800,8 +3778,6 @@ class DatabaseViewerWindow(tk.Toplevel):
         rows = sorted(self._channels, key=self._wl_sort_key,
                       reverse=self._wl_sort_desc)
         for i, ch in enumerate(rows):
-            cutoff = format_yyyymmdd_readable(ch.get("scan_cutoff_date", "")) \
-                     if ch.get("scan_cutoff_date") else ""
             last = format_timestamp_relative(ch.get("last_scanned_timestamp"))
             cid = ch.get("id")
             eligible, reason = self._wl_cleanup_eligibility(ch)
@@ -3818,7 +3794,6 @@ class DatabaseViewerWindow(tk.Toplevel):
                 self._wl_channel_folder(ch),
                 ch.get("platform") or "",
                 ch.get("genre") or "",
-                cutoff,
                 last,
                 ch.get("pending_new_count") or 0,
                 ch.get("total_downloaded") or 0,
@@ -9197,7 +9172,7 @@ class MP3DownloaderApp(tk.Tk):
             ))
 
         finally:
-            # ── Watch List: update cutoff + clear pending after batch ──
+            # ── Watch List: clear pending + reset status after batch ──
             wl_batch = self._active_watchlist_batch
             if wl_batch:
                 try:
@@ -9211,14 +9186,9 @@ class MP3DownloaderApp(tk.Tk):
                             # pending list here would forget tracks that were
                             # never downloaded — the next scan re-finds them and
                             # the count silently resets on every run. Leave the
-                            # pending list and the cutoff exactly as they were
-                            # so the retry is real.
+                            # pending list exactly as it was so the retry is
+                            # real.
                             continue
-                        # Advance cutoff to today minus buffer
-                        new_cutoff = subtract_days_from_yyyymmdd(
-                            today_yyyymmdd(), WATCHLIST_CUTOFF_BUFFER_DAYS)
-                        self._db.update_watchlist_cutoff(
-                            ch["url"], new_cutoff)
                         self._db.clear_pending_for_channel(cid)
                 except Exception as wle:
                     self._dbg.error(
@@ -9397,9 +9367,6 @@ class MP3DownloaderApp(tk.Tk):
                     self._dbg.info(
                         f"SIDECAR WRITE | {channel_sub!r}  "
                         f"channel_id={coll_channel_id}")
-
-            # Track the newest upload date seen in this run (for auto-add)
-            _max_upload_date_this_run = None
 
             self.after(0, lambda sd=save_dir: self._set_status(
                 f"Saving to  {sd.replace(os.path.expanduser('~'), '~')}"))
@@ -9823,10 +9790,6 @@ class MP3DownloaderApp(tk.Tk):
                         artwork_path=_art_path,
                         artwork_embedded=_art_embedded,
                         thumbnail_url=entry.get("thumbnail") or _r_thumb)
-                    if _vid_upload and (
-                            _max_upload_date_this_run is None
-                            or _vid_upload > _max_upload_date_this_run):
-                        _max_upload_date_this_run = _vid_upload
                     brate_txt = (f"{int(source_abr[0])}k → {effective_kbps}k"
                                  if source_abr[0] else f"→ {effective_kbps}k")
                     self.after(0, lambda i=idx, b=brate_txt:
@@ -9942,11 +9905,6 @@ class MP3DownloaderApp(tk.Tk):
                                 artwork_embedded=_art_embedded,
                                 thumbnail_url=entry.get("thumbnail")
                                               or _r_thumb)
-                            if _vid_upload and (
-                                    _max_upload_date_this_run is None
-                                    or _vid_upload
-                                       > _max_upload_date_this_run):
-                                _max_upload_date_this_run = _vid_upload
                             brate_txt = (
                                 f"{int(source_abr[0])}k → {output_kbps}k"
                                 if source_abr[0]
@@ -10046,7 +10004,6 @@ class MP3DownloaderApp(tk.Tk):
                     url,
                     channel_name_override or collection_name,
                     genre,
-                    _max_upload_date_this_run,
                     channel_id=coll_channel_id)
 
             return actual_downloaded, skipped, errors + unavail
@@ -10496,9 +10453,7 @@ class MP3DownloaderApp(tk.Tk):
         mid.pack(fill="x", pady=(4, 0))
 
         last_dl = format_timestamp_relative(ch.get("last_download_started"))
-        cutoff_readable = format_yyyymmdd_readable(ch.get("scan_cutoff_date", ""))
         details = (f"Last download: {last_dl}  •  "
-                   f"Cutoff: {cutoff_readable}  •  "
                    f"Total downloaded: {ch.get('total_downloaded', 0)}")
         if ch.get("auto_added"):
             details += "  •  auto-added"
@@ -11536,18 +11491,6 @@ class MP3DownloaderApp(tk.Tk):
                                     values=genres, state="readonly")
         genre_combo.pack(fill="x", pady=(0, 10))
 
-        # Download since
-        tk.Label(outer, text="Download uploads since",
-                 font=("Segoe UI", 10, "bold"), fg=TEXT, bg=BG
-                 ).pack(anchor="w", pady=(0, 4))
-        since_var = tk.StringVar(value=SINCE_DATE_OPTIONS[0])
-        since_combo = ttk.Combobox(outer, textvariable=since_var,
-                                    values=SINCE_DATE_OPTIONS, state="readonly")
-        since_combo.pack(fill="x", pady=(0, 16))
-        Tooltip(since_combo,
-                "Choose how far back to look for uploads. 'Today' means "
-                "only future uploads will be detected.")
-
         # Buttons
         btn_row = tk.Frame(outer, bg=BG)
         btn_row.pack(fill="x")
@@ -11560,51 +11503,11 @@ class MP3DownloaderApp(tk.Tk):
                 return
             name = name_var.get().strip() or raw_url
             genre = genre_var.get()
-            since = since_var.get()
-
-            # Resolve the cutoff date from the "since" selection
-            if since.startswith("Today"):
-                cutoff = today_yyyymmdd()
-            elif "30 days" in since:
-                cutoff = days_ago_yyyymmdd(30)
-            elif "90 days" in since:
-                cutoff = days_ago_yyyymmdd(90)
-            elif "6 months" in since:
-                cutoff = days_ago_yyyymmdd(180)
-            elif "1 year" in since:
-                cutoff = days_ago_yyyymmdd(365)
-            elif since.startswith("Custom"):
-                custom = simpledialog.askstring(
-                    "Custom Date",
-                    "Enter date as YYYY-MM-DD:",
-                    parent=dlg)
-                if not custom:
-                    return
-                try:
-                    dt = datetime.strptime(custom.strip(), "%Y-%m-%d").date()
-                    cutoff = dt.strftime("%Y%m%d")
-                except ValueError:
-                    messagebox.showerror("Bad Date",
-                                         "Please use YYYY-MM-DD format.",
-                                         parent=dlg)
-                    return
-            elif since.startswith("Scan my"):
-                # Scan music folder for newest mp3
-                plat = self._detect_platform(raw_url)
-                folder = os.path.join(self._base_dir, plat, genre or "_No Genre", name)
-                count, newest = scan_folder_newest_mp3(folder)
-                if newest:
-                    cutoff = subtract_days_from_yyyymmdd(
-                        newest, WATCHLIST_CUTOFF_BUFFER_DAYS)
-                else:
-                    cutoff = today_yyyymmdd()
-            else:
-                cutoff = today_yyyymmdd()
 
             result = self._db.add_watchlist_channel(
                 url=raw_url, display_name=name,
                 platform=self._detect_platform(raw_url), genre=genre,
-                scan_cutoff_date=cutoff, auto_added=False)
+                auto_added=False)
             if result is None:
                 messagebox.showinfo(
                     "Already Exists",
@@ -11936,35 +11839,12 @@ class MP3DownloaderApp(tk.Tk):
         else:
             tk.Frame(outer, bg=BG, height=6).pack(fill="x")
 
-        # Cutoff date
-        tk.Label(outer, text="Scan cutoff date (YYYY-MM-DD)",
-                 font=("Segoe UI", 10, "bold"), fg=TEXT, bg=BG
-                 ).pack(anchor="w", pady=(0, 4))
-        current_cutoff = ch.get("scan_cutoff_date", "")
-        try:
-            display_date = datetime.strptime(current_cutoff, "%Y%m%d").strftime("%Y-%m-%d")
-        except (ValueError, TypeError):
-            display_date = current_cutoff
-        cutoff_var = tk.StringVar(value=display_date)
-        tk.Entry(outer, textvariable=cutoff_var,
-                 font=("Segoe UI", 10), bg=SURFACE, fg=TEXT,
-                 insertbackground=TEXT, relief="flat",
-                 highlightthickness=1, highlightbackground=BORDER
-                 ).pack(fill="x", ipady=5, pady=(0, 16))
+        tk.Frame(outer, bg=BG, height=10).pack(fill="x")
 
         btn_row = tk.Frame(outer, bg=BG)
         btn_row.pack(fill="x")
 
         def _save():
-            raw_date = cutoff_var.get().strip()
-            try:
-                dt = datetime.strptime(raw_date, "%Y-%m-%d").date()
-                new_cutoff = dt.strftime("%Y%m%d")
-            except ValueError:
-                messagebox.showerror("Bad Date", "Use YYYY-MM-DD format.",
-                                     parent=dlg)
-                return
-
             # Genre change: physically move the channel folder, then rewrite
             # all downloads rows for it. Abort on collision. Rollback the move
             # if the DB rewrite fails so disk and DB never drift apart.
@@ -12067,8 +11947,6 @@ class MP3DownloaderApp(tk.Tk):
                         ch, ch_platform, db_genre, picked_genre,
                         folder=(dst_dir if os.path.isdir(dst_dir) else None))
 
-            self._db.update_watchlist_channel_fields(
-                cid, scan_cutoff_date=new_cutoff)
             # If the URL changed, re-point (and re-resolve) the channel.
             new_url = url_var.get().strip()
             if new_url and new_url != (ch.get("url") or ""):
@@ -12115,8 +11993,8 @@ class MP3DownloaderApp(tk.Tk):
 
     # ── Scan one channel ──────────────────────────────────────────────────────
     def _watchlist_scan_channel(self, cid):
-        """Threaded scan: use yt-dlp flat extraction with dateafter to find
-        new uploads since the channel's scan_cutoff_date."""
+        """Threaded scan: flat-extract the channel listing and report anything
+        not already in the database or on disk as a new upload."""
         ch = self._db.get_watchlist_channel(cid)
         if not ch:
             return
@@ -12166,12 +12044,6 @@ class MP3DownloaderApp(tk.Tk):
 
                 import yt_dlp
 
-                # Apply the buffer: scan a few days before the cutoff
-                # so approximate_date imprecision doesn't miss anything
-                raw_cutoff = ch["scan_cutoff_date"]
-                buffered = subtract_days_from_yyyymmdd(
-                    raw_cutoff, WATCHLIST_CUTOFF_BUFFER_DAYS)
-
                 # We decide "new" by whether the track is already on disk in
                 # the channel folder (see below) — NOT by upload date, which
                 # is unreliable in flat channel listings. So we enumerate the
@@ -12193,8 +12065,7 @@ class MP3DownloaderApp(tk.Tk):
                 url = watch_fetch_url(platform, ch["url"])
 
                 self._dbg.info(
-                    f"WL SCAN | {ch['display_name']}  url={url}  "
-                    f"cutoff={raw_cutoff}  buffered={buffered}")
+                    f"WL SCAN | {ch['display_name']}  url={url}")
 
                 with yt_dlp.YoutubeDL(scan_opts) as ydl:
                     info = ydl.extract_info(url, download=False)
@@ -12418,7 +12289,7 @@ class MP3DownloaderApp(tk.Tk):
     def _watchlist_force_download(self, cid):
         """Force a normal full download of a channel, exactly as if the user
         pasted its URL into the Main tab and pressed "Start Downloads". Used when
-        a scan finds nothing (cutoff / bad yt-dlp scan data) but the user still
+        a scan finds nothing (bad yt-dlp scan data) but the user still
         wants to pull the channel down. Runs through the standard Main-tab path
         (NOT a watchlist=True session) so the post-download auto-add/dedup in
         _watchlist_auto_add_if_enabled attaches the run to this card."""
@@ -12703,7 +12574,7 @@ class MP3DownloaderApp(tk.Tk):
 
     # ── Auto-add after a normal channel download ──────────────────────────────
     def _watchlist_auto_add_if_enabled(self, url, display_name, genre,
-                                        max_upload_date, channel_id=None):
+                                        channel_id=None):
         """Called from _process_one_url after a successful collection download.
         If auto-add is enabled, adds the channel to the watchlist — or, if the
         channel is already tracked under ANY of its URL forms (@handle vs
@@ -12711,14 +12582,6 @@ class MP3DownloaderApp(tk.Tk):
         creating a duplicate blank card."""
         if not self._auto_add_to_watchlist.get():
             return
-
-        # Determine the cutoff: use the max upload date from this run
-        # (minus buffer), or fall back to today
-        if max_upload_date:
-            cutoff = subtract_days_from_yyyymmdd(
-                max_upload_date, WATCHLIST_CUTOFF_BUFFER_DAYS)
-        else:
-            cutoff = today_yyyymmdd()
 
         cid  = (channel_id or "").strip()
         name = (display_name or "").strip()
@@ -12740,11 +12603,9 @@ class MP3DownloaderApp(tk.Tk):
                 fields["display_name"] = name       # backfill blank name
             if fields:
                 self._db.update_watchlist_channel_fields(wl_id, **fields)
-            if cutoff > (existing.get("scan_cutoff_date") or ""):
-                self._db.update_watchlist_cutoff(existing["url"], cutoff)
             self._dbg.info(
                 f"WL AUTO-UPDATE | {name or existing.get('display_name')!r}  "
-                f"cutoff={cutoff}  fields={list(fields) or 'none'}")
+                f"fields={list(fields) or 'none'}")
             return
 
         # ── No existing row. Never create a nameless card. ───────────────────
@@ -12756,11 +12617,11 @@ class MP3DownloaderApp(tk.Tk):
         result = self._db.add_watchlist_channel(
             url=url, display_name=name,
             platform=platform, genre=genre or "(none)",
-            scan_cutoff_date=cutoff, auto_added=True,
+            auto_added=True,
             channel_id=cid or None)
         if result is None:
             return
-        self._dbg.info(f"WL AUTO-ADD | {name!r}  cutoff={cutoff}")
+        self._dbg.info(f"WL AUTO-ADD | {name!r}")
         # A brand-new channel was added on the background download worker.
         # Marshal a structural card rebuild to the main thread so the card
         # appears immediately instead of only after a restart. No scan is
@@ -12775,9 +12636,9 @@ class MP3DownloaderApp(tk.Tk):
         """On first run (empty Watch List), populate it by scanning the
         existing folder hierarchy:  base/YouTube/<Genre>/<Channel>/*.mp3
 
-        Each channel sub-folder becomes a Watch List entry. The scan cutoff
-        is derived from the newest .mp3 in the folder (minus a small buffer)
-        so future scans only surface genuinely new uploads."""
+        Each channel sub-folder becomes a Watch List entry; the tracks
+        already in it are what later scans compare against, so only genuinely
+        new uploads surface."""
         # Only populate when the Watch List is empty.
         try:
             if self._db.get_all_watchlist_channels():
@@ -12801,11 +12662,6 @@ class MP3DownloaderApp(tk.Tk):
                     if not os.path.isdir(channel_path):
                         continue
 
-                    count, newest = scan_folder_newest_mp3(channel_path)
-                    cutoff = (subtract_days_from_yyyymmdd(
-                                  newest, WATCHLIST_CUTOFF_BUFFER_DAYS)
-                              if newest else today_yyyymmdd())
-
                     sc = read_channel_sidecar(channel_path)
                     if sc and (sc.get("channel_url") or sc.get("channel_id")):
                         real_url = (sc.get("channel_url")
@@ -12816,7 +12672,6 @@ class MP3DownloaderApp(tk.Tk):
                             display_name=sc.get("display_name") or channel_dir,
                             platform=platform,
                             genre=genre,
-                            scan_cutoff_date=cutoff,
                             auto_added=True,
                             status="idle")
                         status_note = "from sidecar"
@@ -12832,7 +12687,6 @@ class MP3DownloaderApp(tk.Tk):
                             display_name=channel_dir,
                             platform=platform,
                             genre=genre,
-                            scan_cutoff_date=cutoff,
                             auto_added=True,
                             status="needs_resolve")
                         status_note = "needs_resolve"
@@ -12842,7 +12696,7 @@ class MP3DownloaderApp(tk.Tk):
                         self._dbg.info(
                             f"WL FOLDER-POPULATE | {channel_dir!r}  "
                             f"platform={platform}  genre={genre}  "
-                            f"cutoff={cutoff}  ({status_note})")
+                            f"({status_note})")
 
         if added:
             self._watchlist_log(

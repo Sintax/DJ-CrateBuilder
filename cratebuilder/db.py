@@ -29,7 +29,7 @@ def is_suppressed(reason, attempts, last_failed, now):
 
 
 class DownloadsDatabase:
-    SCHEMA_VERSION = 5
+    SCHEMA_VERSION = 6
 
     def __init__(self, db_path, debug_logger=None):
         self.db_path = db_path
@@ -105,7 +105,6 @@ class DownloadsDatabase:
                         display_name             TEXT NOT NULL,
                         platform                 TEXT NOT NULL,
                         genre                    TEXT,
-                        scan_cutoff_date         TEXT NOT NULL,
                         date_added               INTEGER NOT NULL,
                         last_scanned_timestamp   INTEGER,
                         last_download_started    INTEGER,
@@ -167,6 +166,27 @@ class DownloadsDatabase:
                                   f"migration: added {col} to downloads")
                     except sqlite3.OperationalError:
                         pass  # column already exists
+
+                # schema v6: drop watchlist.scan_cutoff_date. Nothing ever
+                # read it to make a decision — a scan enumerates the channel
+                # and decides "new" by DB membership plus on-disk presence, so
+                # the date only travelled from the UI back to the UI. Guarded
+                # by a column check because DROP COLUMN raises on a table that
+                # has already been migrated.
+                try:
+                    cols = {r[1] for r in conn.execute(
+                        "PRAGMA table_info(watchlist)")}
+                    if "scan_cutoff_date" in cols:
+                        conn.execute("ALTER TABLE watchlist "
+                                     "DROP COLUMN scan_cutoff_date")
+                        self._log("info", "migration: dropped "
+                                          "scan_cutoff_date from watchlist")
+                except sqlite3.OperationalError as e:
+                    # SQLite older than 3.35 has no DROP COLUMN. The column is
+                    # inert either way, so a failure here is not worth
+                    # aborting startup over.
+                    self._log("warning",
+                              f"migration: could not drop scan_cutoff_date: {e}")
 
                 conn.execute(
                     "INSERT OR REPLACE INTO schema_info (key, value) VALUES (?, ?)",
@@ -586,7 +606,7 @@ class DownloadsDatabase:
             return 0
 
     def add_watchlist_channel(self, *, url, display_name, platform, genre,
-                               scan_cutoff_date, auto_added=False,
+                               auto_added=False,
                                channel_id=None, status="idle"):
         try:
             total = self.get_channel_download_count(url)
@@ -594,11 +614,10 @@ class DownloadsDatabase:
                 cur = conn.execute("""
                     INSERT INTO watchlist
                       (url, channel_id, display_name, platform, genre,
-                       scan_cutoff_date, date_added, auto_added,
-                       total_downloaded, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       date_added, auto_added, total_downloaded, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (url, channel_id or None, display_name, platform, genre,
-                      scan_cutoff_date, int(time.time()),
+                      int(time.time()),
                       1 if auto_added else 0, total, status))
                 return cur.lastrowid
         except sqlite3.IntegrityError:
@@ -606,15 +625,6 @@ class DownloadsDatabase:
         except Exception as e:
             self._log("error", f"add_watchlist_channel failed: {e}")
             return None
-
-    def update_watchlist_cutoff(self, url, new_cutoff_date):
-        try:
-            with self._conn() as conn:
-                conn.execute(
-                    "UPDATE watchlist SET scan_cutoff_date = ? WHERE url = ?",
-                    (new_cutoff_date, url))
-        except Exception as e:
-            self._log("error", f"update_watchlist_cutoff failed: {e}")
 
     def update_watchlist_scan_result(self, channel_id, *, timestamp,
                                       pending_count, pending_entries, status,
@@ -664,7 +674,7 @@ class DownloadsDatabase:
         collision, which means the target url already belongs to another row).
         Never raises — callers branch on the bool instead of getting a silent
         no-op."""
-        allowed = {"display_name", "genre", "scan_cutoff_date",
+        allowed = {"display_name", "genre",
                    "channel_id", "url", "status", "last_error"}
         fields = {k: v for k, v in fields.items() if k in allowed}
         if not fields:

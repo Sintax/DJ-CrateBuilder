@@ -49,7 +49,7 @@ def _card_labels(app, ch):
 BASE = dict(id=9001, display_name="Test Chan", platform="YouTube",
             genre="DnB", url="https://www.youtube.com/channel/UCx/videos",
             pending_new_count=3, last_error="getaddrinfo failed",
-            last_scanned_timestamp=1000, scan_cutoff_date="20260101")
+            last_scanned_timestamp=1000)
 
 
 def test_card_offers_fix_link_only_when_the_link_is_actually_unknown(app):
