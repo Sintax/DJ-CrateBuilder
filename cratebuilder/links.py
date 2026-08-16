@@ -38,6 +38,18 @@ def get_link(path, platform, genre, display_name):
     return ""
 
 
+def remove_link(path, platform, genre, display_name):
+    """Drop one channel identity from the store. Returns True only when an
+    entry existed and the rewrite landed. Used when a channel moves genre so
+    the old Platform/Genre/Channel key doesn't linger as a stale duplicate."""
+    data = load_links(path)
+    key = link_key(platform, genre, display_name)
+    if key not in data:
+        return False
+    del data[key]
+    return _write_links(path, data)
+
+
 def save_link(path, *, platform, genre, display_name, url,
               channel_id=None, updated=None):
     """Mirror one channel's URL into the store. Best-effort: returns True on a
@@ -57,6 +69,11 @@ def save_link(path, *, platform, genre, display_name, url,
     if updated:
         entry["updated"] = updated
     data[key] = entry
+    return _write_links(path, data)
+
+
+def _write_links(path, data):
+    """Atomically replace the store with *data*. False on any OS failure."""
     tmp = path + ".tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
