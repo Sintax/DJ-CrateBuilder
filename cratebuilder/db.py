@@ -28,14 +28,57 @@ def is_suppressed(reason, attempts, last_failed, now):
     return False
 
 
+# The partial UNIQUE index that makes one file on disk mean one downloads row,
+# and the matching ON CONFLICT target. Partial because file_path may be empty
+# (a download whose real path was never resolved): those rows key on nothing,
+# so they are left out of the index and can never collide with each other.
+_PATH_INDEX_NAME  = "idx_dl_file_path_unique"
+_PATH_INDEX_WHERE = "WHERE file_path IS NOT NULL AND file_path != ''"
+_PATH_CONFLICT    = f"ON CONFLICT(file_path) {_PATH_INDEX_WHERE}"
+
+# Columns carried over when a duplicate group is collapsed: every column that
+# holds knowledge about the track, so the surviving row can be filled from the
+# rows removed around it. id and file_path are excluded — one identifies the
+# survivor, the other is what the group is keyed on.
+_MERGE_COLUMNS = ("video_id", "title", "channel_name", "channel_url",
+                  "channel_id", "platform", "genre", "upload_date",
+                  "bitrate", "artwork_path", "artwork_embedded",
+                  "thumbnail_url", "download_timestamp")
+
+
+def _row_richness(row):
+    """Score a duplicate row so the most informative one survives a de-dup.
+
+    A real download is the richest thing a row can be: only add_download
+    records a bitrate. After that, evidence that anything was ever resolved
+    for this track — a real upload date, embedded cover art, a sidecar, a
+    video id — each counts once."""
+    return (
+        1 if (row["bitrate"] or "").strip() else 0,
+        1 if (row["upload_date"] or "").strip() else 0,
+        1 if row["artwork_embedded"] else 0,
+        1 if row["artwork_path"] else 0,
+        1 if (row["video_id"] or "").strip() else 0,
+        row["download_timestamp"] or 0,
+        -(row["id"] or 0),
+    )
+
+
 class DownloadsDatabase:
-    SCHEMA_VERSION = 6
+    SCHEMA_VERSION = 7
 
     # True when the v6 migration could not drop watchlist.scan_cutoff_date and
     # the legacy NOT NULL column is still there. Nothing reads it, but an
     # INSERT that omits it would violate the constraint, so add_watchlist_
     # channel has to keep feeding it a placeholder. See _init_schema.
     _legacy_cutoff_column = False
+
+    # True once downloads.file_path carries the partial UNIQUE index, which is
+    # what lets the write paths upsert instead of insert. False on a database
+    # that still holds duplicate paths — the index cannot be built over them,
+    # so those databases keep today's plain-INSERT behaviour until the user
+    # runs the de-dup. See _try_unique_path_index.
+    _path_unique_index = False
 
     def __init__(self, db_path, debug_logger=None):
         self.db_path = db_path
@@ -207,24 +250,94 @@ class DownloadsDatabase:
                     "INSERT OR REPLACE INTO schema_info (key, value) VALUES (?, ?)",
                     ("version", str(self.SCHEMA_VERSION))
                 )
+            # schema v7: one file on disk = one downloads row. Runs outside the
+            # block above because it is allowed to fail on an existing library
+            # (see _try_unique_path_index) and must not take schema init with
+            # it — a failed index leaves the app exactly as it behaved at v6.
+            self._try_unique_path_index()
             self._log("info", f"schema initialized at {self.db_path}")
         except Exception as e:
             self._log("error", f"schema init failed: {e}")
             raise
 
+    @property
+    def has_unique_path_index(self):
+        """True when downloads.file_path is uniquely indexed, i.e. this
+        database can no longer grow a second row for a file it already knows.
+        False means duplicates are still present and blocking the index."""
+        return bool(self._path_unique_index)
+
+    def _try_unique_path_index(self):
+        """Build the partial UNIQUE index on downloads.file_path if the data
+        allows it, and record the outcome in _path_unique_index.
+
+        A library that already contains duplicate paths cannot take the index,
+        and rebuilding it would mean deleting the user's rows behind their back
+        during a routine app start — so the failure is expected, logged, and
+        survivable: the write paths fall back to plain INSERT, exactly as they
+        behaved before v7. The user removes the duplicates deliberately via
+        dedupe_downloads_by_path, which retries this. Never raises."""
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    f"CREATE UNIQUE INDEX IF NOT EXISTS {_PATH_INDEX_NAME} "
+                    f"ON downloads(file_path) {_PATH_INDEX_WHERE}")
+            self._path_unique_index = True
+        except sqlite3.IntegrityError:
+            self._path_unique_index = False
+            groups, extra = self.count_duplicate_downloads()
+            self._log("warning",
+                      f"migration: downloads.file_path is not unique — "
+                      f"{extra} duplicate row(s) across {groups} file(s). "
+                      f"Use 'Remove Duplicate Rows' to clean them up; "
+                      f"until then duplicate protection is off.")
+        except Exception as e:
+            self._path_unique_index = False
+            self._log("warning",
+                      f"migration: could not create {_PATH_INDEX_NAME}: {e}")
+        return self._path_unique_index
+
     def add_download(self, *, video_id, title, channel_name, channel_url,
                      platform, genre, file_path, upload_date, bitrate,
                      channel_id=None, artwork_path=None, artwork_embedded=0,
                      thumbnail_url=None):
+        """Record a completed download.
+
+        Keyed on file_path: re-downloading a track (a Force Download, or the
+        same recurring upload title overwriting the file) updates the row for
+        that file instead of adding another one. The fresh download describes
+        what is on disk now, so its values win — except where it has nothing
+        to say, which never blanks out what the row already knew."""
+        upsert = f"""
+            {_PATH_CONFLICT} DO UPDATE SET
+                video_id     = COALESCE(excluded.video_id, video_id),
+                title        = COALESCE(NULLIF(excluded.title, ''), title),
+                channel_name = COALESCE(NULLIF(excluded.channel_name, ''),
+                                        channel_name),
+                channel_url  = COALESCE(NULLIF(excluded.channel_url, ''),
+                                        channel_url),
+                channel_id   = COALESCE(excluded.channel_id, channel_id),
+                platform     = COALESCE(NULLIF(excluded.platform, ''),
+                                        platform),
+                genre        = COALESCE(NULLIF(excluded.genre, ''), genre),
+                upload_date  = COALESCE(NULLIF(excluded.upload_date, ''),
+                                        upload_date),
+                download_timestamp = excluded.download_timestamp,
+                bitrate      = COALESCE(NULLIF(excluded.bitrate, ''), bitrate),
+                artwork_path = COALESCE(excluded.artwork_path, artwork_path),
+                artwork_embedded = excluded.artwork_embedded,
+                thumbnail_url = COALESCE(excluded.thumbnail_url, thumbnail_url)
+        """ if self._path_unique_index else ""
         try:
             with self._conn() as conn:
-                conn.execute("""
+                conn.execute(f"""
                     INSERT INTO downloads
                       (video_id, title, channel_name, channel_url, channel_id,
                        platform, genre, file_path, upload_date,
                        download_timestamp, bitrate,
                        artwork_path, artwork_embedded, thumbnail_url)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    {upsert}
                 """, (video_id or None, title or "", channel_name or "",
                       channel_url or "", channel_id or None, platform,
                       genre or "", file_path or "", upload_date or "",
@@ -241,7 +354,18 @@ class DownloadsDatabase:
 
         Rows are normalised before binding: callers predating the cover-art
         columns omit them entirely, and sqlite3's named-style binding raises on
-        a missing key rather than substituting NULL."""
+        a missing key rather than substituting NULL.
+
+        Keyed on file_path, so a track this database already knows is repaired
+        rather than duplicated. That is the whole point on the scan path: a
+        Watch List scan backfills tracks it found on disk whose video_id it
+        could not match, and before v7 every one of those inserted a second row
+        for a file already recorded — one rebuild (which loses unrecoverable
+        video_ids) followed by one scan doubled the table. What a scan or a
+        rebuild genuinely knows is where a track lives, so the channel, genre
+        and title it supplies win; what a track *is* — its bitrate, upload
+        date, cover art, video id, and the moment it was downloaded — is only
+        filled in where the existing row has nothing, never overwritten."""
         if not rows:
             return 0
         try:
@@ -261,8 +385,37 @@ class DownloadsDatabase:
                 "artwork_embedded": int(bool(r.get("artwork_embedded"))),
                 "thumbnail_url":    r.get("thumbnail_url"),
             } for r in rows]
+            upsert = f"""
+                {_PATH_CONFLICT} DO UPDATE SET
+                    title        = COALESCE(NULLIF(excluded.title, ''), title),
+                    channel_name = COALESCE(NULLIF(excluded.channel_name, ''),
+                                            channel_name),
+                    channel_url  = COALESCE(NULLIF(excluded.channel_url, ''),
+                                            channel_url),
+                    channel_id   = COALESCE(excluded.channel_id, channel_id),
+                    platform     = COALESCE(NULLIF(excluded.platform, ''),
+                                            platform),
+                    genre        = COALESCE(NULLIF(excluded.genre, ''), genre),
+                    video_id     = COALESCE(video_id, excluded.video_id),
+                    upload_date  = COALESCE(NULLIF(upload_date, ''),
+                                            excluded.upload_date),
+                    bitrate      = COALESCE(NULLIF(bitrate, ''),
+                                            excluded.bitrate),
+                    artwork_path = COALESCE(artwork_path,
+                                            excluded.artwork_path),
+                    artwork_embedded = MAX(COALESCE(artwork_embedded, 0),
+                                           COALESCE(excluded.artwork_embedded,
+                                                    0)),
+                    thumbnail_url = COALESCE(thumbnail_url,
+                                             excluded.thumbnail_url),
+                    download_timestamp = CASE
+                        WHEN download_timestamp IS NULL
+                             OR download_timestamp <= 0
+                        THEN excluded.download_timestamp
+                        ELSE download_timestamp END
+            """ if self._path_unique_index else ""
             with self._conn() as conn:
-                conn.executemany("""
+                conn.executemany(f"""
                     INSERT INTO downloads
                       (video_id, title, channel_name, channel_url, channel_id,
                        platform, genre, file_path, upload_date,
@@ -272,6 +425,7 @@ class DownloadsDatabase:
                             :channel_id, :platform, :genre, :file_path,
                             :upload_date, :ts, :bitrate,
                             :artwork_path, :artwork_embedded, :thumbnail_url)
+                    {upsert}
                 """, bound)
             return len(bound)
         except Exception as e:
@@ -283,13 +437,18 @@ class DownloadsDatabase:
         Returns the number of rows updated, 0 on failure or no match. Used by
         the artwork backfill when embedding art forces a container change
         (a WebM remuxed to Opus so mutagen can write the cover), so the row
-        does not keep pointing at the file that no longer exists."""
+        does not keep pointing at the file that no longer exists.
+
+        OR REPLACE because *new_path* may already have a row of its own — one
+        file can only be one row (see the v7 index), and the row being moved is
+        the one that describes the file that is actually there now."""
         if not old_path or not new_path:
             return 0
         try:
             with self._conn() as conn:
                 cur = conn.execute(
-                    "UPDATE downloads SET file_path = ? WHERE file_path = ?",
+                    "UPDATE OR REPLACE downloads SET file_path = ? "
+                    "WHERE file_path = ?",
                     (new_path, old_path))
                 return cur.rowcount or 0
         except Exception as e:
@@ -600,6 +759,95 @@ class DownloadsDatabase:
         except Exception as e:
             self._log("error", f"clear_all_downloads failed: {e}")
 
+    def count_duplicate_downloads(self):
+        """(files, redundant_rows) — how many files hold more than one row, and
+        how many rows a de-dup would remove. (0, 0) on failure or when clean.
+
+        This is the number behind the "Remove Duplicate Rows" button, so the
+        user sees the damage before agreeing to anything."""
+        try:
+            with self._conn() as conn:
+                row = conn.execute(f"""
+                    SELECT COUNT(*) AS files,
+                           COALESCE(SUM(n), 0) - COUNT(*) AS extra
+                    FROM (SELECT COUNT(*) AS n FROM downloads
+                          {_PATH_INDEX_WHERE}
+                          GROUP BY file_path HAVING n > 1)
+                """).fetchone()
+                return (int(row["files"] or 0), int(row["extra"] or 0))
+        except Exception as e:
+            self._log("error", f"count_duplicate_downloads failed: {e}")
+            return (0, 0)
+
+    def dedupe_downloads_by_path(self):
+        """Collapse every group of rows sharing a file_path down to one row,
+        then take the UNIQUE index that stops the duplicates coming back.
+
+        DELIBERATE ONLY. This deletes rows, so nothing calls it on its own —
+        it runs when the user asks for it and never during startup, a scan, a
+        download or a rebuild.
+
+        Nothing a group knew is thrown away. The richest row survives (see
+        _row_richness) and any column it left empty is filled from the other
+        rows in the group, richest first — so the id a scan recovered and the
+        cover art a rebuild resolved end up on the same surviving row. Rows
+        with no file_path are not touched: they key on nothing, so no two of
+        them can be shown to be the same track.
+
+        Returns {"groups": files collapsed, "removed": rows deleted,
+        "indexed": whether file_path is now uniquely indexed}. Never raises."""
+        try:
+            with self._conn() as conn:
+                dupes = conn.execute(f"""
+                    SELECT * FROM downloads
+                    {_PATH_INDEX_WHERE} AND file_path IN (
+                        SELECT file_path FROM downloads
+                        {_PATH_INDEX_WHERE}
+                        GROUP BY file_path HAVING COUNT(*) > 1)
+                    ORDER BY file_path
+                """).fetchall()
+
+                groups = {}
+                for r in dupes:
+                    groups.setdefault(r["file_path"], []).append(r)
+
+                doomed, patches = [], []
+                for rows in groups.values():
+                    rows.sort(key=_row_richness, reverse=True)
+                    keeper, rest = rows[0], rows[1:]
+                    merged = {}
+                    for col in _MERGE_COLUMNS:
+                        if keeper[col] not in (None, "", 0):
+                            continue
+                        for other in rest:
+                            if other[col] not in (None, "", 0):
+                                merged[col] = other[col]
+                                break
+                    if merged:
+                        sets = ", ".join(f"{c} = ?" for c in merged)
+                        patches.append((f"UPDATE downloads SET {sets} "
+                                        f"WHERE id = ?",
+                                        [*merged.values(), keeper["id"]]))
+                    doomed.extend(r["id"] for r in rest)
+
+                for sql, vals in patches:
+                    conn.execute(sql, vals)
+                for i in range(0, len(doomed), 500):
+                    chunk = doomed[i:i + 500]
+                    conn.execute(
+                        f"DELETE FROM downloads WHERE id IN "
+                        f"({','.join('?' * len(chunk))})", chunk)
+
+            removed = len(doomed)
+            self._log("info", f"dedupe: collapsed {len(groups)} file(s), "
+                              f"removed {removed} redundant row(s)")
+        except Exception as e:
+            self._log("error", f"dedupe_downloads_by_path failed: {e}")
+            return {"groups": 0, "removed": 0,
+                    "indexed": bool(self._path_unique_index)}
+        return {"groups": len(groups), "removed": removed,
+                "indexed": self._try_unique_path_index()}
+
     def delete_downloads_by_paths(self, paths):
         """Delete download rows whose file_path is in *paths*. Returns the
         number of rows removed. Best-effort: logs and returns 0 on error.
@@ -727,7 +975,13 @@ class DownloadsDatabase:
         Prefix match is anchored with a trailing separator so partial-name
         collisions can't leak. old_dir == new_dir is a valid genre-only patch
         (used by verify-on-open when the folder was already found in the right
-        place but the DB rows still say the wrong genre). Never raises."""
+        place but the DB rows still say the wrong genre). Never raises.
+
+        OR REPLACE so one already-recorded destination path cannot abandon the
+        whole move: the rows being moved describe the files that are now in
+        new_dir, so where a stale row already sits on one of those paths, the
+        moved row replaces it rather than colliding with the v7 unique index
+        and rolling the entire transaction back."""
         if not old_dir or not new_dir:
             return 0
         sep = "\\" if "\\" in old_dir else "/"
@@ -737,7 +991,7 @@ class DownloadsDatabase:
         try:
             with self._conn() as conn:
                 cur = conn.execute("""
-                    UPDATE downloads
+                    UPDATE OR REPLACE downloads
                     SET file_path = ? || SUBSTR(file_path, ?),
                         artwork_path = CASE
                             WHEN artwork_path IS NOT NULL AND artwork_path LIKE ?
