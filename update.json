@@ -1,9 +1,9 @@
 {
   "version": "1.3",
-  "build": 52,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.52.zip",
-  "sha256": "277511def59a58d912a6398f7bc1889958d6023e3430c138c6dd92786da143ae",
-  "notes": "CrateBuilder now spots duplicate database entries left by earlier builds and offers to merge them for you.",
+  "build": 53,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.53.zip",
+  "sha256": "7aa3518168b493dd58574f7b961ec6d30275dde7dbc08f4eee4d2108180244db",
+  "notes": "Premieres no longer count as new downloads or fail mid-batch; channel cards show how many are scheduled.",
   "base": 51,
   "ffmpeg": {
     "version": "8.1-essentials_build-www.gyan.dev+1a65d5b0",
