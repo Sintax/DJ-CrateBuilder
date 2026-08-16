@@ -2,7 +2,8 @@
 import os
 
 try:
-    from mutagen.id3 import ID3, TIT2, TENC, COMM, WOAS, ID3NoHeaderError
+    from mutagen.id3 import (ID3, TIT2, TENC, TCON, COMM, WOAS,
+                             ID3NoHeaderError)
 except ImportError:  # pragma: no cover - mutagen is a runtime dep
     ID3 = None
 
@@ -22,6 +23,11 @@ from cratebuilder.util import MP4_EXTS, OGG_EXTS
 
 ENCODED_BY = "DJ-CrateBuilder"
 
+# Where each container keeps the genre. MP3 uses the TCON frame (handled
+# separately, it needs a frame object); MP4 and Ogg take a plain string.
+_MP4_GENRE_KEY = "\xa9gen"
+_OGG_GENRE_KEY = "genre"
+
 
 def tagging_available():
     """True when the mutagen backend is importable (it is a runtime dep)."""
@@ -29,12 +35,13 @@ def tagging_available():
 
 
 def write_track_tags(path, title=None, source_url=None,
-                     encoded_by=ENCODED_BY, overwrite=False):
+                     encoded_by=ENCODED_BY, overwrite=False, genre=None):
     """Write our standard ID3 tags onto the MP3 at *path*.
 
     Fields written:
       * Title       (TIT2)
       * Encoded by  (TENC) -> "DJ-CrateBuilder"
+      * Genre       (TCON) -> the CrateBuilder genre the track was filed under
       * Source URL  -> Comment (COMM, blank description, so it shows in the
                        Windows Explorer Details pane) AND the WOAS
                        "official audio source" URL frame.
@@ -64,6 +71,9 @@ def write_track_tags(path, title=None, source_url=None,
             changed = True
         if encoded_by and (overwrite or not tags.getall("TENC")):
             tags.setall("TENC", [TENC(encoding=3, text=[encoded_by])])
+            changed = True
+        if genre and (overwrite or not tags.getall("TCON")):
+            tags.setall("TCON", [TCON(encoding=3, text=[genre])])
             changed = True
         if source_url:
             if overwrite or not tags.getall("COMM"):
@@ -125,15 +135,132 @@ def read_source_url(path):
         return None
 
 
+def _ogg_opener(lower):
+    """The Vorbis-comment class for an Ogg path, or None when unavailable."""
+    if OggOpus is None:
+        return None
+    return OggOpus if lower.endswith(".opus") else OggVorbis
+
+
+def read_track_genre(path):
+    """The genre currently tagged on *path*, or None when it carries none.
+
+    Handles all three containers we produce: the ID3 TCON frame on an MP3, the
+    `\\xa9gen` atom on MP4/M4A, and the `genre` Vorbis comment on Ogg/Opus.
+    An empty-string tag reads back as '' — distinct from None, so a caller can
+    tell "tagged blank" from "never tagged". Never raises.
+    """
+    if not path or not os.path.isfile(path):
+        return None
+    lower = path.lower()
+    try:
+        if lower.endswith(".mp3"):
+            if ID3 is None:
+                return None
+            try:
+                tags = ID3(path)
+            except ID3NoHeaderError:
+                return None
+            for frame in tags.getall("TCON"):
+                values = getattr(frame, "text", None) or []
+                if values:
+                    return str(values[0])
+            return None
+        if lower.endswith(MP4_EXTS):
+            if MP4 is None:
+                return None
+            values = (MP4(path).tags or {}).get(_MP4_GENRE_KEY) or []
+            return str(values[0]) if values else None
+        if lower.endswith(OGG_EXTS):
+            opener = _ogg_opener(lower)
+            if opener is None:
+                return None
+            values = opener(path).get(_OGG_GENRE_KEY) or []
+            return str(values[0]) if values else None
+    except Exception:
+        return None
+    return None
+
+
+def set_track_genre(path, genre):
+    """Force *path*'s genre tag to *genre*, or strip it when *genre* is falsy.
+
+    Unlike `write_track_tags`, this always wins over what is already there —
+    it is the bulk repair that realigns a library with the CrateBuilder genre
+    folders. A file that already carries the wanted value is left completely
+    untouched (not even re-saved), so a second run is free and the change count
+    reflects real work.
+
+    Returns True only when the file was rewritten. False covers "already
+    correct", an unsupported container, a missing mutagen backend, and any
+    write failure — never raises, so one bad file cannot stop a library sweep.
+    """
+    if not path or not os.path.isfile(path):
+        return False
+    wanted = (genre or "").strip()
+    current = read_track_genre(path)
+    if (current or "") == wanted:
+        return False
+
+    lower = path.lower()
+    try:
+        if lower.endswith(".mp3"):
+            if ID3 is None:
+                return False
+            try:
+                tags = ID3(path)
+            except ID3NoHeaderError:
+                if not wanted:
+                    return False
+                tags = ID3()
+            if wanted:
+                tags.setall("TCON", [TCON(encoding=3, text=[wanted])])
+            else:
+                tags.delall("TCON")
+            tags.save(path, v2_version=3)
+            return True
+
+        if lower.endswith(MP4_EXTS):
+            if MP4 is None:
+                return False
+            audio = MP4(path)
+            if audio.tags is None:
+                if not wanted:
+                    return False
+                audio.add_tags()
+            if wanted:
+                audio.tags[_MP4_GENRE_KEY] = [wanted]
+            else:
+                audio.tags.pop(_MP4_GENRE_KEY, None)
+            audio.save()
+            return True
+
+        if lower.endswith(OGG_EXTS):
+            opener = _ogg_opener(lower)
+            if opener is None:
+                return False
+            audio = opener(path)
+            if wanted:
+                audio[_OGG_GENRE_KEY] = [wanted]
+            else:
+                audio.pop(_OGG_GENRE_KEY, None)
+            audio.save()
+            return True
+    except Exception:
+        return False
+    return False
+
+
 def write_track_tags_any(path, title=None, source_url=None,
-                         encoded_by=ENCODED_BY, overwrite=False):
+                         encoded_by=ENCODED_BY, overwrite=False, genre=None):
     """Write our standard tags onto *path*, whatever container it is in.
 
     MP3 delegates to `write_track_tags`. MP4 uses the iTunes atoms
-    (`\\xa9nam` title, `\\xa9too` encoder, `\\xa9cmt` comment); Ogg uses the
-    Vorbis comments (`title`, `encoder`, `comment`). The comment field carries
-    the source URL in every container, which is what lets a database rebuild
-    recover a track's video id from the file itself.
+    (`\\xa9nam` title, `\\xa9too` encoder, `\\xa9gen` genre, `\\xa9cmt`
+    comment); Ogg uses the Vorbis comments (`title`, `encoder`, `genre`,
+    `comment`). The comment field carries the source URL in every container,
+    which is what lets a database rebuild recover a track's video id from the
+    file itself.
 
     *overwrite* False leaves an existing field alone, matching
     `write_track_tags`, so this is safe to run as a bulk backfill.
@@ -146,20 +273,21 @@ def write_track_tags_any(path, title=None, source_url=None,
     lower = path.lower()
     if lower.endswith(".mp3"):
         return write_track_tags(path, title=title, source_url=source_url,
-                                encoded_by=encoded_by, overwrite=overwrite)
+                                encoded_by=encoded_by, overwrite=overwrite,
+                                genre=genre)
 
     if lower.endswith(MP4_EXTS):
         if MP4 is None:
             return False
         opener = MP4
         fields = (("\xa9nam", title), ("\xa9too", encoded_by),
-                  ("\xa9cmt", source_url))
+                  (_MP4_GENRE_KEY, genre), ("\xa9cmt", source_url))
     elif lower.endswith(OGG_EXTS):
         if OggOpus is None:
             return False
         opener = OggOpus if lower.endswith(".opus") else OggVorbis
         fields = (("title", title), ("encoder", encoded_by),
-                  ("comment", source_url))
+                  (_OGG_GENRE_KEY, genre), ("comment", source_url))
     else:
         return False
 

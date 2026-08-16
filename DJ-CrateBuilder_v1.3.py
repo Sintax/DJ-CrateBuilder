@@ -40,8 +40,9 @@ from cratebuilder.cleanup import (
 from cratebuilder import startup as cb_startup
 from cratebuilder import updater_core as ucore
 from cratebuilder.tagging import (
-    write_track_tags, write_track_tags_any, read_source_url)
+    write_track_tags, write_track_tags_any, read_source_url, set_track_genre)
 from cratebuilder import artwork as cb_artwork
+from cratebuilder import genrefix as cb_genrefix
 from cratebuilder import rebuild as cb_rebuild
 from cratebuilder import links as cb_links
 from cratebuilder.singleton import (
@@ -4811,15 +4812,19 @@ class MP3DownloaderApp(tk.Tk):
             f"File: {filepath}"
         )
 
-    def _tag_track(self, path, title, url):
-        """Best-effort: stamp Title / Encoded-by / source-URL tags onto a
-        downloaded track, via `write_track_tags_any` so MP3, MP4/M4A and Ogg
+    def _tag_track(self, path, title, url, genre=None):
+        """Best-effort: stamp Title / Encoded-by / Genre / source-URL tags onto
+        a downloaded track, via `write_track_tags_any` so MP3, MP4/M4A and Ogg
         all get the originating YouTube/SoundCloud link recoverable from the
-        file's Details. Used both for freshly downloaded files and as a
-        backfill on tracks that were skipped because they were already on
-        disk. Never raises; a tag failure must not break a batch."""
+        file's Details. *genre* is the CrateBuilder genre the track is being
+        filed under; "(none)" carries no genre and is dropped. Used both for
+        freshly downloaded files and as a backfill on tracks that were skipped
+        because they were already on disk. Never raises; a tag failure must not
+        break a batch."""
+        tag_genre = None if (genre or "(none)") == "(none)" else genre
         try:
-            if write_track_tags_any(path, title=title, source_url=url):
+            if write_track_tags_any(path, title=title, source_url=url,
+                                    genre=tag_genre):
                 self._dbg.debug(f"ID3 TAGGED   | {title!r}  {path}")
         except Exception as exc:  # pragma: no cover - defensive
             self._dbg.warning(f"ID3 TAG FAIL | {title!r}  {exc}")
@@ -4844,7 +4849,8 @@ class MP3DownloaderApp(tk.Tk):
                 return candidate
         return None
 
-    def _harvest_cover_art(self, audio_path, video_id, title, source_url=None):
+    def _harvest_cover_art(self, audio_path, video_id, title, source_url=None,
+                           genre=None):
         """Turn the thumbnail yt-dlp just wrote into cover art for one track.
 
         Converts the raw image into the channel folder's hidden `.artwork/`
@@ -4893,7 +4899,8 @@ class MP3DownloaderApp(tk.Tk):
                     f"REMUX         | {title!r}  {os.path.basename(audio_path)}"
                     f" -> {os.path.basename(final_path)}")
                 write_track_tags_any(
-                    final_path, title=title, source_url=source_url)
+                    final_path, title=title, source_url=source_url,
+                    genre=genre)
             return art_path, embedded, final_path
         except Exception as exc:  # pragma: no cover - defensive
             self._dbg.warning(f"COVER FAIL    | {title!r}  {exc}")
@@ -6627,6 +6634,29 @@ class MP3DownloaderApp(tk.Tk):
             "Finds cover art for tracks you downloaded before the Cover Art "
             "feature existed, and embeds it into them. Re-uses artwork already "
             "on disk where possible, so re-running it is cheap.").pack(
+                side="left", padx=(0, 16))
+
+        genre_fix_row = ttk.Frame(outer)
+        genre_fix_row.pack(fill="x", pady=(0, 4))
+
+        self._fix_genre_btn = ttk.Button(
+            genre_fix_row, text="🏷  Fix ID3 Genre Fields",
+            style="Orange.TButton",
+            command=self._fix_id3_genre_fields)
+        self._fix_genre_btn.pack(side="left", padx=(0, 8))
+        Tooltip(self._fix_genre_btn,
+                "Rewrites the Genre tag on every track in your library to match "
+                "the CrateBuilder genre folder it is filed under — so a track "
+                "in YouTube/Drum & Bass gets the genre \"Drum & Bass\". Covers "
+                "MP3, M4A and Opus/Ogg files. Tracks under _No Genre have their "
+                "genre tag cleared. Any genre already correct is left untouched, "
+                "so re-running costs nothing; anything else is overwritten. "
+                "Cancel any time — tracks already fixed keep their new tag.",
+                wraplength=380)
+        self._settings_help(genre_fix_row,
+            "Backfills the Genre tag on tracks you downloaded before genres "
+            "were written into files, and realigns any track whose tag no "
+            "longer matches the genre folder it lives in.").pack(
                 side="left", padx=(0, 16))
 
         self._db_path_lbl = tk.Label(
@@ -9517,7 +9547,8 @@ class MP3DownloaderApp(tk.Tk):
                         # source URL is recoverable even for tracks grabbed
                         # before tagging existed. Only fills missing fields.
                         if file_exists and expected_path:
-                            self._tag_track(expected_path, item_title, item_url)
+                            self._tag_track(expected_path, item_title,
+                                            item_url, genre=genre)
                         self.after(0, lambda i=idx: self._set_row_state(
                             i, ST_SKIPPED, "skipped"))
                         self.after(0, lambda: self._vid_progress.config(value=100))
@@ -9761,19 +9792,20 @@ class MP3DownloaderApp(tk.Tk):
                         f"DOWNLOAD OK   | {item_title!r}  quality={src_str}")
                     self._log_download(item_title, expected_path, item_url,
                                        platform, genre, quality=src_str)
-                    # Stamp ID3 tags (title / encoded-by / source URL) on the
-                    # file just written. Resolve the real path first, since
-                    # yt-dlp's sanitiser may differ from expected_path.
+                    # Stamp ID3 tags (title / encoded-by / genre / source URL)
+                    # on the file just written. Resolve the real path first,
+                    # since yt-dlp's sanitiser may differ from expected_path.
                     _real_path = (self._file_exists_on_disk(save_dir, item_title)
                                   or expected_path)
-                    self._tag_track(_real_path, item_title, item_url)
+                    self._tag_track(_real_path, item_title, item_url,
+                                    genre=genre)
                     # Embed the source thumbnail as cover art and keep the
                     # sidecar copy. Runs after _tag_track so the APIC frame is
                     # written onto the tag mutagen has already created.
                     _art_path, _art_embedded, _real_path = (
                         self._harvest_cover_art(
                             _real_path, entry.get("id") or _r_vid, item_title,
-                            source_url=item_url))
+                            source_url=item_url, genre=genre))
                     # ── Record in the downloads database ──────────────
                     _vid_upload = (entry.get("upload_date", "")
                                    or (_dl_info or {}).get("upload_date", "")
@@ -9882,11 +9914,13 @@ class MP3DownloaderApp(tk.Tk):
                             _real_path = (
                                 self._file_exists_on_disk(save_dir, item_title)
                                 or expected_path)
-                            self._tag_track(_real_path, item_title, item_url)
+                            self._tag_track(_real_path, item_title, item_url,
+                                            genre=genre)
                             _art_path, _art_embedded, _real_path = (
                                 self._harvest_cover_art(
                                     _real_path, entry.get("id") or _r_vid,
-                                    item_title, source_url=item_url))
+                                    item_title, source_url=item_url,
+                                    genre=genre))
                             # ── Record retry success in DB ────────────
                             _vid_upload = (
                                 entry.get("upload_date", "")
@@ -12802,6 +12836,146 @@ class MP3DownloaderApp(tk.Tk):
             self._watchlist_log(
                 f"Populated {added} channel(s) from existing folders", "ok")
             self._watchlist_refresh()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Genre-tag repair — realign every file's genre tag with its genre folder
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _library_platform_dirs(self):
+        """The per-platform roots the library layout hangs off."""
+        return [self._platform_dir(p) for p in PLATFORMS]
+
+    def _fix_id3_genre_fields(self):
+        """Entry point for the 'Fix ID3 Genre Fields' button.
+
+        Walks every track in the library and forces its genre tag to the genre
+        folder it lives under, since the folder is what CrateBuilder itself
+        treats as the track's genre. Files already carrying the right value are
+        not rewritten, so this is cheap to re-run and the reported count is
+        real work rather than files touched.
+
+        The walk runs on a worker thread behind a cancellable progress dialog;
+        tags written before a cancel are kept, because each file is complete
+        the moment it is saved."""
+        if getattr(self, "_genre_fix_active", False):
+            messagebox.showinfo(
+                "Fix ID3 Genre Fields",
+                "A genre fix is already running.", parent=self)
+            return
+        if getattr(self, "_rebuild_in_progress", False):
+            messagebox.showinfo(
+                "Fix ID3 Genre Fields",
+                "A database rebuild is in progress. Try again once it "
+                "finishes.", parent=self)
+            return
+
+        platform_dirs = self._library_platform_dirs()
+        total = cb_genrefix.count_library_tracks(platform_dirs)
+        if not total:
+            messagebox.showwarning(
+                "Fix ID3 Genre Fields",
+                f"Found no audio files under {self._base_dir}.",
+                parent=self)
+            return
+        if not messagebox.askokcancel(
+                "Fix ID3 Genre Fields",
+                f"Set the Genre tag on {total} track"
+                f"{'s' if total != 1 else ''} to match the genre folder each "
+                f"one is filed under?\n\n"
+                f"Tracks under '{cb_genrefix.NO_GENRE_DIR}' have their genre "
+                f"tag cleared. Any genre tag you set by hand that disagrees "
+                f"with the folder will be overwritten.\n\n"
+                f"Audio is never re-encoded — only the tag is rewritten.",
+                parent=self):
+            return
+
+        self._genre_fix_active = True
+        self._genre_fix_cancel = threading.Event()
+        self._fix_genre_btn.config(state="disabled")
+        dlg, bar, sub = self._genre_fix_progress(total)
+
+        def _work():
+            fixed = skipped = errors = 0
+            done = 0
+            for path, genre in cb_genrefix.iter_library_tracks(platform_dirs):
+                if self._genre_fix_cancel.is_set():
+                    break
+                try:
+                    if set_track_genre(path, genre):
+                        fixed += 1
+                    else:
+                        skipped += 1
+                except Exception:   # pragma: no cover - set_track_genre eats it
+                    errors += 1
+                done += 1
+                if done % 25 == 0 or done == total:
+                    self.after(0, lambda d=done, f=fixed: _tick(d, f))
+            self.after(0, lambda: _finish(fixed, skipped, errors, done))
+
+        def _tick(done, fixed):
+            try:
+                bar.config(value=done)
+                sub.config(text=f"{done} of {total}  •  {fixed} fixed")
+            except tk.TclError:
+                pass
+
+        def _finish(fixed, skipped, errors, done):
+            self._genre_fix_active = False
+            try:
+                dlg.destroy()
+            except tk.TclError:
+                pass
+            try:
+                self._fix_genre_btn.config(state="normal")
+            except tk.TclError:
+                pass
+            self._dbg.info(
+                f"GENRE FIX | scanned={done}/{total} fixed={fixed} "
+                f"already-correct={skipped} errors={errors} "
+                f"cancelled={self._genre_fix_cancel.is_set()}")
+            summary = (f"{fixed} track{'s' if fixed != 1 else ''} updated.\n"
+                       f"{skipped} already had the right genre.")
+            if errors:
+                summary += f"\n{errors} could not be written."
+            if self._genre_fix_cancel.is_set():
+                summary = (f"Cancelled after {done} of {total}.\n\n" + summary)
+            messagebox.showinfo("Fix ID3 Genre Fields", summary, parent=self)
+
+        self._run_bg(_work)
+
+    def _genre_fix_progress(self, total):
+        """Modal progress window for the genre fix. Returns (dialog, bar, sub)."""
+        dlg = tk.Toplevel(self)
+        dlg.title("Fix ID3 Genre Fields")
+        dlg.configure(bg=BG)
+        dlg.transient(self)
+        dlg.resizable(False, False)
+        tk.Label(dlg, text="Fixing genre tags…",
+                 font=("Segoe UI", 11, "bold"), bg=BG, fg=TEXT
+                 ).pack(padx=24, pady=(18, 4))
+        sub = tk.Label(dlg, text=f"0 of {total}", font=("Segoe UI", 9),
+                       bg=BG, fg=TEXT_DIM, height=2)
+        sub.pack(pady=(0, 8))
+        bar = ttk.Progressbar(dlg, mode="determinate", length=300,
+                              maximum=max(total, 1))
+        bar.pack(padx=24, pady=(0, 10))
+        cancel_btn = tk.Button(
+            dlg, text="Cancel", font=("Segoe UI", 9), relief="flat", bd=0,
+            bg=SURFACE2, fg=TEXT, activebackground=BORDER,
+            activeforeground=TEXT, padx=12, pady=4, cursor="hand2",
+            command=self._genre_fix_cancel.set)
+        cancel_btn.pack(pady=(0, 16))
+        add_hover(cancel_btn)
+        Tooltip(cancel_btn, "Stop after the current track. Tags already "
+                            "written are kept.")
+        # Closing the window is the same request as pressing Cancel — the
+        # worker owns the dialog's lifetime and tears it down when it stops.
+        dlg.protocol("WM_DELETE_WINDOW", self._genre_fix_cancel.set)
+        dlg.update_idletasks()
+        px = self.winfo_x() + (self.winfo_width() - dlg.winfo_width()) // 2
+        py = self.winfo_y() + (self.winfo_height() - dlg.winfo_height()) // 2
+        dlg.geometry(f"+{max(0, px)}+{max(0, py)}")
+        return dlg, bar, sub
 
     # ══════════════════════════════════════════════════════════════════════════
     # Artwork backfill — find cover art for tracks that predate the feature
