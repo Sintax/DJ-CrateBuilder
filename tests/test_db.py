@@ -25,7 +25,7 @@ def test_watchlist_insert_and_dedup(tmp_path):
     db = _new_db(tmp_path)
     row = dict(url="https://www.youtube.com/channel/UC1/videos",
                channel_id="UC1", display_name="One", platform="YouTube",
-               genre="DnB", scan_cutoff_date="2026-01-01")
+               genre="DnB")
     # Real insert method is `add_watchlist_channel` (keyword-only args).
     first = db.add_watchlist_channel(**row)   # confirmed method name in source
     second = db.add_watchlist_channel(**row)  # duplicate url
@@ -41,8 +41,7 @@ def test_update_fields_returns_true_on_success(tmp_path):
     db = _new_db(tmp_path)
     wid = db.add_watchlist_channel(
         url="https://www.youtube.com/channel/UCaaa/videos",
-        display_name="A", platform="YouTube", genre="(none)",
-        scan_cutoff_date="20260101")
+        display_name="A", platform="YouTube", genre="(none)")
     assert db.update_watchlist_channel_fields(
         wid, channel_id="UCaaa", status="idle") is True
 
@@ -51,8 +50,7 @@ def test_set_watchlist_download_started(tmp_path):
     db = _new_db(tmp_path)
     wid = db.add_watchlist_channel(
         url="https://www.youtube.com/channel/UCdl/videos",
-        display_name="DL", platform="YouTube", genre="(none)",
-        scan_cutoff_date="20260101")
+        display_name="DL", platform="YouTube", genre="(none)")
     # Brand-new channel has never downloaded.
     assert db.get_watchlist_channel(wid).get("last_download_started") is None
     db.set_watchlist_download_started([wid], 4242)
@@ -68,8 +66,7 @@ def test_status_only_update_preserves_scan_results(tmp_path):
     db = _new_db(tmp_path)
     wid = db.add_watchlist_channel(
         url="https://www.youtube.com/channel/UCoff/videos",
-        display_name="Off", platform="YouTube", genre="(none)",
-        scan_cutoff_date="20260101")
+        display_name="Off", platform="YouTube", genre="(none)")
     db.update_watchlist_scan_result(
         wid, timestamp=1000, pending_count=3,
         pending_entries=[{"id": "a"}, {"id": "b"}, {"id": "c"}],
@@ -173,11 +170,10 @@ def test_update_fields_returns_false_on_unique_collision(tmp_path):
     db = _new_db(tmp_path)
     db.add_watchlist_channel(
         url="https://www.youtube.com/channel/UCdup/videos",
-        display_name="Existing", platform="YouTube", genre="(none)",
-        scan_cutoff_date="20260101")
+        display_name="Existing", platform="YouTube", genre="(none)")
     other = db.add_watchlist_channel(
         url="https://www.youtube.com/@Some Name", display_name="Dup",
-        platform="YouTube", genre="(none)", scan_cutoff_date="20260101")
+        platform="YouTube", genre="(none)")
     ok = db.update_watchlist_channel_fields(
         other, url="https://www.youtube.com/channel/UCdup/videos",
         channel_id="UCdup", status="idle")
@@ -220,11 +216,11 @@ def test_get_watchlist_channel_by_channel_id(tmp_path):
     db.add_watchlist_channel(
         url="https://www.youtube.com/channel/UCmatch/videos",
         channel_id="UCmatch", display_name="Match", platform="YouTube",
-        genre="(none)", scan_cutoff_date="20260101")
+        genre="(none)")
     # A row whose channel_id is NULL must never be returned by an id lookup.
     db.add_watchlist_channel(
         url="https://www.youtube.com/@nullid", display_name="NullId",
-        platform="YouTube", genre="(none)", scan_cutoff_date="20260101")
+        platform="YouTube", genre="(none)")
 
     row = db.get_watchlist_channel_by_channel_id("UCmatch")
     assert row is not None
@@ -240,17 +236,16 @@ def test_delete_blank_watchlist_channels(tmp_path):
     db = _new_db(tmp_path)
     db.add_watchlist_channel(
         url="https://www.youtube.com/channel/UCnamed/videos",
-        display_name="Named", platform="YouTube", genre="(none)",
-        scan_cutoff_date="20260101")
+        display_name="Named", platform="YouTube", genre="(none)")
     # Blank-name rows: empty string and whitespace-only. These are the broken
     # cards we want gone. (The schema is display_name TEXT NOT NULL, so a true
     # NULL can't occur; '' and '   ' are the only blank forms to handle.)
     blank_empty = db.add_watchlist_channel(
         url="https://www.youtube.com/@blank1", display_name="",
-        platform="YouTube", genre="(none)", scan_cutoff_date="20260101")
+        platform="YouTube", genre="(none)")
     blank_space = db.add_watchlist_channel(
         url="https://www.youtube.com/@blank2", display_name="   ",
-        platform="YouTube", genre="(none)", scan_cutoff_date="20260101")
+        platform="YouTube", genre="(none)")
     assert blank_empty is not None and blank_space is not None
 
     removed = db.delete_blank_watchlist_channels()
@@ -291,13 +286,20 @@ def test_fresh_db_has_artwork_columns(tmp_path):
     assert _ARTWORK_COLUMNS <= _columns(db)
 
 
-def test_schema_version_is_5(tmp_path):
+def test_schema_version_is_6(tmp_path):
     db = _new_db(tmp_path)
     with db._conn() as conn:
         row = conn.execute(
             "SELECT value FROM schema_info WHERE key = 'version'").fetchone()
-    assert row["value"] == "5"
-    assert DownloadsDatabase.SCHEMA_VERSION == 5
+    assert row["value"] == "6"
+    assert DownloadsDatabase.SCHEMA_VERSION == 6
+
+
+def test_fresh_watchlist_has_no_scan_cutoff_column(tmp_path):
+    db = _new_db(tmp_path)
+    with db._conn() as conn:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(watchlist)")}
+    assert "scan_cutoff_date" not in cols
 
 
 def test_v3_database_migrates_to_v4_without_data_loss(tmp_path):
@@ -407,6 +409,73 @@ _V4_SCHEMA = """
 """
 
 
+def test_v5_database_drops_scan_cutoff_without_data_loss(tmp_path):
+    """v6 removes watchlist.scan_cutoff_date. A live v5 database has to lose
+    exactly that column and nothing else — the surrounding row must survive,
+    because this runs against the user's real library on first launch."""
+    path = str(tmp_path / "legacy_v5.db")
+    conn = sqlite3.connect(path)
+    conn.executescript(_V4_SCHEMA)          # v5 shares the v4 watchlist shape
+    conn.executescript("""
+        CREATE TABLE unavailable_tracks (
+            platform TEXT NOT NULL, video_id TEXT NOT NULL,
+            channel_url TEXT, title TEXT, reason TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 1,
+            first_failed INTEGER NOT NULL, last_failed INTEGER NOT NULL,
+            PRIMARY KEY (platform, video_id));
+    """)
+    conn.execute("""
+        INSERT INTO watchlist
+          (url, channel_id, display_name, platform, genre, scan_cutoff_date,
+           date_added, last_scanned_timestamp, pending_new_count,
+           pending_entries_json, total_downloaded, auto_added, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, ("https://www.youtube.com/channel/UCv5/videos", "UCv5", "V5 Chan",
+          "YouTube", "DnB", "20250101", 1700000000, 1700000500, 3,
+          '[{"id": "x"}]', 7, 1, "idle"))
+    conn.commit()
+    conn.close()
+
+    db = DownloadsDatabase(path)
+
+    with db._conn() as c:
+        cols = {r[1] for r in c.execute("PRAGMA table_info(watchlist)")}
+        version = c.execute(
+            "SELECT value FROM schema_info WHERE key = 'version'"
+        ).fetchone()["value"]
+    assert "scan_cutoff_date" not in cols
+    assert version == "6"
+
+    rows = db.get_all_watchlist_channels()
+    assert len(rows) == 1
+    wl = rows[0]
+    assert wl["url"] == "https://www.youtube.com/channel/UCv5/videos"
+    assert wl["channel_id"] == "UCv5"
+    assert wl["display_name"] == "V5 Chan"
+    assert wl["platform"] == "YouTube"
+    assert wl["genre"] == "DnB"
+    assert wl["date_added"] == 1700000000
+    assert wl["last_scanned_timestamp"] == 1700000500
+    # The pending queue is the one thing a botched migration would quietly
+    # destroy, taking the user's unfinished downloads with it.
+    assert wl["pending_new_count"] == 3
+    assert wl["pending_entries_json"] == '[{"id": "x"}]'
+    assert wl["total_downloaded"] == 7
+    assert wl["auto_added"] == 1
+    assert wl["status"] == "idle"
+
+
+def test_migration_is_idempotent_on_an_already_v6_database(tmp_path):
+    """Re-opening a migrated database must not raise on the DROP COLUMN that
+    has nothing left to drop."""
+    path = str(tmp_path / "twice.db")
+    db = DownloadsDatabase(path)
+    db.add_watchlist_channel(url="https://yt/a", display_name="A",
+                             platform="YouTube", genre="DnB")
+    reopened = DownloadsDatabase(path)
+    assert len(reopened.get_all_watchlist_channels()) == 1
+
+
 def test_v4_database_migrates_to_v5_without_data_loss(tmp_path):
     """A live v4 database on a user's disk must open cleanly at v5, keep every
     existing row exactly as it was, and gain the unavailable_tracks table."""
@@ -454,11 +523,11 @@ def test_v4_database_migrates_to_v5_without_data_loss(tmp_path):
     assert "unavailable_tracks" in tables
     assert "idx_unavail_channel_url" in indexes
 
-    # (b) schema_info reports v5...
+    # (b) schema_info reports the current version...
     with db._conn() as conn:
         row = conn.execute(
             "SELECT value FROM schema_info WHERE key = 'version'").fetchone()
-    assert row["value"] == "5"
+    assert row["value"] == "6"
 
     # (c) ...and the pre-existing rows survived byte-for-byte.
     dl_rows = db.get_all_downloads()
@@ -487,7 +556,8 @@ def test_v4_database_migrates_to_v5_without_data_loss(tmp_path):
     assert wl["display_name"] == "V4 Chan"
     assert wl["platform"] == "YouTube"
     assert wl["genre"] == "DnB"
-    assert wl["scan_cutoff_date"] == "20250101"
+    # scan_cutoff_date went away in v6 — the row survives without it.
+    assert "scan_cutoff_date" not in wl.keys()
     assert wl["date_added"] == 1700000000
     assert wl["total_downloaded"] == 1
     assert wl["status"] == "idle"

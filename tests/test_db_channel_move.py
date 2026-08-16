@@ -28,7 +28,7 @@ def test_prefix_rewrite_moves_rows_under_channel(tmp_path):
     db = _new_db(tmp_path)
     wid = db.add_watchlist_channel(
         url="https://youtube.com/@foo", display_name="Foo",
-        platform="YouTube", genre="Rock", scan_cutoff_date="20260101")
+        platform="YouTube", genre="Rock")
     old = r"C:\Music\YouTube\Rock\Foo"
     new = r"C:\Music\YouTube\Techno\Foo"
     _add_track(db, video_id="v1", file_path=old + r"\song1.mp3",
@@ -51,7 +51,7 @@ def test_prefix_rewrite_ignores_unrelated_rows(tmp_path):
     db = _new_db(tmp_path)
     wid = db.add_watchlist_channel(
         url="https://youtube.com/@foo", display_name="Foo",
-        platform="YouTube", genre="Rock", scan_cutoff_date="20260101")
+        platform="YouTube", genre="Rock")
     old = r"C:\Music\YouTube\Rock\Foo"
     new = r"C:\Music\YouTube\Techno\Foo"
     _add_track(db, video_id="v1", file_path=old + r"\song.mp3")
@@ -80,7 +80,7 @@ def test_null_artwork_stays_null(tmp_path):
     db = _new_db(tmp_path)
     wid = db.add_watchlist_channel(
         url="https://youtube.com/@foo", display_name="Foo",
-        platform="YouTube", genre="Rock", scan_cutoff_date="20260101")
+        platform="YouTube", genre="Rock")
     old = r"C:\Music\YouTube\Rock\Foo"
     new = r"C:\Music\YouTube\Techno\Foo"
     _add_track(db, video_id="v1", file_path=old + r"\song.mp3",
@@ -100,7 +100,7 @@ def test_genre_only_patch_when_dirs_match(tmp_path):
     db = _new_db(tmp_path)
     wid = db.add_watchlist_channel(
         url="https://youtube.com/@foo", display_name="Foo",
-        platform="YouTube", genre="Rock", scan_cutoff_date="20260101")
+        platform="YouTube", genre="Rock")
     same = r"C:\Music\YouTube\Techno\Foo"
     _add_track(db, video_id="v1", genre="Rock", file_path=same + r"\song.mp3",
                artwork_path=same + r"\.artwork\v1.jpg")
@@ -130,7 +130,7 @@ def test_unix_style_separators(tmp_path):
     db = _new_db(tmp_path)
     wid = db.add_watchlist_channel(
         url="https://youtube.com/@foo", display_name="Foo",
-        platform="YouTube", genre="Rock", scan_cutoff_date="20260101")
+        platform="YouTube", genre="Rock")
     old = "/home/dj/Music/YouTube/Rock/Foo"
     new = "/home/dj/Music/YouTube/Techno/Foo"
     _add_track(db, file_path=old + "/song.mp3",

@@ -33,7 +33,6 @@ class _StubDB:
                           "genre": "(none)", "pending_new_count": 2}
                          for c in cids]
         self.cleared = []
-        self.cutoffs = []
         self.statuses = []
 
     def get_watchlist_channel(self, cid):
@@ -50,9 +49,6 @@ class _StubDB:
         ch = self.get_watchlist_channel(cid)
         if ch:
             ch["pending_new_count"] = 0
-
-    def update_watchlist_cutoff(self, url, cutoff):
-        self.cutoffs.append(url)
 
     def update_watchlist_status(self, cid, status):
         self.statuses.append((cid, status))
@@ -99,7 +95,6 @@ def _run_batch(monkeypatch, tmp_path, outcomes):
 def test_failed_channel_keeps_its_pending_list(tmp_path, monkeypatch):
     db = _run_batch(monkeypatch, tmp_path, [(0, 0, 2)])
     assert db.cleared == []
-    assert db.cutoffs == []
     assert db.get_total_pending_count() == 2
     assert (1, "idle") in db.statuses
 
@@ -107,7 +102,6 @@ def test_failed_channel_keeps_its_pending_list(tmp_path, monkeypatch):
 def test_clean_channel_still_retires_its_pending_list(tmp_path, monkeypatch):
     db = _run_batch(monkeypatch, tmp_path, [(2, 0, 0)])
     assert db.cleared == [1]
-    assert db.cutoffs == ["https://ch/1"]
     assert db.get_total_pending_count() == 0
 
 
