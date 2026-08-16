@@ -1,10 +1,10 @@
 {
   "version": "1.3",
-  "build": 50,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.50.zip",
-  "sha256": "5f379a099be61777dba7f8c8df0f2737489c52bb45326fa48d958bf727def85b",
-  "notes": "Fixed downloads failing with a permission error, and updated bundled security certificates.",
-  "base": 50,
+  "build": 51,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.51.zip",
+  "sha256": "12bb4268e623abedd0b51fe0ad9c38f067a57e0bb7410c9f74b0784574bc6fa0",
+  "notes": "Tracks now carry their genre. New Settings tools: Fix ID3 Genre Fields, Remove Duplicates, and a cover art on/off switch.",
+  "base": 51,
   "ffmpeg": {
     "version": "8.1-essentials_build-www.gyan.dev+1a65d5b0",
     "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/ffmpeg-8.1-essentials_build-www.gyan.dev_1a65d5b0.zip",
