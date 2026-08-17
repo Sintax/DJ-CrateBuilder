@@ -2,33 +2,12 @@
 
 A card reading "0 new" for a channel whose page clearly has fresh uploads on
 it looks broken. The scheduled note is what tells the user the count is right."""
-import gc
-import time
 import tkinter as tk
-
-import pytest
-
-
-@pytest.fixture(scope="module")
-def app(cb):
-    last = None
-    for _ in range(3):
-        gc.collect()
-        try:
-            a = cb.MP3DownloaderApp()
-            break
-        except Exception as e:      # pragma: no cover - environment dependent
-            last = e
-            time.sleep(0.25)
-    else:
-        pytest.skip(f"no display: {last}")
-    a.update()
-    yield a
-    a.destroy()
 
 
 def _card_text(app, ch):
     """Every text= string in a freshly rendered card, joined."""
+    app.update()
     holder = tk.Frame(app)
     app._watchlist_build_channel_card(holder, ch)
     out = []
@@ -52,21 +31,18 @@ CH = dict(id=9101, display_name="DnB Portal", platform="YouTube",
 
 
 def test_a_card_with_no_held_back_tracks_says_nothing_about_scheduling(app):
-    app._wl_upcoming_counts.pop(CH["id"], None)
     assert "scheduled" not in _card_text(app, CH)
 
 
 def test_held_back_premieres_are_reported_on_the_card(app):
     app._wl_upcoming_counts[CH["id"]] = 2
     assert "2 scheduled" in _card_text(app, CH)
-    app._wl_upcoming_counts.pop(CH["id"], None)
 
 
 def test_a_zero_count_is_treated_as_nothing_to_say(app):
     """A scan that held nothing back must clear the note, not print '0'."""
     app._wl_upcoming_counts[CH["id"]] = 0
     assert "scheduled" not in _card_text(app, CH)
-    app._wl_upcoming_counts.pop(CH["id"], None)
 
 
 def test_the_note_is_scoped_to_its_own_channel(app):
@@ -76,7 +52,6 @@ def test_the_note_is_scoped_to_its_own_channel(app):
     other = {**CH, "id": 9102, "display_name": "Other Chan"}
     assert "scheduled" not in _card_text(app, other)
     assert "3 scheduled" in _card_text(app, CH)
-    app._wl_upcoming_counts.pop(CH["id"], None)
 
 
 def test_held_back_tracks_do_not_inflate_the_new_badge(app):
@@ -85,10 +60,10 @@ def test_held_back_tracks_do_not_inflate_the_new_badge(app):
     text = _card_text(app, CH)
     assert "2 scheduled" in text
     assert "2 new" not in text
-    app._wl_upcoming_counts.pop(CH["id"], None)
 
 
 def test_the_counter_starts_empty_on_a_fresh_app(app):
     """It is a scan result, deliberately not persisted — a fresh session
     shows no note until the channel is scanned again."""
     assert isinstance(app._wl_upcoming_counts, dict)
+    assert app._wl_upcoming_counts == {}

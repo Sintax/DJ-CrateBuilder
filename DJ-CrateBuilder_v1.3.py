@@ -4322,7 +4322,11 @@ class MP3DownloaderApp(tk.Tk):
         except ValueError:
             return 0
 
-    def __init__(self):
+    def __init__(self, quiet=False):
+        """quiet=True (test harness only) suppresses the ambient startup side
+        effects — the dependency check, the scheduled watchlist/auto-download
+        startup chain, and the start-minimized tray handoff — while building
+        every widget and variable exactly as a normal launch does."""
         super().__init__()
         self.title(f"{APP_NAME}  v{APP_VERSION_FULL}")
         self.geometry("850x950")
@@ -4505,19 +4509,20 @@ class MP3DownloaderApp(tk.Tk):
         self._build_styles()
         self._build_ui()
         self._apply_platform()      # paint initial platform colours
-        self._check_deps_async()
+        if not quiet:
+            self._check_deps_async()
 
-        # Sweep out any blank "nameless" Watch List cards left by older
-        # auto-add bugs BEFORE the list is first populated or rendered.
-        self.after(900, self._watchlist_cleanup_blank_rows)
-        # First-run: auto-populate the Watch List from existing channel folders
-        self.after(1200, self._watchlist_populate_from_folders)
-        self.after(1600, self._reschedule_auto_download)
-        # Offer to merge duplicate rows an older build left behind. Ahead of
-        # the startup scan so the user answers before the window gets busy.
-        self.after(1800, self._prompt_dedupe_after_update)
-        # Actively refresh new-track counts for every entry on each launch.
-        self.after(2200, self._watchlist_startup_scan)
+            # Sweep out any blank "nameless" Watch List cards left by older
+            # auto-add bugs BEFORE the list is first populated or rendered.
+            self.after(900, self._watchlist_cleanup_blank_rows)
+            # First-run: auto-populate the Watch List from existing channel folders
+            self.after(1200, self._watchlist_populate_from_folders)
+            self.after(1600, self._reschedule_auto_download)
+            # Offer to merge duplicate rows an older build left behind. Ahead of
+            # the startup scan so the user answers before the window gets busy.
+            self.after(1800, self._prompt_dedupe_after_update)
+            # Actively refresh new-track counts for every entry on each launch.
+            self.after(2200, self._watchlist_startup_scan)
 
         # Close (X) always confirms quit; the Minimize button is what hides to
         # tray (when the option is enabled).
@@ -4530,7 +4535,7 @@ class MP3DownloaderApp(tk.Tk):
         # ("--startup") launch. When it's unticked, both launch paths just show
         # the open window. _hide_to_tray falls back to a taskbar minimise if the
         # tray is unavailable.
-        if self._start_minimized.get():
+        if not quiet and self._start_minimized.get():
             self.after(1700, self._hide_to_tray)
 
     # ══════════════════════════════════════════════════════════════════════════
