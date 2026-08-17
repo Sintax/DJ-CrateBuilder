@@ -5147,7 +5147,7 @@ class MP3DownloaderApp(tk.Tk):
         if not url:
             messagebox.showwarning("No URL", "Please enter a YouTube or SoundCloud URL.")
             return
-        platform = self._detect_platform(url)
+        platform = detect_platform(url)
         cfg      = PLATFORMS[platform]
         if not re.search(cfg["url_pattern"], url):
             messagebox.showwarning("Invalid URL", "That doesn't look like a YouTube or SoundCloud URL.")
@@ -8843,11 +8843,6 @@ class MP3DownloaderApp(tk.Tk):
         self._settings.set("url_history", self._url_history)
 
     @staticmethod
-    def _detect_platform(url):
-        """Return 'SoundCloud' or 'YouTube' based on the URL."""
-        return detect_platform(url)
-
-    @staticmethod
     def _normalize_url(url):
         """Append /videos to bare YouTube channel URLs so yt-dlp fetches
         the full video list instead of the channel's featured page."""
@@ -9020,7 +9015,7 @@ class MP3DownloaderApp(tk.Tk):
                 messagebox.showwarning("No URL",
                     "Add at least one URL to the batch queue, or enter a YouTube or SoundCloud URL.")
                 return
-            platform = self._detect_platform(url)
+            platform = detect_platform(url)
             cfg      = PLATFORMS[platform]
             if not re.search(cfg["url_pattern"], url):
                 messagebox.showwarning("Invalid URL", "That doesn't look like a YouTube or SoundCloud URL.")
@@ -10007,7 +10002,7 @@ class MP3DownloaderApp(tk.Tk):
         if fix is None or anchor is None:
             return
         try:
-            has_broken = any(self._is_unresolved_channel(c)
+            has_broken = any(is_unresolved_channel(c)
                              for c in self._db.get_all_watchlist_channels())
         except Exception:
             has_broken = False
@@ -10248,22 +10243,12 @@ class MP3DownloaderApp(tk.Tk):
                      anchor="w").pack(side="left", padx=(8, 0))
 
     # ── Channel resolution (heal legacy folders) ───────────────────────────────
-    @staticmethod
-    def _is_unresolved_channel(ch):
-        """True if the channel has no canonical YouTube URL yet (needs Fix Link)."""
-        return is_unresolved_channel(ch)
-
     def _resolve_channel_via_search(self, name, max_results=3):
         """Search YouTube for a channel by display name. Returns up to
         max_results candidate dicts {title, channel_id, url, handle,
         followers}. Raises on network/extractor failure."""
         return self._ydl_session().search_channels(name,
                                                    max_results=max_results)
-
-    @staticmethod
-    def _channel_id_from_url(url):
-        """Pull a UC… channel id straight out of a /channel/ URL, if present."""
-        return channel_id_from_url(url)
 
     def _mirror_channel_link(self, ch, url, channel_id=None):
         """Best-effort: mirror a channel's resolved URL into the durable JSON
@@ -10420,7 +10405,7 @@ class MP3DownloaderApp(tk.Tk):
         ch = self._db.get_watchlist_channel(cid)
         if not ch or not new_url:
             return
-        direct = self._channel_id_from_url(new_url)
+        direct = channel_id_from_url(new_url)
         if direct:
             self._finish_resolve(
                 ch, direct, success_msg=f"Channel set: {ch['display_name']}")
@@ -10439,7 +10424,7 @@ class MP3DownloaderApp(tk.Tk):
             try:
                 ident = self._ydl_session().probe_identity(new_url)
                 ucid = ident.channel_id or \
-                    self._channel_id_from_url(ident.channel_url)
+                    channel_id_from_url(ident.channel_url)
                 handle = ident.handle
                 if ucid:
                     # Keep the user's URL (may be a playlist) but record the
@@ -10952,7 +10937,7 @@ class MP3DownloaderApp(tk.Tk):
                     status_lbl.config(text="Enter a URL or pick a match.",
                                       fg=YT_RED)
                     return
-                cid_direct = self._channel_id_from_url(raw)
+                cid_direct = channel_id_from_url(raw)
                 if cid_direct:
                     self._finish_resolve(
                         ch, cid_direct,
@@ -10966,7 +10951,7 @@ class MP3DownloaderApp(tk.Tk):
                     try:
                         ident = self._ydl_session().probe_identity(raw)
                         cid2 = ident.channel_id or \
-                            self._channel_id_from_url(ident.channel_url)
+                            channel_id_from_url(ident.channel_url)
                         handle = ident.handle
                         if cid2:
                             dlg.after(0, lambda: self._finish_resolve(
@@ -11029,7 +11014,7 @@ class MP3DownloaderApp(tk.Tk):
         """Walk every unresolved channel through the resolve dialog, one at a
         time, so the user can heal all legacy folders in one pass."""
         broken = [c for c in self._db.get_all_watchlist_channels()
-                  if self._is_unresolved_channel(c)]
+                  if is_unresolved_channel(c)]
         if not broken:
             messagebox.showinfo(
                 "Nothing to fix",
@@ -11161,7 +11146,7 @@ class MP3DownloaderApp(tk.Tk):
 
             result = self._db.add_watchlist_channel(
                 url=raw_url, display_name=name,
-                platform=self._detect_platform(raw_url), genre=genre,
+                platform=detect_platform(raw_url), genre=genre,
                 auto_added=False)
             if result is None:
                 messagebox.showinfo(
@@ -11658,7 +11643,7 @@ class MP3DownloaderApp(tk.Tk):
         # unresolved:// sentinel). That is precisely the bug that produced the
         # HTTP 404s. Route to resolution instead so the scan only ever runs on
         # a canonical /channel/UC… URL.
-        if self._is_unresolved_channel(ch):
+        if is_unresolved_channel(ch):
             self._db.update_watchlist_status(cid, "needs_resolve")
             if (ch.get("platform") or "YouTube") == "SoundCloud":
                 need = ("needs its SoundCloud profile URL first — click "
@@ -12159,7 +12144,7 @@ class MP3DownloaderApp(tk.Tk):
         run_batch = []
         channel_ids = []
         for ch in channels:
-            if self._is_unresolved_channel(ch):
+            if is_unresolved_channel(ch):
                 continue   # no canonical URL yet — Check Links first
             platform = ch.get("platform", "YouTube")
             run_batch.append({
@@ -12235,7 +12220,7 @@ class MP3DownloaderApp(tk.Tk):
 
         cid  = (channel_id or "").strip()
         name = (display_name or "").strip()
-        platform = self._detect_platform(url)
+        platform = detect_platform(url)
 
         # ── Find an existing row, robust to differing URL forms ──────────────
         # (a) by canonical channel_id; (b) exact url; (c) canonical-key scan.
