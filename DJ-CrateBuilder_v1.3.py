@@ -20,7 +20,7 @@ from cratebuilder.util import (
     today_yyyymmdd,
     format_yyyymmdd_readable, format_timestamp_relative,
     interval_label_to_seconds,
-    normalize_track_key, safe_filename, push_mru,
+    safe_filename, push_mru,
     detect_platform, redact_ydl_opts, build_cookie_opts,
     derive_collection_name, find_matching_watchlist_row,
     soundcloud_profile_handle, merge_soundcloud_candidates,
@@ -30,9 +30,11 @@ from cratebuilder.util import (
 from cratebuilder.sidecar import (
     channel_url_from_id, channel_id_from_url,
     read_channel_sidecar, write_channel_sidecar, is_unresolved_channel,
-    watch_fetch_url, classify_scan_entries, canonical_channel_url,
+    watch_fetch_url, canonical_channel_url,
     classify_scan_error,
 )
+from cratebuilder.crate import (
+    CrateLayout, ChannelCrate, SkipMode, SkipDecision, skip_decision)
 from cratebuilder.db import DownloadsDatabase
 from cratebuilder.cleanup import (
     is_scan_trustworthy, classify_local_files, partition_trash)
@@ -608,7 +610,8 @@ def add_hover(btn, hover_bg=None, hover_fg=None):
 # CHANNEL_SIDECAR_NAME, channel_url_from_id, read_channel_sidecar,
 # write_channel_sidecar moved to cratebuilder.sidecar (imported above)
 
-# normalize_track_key moved to cratebuilder.util (imported above)
+# Track-key ownership matching moved to cratebuilder.crate.ChannelCrate, which
+# indexes a channel folder by cratebuilder.util.normalize_track_key.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3155,20 +3158,20 @@ class DatabaseViewerWindow(tk.Toplevel):
         side effects (the App's _resolve_save_dir helper would makedirs).
         Returns '' if the channel's platform isn't recognised or the parent
         app isn't reachable. Note: the path may not exist on disk yet
-        (channel with no downloads); callers must handle that."""
+        (channel with no downloads); callers must handle that.
+
+        The path itself is CrateLayout's, so the Folder column can never name a
+        different folder than the download would write to. What stays here is
+        this window's own policy: an unrecognised platform, or a parent app that
+        can't be reached, degrades to a blank column rather than raising into
+        the tree rebuild."""
         try:
-            platform     = (ch.get("platform") or "").strip()
-            genre        = (ch.get("genre") or "").strip()
-            channel_name = (ch.get("display_name") or "").strip()
+            platform = (ch.get("platform") or "").strip()
             if platform not in PLATFORMS:
                 return ""
-            parts = [self._parent._platform_dir(platform)]
-            parts.append(genre if genre and genre != "(none)" else "_No Genre")
-            if channel_name:
-                safe = safe_filename(channel_name, strip=True)
-                if safe:
-                    parts.append(safe)
-            return os.path.join(*parts)
+            return CrateLayout.channel_dir(
+                self._parent._platform_dir(platform),
+                ch.get("genre"), ch.get("display_name"))
         except Exception:
             return ""
 
@@ -4564,24 +4567,21 @@ class MP3DownloaderApp(tk.Tk):
             return []
         return sorted(
             d for d in os.listdir(pdir)
-            if os.path.isdir(os.path.join(pdir, d)) and d != "_No Genre"
+            if os.path.isdir(os.path.join(pdir, d))
+            and d != CrateLayout.NO_GENRE_DIR
         )
 
     def _channel_save_path(self, genre, channel_name=None, platform=None):
         """Build the save path  base/Platform[/Genre[/Channel]]  — pure, no
         side effects (does NOT create the directory). The path may not exist
         on disk yet; callers that need it created should use
-        _resolve_save_dir instead."""
-        parts = [self._platform_dir(platform)]
-        if genre and genre != "(none)":
-            parts.append(genre)
-        else:
-            parts.append("_No Genre")
-        if channel_name:
-            safe = safe_filename(channel_name, strip=True)
-            if safe:
-                parts.append(safe)
-        return os.path.join(*parts)
+        _resolve_save_dir instead.
+
+        Only the platform root is this app's business; the genre and channel
+        components come from CrateLayout, which is also what the Watch List
+        viewer's folder column and the ownership index agree with."""
+        return CrateLayout.channel_dir(self._platform_dir(platform),
+                                       genre, channel_name)
 
     def _resolve_save_dir(self, genre, channel_name=None, platform=None):
         """Build the final save path:  base/Platform[/Genre[/Channel]]
@@ -4617,8 +4617,7 @@ class MP3DownloaderApp(tk.Tk):
         (genre, path) on first non-empty match, else None. Skips the special
         "_No Genre" bucket and empty candidates so verify-on-open never latches
         onto a stale placeholder."""
-        safe = safe_filename(display_name or "", strip=True)
-        if not safe:
+        if not CrateLayout.channel_dir_name(display_name or ""):
             return None
         pdir = self._platform_dir(platform)
         if not os.path.isdir(pdir):
@@ -4626,11 +4625,14 @@ class MP3DownloaderApp(tk.Tk):
         try:
             genres = [d for d in os.listdir(pdir)
                       if os.path.isdir(os.path.join(pdir, d))
-                      and d != "_No Genre"]
+                      and d != CrateLayout.NO_GENRE_DIR]
         except OSError:
             return None
         for genre in sorted(genres, key=str.lower):
-            candidate = os.path.join(pdir, genre, safe)
+            # Through CrateLayout so this can't drift from where a download
+            # actually writes; the genre is already an on-disk name here.
+            candidate = CrateLayout.channel_dir(
+                pdir, CrateLayout.genre_value(genre), display_name)
             if self._folder_has_audio(candidate):
                 return (genre, candidate)
         return None
@@ -4921,41 +4923,6 @@ class MP3DownloaderApp(tk.Tk):
             line = "═" * 80
         self._logger.info(line)
 
-    def _file_exists_on_disk(self, save_dir, title):
-        """Check if a file matching *title* already exists in *save_dir*.
-        Uses yt-dlp's sanitize_filename for an exact match first, then
-        falls back to a case-insensitive prefix scan of existing .mp3 files."""
-        try:
-            from yt_dlp.utils import sanitize_filename as ytdl_sanitize
-            ytdl_safe = ytdl_sanitize(title, restricted=False)
-        except ImportError:
-            ytdl_safe = safe_filename(title)
-
-        # Exact match using yt-dlp's sanitization
-        exact = os.path.join(save_dir, ytdl_safe + ".mp3")
-        if os.path.exists(exact):
-            return exact
-
-        # Also try our own regex sanitization (for files we downloaded before
-        # the fix, which used the old naming)
-        regex_safe = safe_filename(title, strip=True)
-        legacy = os.path.join(save_dir, regex_safe + ".mp3")
-        if legacy != exact and os.path.exists(legacy):
-            return legacy
-
-        # Fallback: case-insensitive prefix scan of existing .mp3 files
-        # This catches minor title variations between flat/full extraction
-        try:
-            prefix = ytdl_safe[:40].lower()
-            for fname in os.listdir(save_dir):
-                if fname.lower().endswith(".mp3") and \
-                   fname[:-4].lower().startswith(prefix):
-                    return os.path.join(save_dir, fname)
-        except OSError:
-            pass
-
-        return None
-
     def _ask_redownload(self, title, result_holder, done_event):
         """
         Show a dark-themed re-download confirmation dialog with a 20-second
@@ -5168,7 +5135,7 @@ class MP3DownloaderApp(tk.Tk):
             proceed = messagebox.askyesno(
                 "No Genre Selected",
                 "No genre is selected. Files will be saved to the\n"
-                "'_No Genre' folder.\n\n"
+                f"'{CrateLayout.NO_GENRE_DIR}' folder.\n\n"
                 "Do you want to continue?")
             if not proceed:
                 return
@@ -6658,7 +6625,8 @@ class MP3DownloaderApp(tk.Tk):
                 "Rewrites the Genre tag on every track in your library to match "
                 "the CrateBuilder genre folder it is filed under — so a track "
                 "in YouTube/Drum & Bass gets the genre \"Drum & Bass\". Covers "
-                "MP3, M4A and Opus/Ogg files. Tracks under _No Genre have their "
+                f"MP3, M4A and Opus/Ogg files. Tracks under "
+                f"{CrateLayout.NO_GENRE_DIR} have their "
                 "genre tag cleared. Any genre already correct is left untouched, "
                 "so re-running costs nothing; anything else is overwritten. "
                 "Cancel any time — tracks already fixed keep their new tag.",
@@ -8316,7 +8284,7 @@ class MP3DownloaderApp(tk.Tk):
         manager. Never creates it — the button is disabled unless the folder
         already exists on disk."""
         genre = self._selected_genre()
-        folder = "_No Genre" if not genre or genre == "(none)" else genre
+        folder = CrateLayout.genre_dir_name(genre)
         target = os.path.join(
             self._platform_dir(self._selected_genre_platform()), folder)
         if not os.path.isdir(target):
@@ -9039,7 +9007,7 @@ class MP3DownloaderApp(tk.Tk):
                 proceed = messagebox.askyesno(
                     "No Genre Selected",
                     "No genre is selected. Files will be saved to the\n"
-                    "'_No Genre' folder.\n\n"
+                    f"'{CrateLayout.NO_GENRE_DIR}' folder.\n\n"
                     "Do you want to continue?")
                 if not proceed:
                     return
@@ -9458,24 +9426,16 @@ class MP3DownloaderApp(tk.Tk):
 
             done = skipped = errors = unavail = deferred = 0
 
-            # Watch List downloads decide "already owned" with the SAME test the
-            # scan used (DB video_id + EXACT normalized-title key), so they never
-            # skip a track the scan just surfaced as new. Build the channel
-            # folder's key set once here. This deliberately avoids
-            # _file_exists_on_disk's 40-char prefix fallback, which false-matches
-            # different versions sharing a long title prefix — e.g. an original
-            # "… - Cascade" against an existing "… - Cascade (Cutline Remix)".
+            # The channel's crate: one folder index for the whole batch, and the
+            # same interface the Watch List scan asks "do we already have this?"
+            # through — so a download can never skip a track the scan just
+            # surfaced as new. The duration ceiling is deliberately NOT handed
+            # over: it is checked per entry below, off live Tk vars, before
+            # ownership is consulted at all.
             wl_dl = getattr(self, "_wl_download_active", False)
-            wl_folder_keys = {}
-            if wl_dl:
-                try:
-                    for _fn in os.listdir(save_dir):
-                        if _fn.lower().endswith(".mp3"):
-                            _k = normalize_track_key(_fn)
-                            if _k:
-                                wl_folder_keys.setdefault(_k, _fn)
-                except OSError:
-                    pass
+            channel_crate = ChannelCrate(
+                save_dir, is_downloaded=self._db.is_video_downloaded,
+                platform=platform)
 
             for idx, entry in enumerate(entries):
                 if self._cancel_flag.is_set():
@@ -9526,8 +9486,7 @@ class MP3DownloaderApp(tk.Tk):
                     self._vid_progress.config(value=0),
                 ))
 
-                safe          = safe_filename(item_title)
-                expected_path = os.path.join(save_dir, safe + ".mp3")
+                expected_path = CrateLayout.track_path(save_dir, item_title)
 
                 # ── Skip / re-download logic ──────────────────────────────────
                 # Watch List "Download New" always skips tracks the scan would
@@ -9536,45 +9495,30 @@ class MP3DownloaderApp(tk.Tk):
                 # never re-grabs what you already own.
                 if self._skip_existing.get() or wl_dl:
                     mode        = self._skip_mode.get()
-                    video_id    = entry.get("id")
-                    in_db       = self._db.is_video_downloaded(video_id)
+                    ownership   = channel_crate.owns(entry)
+                    in_db       = ownership.in_db
+                    file_exists = bool(ownership.path)
+                    # Log and tag the file we actually own, not the guessed name.
+                    if file_exists:
+                        expected_path = ownership.path
 
-                    if wl_dl:
-                        # Mirror the scan EXACTLY: owned = DB video_id OR an
-                        # EXACT normalized-title key in the channel folder. No
-                        # prefix fallback (which false-matched remixes/VIPs) and
-                        # no mid-batch prompt — so a track the scan surfaced as
-                        # new is never skipped here.
-                        wkey        = normalize_track_key(item_title)
-                        found_name  = wl_folder_keys.get(wkey) if wkey else None
-                        file_exists = found_name is not None
-                        if found_name:
-                            expected_path = os.path.join(save_dir, found_name)
-                        should_skip = bool(in_db) or file_exists
+                    decision = skip_decision(
+                        ownership, SkipMode.WATCH_LIST if wl_dl else mode)
+                    if decision is SkipDecision.CONFIRM_REDOWNLOAD:
+                        # "The database says we have it but the file is gone" —
+                        # only the user can settle that, so the worker blocks on
+                        # the modal answer. Never reachable on a Watch List run.
+                        result = []
+                        evt    = threading.Event()
+                        self.after(0, lambda t=item_title, r=result, e=evt:
+                            self._ask_redownload(t, r, e))
+                        evt.wait()
+                        # An answerless event means nobody chose; treat that as
+                        # the dialog's own default rather than letting an empty
+                        # holder abandon every remaining entry for this URL.
+                        should_skip = not (result[0] if result else False)
                     else:
-                        found_path  = self._file_exists_on_disk(save_dir, item_title)
-                        file_exists = found_path is not None
-                        # Use the actual found path for log/display if available
-                        if found_path:
-                            expected_path = found_path
-
-                        should_skip = False
-                        if mode == "In Database ~ In Folder":
-                            should_skip = file_exists or in_db
-                        elif mode == "In Folder Only":
-                            should_skip = file_exists
-                        elif mode == "In Database Only":
-                            should_skip = in_db
-
-                        if should_skip and in_db and not file_exists and mode in (
-                                "In Database ~ In Folder", "In Database Only"):
-                            result = []
-                            evt    = threading.Event()
-                            self.after(0, lambda t=item_title, r=result, e=evt:
-                                self._ask_redownload(t, r, e))
-                            evt.wait()
-                            if result[0]:
-                                should_skip = False
+                        should_skip = decision is SkipDecision.SKIP
 
                     if should_skip:
                         skip_reason = (
@@ -9832,8 +9776,13 @@ class MP3DownloaderApp(tk.Tk):
                     # Stamp ID3 tags (title / encoded-by / genre / source URL)
                     # on the file just written. Resolve the real path first,
                     # since yt-dlp's sanitiser may differ from expected_path.
-                    _real_path = (self._file_exists_on_disk(save_dir, item_title)
+                    _real_path = (CrateLayout.find_existing(save_dir, item_title)
                                   or expected_path)
+                    # The crate indexed the folder once, before this loop, so
+                    # tell it what we just wrote — otherwise a later entry in
+                    # the same batch whose title normalises alike downloads
+                    # again over the same file.
+                    channel_crate.remember(_real_path)
                     self._tag_track(_real_path, item_title, item_url,
                                     genre=genre)
                     # Embed the source thumbnail as cover art and keep the
@@ -9945,8 +9894,9 @@ class MP3DownloaderApp(tk.Tk):
                                 item_title, expected_path, item_url,
                                 platform, genre, quality=src_str)
                             _real_path = (
-                                self._file_exists_on_disk(save_dir, item_title)
+                                CrateLayout.find_existing(save_dir, item_title)
                                 or expected_path)
+                            channel_crate.remember(_real_path)
                             self._tag_track(_real_path, item_title, item_url,
                                             genre=genre)
                             _art_path, _art_embedded, _real_path = (
@@ -12112,22 +12062,18 @@ class MP3DownloaderApp(tk.Tk):
                         f"Scan cancelled: {ch['display_name']}", "info"))
                     return
 
-                # Build a lookup of tracks already on disk in this channel's
-                # folder. Legacy downloads predate the database and have NO
-                # video_id recorded anywhere, so their .mp3 filename (which is
-                # the sanitised video title) is the only evidence we have that
+                # The channel's folder, created here if this is its first scan —
+                # a channel the user is watching has a home whether or not it
+                # has downloaded anything yet. Its crate indexes the tracks
+                # already on disk: legacy downloads predate the database and
+                # have NO video_id recorded anywhere, so their .mp3 filename
+                # (the sanitised video title) is the only evidence we have that
                 # the track is already owned.
-                folder_keys = {}
+                folder = ""
                 try:
                     folder = self._resolve_save_dir(
                         ch.get("genre") or "(none)", ch.get("display_name"),
                         platform=platform)
-                    for fn in os.listdir(folder):
-                        if fn.lower().endswith(".mp3"):
-                            k = normalize_track_key(fn)
-                            if k:
-                                folder_keys.setdefault(
-                                    k, os.path.join(folder, fn))
                 except OSError:
                     pass
 
@@ -12147,14 +12093,13 @@ class MP3DownloaderApp(tk.Tk):
                 # platform has already proven undownloadable (DRM, removed,
                 # geo-blocked) so it is not offered as "new" again.
                 suppressed = self._db.get_suppressed_reasons(platform)
-                classified = classify_scan_entries(
-                    entries,
+                classified = ChannelCrate(
+                    folder,
                     is_downloaded=self._db.is_video_downloaded,
-                    folder_keys=folder_keys,
-                    limit_sec=limit_sec,
                     platform=platform,
-                    is_unavailable=suppressed.get,
-                    now=now_ts)
+                    suppressed_reason=suppressed.get,
+                    limit_sec=limit_sec,
+                ).classify(entries, now=now_ts)
                 new_entries = classified["new"]
                 n_unavail = len(classified.get("unavailable") or [])
                 upcoming = classified.get("upcoming") or []
@@ -12704,7 +12649,7 @@ class MP3DownloaderApp(tk.Tk):
                 genre_path = os.path.join(proot, genre_dir)
                 if not os.path.isdir(genre_path):
                     continue
-                genre = "(none)" if genre_dir == "_No Genre" else genre_dir
+                genre = CrateLayout.genre_value(genre_dir)
 
                 for channel_dir in sorted(os.listdir(genre_path)):
                     channel_path = os.path.join(genre_path, channel_dir)
@@ -12797,7 +12742,7 @@ class MP3DownloaderApp(tk.Tk):
                 f"Set the Genre tag on {total} track"
                 f"{'s' if total != 1 else ''} to match the genre folder each "
                 f"one is filed under?\n\n"
-                f"Tracks under '{cb_genrefix.NO_GENRE_DIR}' have their genre "
+                f"Tracks under '{CrateLayout.NO_GENRE_DIR}' have their genre "
                 f"tag cleared. Any genre tag you set by hand that disagrees "
                 f"with the folder will be overwritten.\n\n"
                 f"Audio is never re-encoded — only the tag is rewritten.",
@@ -13289,8 +13234,7 @@ class MP3DownloaderApp(tk.Tk):
                         genre_path = os.path.join(proot, genre_dir)
                         if not os.path.isdir(genre_path):
                             continue
-                        genre = ("(none)" if genre_dir == "_No Genre"
-                                  else genre_dir)
+                        genre = CrateLayout.genre_value(genre_dir)
 
                         for channel_dir in sorted(os.listdir(genre_path)):
                             channel_path = os.path.join(genre_path, channel_dir)

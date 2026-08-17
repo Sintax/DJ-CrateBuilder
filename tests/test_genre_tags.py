@@ -5,6 +5,7 @@ import os
 import pytest
 
 from cratebuilder import genrefix, tagging
+from cratebuilder.crate import CrateLayout
 
 mutagen = pytest.importorskip("mutagen")
 from mutagen.id3 import ID3  # noqa: E402
@@ -114,15 +115,19 @@ def test_set_genre_strips_surrounding_whitespace(tmp_path):
 # ── genrefix: which genre a track belongs to ──────────────────────────────────
 
 def test_no_genre_bucket_maps_to_no_genre():
-    assert genrefix.genre_from_dir_name(genrefix.NO_GENRE_DIR) == ""
-    assert genrefix.genre_from_dir_name("Drum & Bass") == "Drum & Bass"
+    # The folder name is read back by CrateLayout — the one translator — and
+    # only then converted to the tag-write convention, where "" clears the
+    # frame rather than writing the in-app "(none)" sentinel into it.
+    assert genrefix._tag_genre_for_dir(CrateLayout.NO_GENRE_DIR) == ""
+    assert genrefix._tag_genre_for_dir("Drum & Bass") == "Drum & Bass"
+    assert CrateLayout.genre_value(CrateLayout.NO_GENRE_DIR) == "(none)"
 
 
 def _library(tmp_path):
     yt = tmp_path / "YouTube"
     _make_mp3(yt / "Drum & Bass" / "DnB Portal" / "a.mp3")
     _make_mp3(yt / "Drum & Bass" / "DnB Portal" / "b.mp3")
-    _make_mp3(yt / genrefix.NO_GENRE_DIR / "Misc" / "c.mp3")
+    _make_mp3(yt / CrateLayout.NO_GENRE_DIR / "Misc" / "c.mp3")
     sc = tmp_path / "SoundCloud"
     _make_mp3(sc / "House" / "DJ Foo" / "d.mp3")
     return [str(yt), str(sc)]
@@ -222,7 +227,7 @@ def test_channel_retag_after_a_genre_move(tmp_path):
 
 
 def test_channel_retag_to_no_genre_clears_the_tag(tmp_path):
-    folder = tmp_path / "YouTube" / genrefix.NO_GENRE_DIR / "DJ Foo"
+    folder = tmp_path / "YouTube" / CrateLayout.NO_GENRE_DIR / "DJ Foo"
     a = _make_mp3(folder / "a.mp3")
     tagging.set_track_genre(a, "House")
     for p, g in genrefix.iter_channel_tracks(str(folder), ""):
