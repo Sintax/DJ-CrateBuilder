@@ -215,9 +215,18 @@ def ensure_usable_tempdir(base_dir=None):
 
 # ── Config persistence ────────────────────────────────────────────────────────
 CONFIG_NAME = ".dj_cratebuilder_config.json"
+LEGACY_CONFIG_NAME = ".yt_dj_cratebuilder_config.json"
 
 def _config_path():
     return os.path.join(os.path.expanduser("~"), CONFIG_NAME)
+
+def _legacy_config_path():
+    return os.path.join(os.path.expanduser("~"), LEGACY_CONFIG_NAME)
+
+def default_base_dir():
+    """The crate root a fresh install downloads into. Resolved live so a
+    changed home directory is honoured."""
+    return os.path.join(os.path.expanduser("~"), "Music", "DJ-CrateBuilder")
 
 def load_config():
     p = _config_path()

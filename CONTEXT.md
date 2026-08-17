@@ -73,5 +73,12 @@ design conversations use these words exactly.
 - **Snapshot** — a frozen, Tk-free, per-concern record handed to worker
   threads instead of live Tk variables: `CookieConfig` (what a `YdlSession`
   authenticates with), `DownloadPolicy` (skip / limiter / bitrate / sleep /
-  geo / UA), `AutomationConfig` (intervals, startup-scan, tray). Each
-  consumer receives only the fields it reads.
+  geo / UA / cover art), `AutomationConfig` (intervals, startup-scan, tray).
+  Each consumer receives only the fields it reads. **Workers are handed the
+  app's `_cookie_config()` / `_download_policy()` / `_automation_config()`,
+  built from the live Tk vars** — that is what the user currently sees, and
+  it preserves today's read-at-point-of-use semantics for the settings that
+  autosave late (the sleep spinboxes, the cookie profile/file entries).
+  `Settings.cookie_config()` and its siblings build the same records from the
+  stored values, for headless callers and tests; they are not the
+  worker-facing source.
