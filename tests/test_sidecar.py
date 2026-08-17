@@ -32,12 +32,25 @@ def test_is_unresolved_truth_table():
         {"status": "idle", "url": "https://www.youtube.com/channel/UC/videos"}) is False
 
 
-def test_delegator_still_works(cb):
-    # The App staticmethod must keep delegating to the module function.
-    App = cb.MP3DownloaderApp
-    assert App._is_unresolved_channel({"status": "needs_resolve", "url": "x"}) is True
-    assert App._is_unresolved_channel(
-        {"status": "idle", "url": "https://www.youtube.com/channel/UC/videos"}) is False
+def test_the_monolith_keeps_no_private_copy_of_these_answers(cb_mod):
+    """Replaces two identity tests that asserted App._is_unresolved_channel and
+    App._channel_id_from_url still forwarded to the module functions.
+
+    Those staticmethods are gone — a one-line forward is not a seam, and a test
+    that it forwards proves nothing a caller can observe. The module functions
+    themselves are covered directly by the tests around this one. What is still
+    worth pinning is that deleting them left no second answer behind: the app
+    must ask cratebuilder rather than re-derive a platform, an unresolved
+    verdict or a channel id of its own."""
+    import inspect
+    source = inspect.getsource(cb_mod)
+    for gone in ("def _detect_platform", "def _is_unresolved_channel",
+                 "def _channel_id_from_url"):
+        assert gone not in source, f"{gone} is back in the monolith"
+    # Still asked, just no longer wrapped.
+    for asked in ("detect_platform(", "is_unresolved_channel(",
+                  "channel_id_from_url("):
+        assert asked in source
 
 
 def test_is_unresolved_platform_aware():
@@ -184,14 +197,6 @@ def test_channel_id_from_url():
     assert channel_id_from_url("https://www.youtube.com/@handle") is None
     assert channel_id_from_url("") is None
     assert channel_id_from_url(None) is None
-
-
-def test_channel_id_from_url_delegator(cb):
-    # The App staticmethod must keep delegating to the module function.
-    App = cb.MP3DownloaderApp
-    assert App._channel_id_from_url(
-        "https://www.youtube.com/channel/UCabc/videos") == "UCabc"
-    assert App._channel_id_from_url("https://www.youtube.com/@h") is None
 
 
 def test_canonical_channel_url_strips_soundcloud_tracks_tab():
