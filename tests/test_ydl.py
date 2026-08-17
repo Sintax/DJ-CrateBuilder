@@ -124,9 +124,42 @@ def test_list_channel_flattens_one_tab_level():
         {"id": "v1"}, {"id": "v2"}, {"id": "v3"}]
 
 
-def test_list_channel_returns_empty_list_when_yt_dlp_returns_nothing():
+def test_list_channel_refuses_to_read_a_non_answer_as_an_empty_channel():
+    # A scan that mistakes "yt-dlp never answered" for "this channel has no
+    # uploads" zeroes the channel's pending list and its last-good scan
+    # timestamp. The listing must fail instead, so the caller keeps both.
     session, _ = _session(None)
+    with pytest.raises(ydl.YdlUnclassified):
+        session.list_channel("https://yt/@a")
+
+
+def test_list_channel_reports_a_genuinely_empty_channel_as_empty():
+    session, _ = _session({"entries": []})
     assert session.list_channel("https://yt/@a") == []
+
+
+def test_list_channel_types_a_failure_raised_while_paginating():
+    # lazy_playlist means the entries are fetched as they are enumerated, so
+    # this failure surfaces outside the runner call itself.
+    def entries():
+        yield {"id": "v1"}
+        raise RuntimeError("This channel does not exist")
+
+    session, _ = _session({"entries": entries()},
+                          network_probe=lambda: True)
+    with pytest.raises(ydl.YdlPermanent):
+        session.list_channel("https://yt/@a")
+
+
+def test_pagination_failure_still_honours_the_captive_portal_rule():
+    def entries():
+        raise RuntimeError("HTTP Error 404: Not Found")
+        yield  # pragma: no cover
+
+    session, _ = _session({"entries": entries()},
+                          network_probe=lambda: False)
+    with pytest.raises(ydl.YdlOffline):
+        session.list_channel("https://yt/@a")
 
 
 def test_search_channels_opts_use_extract_flat_true_and_item_range():

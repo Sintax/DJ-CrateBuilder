@@ -44,6 +44,7 @@ from cratebuilder import artwork as cb_artwork
 from cratebuilder import genrefix as cb_genrefix
 from cratebuilder import rebuild as cb_rebuild
 from cratebuilder import links as cb_links
+from cratebuilder import ydl as cb_ydl
 from cratebuilder.singleton import (
     acquire_single_instance, request_show, listen_for_show_requests,
     SINGLE_INSTANCE_PORT)
@@ -317,6 +318,27 @@ WATCHLIST_MAX_CONCURRENT_SCANS = 3
 # ── purely about not wasting a scan pass.
 WATCHLIST_STARTUP_NET_TRIES = 18      # ≈ 90 s window at the delay below
 WATCHLIST_STARTUP_NET_DELAY = 5.0     # seconds between connectivity probes
+
+# ── Watch List scan verdict for each typed read-only yt-dlp failure. A
+# ── YdlSession has already weighed the message against the marker lists AND
+# ── against network reachability (a captive portal answers 404 for everything),
+# ── so the error's *type* is the verdict — no re-reading its text here.
+WL_SCAN_VERDICT_BY_YDL_ERROR = {
+    cb_ydl.YdlPermanent:    "needs_resolve",
+    cb_ydl.YdlOffline:      "offline",
+    cb_ydl.YdlUnclassified: "error",
+}
+
+
+def wl_scan_verdict_for(exc):
+    """The scan verdict for a typed read-only failure, or None if *exc* isn't
+    one. Matched by isinstance so a future error type derived from one of
+    these inherits its verdict instead of silently falling through to having
+    its message re-read."""
+    for error_type, verdict in WL_SCAN_VERDICT_BY_YDL_ERROR.items():
+        if isinstance(exc, error_type):
+            return verdict
+    return None
 
 # ── Config persistence ────────────────────────────────────────────────────────
 # User-config access goes through cratebuilder.settings.Settings (one app-wide
@@ -1829,20 +1851,9 @@ class _FoldersCleanupSession:
         """Background thread: flat-scan the channel, then hand results back to
         the main thread."""
         try:
-            import yt_dlp
-            opts = {
-                "extract_flat":  "in_playlist",
-                "skip_download": True,
-                "lazy_playlist": True,
-                "quiet":         True,
-                "no_warnings":   True,
-            }
-            self.app._apply_cookie_opts(opts)
             platform = ch.get("platform") or "YouTube"
             url = watch_fetch_url(platform, ch["url"])
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-            entries = list(info.get("entries") or [])
+            entries = self.app._ydl_session().list_channel(url)
             err = None
         except Exception as exc:
             entries = []
@@ -4097,21 +4108,10 @@ class _ArtworkBackfillSession:
         if not url or platform != "youtube" or self._cancel_event.is_set():
             return {}
         try:
-            import yt_dlp
-            opts = {"skip_download": True, "quiet": True, "no_warnings": True,
-                    "extract_flat": "in_playlist",
-                    "ignore_no_formats_error": True}
-            self.app._apply_cookie_opts(opts)
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False) or {}
-            entries = []
-            for e in info.get("entries") or []:
-                # A bare channel URL can come back as tabs, each carrying its
-                # own entries list — flatten one level so the index sees videos.
-                if isinstance(e, dict) and isinstance(e.get("entries"), list):
-                    entries.extend(e["entries"])
-                else:
-                    entries.append(e)
+            # ignore_no_formats: a channel whose videos serve no formats must
+            # still yield its listing — the index only wants ids and titles.
+            entries = self.app._ydl_session().list_channel(
+                url, ignore_no_formats=True)
             index = cb_artwork.build_title_index(entries)
             self.app._dbg.info(
                 f"ARTFILL INDEX | {meta.get('display_name') or url}  "
@@ -4129,16 +4129,7 @@ class _ArtworkBackfillSession:
         if not source_url:
             return None
         try:
-            import yt_dlp
-            # ignore_no_formats_error: format selection runs even though only
-            # metadata is wanted, and a video with no servable formats would
-            # otherwise abort the lookup that its thumbnail would have survived.
-            opts = {"skip_download": True, "quiet": True, "no_warnings": True,
-                    "ignore_no_formats_error": True}
-            self.app._apply_cookie_opts(opts)
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(source_url, download=False) or {}
-            return info.get("thumbnail") or None
+            return self.app._ydl_session().probe_thumbnail(source_url)
         except Exception as exc:
             self.app._dbg.debug(f"ARTFILL LOOKUP| {source_url}  {exc}")
             return None
@@ -4762,8 +4753,10 @@ class MP3DownloaderApp(tk.Tk):
         are required; if neither is present yt-dlp simply falls back (the
         download then skips gracefully). See yt-dlp wiki: EJS.
 
-        Only needed on opts that extract real formats (metadata/probe/
-        download) — flat listing/scan opts don't trip the challenge."""
+        Only needed on opts that extract real formats — flat listing/scan opts
+        don't trip the challenge. Now serves the two download opts blocks only;
+        every read-only probe gets this rule applied inside
+        cratebuilder.ydl.YdlSession instead."""
         opts["js_runtimes"] = {"node": {"path": None}}
         # Fallback for machines without the local yt-dlp-ejs package: let
         # yt-dlp fetch the solver scripts from GitHub on demand.
@@ -4772,13 +4765,16 @@ class MP3DownloaderApp(tk.Tk):
 
     def _dbg_ydl_opts(self, label, opts):
         """Log yt-dlp options to debug.log with auth-bearing values redacted
-        (delegates to cratebuilder.util.redact_ydl_opts)."""
+        (delegates to cratebuilder.util.redact_ydl_opts). Serves the download
+        opts only — YdlSession logs its own line per intent."""
         self._dbg.info(f"YDL OPTS ({label}) | {redact_ydl_opts(opts)}")
 
     def _apply_cookie_opts(self, opts):
         """Merge the user's cookie settings into a yt-dlp *opts* dict in place,
-        but only when cookies are enabled (no-op otherwise). Single source of
-        truth for the metadata / probe / download / scan cookie blocks."""
+        but only when cookies are enabled (no-op otherwise). Serves the two
+        download opts blocks; every read-only probe authenticates through
+        cratebuilder.ydl.YdlSession, which takes one policy for the whole
+        session from _cookie_config()."""
         if not self._use_cookies.get():
             return
         opts.update(build_cookie_opts(
@@ -6981,8 +6977,14 @@ class MP3DownloaderApp(tk.Tk):
 
     def _cookie_config(self):
         """CookieConfig snapshot of the live Tk cookie variables — the frozen,
-        Tk-free record a worker thread reads instead of the variables. Main
-        thread only (it reads Tk vars)."""
+        Tk-free record a worker thread carries instead of the variables.
+
+        Reading the variables off the main thread is the pattern the cookie
+        blocks have always used (Tk marshals a variable read while the main
+        loop is running), and the read is what makes the snapshot reflect what
+        the user currently has set. Prefer taking the snapshot before spawning
+        a worker where the call site makes that easy — it is strictly safer,
+        and it is what the download path will do."""
         return CookieConfig(
             use_cookies=self._use_cookies.get(),
             cookie_method=self._cookie_method.get(),
@@ -6990,6 +6992,19 @@ class MP3DownloaderApp(tk.Tk):
             cookies_profile=self._cookies_profile.get(),
             cookie_file=self._cookie_file.get(),
         )
+
+    def _ydl_session(self, **kwargs):
+        """A YdlSession for one read-only yt-dlp operation — every probe, every
+        channel listing and every search in the app goes through one of these.
+
+        Carries the cookie policy the user currently has set (the live-Tk-var
+        snapshot, so a setting changed mid-batch takes effect on the next
+        operation) and logs each intent's redacted options to debug.log. Built
+        fresh per operation, on whichever thread the operation already runs on.
+        Extra keyword arguments pass straight through to YdlSession, which is
+        how tests inject a fake runner or reachability probe."""
+        return cb_ydl.YdlSession(cookies=self._cookie_config(),
+                                 debug=self._dbg, **kwargs)
 
     def _download_policy(self):
         """DownloadPolicy snapshot of the live Tk download-behavior variables:
@@ -7063,20 +7078,12 @@ class MP3DownloaderApp(tk.Tk):
     # ══════════════════════════════════════════════════════════════════════════
     @staticmethod
     def _network_is_reachable(timeout=2.0):
-        """Best-effort TCP reachability probe. Tries a couple of stable, high-
-        availability endpoints and returns True on the first successful connect,
-        False if none answer. Never raises — used only to defer the startup scan
-        until the network is actually up."""
-        import socket
-        for host, port in (("www.youtube.com", 443),
-                           ("1.1.1.1", 443),
-                           ("8.8.8.8", 53)):
-            try:
-                with socket.create_connection((host, port), timeout=timeout):
-                    return True
-            except OSError:
-                continue
-        return False
+        """Best-effort TCP reachability probe. Never raises — used to defer the
+        startup scan until the network is actually up, and to pre-flight a Scan
+        All. The probe itself lives in cratebuilder.ydl, which is also where a
+        YdlSession consults it for its captive-portal rule, so the app and the
+        yt-dlp boundary can never disagree about being online."""
+        return cb_ydl.network_is_reachable(timeout)
 
     def _watchlist_startup_scan(self):
         """On launch, scan every watched channel (all platforms) so the cards
@@ -9323,22 +9330,16 @@ class MP3DownloaderApp(tk.Tk):
             self.after(0, lambda: self._set_status(cfg["fetch_label"]))
 
             # Step 1 — fetch metadata without downloading
-            meta_opts = {
-                "quiet":         True,
-                "no_warnings":   True,
-                "extract_flat":  "in_playlist",
-                "skip_download": True,
-            }
-            self._apply_cookie_opts(meta_opts)
-
-            self._apply_js_runtime(meta_opts)
+            meta_session = self._ydl_session()
             self._dbg.info(f"─── METADATA FETCH ─── URL: {url}")
             self._dbg_cookie_config()
-            self._dbg_ydl_opts("metadata", meta_opts)
 
             try:
-                with yt_dlp.YoutubeDL(meta_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
+                info = meta_session.probe_metadata(url)
+                if not info:
+                    # An intent that answers nothing is a failed fetch, not a
+                    # URL with one blank track on it.
+                    raise RuntimeError("yt-dlp returned no metadata")
                 self._dbg.info(
                     f"METADATA OK   | type={info.get('_type', 'single')!r}  "
                     f"title={info.get('title', '?')!r}  "
@@ -9622,20 +9623,11 @@ class MP3DownloaderApp(tk.Tk):
                         and not self._no_conversion.get()
                         and int(output_kbps) < 320):
                     try:
-                        probe_opts = {
-                            "quiet":         True,
-                            "no_warnings":   True,
-                            "skip_download": True,
-                        }
-                        # Mirror cookie settings so the probe sees the
-                        # same authenticated format ladder as the download.
-                        self._apply_cookie_opts(probe_opts)
-                        self._apply_js_runtime(probe_opts)
-                        with yt_dlp.YoutubeDL(probe_opts) as probe:
-                            probe_info = probe.extract_info(
-                                item_url, download=False)
+                        # The session carries the same cookie policy as the
+                        # download, so the probe sees the same authenticated
+                        # format ladder.
                         best_abr = 0
-                        for f in (probe_info.get("formats") or []):
+                        for f in self._ydl_session().probe_formats(item_url):
                             # Audio-only streams have vcodec == "none"
                             if f.get("vcodec") == "none":
                                 abr_val = f.get("abr") or f.get("tbr")
@@ -10659,33 +10651,8 @@ class MP3DownloaderApp(tk.Tk):
         """Search YouTube for a channel by display name. Returns up to
         max_results candidate dicts {title, channel_id, url, handle,
         followers}. Raises on network/extractor failure."""
-        import yt_dlp
-        q = urllib.parse.quote(name)
-        # sp=EgIQAg%3D%3D  →  YouTube's "Channel" search-results filter.
-        search_url = (f"https://www.youtube.com/results?search_query={q}"
-                      f"&sp=EgIQAg%3D%3D")
-        opts = {
-            "quiet": True, "no_warnings": True,
-            "extract_flat": True, "skip_download": True,
-            "playlist_items": f"1-{max_results}",
-        }
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(search_url, download=False)
-        out = []
-        for e in (info.get("entries") or []):
-            cid = e.get("channel_id") or e.get("id") or ""
-            if not str(cid).startswith("UC"):
-                continue  # skip non-channel rows
-            out.append({
-                "title": e.get("title") or e.get("channel") or name,
-                "channel_id": cid,
-                "url": channel_url_from_id(cid),
-                "handle": e.get("uploader_id") or "",
-                "followers": e.get("channel_follower_count"),
-            })
-            if len(out) >= max_results:
-                break
-        return out
+        return self._ydl_session().search_channels(name,
+                                                   max_results=max_results)
 
     @staticmethod
     def _channel_id_from_url(url):
@@ -10864,15 +10831,10 @@ class MP3DownloaderApp(tk.Tk):
 
         def _bg():
             try:
-                import yt_dlp
-                opts = {"quiet": True, "no_warnings": True,
-                        "extract_flat": "in_playlist", "skip_download": True,
-                        "playlist_items": "0"}
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(new_url, download=False)
-                ucid = info.get("channel_id") or \
-                    self._channel_id_from_url(info.get("channel_url", ""))
-                handle = info.get("uploader_id") or ""
+                ident = self._ydl_session().probe_identity(new_url)
+                ucid = ident.channel_id or \
+                    self._channel_id_from_url(ident.channel_url)
+                handle = ident.handle
                 if ucid:
                     # Keep the user's URL (may be a playlist) but record the
                     # channel_id and write the folder sidecar.
@@ -10892,20 +10854,7 @@ class MP3DownloaderApp(tk.Tk):
         """Search SoundCloud *tracks* by name via yt-dlp and return their
         permalink URLs (each first path segment is the artist handle). Flat
         extraction keeps it fast. Raises on extractor/network failure."""
-        import yt_dlp
-        opts = {"quiet": True, "no_warnings": True,
-                "extract_flat": True, "skip_download": True}
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(f"scsearch{limit}:{name}", download=False)
-        out = []
-        for e in (info.get("entries") or []):
-            url = (e.get("url") or e.get("permalink_url")
-                   or e.get("webpage_url") or "")
-            if not url:
-                continue
-            title = (e.get("uploader") or e.get("channel") or "").strip()
-            out.append({"url": url, "title": title})
-        return out
+        return self._ydl_session().search_soundcloud_tracks(name, limit=limit)
 
     @staticmethod
     def _sc_web_search(name, limit=10):
@@ -11409,15 +11358,10 @@ class MP3DownloaderApp(tk.Tk):
 
                 def _lookup():
                     try:
-                        import yt_dlp
-                        opts = {"quiet": True, "no_warnings": True,
-                                "extract_flat": "in_playlist",
-                                "skip_download": True, "playlist_items": "0"}
-                        with yt_dlp.YoutubeDL(opts) as ydl:
-                            info = ydl.extract_info(raw, download=False)
-                        cid2 = info.get("channel_id") or \
-                            self._channel_id_from_url(info.get("channel_url", ""))
-                        handle = info.get("uploader_id") or ""
+                        ident = self._ydl_session().probe_identity(raw)
+                        cid2 = ident.channel_id or \
+                            self._channel_id_from_url(ident.channel_url)
+                        handle = ident.handle
                         if cid2:
                             dlg.after(0, lambda: self._finish_resolve(
                                 ch, cid2, handle,
@@ -11565,15 +11509,16 @@ class MP3DownloaderApp(tk.Tk):
             name_var.set("Fetching…")
             def _do():
                 try:
-                    import yt_dlp
-                    opts = {"quiet": True, "no_warnings": True,
-                            "extract_flat": "in_playlist", "skip_download": True,
-                            "playlist_items": "0"}
-                    with yt_dlp.YoutubeDL(opts) as ydl:
-                        info = ydl.extract_info(raw_url, download=False)
-                    title = derive_collection_name(info)
+                    ident = self._ydl_session().probe_identity(raw_url)
+                    title = ident.display_name
                     dlg.after(0, lambda: name_var.set(title or raw_url))
-                except Exception:
+                except Exception as ex:
+                    # The field just goes blank, so debug.log is the only place
+                    # the reason survives — and now that this probe carries the
+                    # session's cookie policy, an unreadable browser profile
+                    # fails here on URLs that are perfectly fine.
+                    self._dbg.info(f"ADD DIALOG name fetch failed: "
+                                   f"{str(ex)[:160]}")
                     dlg.after(0, lambda: name_var.set(""))
             self._run_bg(_do)
 
@@ -12146,23 +12091,10 @@ class MP3DownloaderApp(tk.Tk):
                         f"Scan cancelled: {ch['display_name']}", "info"))
                     return
 
-                import yt_dlp
-
                 # We decide "new" by whether the track is already on disk in
                 # the channel folder (see below) — NOT by upload date, which
                 # is unreliable in flat channel listings. So we enumerate the
                 # full channel and cross-reference, rather than date-filtering.
-                scan_opts = {
-                    "extract_flat":   "in_playlist",
-                    "skip_download":  True,
-                    "lazy_playlist":  True,
-                    "quiet":          True,
-                    "no_warnings":    True,
-                }
-
-                # Use cookies if configured
-                self._apply_cookie_opts(scan_opts)
-
                 platform = ch.get("platform") or "YouTube"
                 # Same encoded listing URL a Watch List "Download New" feeds
                 # yt-dlp, so scan and download crawl the channel identically.
@@ -12171,8 +12103,7 @@ class MP3DownloaderApp(tk.Tk):
                 self._dbg.info(
                     f"WL SCAN | {ch['display_name']}  url={url}")
 
-                with yt_dlp.YoutubeDL(scan_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
+                entries = self._ydl_session().list_channel(url)
 
                 if self._cancel_flag.is_set() or cid in self._wl_cancel_cids:
                     self._wl_cancel_cids.discard(cid)
@@ -12180,8 +12111,6 @@ class MP3DownloaderApp(tk.Tk):
                     self.after(0, lambda: self._watchlist_log(
                         f"Scan cancelled: {ch['display_name']}", "info"))
                     return
-
-                entries = list(info.get("entries") or [])
 
                 # Build a lookup of tracks already on disk in this channel's
                 # folder. Legacy downloads predate the database and have NO
@@ -12290,13 +12219,18 @@ class MP3DownloaderApp(tk.Tk):
                 # Decide whether the LINK is at fault or the NETWORK was. A
                 # transient failure must leave the row exactly as it was —
                 # same URL, same pending tracks, no Fix Link button — or one
-                # offline scan strands the whole watch list. When the network
-                # is provably down we don't even trust the message: nothing
-                # yt-dlp says about a channel is meaningful with no route to
-                # it (a captive portal happily answers 404 for everything).
-                verdict = classify_scan_error(err)
-                if verdict == "needs_resolve" and not self._network_is_reachable():
-                    verdict = "offline"
+                # offline scan strands the whole watch list. A yt-dlp failure
+                # arrives already judged (YdlSession weighed the message and
+                # the network's reachability, since nothing yt-dlp says about a
+                # channel is meaningful with no route to it — a captive portal
+                # happily answers 404 for everything). Anything else that broke
+                # mid-scan still has to be read from its message.
+                verdict = wl_scan_verdict_for(exc)
+                if verdict is None:
+                    verdict = classify_scan_error(err)
+                    if (verdict == "needs_resolve"
+                            and not self._network_is_reachable()):
+                        verdict = "offline"
                 self._dbg.error(
                     f"WL SCAN FAIL | {ch['display_name']}  "
                     f"verdict={verdict}  error: {err}")
