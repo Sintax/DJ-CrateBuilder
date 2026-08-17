@@ -1,4 +1,4 @@
-import importlib.util, os, sys, time, pytest
+import importlib.util, json, os, sys, time, pytest
 
 def _app():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -62,4 +62,26 @@ def test_legacy_auto_check_interval_carries_over(tmp_path, monkeypatch):
     # The schedule now counts from app start, NOT a stored anchor: the old
     # watchlist_last_check (1234) is ignored in favor of this launch time.
     assert app._watchlist_last_download >= started
+    app.destroy()
+
+
+def test_save_settings_preserves_unrelated_keys(tmp_path, monkeypatch):
+    # Regression: _save_settings passed only the Settings tab's keys to
+    # save_config(), which writes the dict verbatim — so pressing Save
+    # Settings silently deleted keys owned by other writers (url_history,
+    # update-check state, DB-viewer column layout).
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    cfg_path = tmp_path / ".dj_cratebuilder_config.json"
+    cfg_path.write_text(json.dumps({
+        "url_history": ["https://example.com/watch?v=abc"],
+        "__unrelated_sentinel__": "must-survive",
+    }), encoding="utf-8")
+    app = _app(); app.update()
+    app._settings_dir_var.set(str(tmp_path / "Music"))
+    app._save_settings()
+    saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+    assert saved["url_history"] == ["https://example.com/watch?v=abc"]
+    assert saved["__unrelated_sentinel__"] == "must-survive"
+    assert saved["base_dir"] == str(tmp_path / "Music")
     app.destroy()

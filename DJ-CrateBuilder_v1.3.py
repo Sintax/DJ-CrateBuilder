@@ -6689,7 +6689,11 @@ class MP3DownloaderApp(tk.Tk):
         self._base_dir = new_base
         self._ensure_dirs()
         self._setup_logger()
-        save_config({
+        # Merge into the stored config: save_config() writes the dict verbatim,
+        # so passing only this tab's keys would delete every key other writers
+        # own (url_history, update-check state, DB-viewer column layout).
+        cfg = load_config()
+        cfg.update({
             "base_dir":       self._base_dir,
             "limit_enabled":  self._limit_enabled.get(),
             "limit_minutes":  self._limit_minutes.get(),
@@ -6720,6 +6724,7 @@ class MP3DownloaderApp(tk.Tk):
             "watchlist_scan_on_startup": self._watchlist_scan_on_startup.get(),
             "watchlist_last_download": self._watchlist_last_download,
         })
+        save_config(cfg)
         self._refresh_genre_list()
         self._update_save_preview()
         self._refresh_log_path_label()
