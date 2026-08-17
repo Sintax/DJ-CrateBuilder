@@ -6,21 +6,6 @@ a `finally`, regardless of outcome. When downloads failed the count reset to
 zero, the next scan re-found the very same tracks, and the user saw "Download
 All New (N)" produce nothing over and over.
 """
-import importlib.util
-import os
-import sys
-
-import pytest
-
-
-def _load():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    spec = importlib.util.spec_from_file_location(
-        "cb_main", os.path.join(root, "DJ-CrateBuilder_v1.3.py"))
-    m = importlib.util.module_from_spec(spec)
-    sys.modules["cb_main"] = m
-    spec.loader.exec_module(m)
-    return m
 
 
 class _StubDB:
@@ -54,17 +39,11 @@ class _StubDB:
         self.statuses.append((cid, status))
 
 
-def _run_batch(monkeypatch, tmp_path, outcomes):
+def _run_batch(make_app, monkeypatch, outcomes):
     """Drive _batch_worker over one item per channel, with _process_one_url
     stubbed to the given (downloaded, skipped, errored) tuples. Returns the
     stub DB so the caller can assert on what the cleanup did."""
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    mod = _load()
-    try:
-        app = mod.MP3DownloaderApp()
-    except Exception as e:
-        pytest.skip(f"no display: {e}")
+    app = make_app()
 
     cids = list(range(1, len(outcomes) + 1))
     db = _StubDB(cids)
@@ -88,34 +67,33 @@ def _run_batch(monkeypatch, tmp_path, outcomes):
                   "title": f"ch{c}"} for c in cids]
     app._batch_worker(run_batch)
     app.update()
-    app.destroy()
     return db
 
 
-def test_failed_channel_keeps_its_pending_list(tmp_path, monkeypatch):
-    db = _run_batch(monkeypatch, tmp_path, [(0, 0, 2)])
+def test_failed_channel_keeps_its_pending_list(make_app, monkeypatch):
+    db = _run_batch(make_app, monkeypatch, [(0, 0, 2)])
     assert db.cleared == []
     assert db.get_total_pending_count() == 2
     assert (1, "idle") in db.statuses
 
 
-def test_clean_channel_still_retires_its_pending_list(tmp_path, monkeypatch):
-    db = _run_batch(monkeypatch, tmp_path, [(2, 0, 0)])
+def test_clean_channel_still_retires_its_pending_list(make_app, monkeypatch):
+    db = _run_batch(make_app, monkeypatch, [(2, 0, 0)])
     assert db.cleared == [1]
     assert db.get_total_pending_count() == 0
 
 
-def test_a_failure_does_not_drag_down_its_neighbours(tmp_path, monkeypatch):
+def test_a_failure_does_not_drag_down_its_neighbours(make_app, monkeypatch):
     """Per-channel accounting: channel 2 failing must not hold back 1 and 3,
     and channel 2's own pending list must survive for the retry."""
-    db = _run_batch(monkeypatch, tmp_path,
+    db = _run_batch(make_app, monkeypatch,
                     [(1, 0, 0), (0, 0, 1), (1, 0, 0)])
     assert db.cleared == [1, 3]
     assert db.get_watchlist_channel(2)["pending_new_count"] == 2
 
 
-def test_skipped_only_channel_counts_as_clean(tmp_path, monkeypatch):
+def test_skipped_only_channel_counts_as_clean(make_app, monkeypatch):
     """Everything already on disk is a success, not a failure — the pending
     list is genuinely done and must not linger forever."""
-    db = _run_batch(monkeypatch, tmp_path, [(0, 5, 0)])
+    db = _run_batch(make_app, monkeypatch, [(0, 5, 0)])
     assert db.cleared == [1]

@@ -1,24 +1,10 @@
-import importlib.util, logging, os, sys
-
-_CACHED = None
-
-
-def _module():
-    global _CACHED
-    if _CACHED is None:
-        root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        spec = importlib.util.spec_from_file_location(
-            "cb_main", os.path.join(root_dir, "DJ-CrateBuilder_v1.3.py"))
-        m = importlib.util.module_from_spec(spec)
-        sys.modules["cb_main"] = m
-        spec.loader.exec_module(m)
-        _CACHED = m
-    return _CACHED
+import logging
+import os
 
 
-def _handler(path, max_bytes):
-    m = _module()
-    h = m._HeadTrimFileHandler(str(path), max_bytes=max_bytes, encoding="utf-8")
+def _handler(cb_mod, path, max_bytes):
+    h = cb_mod._HeadTrimFileHandler(str(path), max_bytes=max_bytes,
+                                    encoding="utf-8")
     h.setFormatter(logging.Formatter("%(message)s"))
     return h
 
@@ -29,8 +15,8 @@ def _emit(h, msg):
 
 # ── Label <-> megabyte parsing ────────────────────────────────────────────────
 
-def test_log_limit_label_roundtrip():
-    App = _module().MP3DownloaderApp
+def test_log_limit_label_roundtrip(cb_mod):
+    App = cb_mod.MP3DownloaderApp
     assert App._log_limit_label(0) == "Unlimited"
     assert App._log_limit_label(4) == "4MB"
     assert App._parse_log_limit_mb("Unlimited") == 0
@@ -46,10 +32,10 @@ def test_log_limit_label_roundtrip():
 
 # ── Head-trimming behaviour ───────────────────────────────────────────────────
 
-def test_trims_oldest_lines_when_over_cap(tmp_path):
+def test_trims_oldest_lines_when_over_cap(cb_mod, tmp_path):
     # Cap small so a handful of lines blows past it; the newest line must
     # survive and the very oldest must be gone.
-    h = _handler(tmp_path / "a.log", max_bytes=2000)
+    h = _handler(cb_mod, tmp_path / "a.log", max_bytes=2000)
     try:
         for i in range(2000):
             _emit(h, f"line {i:05d} " + "x" * 40)
@@ -66,8 +52,8 @@ def test_trims_oldest_lines_when_over_cap(tmp_path):
     assert data.splitlines()[0].startswith("line ")
 
 
-def test_unlimited_never_trims(tmp_path):
-    h = _handler(tmp_path / "u.log", max_bytes=0)
+def test_unlimited_never_trims(cb_mod, tmp_path):
+    h = _handler(cb_mod, tmp_path / "u.log", max_bytes=0)
     try:
         for i in range(500):
             _emit(h, f"line {i}")
@@ -79,7 +65,7 @@ def test_unlimited_never_trims(tmp_path):
     assert "line 499" in data
 
 
-def test_oversized_file_trimmed_on_open(tmp_path):
+def test_oversized_file_trimmed_on_open(cb_mod, tmp_path):
     # A log that was already huge before a cap existed gets trimmed the moment
     # the capped handler opens it (covers the 'on startup' trim).
     p = tmp_path / "old.log"
@@ -87,7 +73,7 @@ def test_oversized_file_trimmed_on_open(tmp_path):
                  encoding="utf-8")
     assert os.path.getsize(p) > 4000
 
-    h = _handler(p, max_bytes=2000)
+    h = _handler(cb_mod, p, max_bytes=2000)
     try:
         assert os.path.getsize(p) <= 2000
         data = p.read_text(encoding="utf-8")
@@ -98,11 +84,11 @@ def test_oversized_file_trimmed_on_open(tmp_path):
         h.close()
 
 
-def test_lowering_cap_trims_via_maybe_trim(tmp_path):
+def test_lowering_cap_trims_via_maybe_trim(cb_mod, tmp_path):
     # Simulates the dropdown lowering the limit at runtime: bump max_bytes down
     # then call maybe_trim(), as _autosave_log_limit does.
     p = tmp_path / "live.log"
-    h = _handler(p, max_bytes=0)   # start unlimited
+    h = _handler(cb_mod, p, max_bytes=0)   # start unlimited
     try:
         for i in range(3000):
             _emit(h, f"line {i:05d}")
