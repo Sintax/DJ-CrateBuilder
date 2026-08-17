@@ -5,7 +5,8 @@ import re
 import time
 import urllib.parse
 
-from cratebuilder.util import today_yyyymmdd, normalize_track_key
+from cratebuilder.util import (today_yyyymmdd, normalize_track_key,
+                               classify_ydl_error)
 
 CHANNEL_SIDECAR_NAME = "cratebuilder.json"
 
@@ -95,32 +96,14 @@ def is_unresolved_channel(ch):
     return False
 
 
-# Substrings that identify a scan failure as permanent — the channel itself is
-# gone, private, or was never a valid target — so the link genuinely needs
-# fixing. Checked BEFORE the transient markers: yt-dlp wraps a 404 in its
-# generic "Unable to download webpage" text, and the 404 is the real signal.
-_PERMANENT_ERROR_MARKERS = (
-    "404", "does not exist", "not found", "unsupported url",
-    "is not a valid url", "unable to recognize tab page",
-    "incomplete youtube id", "no longer available", "has been removed",
-    "has been terminated", "is private", "this playlist is private",
-    "private video", "unavailable videos are hidden",
-)
-
-# Substrings that identify a scan failure as transient — no network, a blocked
-# or throttled request, a server-side wobble. The link is fine; retry later.
-_TRANSIENT_ERROR_MARKERS = (
-    "getaddrinfo", "name resolution", "name or service not known",
-    "nodename nor servname", "failed to resolve", "no address associated",
-    "network is unreachable", "network unreachable", "unreachable network",
-    "connection reset", "connection aborted", "connection refused",
-    "connection broken", "remote end closed", "timed out", "timeout",
-    "urlopen error", "ssl", "handshake", "incompleteread", "temporary failure",
-    "unable to download webpage", "unable to download api page",
-    "http error 429", "http error 500", "http error 502", "http error 503",
-    "http error 504", "too many requests", "service unavailable",
-    "errno 11001", "errno 11004", "errno 10054", "errno 10060", "errno 101",
-)
+# How a yt-dlp durability verdict reads as a watchlist row status. The marker
+# lists themselves live in util.classify_ydl_error — the one home shared with
+# cratebuilder.ydl, so a scan and a probe can never disagree about a message.
+_SCAN_STATUS_FOR = {
+    "permanent": "needs_resolve",
+    "transient": "offline",
+    "unknown": "error",
+}
 
 
 def classify_scan_error(message):
@@ -131,14 +114,7 @@ def classify_scan_error(message):
     permanent one (channel gone/private/never valid — the link must be
     fixed), or 'error' when the message matches neither and we shouldn't
     guess. Only 'needs_resolve' surfaces the Fix Link button."""
-    text = (message or "").lower()
-    if not text:
-        return "error"
-    if any(m in text for m in _PERMANENT_ERROR_MARKERS):
-        return "needs_resolve"
-    if any(m in text for m in _TRANSIENT_ERROR_MARKERS):
-        return "offline"
-    return "error"
+    return _SCAN_STATUS_FOR[classify_ydl_error(message)]
 
 
 def watch_scan_url(platform, url):
