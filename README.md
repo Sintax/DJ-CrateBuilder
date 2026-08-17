@@ -12,7 +12,7 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 - <sub>[Features](#features)</sub>
 - <sub>[Requirements](#requirements)</sub>
 - <sub>[Installation](#installation)</sub>
-- <sub>[Updates & Antivirus Notice](#updates)</sub>
+- <sub>[Updates](#updates)</sub>
 - <sub>[Usage](#usage)</sub>
 - <sub>[Browser Cookie Authentication](#browser-cookie-authentication)</sub>
 - <sub>[Settings](#settings)</sub>
@@ -47,7 +47,7 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 
 ## Features&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
 
-- **Watch List** — Track your favourite YouTube and SoundCloud channels and periodically scan for *only* genuinely-new uploads, so you never re-download tracks you already own. YouTube channels are identified by their canonical channel ID (with a built-in search resolver to heal broken links) while SoundCloud artists are tracked by their profile URL, new uploads are cross-referenced against what's already in your folders, and per-channel cards let you Fix Link (shown only when a link needs healing), Scan, Download New, Edit, or Cancel at any time — all alongside a pinned, resizable scan log. Every tracked entry is re-scanned in the background on launch so the new-track counts are always current *(new in v1.3)*
+- **Watch List** — Track your favourite YouTube and SoundCloud channels and periodically scan for *only* genuinely-new uploads, so you never re-download tracks you already own. YouTube channels are identified by their canonical channel ID (with a built-in search resolver to heal broken links) while SoundCloud artists are tracked by their profile URL, new uploads are cross-referenced against what's already in your folders, and per-channel cards let you Fix Link (shown only when a link needs healing), Scan, Download New, Edit, or Cancel at any time — all alongside a pinned, resizable scan log. Every tracked entry is re-scanned in the background on launch so the new-track counts are always current. Unreleased YouTube premieres and scheduled live events are held back from the "new" count instead of failing mid-batch — the channel card shows "N scheduled" until they actually air *(new in v1.3)*
 - **Background Automation** — Let the Watch List run on its own: every launch the app refreshes the new-track counts for all entries (YouTube and SoundCloud) in the background, and you can pick a check interval (Off / 6 / 12 / 24 / 48 hours) so DJ-CrateBuilder periodically scans every tracked channel and auto-downloads new tracks to their folders, notifying you when it does. Optionally launch at Windows startup and minimize to the system tray so it keeps watching while you work *(new in v1.3)*
 - **Batch Queue** — Add multiple URLs (channels, playlists, single videos) and process them in sequence
 - **Auto-Organization** — Downloads are sorted into folders by platform, genre, and channel name
@@ -60,6 +60,9 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 - **Geo-Bypass** — Attempt to bypass geographic IP restrictions
 - **Downloads Log** — Timestamped record of every download, skip, and error (`activity.log`) with a built-in color-coded log viewer
 - **Debug Log** — Separate diagnostic log (`debug.log`) capturing yt-dlp options, cookie configuration, and full error tracebacks for troubleshooting *(new in v1.3)*
+- **Cover Art** — Embeds the source thumbnail into each MP3 so cover art shows in Explorer, media players, and on mobile, with a Crop-to-square or Keep-original-aspect mode; a **Fetch Missing Cover Art** backfill tool covers tracks downloaded before the feature existed *(new in v1.3)*
+- **Genre Retagging** — A **Fix ID3 Genre Fields** backfill tool rewrites genre tags on existing files, and changing a Watch List channel's genre retags its already-downloaded files to match *(new in v1.3)*
+- **Database Maintenance** — A **Remove Duplicates** tool merges duplicate downloads-table rows, offered automatically once after an update *(new in v1.3)*
 - **URL History** — The URL field remembers your last 6 inputs
 - **Channel Auto-Detection** — Bare channel URLs (youtube.com/@Name) automatically resolve to the full video list
 - **Dark Themed UI** — Purpose-built dark interface using tkinter
@@ -149,6 +152,27 @@ After installation, launch with `dj-cratebuilder` from terminal or find it in yo
 
 ---
 
+<a name="updates"></a>
+
+## Updates&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
+
+DJ-CrateBuilder can update itself. The **About** tab shows a **Check for
+updates** button that flips to **Update Now** once a newer nightly build is
+found, and the app also checks quietly in the background on a configurable
+interval (1 hour to 1 day). The display version stays pinned at `1.3` — only
+the build number advances between nightly updates. Update files come straight
+from the official [GitHub repository](https://github.com/Sintax/DJ-CrateBuilder)
+and are SHA-256 verified before anything is installed.
+
+The app isn't code-signed, so Windows SmartScreen may show a warning on first
+install/run — click **More info → Run anyway**; this is expected for
+certificate-free freeware.
+
+> Running from source (not the installer)? There's nothing to self-update —
+> just `git pull` the latest changes.
+
+---
+
 <a name="usage"></a>
 
 ## Usage&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
@@ -212,6 +236,7 @@ For faster downloads and fewer "login required" errors, you can authenticate wit
 |---------|---------|-------------|
 | Time Limiter | 8 min | Skip tracks exceeding this duration |
 | MP3 Bitrate | 192 kbps | Output quality (128 / 192 / 256 / 320) |
+| Cover Art | On ~ Crop to square | Embed the source thumbnail as MP3 cover art (Crop to square / Keep original aspect / Off) |
 | Skip Existing | In Logs ~ In Folder | Prevent re-downloading completed files |
 | Geo-Bypass | Off | Bypass geographic restrictions |
 | Rotate User-Agent | On | Randomize browser fingerprint per session |
@@ -328,7 +353,7 @@ python -m pytest -q
 
 | Version | Date | Highlights |
 |---------|------|------------|
-| 1.3 | 2026-05 | **Watch List** — YouTube **and SoundCloud** channel tracking with new-upload detection, canonical channel-ID resolution + search-based healing (Fix Link, shown only when needed, with duplicate-entry detection), folder cross-reference dedup, per-card Scan/Download/Edit/Cancel, pinned resizable scan log; **Background Automation** — startup scan refreshing new-track counts for every entry, interval auto-scan (Off/6/12/24/48h, default 24h) with auto-download + tray notifications, run-at-Windows-startup, minimize-to-system-tray; extracted reusable `cratebuilder/` package with a pytest suite; debug log with full yt-dlp/cookie diagnostics, renamed DJ-CrateBuilder.log → activity.log, "Downloads Log" rename, native Linux installer improvements |
+| 1.3 | 2026-05 | **Watch List** — YouTube **and SoundCloud** channel tracking with new-upload detection, canonical channel-ID resolution + search-based healing (Fix Link, shown only when needed, with duplicate-entry detection), folder cross-reference dedup, per-card Scan/Download/Edit/Cancel, pinned resizable scan log, premieres/scheduled uploads held back instead of failing mid-batch; **Background Automation** — startup scan refreshing new-track counts for every entry, interval auto-scan (Off/6/12/24/48h, default 24h) with auto-download + tray notifications, run-at-Windows-startup, minimize-to-system-tray; **Cover Art** embedding with crop/original modes and a Fetch-Missing-Cover-Art backfill tool; **ID3 Genre Tools** — Fix ID3 Genre Fields backfill, retag-on-channel-move; **Database Maintenance** — Remove Duplicates tool, offered automatically once after an update; in-app self-updater (Check for Updates / Update Now, SHA-256-verified nightly builds); extracted reusable `cratebuilder/` package with a pytest suite; debug log with full yt-dlp/cookie diagnostics, renamed DJ-CrateBuilder.log → activity.log, "Downloads Log" rename, native Linux installer improvements |
 | 1.2 | 2026-03 | Browser cookie auth, cookie file support, age-gate retry, format diagnostics, _No Genre folder, URL history, genre confirmation, renamed from YouTube DJ-CrateBuilder |
 | 1.1 | 2026-03 | Queue rewrite (Text widget), batch system, throttle presets, geo-bypass, UA rotation, log viewer, Settings tab overhaul |
 | 1.0 | 2026-03 | Initial release — single/batch download, genre folders, skip-existing, time limiter, dark UI |
