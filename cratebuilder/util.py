@@ -595,6 +595,55 @@ def classify_permanent_failure(error_text):
     return None
 
 
+# Substrings that identify a yt-dlp read failure as permanent — the target
+# itself is gone, private, or was never a valid URL — so the link genuinely
+# needs fixing. Checked BEFORE the transient markers: yt-dlp wraps a 404 in its
+# generic "Unable to download webpage" text, and the 404 is the real signal.
+PERMANENT_ERROR_MARKERS = (
+    "404", "does not exist", "not found", "unsupported url",
+    "is not a valid url", "unable to recognize tab page",
+    "incomplete youtube id", "no longer available", "has been removed",
+    "has been terminated", "is private", "this playlist is private",
+    "private video", "unavailable videos are hidden",
+)
+
+# Substrings that identify a yt-dlp read failure as transient — no network, a
+# blocked or throttled request, a server-side wobble. The link is fine; retry
+# later.
+TRANSIENT_ERROR_MARKERS = (
+    "getaddrinfo", "name resolution", "name or service not known",
+    "nodename nor servname", "failed to resolve", "no address associated",
+    "network is unreachable", "network unreachable", "unreachable network",
+    "connection reset", "connection aborted", "connection refused",
+    "connection broken", "remote end closed", "timed out", "timeout",
+    "urlopen error", "ssl", "handshake", "incompleteread", "temporary failure",
+    "unable to download webpage", "unable to download api page",
+    "http error 429", "http error 500", "http error 502", "http error 503",
+    "http error 504", "too many requests", "service unavailable",
+    "errno 11001", "errno 11004", "errno 10054", "errno 10060", "errno 101",
+)
+
+
+def classify_ydl_error(message):
+    """Classify a yt-dlp read-only failure message by how durable it is.
+
+    Returns 'permanent' (the target is gone/private/never valid — asking again
+    cannot help), 'transient' (network down, throttled, server wobble — the
+    same call may well succeed later), or 'unknown' when the message matches
+    neither and we shouldn't guess. The single home for these markers: both
+    cratebuilder.ydl (typed errors) and sidecar.classify_scan_error (watchlist
+    row status) read the verdict from here. Case-insensitive; safe on
+    None/empty input."""
+    text = (message or "").lower()
+    if not text:
+        return "unknown"
+    if any(m in text for m in PERMANENT_ERROR_MARKERS):
+        return "permanent"
+    if any(m in text for m in TRANSIENT_ERROR_MARKERS):
+        return "transient"
+    return "unknown"
+
+
 def redact_ydl_opts(opts):
     """Return a shallow copy of a yt-dlp options dict made safe for debug
     logging. Auth-bearing values (cookie file path, browser-cookie source)
