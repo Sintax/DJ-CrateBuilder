@@ -17,7 +17,7 @@ import urllib.request
 from datetime import datetime, timedelta, date
 
 from cratebuilder.util import (
-    load_config, save_config, today_yyyymmdd,
+    today_yyyymmdd,
     format_yyyymmdd_readable, format_timestamp_relative,
     interval_label_to_seconds,
     normalize_track_key, safe_filename, push_mru,
@@ -25,7 +25,7 @@ from cratebuilder.util import (
     derive_collection_name, find_matching_watchlist_row,
     soundcloud_profile_handle, merge_soundcloud_candidates,
     runtime_data_dir, classify_permanent_failure, classify_deferred_failure,
-    download_result_facts, ensure_usable_tempdir,
+    download_result_facts, ensure_usable_tempdir, default_base_dir,
 )
 from cratebuilder.sidecar import (
     channel_url_from_id, channel_id_from_url,
@@ -47,6 +47,8 @@ from cratebuilder import links as cb_links
 from cratebuilder.singleton import (
     acquire_single_instance, request_show, listen_for_show_requests,
     SINGLE_INSTANCE_PORT)
+from cratebuilder.settings import (
+    Settings, CookieConfig, DownloadPolicy, AutomationConfig)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Version & About — edit these values to update the app info
@@ -317,9 +319,11 @@ WATCHLIST_STARTUP_NET_TRIES = 18      # ≈ 90 s window at the delay below
 WATCHLIST_STARTUP_NET_DELAY = 5.0     # seconds between connectivity probes
 
 # ── Config persistence ────────────────────────────────────────────────────────
-# _config_path, load_config, save_config moved to cratebuilder.util (imported above)
+# User-config access goes through cratebuilder.settings.Settings (one app-wide
+# instance, created in MP3DownloaderApp.__init__); the raw load/save helpers
+# stay in cratebuilder.util.
 
-DEFAULT_BASE = os.path.join(os.path.expanduser("~"), "Music", "DJ-CrateBuilder")
+DEFAULT_BASE = default_base_dir()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2270,10 +2274,9 @@ class DatabaseViewerWindow(tk.Toplevel):
     _WL_WIDTH_KEY  = "db_wl_col_widths"
     _ART_WIDTH_KEY = "db_art_col_widths"
 
-    @staticmethod
-    def _saved_col_widths(key):
+    def _saved_col_widths(self, key):
         """Return the saved {column_id: width} dict for *key* (empty if none)."""
-        val = load_config().get(key)
+        val = self._parent._settings.get(key)
         return val if isinstance(val, dict) else {}
 
     def _persist_col_widths(self):
@@ -2287,13 +2290,14 @@ class DatabaseViewerWindow(tk.Toplevel):
                     pass
             return out
         try:
-            cfg = load_config()
-            cfg[self._DL_WIDTH_KEY] = widths(
-                self._dl_tree, ["#0", *self._DL_COLS])
-            cfg[self._WL_WIDTH_KEY] = widths(self._wl_tree, list(self._WL_COLS))
-            cfg[self._ART_WIDTH_KEY] = widths(self._art_tree,
-                                              list(self._ART_COLS))
-            save_config(cfg)
+            self._parent._settings.update({
+                self._DL_WIDTH_KEY: widths(
+                    self._dl_tree, ["#0", *self._DL_COLS]),
+                self._WL_WIDTH_KEY: widths(self._wl_tree,
+                                           list(self._WL_COLS)),
+                self._ART_WIDTH_KEY: widths(self._art_tree,
+                                            list(self._ART_COLS)),
+            })
         except Exception:
             pass   # column widths are a nicety; never block closing on them
 
@@ -2326,16 +2330,13 @@ class DatabaseViewerWindow(tk.Toplevel):
 
     def _apply_saved_order(self, tree, all_cols, key):
         """Restore a saved column order if it's still a valid permutation."""
-        order = load_config().get(key)
+        order = self._parent._settings.get(key)
         if isinstance(order, list) and sorted(order) == sorted(all_cols):
             tree.configure(displaycolumns=order)
 
-    @staticmethod
-    def _save_col_order(key, order):
+    def _save_col_order(self, key, order):
         try:
-            cfg = load_config()
-            cfg[key] = list(order)
-            save_config(cfg)
+            self._parent._settings.set(key, list(order))
         except Exception:
             pass
 
@@ -4352,32 +4353,37 @@ class MP3DownloaderApp(tk.Tk):
         y = (self.winfo_screenheight() - 950) // 2
         self.geometry(f"+{x}+{y}")
 
-        # Load persisted config
-        cfg = load_config()
-        self._base_dir      = cfg.get("base_dir", DEFAULT_BASE)
+        # Load persisted config. One Settings instance owns the config file for
+        # the whole app; every reader and writer below goes through it, and the
+        # legacy migrations (skip_mode renames, auto_check_hours seed, cover-art
+        # 'off' split) are applied inside Settings at load.
+        self._settings = Settings()
+        self._base_dir      = self._settings.get("base_dir")
         self._downloading   = False
         self._cancel_flag   = threading.Event()
         self._pause_flag    = threading.Event()   # set = paused, clear = running
         self._wl_scan_active = 0   # count of in-flight Watch List scans
         self._wl_cancel_cids = set()  # channel ids the user asked to cancel
         self._queue         = []
-        self._skip_existing   = tk.BooleanVar(value=cfg.get("skip_existing", True))
-        _raw_skip = cfg.get("skip_mode", "In Folder Only")
-        _migrated = {"In Logs ~ In Folder": "In Database ~ In Folder",
-                     "In Logs Only": "In Database Only"}
-        self._skip_mode       = tk.StringVar(value=_migrated.get(_raw_skip, _raw_skip))
+        self._skip_existing   = tk.BooleanVar(
+            value=self._settings.get("skip_existing"))
+        self._skip_mode       = tk.StringVar(
+            value=self._settings.get("skip_mode"))
         self._skip_existing.trace_add("write", self._autosave_skip_settings)
         self._skip_mode.trace_add("write",     self._autosave_skip_settings)
         self._platform_var    = tk.StringVar(value="YouTube")
-        self._limit_enabled   = tk.BooleanVar(value=cfg.get("limit_enabled", True))
-        self._limit_minutes   = tk.IntVar(value=cfg.get("limit_minutes", 8))
+        self._limit_enabled   = tk.BooleanVar(
+            value=self._settings.get("limit_enabled"))
+        self._limit_minutes   = tk.IntVar(
+            value=self._settings.get("limit_minutes"))
         self._limit_enabled.trace_add("write", self._autosave_limiter_settings)
+        _bitrate = str(self._settings.get("bitrate_quality"))
         self._bitrate_quality = tk.StringVar(
-            value=cfg.get("bitrate_quality", "192") + " kbps"
-                  if not str(cfg.get("bitrate_quality", "192")).endswith("kbps")
-                  else cfg.get("bitrate_quality", "192"))
+            value=_bitrate if _bitrate.endswith("kbps")
+                  else _bitrate + " kbps")
         self._bitrate_quality.trace_add("write", self._autosave_bitrate_setting)
-        self._no_conversion = tk.BooleanVar(value=cfg.get("no_conversion", False))
+        self._no_conversion = tk.BooleanVar(
+            value=self._settings.get("no_conversion"))
         self._no_conversion.trace_add("write", self._autosave_bitrate_setting)
 
         # Cover art — how the source thumbnail is fitted to the square art slot
@@ -4385,16 +4391,12 @@ class MP3DownloaderApp(tk.Tk):
         # presented in the UI as a friendly label via _COVER_ART_LABELS.
         # Whether artwork is fetched at all is the separate cover_art_enabled
         # flag; a legacy config that only knows cover_art_mode == "off" seeds
-        # the checkbox off and leaves the dropdown on the default formatting.
-        _cfg_mode = str(cfg.get("cover_art_mode",
-                                cb_artwork.DEFAULT_COVER_ART_MODE)).lower()
-        if _cfg_mode not in cb_artwork.COVER_ART_MODES:
-            _cfg_mode = cb_artwork.DEFAULT_COVER_ART_MODE
-        _cfg_art_on = bool(cfg.get("cover_art_enabled", _cfg_mode != "off"))
-        if _cfg_mode == "off":
-            _cfg_mode = cb_artwork.DEFAULT_COVER_ART_MODE
-        self._cover_art_enabled = tk.BooleanVar(value=_cfg_art_on)
-        self._cover_art_mode = tk.StringVar(value=_COVER_ART_LABELS[_cfg_mode])
+        # the checkbox off and leaves the dropdown on the default formatting
+        # (that split now happens inside Settings at load).
+        self._cover_art_enabled = tk.BooleanVar(
+            value=self._settings.get("cover_art_enabled"))
+        self._cover_art_mode = tk.StringVar(
+            value=_COVER_ART_LABELS[self._settings.get("cover_art_mode")])
         self._cover_art_mode.trace_add("write", self._autosave_cover_art_setting)
         self._cover_art_enabled.trace_add(
             "write", self._autosave_cover_art_setting)
@@ -4410,36 +4412,46 @@ class MP3DownloaderApp(tk.Tk):
         # Log size limit — caps activity.log and debug.log (each) by trimming the
         # oldest lines; 0 = Unlimited. Default 2 MB keeps the logs from growing
         # without bound while preserving plenty of recent history.
-        self._log_max_mb = int(cfg.get("log_max_mb", 2) or 0)
+        self._log_max_mb = int(self._settings.get("log_max_mb") or 0)
         self._log_max_bytes = self._log_max_mb * 1024 * 1024
         self._log_limit_var = tk.StringVar(
             value=self._log_limit_label(self._log_max_mb))
 
         # Download behavior settings
-        self._geo_bypass      = tk.BooleanVar(value=cfg.get("geo_bypass", True))
-        self._rotate_ua       = tk.BooleanVar(value=cfg.get("rotate_ua", True))
-        self._sleep_enabled   = tk.BooleanVar(value=cfg.get("sleep_enabled", True))
-        self._sleep_mode      = tk.StringVar(value=cfg.get("sleep_mode", "Auto"))
-        self._sleep_preset    = tk.StringVar(value=cfg.get("sleep_preset", "Light  (1–5 s)"))
-        self._sleep_min       = tk.IntVar(value=cfg.get("sleep_min", 1))
-        self._sleep_max       = tk.IntVar(value=cfg.get("sleep_max", 5))
+        self._geo_bypass      = tk.BooleanVar(
+            value=self._settings.get("geo_bypass"))
+        self._rotate_ua       = tk.BooleanVar(
+            value=self._settings.get("rotate_ua"))
+        self._sleep_enabled   = tk.BooleanVar(
+            value=self._settings.get("sleep_enabled"))
+        self._sleep_mode      = tk.StringVar(
+            value=self._settings.get("sleep_mode"))
+        self._sleep_preset    = tk.StringVar(
+            value=self._settings.get("sleep_preset"))
+        self._sleep_min       = tk.IntVar(value=self._settings.get("sleep_min"))
+        self._sleep_max       = tk.IntVar(value=self._settings.get("sleep_max"))
         self._geo_bypass.trace_add("write",    self._autosave_behavior_settings)
         self._rotate_ua.trace_add("write",     self._autosave_behavior_settings)
         self._sleep_enabled.trace_add("write",  self._autosave_behavior_settings)
         self._sleep_mode.trace_add("write",     self._autosave_behavior_settings)
         self._sleep_preset.trace_add("write",   self._autosave_behavior_settings)
-        self._use_cookies     = tk.BooleanVar(value=cfg.get("use_cookies", False))
-        self._cookie_method   = tk.StringVar(value=cfg.get("cookie_method", "Browser"))
-        self._cookies_browser = tk.StringVar(value=cfg.get("cookies_browser", "Firefox"))
-        self._cookies_profile = tk.StringVar(value=cfg.get("cookies_profile", ""))
-        self._cookie_file     = tk.StringVar(value=cfg.get("cookie_file", ""))
+        self._use_cookies     = tk.BooleanVar(
+            value=self._settings.get("use_cookies"))
+        self._cookie_method   = tk.StringVar(
+            value=self._settings.get("cookie_method"))
+        self._cookies_browser = tk.StringVar(
+            value=self._settings.get("cookies_browser"))
+        self._cookies_profile = tk.StringVar(
+            value=self._settings.get("cookies_profile"))
+        self._cookie_file     = tk.StringVar(
+            value=self._settings.get("cookie_file"))
         self._use_cookies.trace_add("write",     self._autosave_behavior_settings)
         self._cookie_method.trace_add("write",   self._autosave_behavior_settings)
         self._cookies_browser.trace_add("write", self._autosave_behavior_settings)
 
         # Watch List behavior
         self._auto_add_to_watchlist = tk.BooleanVar(
-            value=cfg.get("auto_add_to_watchlist", True))
+            value=self._settings.get("auto_add_to_watchlist"))
         self._auto_add_to_watchlist.trace_add(
             "write", self._autosave_behavior_settings)
         self._active_watchlist_batch = None   # set by _watchlist_download_*
@@ -4457,23 +4469,22 @@ class MP3DownloaderApp(tk.Tk):
         self._wl_batch_active_idx = -1        # index currently downloading
 
         # Automation settings (auto-download / startup / tray)
-        # New keys, falling back to the older auto-check names so an existing
-        # config keeps its interval / schedule anchor across the upgrade.
+        # An existing config's older auto_check_hours seeds the interval inside
+        # Settings, so the renamed key keeps its schedule across the upgrade.
         self._auto_dl_interval = tk.StringVar(
-            value=cfg.get("auto_download_interval",
-                          cfg.get("auto_check_hours", "1 day")))
+            value=self._settings.get("auto_download_interval"))
         self._run_at_startup = tk.BooleanVar(
-            value=cfg.get("run_at_startup", False))
+            value=self._settings.get("run_at_startup"))
         if sys.platform == "win32":
             self._run_at_startup.set(cb_startup.startup_is_enabled())
         self._minimize_to_tray = tk.BooleanVar(
-            value=cfg.get("minimize_to_tray", True))
+            value=self._settings.get("minimize_to_tray"))
         self._start_minimized = tk.BooleanVar(
-            value=cfg.get("start_minimized", False))
+            value=self._settings.get("start_minimized"))
         # Scan the Watch List for new uploads as soon as the app launches.
         # On by default; the user can opt out via Settings.
         self._watchlist_scan_on_startup = tk.BooleanVar(
-            value=cfg.get("watchlist_scan_on_startup", True))
+            value=self._settings.get("watchlist_scan_on_startup"))
         # The auto-download schedule counts from when the app starts: the next
         # run is always (this launch time + interval), regardless of any stored
         # value from a previous session. A later Download All New re-anchors to
@@ -4487,7 +4498,7 @@ class MP3DownloaderApp(tk.Tk):
         # How often to silently re-check GitHub for a newer nightly build. Set
         # from the About-tab dropdown; persisted as 'update_check_interval'.
         self._update_check_interval = tk.StringVar(
-            value=cfg.get("update_check_interval", "6 hours"))
+            value=self._settings.get("update_check_interval"))
         self._update_check_after_id = None
         self._update_prompt_open = False    # an auto-check dialog is on screen
         self._update_in_progress = False    # download/stage worker is running
@@ -4502,7 +4513,7 @@ class MP3DownloaderApp(tk.Tk):
             "write", self._on_update_interval_changed)
 
         # Ensure directory structure exists on startup
-        self._url_history = cfg.get("url_history", [])[:6]
+        self._url_history = self._settings.get("url_history")[:6]
         self._ensure_dirs()
         self._setup_logger()
 
@@ -6694,11 +6705,7 @@ class MP3DownloaderApp(tk.Tk):
         self._base_dir = new_base
         self._ensure_dirs()
         self._setup_logger()
-        # Merge into the stored config: save_config() writes the dict verbatim,
-        # so passing only this tab's keys would delete every key other writers
-        # own (url_history, update-check state, DB-viewer column layout).
-        cfg = load_config()
-        cfg.update({
+        self._settings.update({
             "base_dir":       self._base_dir,
             "limit_enabled":  self._limit_enabled.get(),
             "limit_minutes":  self._limit_minutes.get(),
@@ -6729,7 +6736,6 @@ class MP3DownloaderApp(tk.Tk):
             "watchlist_scan_on_startup": self._watchlist_scan_on_startup.get(),
             "watchlist_last_download": self._watchlist_last_download,
         })
-        save_config(cfg)
         self._refresh_genre_list()
         self._update_save_preview()
         self._refresh_log_path_label()
@@ -6783,17 +6789,17 @@ class MP3DownloaderApp(tk.Tk):
 
     def _autosave_limiter_settings(self, *_):
         """Auto-save limiter settings to config whenever either value changes."""
-        cfg = load_config()
-        cfg["limit_enabled"] = self._limit_enabled.get()
-        cfg["limit_minutes"] = self._limit_minutes.get()
-        save_config(cfg)
+        self._settings.update({
+            "limit_enabled": self._limit_enabled.get(),
+            "limit_minutes": self._limit_minutes.get(),
+        })
 
     def _autosave_bitrate_setting(self, *_):
         """Auto-save bitrate setting and no-conversion flag to config."""
-        cfg = load_config()
-        cfg["bitrate_quality"] = self._bitrate_quality.get().split()[0]
-        cfg["no_conversion"]   = self._no_conversion.get()
-        save_config(cfg)
+        self._settings.update({
+            "bitrate_quality": self._bitrate_quality.get().split()[0],
+            "no_conversion":   self._no_conversion.get(),
+        })
 
     def _cover_art_format_value(self):
         """The bare formatting mode ('crop'/'original') behind the friendly
@@ -6814,10 +6820,10 @@ class MP3DownloaderApp(tk.Tk):
     def _autosave_cover_art_setting(self, *_):
         """Auto-save the cover-art checkbox + formatting whenever either
         changes, and grey the dropdown out while artwork is disabled."""
-        cfg = load_config()
-        cfg["cover_art_enabled"] = bool(self._cover_art_enabled.get())
-        cfg["cover_art_mode"] = self._cover_art_format_value()
-        save_config(cfg)
+        self._settings.update({
+            "cover_art_enabled": bool(self._cover_art_enabled.get()),
+            "cover_art_mode": self._cover_art_format_value(),
+        })
         self._on_cover_art_toggle()
 
     def _on_cover_art_toggle(self):
@@ -6837,9 +6843,7 @@ class MP3DownloaderApp(tk.Tk):
         mb = self._parse_log_limit_mb(self._log_limit_var.get())
         self._log_max_mb = mb
         self._log_max_bytes = mb * 1024 * 1024
-        cfg = load_config()
-        cfg["log_max_mb"] = mb
-        save_config(cfg)
+        self._settings.set("log_max_mb", mb)
         for fh in (getattr(self, "_log_fh", None), getattr(self, "_dbg_fh", None)):
             if fh is not None:
                 fh.max_bytes = self._log_max_bytes
@@ -6855,10 +6859,10 @@ class MP3DownloaderApp(tk.Tk):
 
     def _autosave_skip_settings(self, *_):
         """Auto-save skip checkbox and mode to config whenever either value changes."""
-        cfg = load_config()
-        cfg["skip_existing"] = self._skip_existing.get()
-        cfg["skip_mode"]     = self._skip_mode.get()
-        save_config(cfg)
+        self._settings.update({
+            "skip_existing": self._skip_existing.get(),
+            "skip_mode":     self._skip_mode.get(),
+        })
 
     def _on_sleep_toggle(self):
         """Switch Auto/Manual content and grey out everything when disabled."""
@@ -6975,34 +6979,82 @@ class MP3DownloaderApp(tk.Tk):
             s_max = s_min
         return s_min, s_max
 
+    def _cookie_config(self):
+        """CookieConfig snapshot of the live Tk cookie variables — the frozen,
+        Tk-free record a worker thread reads instead of the variables. Main
+        thread only (it reads Tk vars)."""
+        return CookieConfig(
+            use_cookies=self._use_cookies.get(),
+            cookie_method=self._cookie_method.get(),
+            cookies_browser=self._cookies_browser.get(),
+            cookies_profile=self._cookies_profile.get(),
+            cookie_file=self._cookie_file.get(),
+        )
+
+    def _download_policy(self):
+        """DownloadPolicy snapshot of the live Tk download-behavior variables:
+        skip / limiter / bitrate / sleep / geo / UA / cover-art, in the same
+        stored forms the config file uses (bare bitrate number, bare cover-art
+        formatting mode). Main thread only (it reads Tk vars)."""
+        return DownloadPolicy(
+            skip_existing=self._skip_existing.get(),
+            skip_mode=self._skip_mode.get(),
+            limit_enabled=self._limit_enabled.get(),
+            limit_minutes=self._limit_minutes.get(),
+            bitrate_quality=self._bitrate_quality.get().split()[0],
+            no_conversion=self._no_conversion.get(),
+            sleep_enabled=self._sleep_enabled.get(),
+            sleep_mode=self._sleep_mode.get(),
+            sleep_preset=self._sleep_preset.get(),
+            sleep_min=self._sleep_min.get(),
+            sleep_max=self._sleep_max.get(),
+            geo_bypass=self._geo_bypass.get(),
+            rotate_ua=self._rotate_ua.get(),
+            cover_art_enabled=self._cover_art_enabled.get(),
+            cover_art_mode=self._cover_art_format_value(),
+        )
+
+    def _automation_config(self):
+        """AutomationConfig snapshot of the live Tk automation variables:
+        intervals, startup-scan, and tray behavior. Main thread only (it reads
+        Tk vars)."""
+        return AutomationConfig(
+            auto_download_interval=self._auto_dl_interval.get(),
+            watchlist_scan_on_startup=self._watchlist_scan_on_startup.get(),
+            minimize_to_tray=self._minimize_to_tray.get(),
+            start_minimized=self._start_minimized.get(),
+            auto_add_to_watchlist=self._auto_add_to_watchlist.get(),
+            update_check_interval=self._update_check_interval.get(),
+        )
+
     def _autosave_behavior_settings(self, *_):
         """Auto-save download behavior settings whenever any value changes."""
-        cfg = load_config()
-        cfg["geo_bypass"]    = self._geo_bypass.get()
-        cfg["rotate_ua"]     = self._rotate_ua.get()
-        cfg["sleep_enabled"] = self._sleep_enabled.get()
-        cfg["sleep_mode"]    = self._sleep_mode.get()
-        cfg["sleep_preset"]  = self._sleep_preset.get()
-        cfg["sleep_min"]     = self._sleep_min.get()
-        cfg["sleep_max"]     = self._sleep_max.get()
-        cfg["use_cookies"]      = self._use_cookies.get()
-        cfg["cookie_method"]    = self._cookie_method.get()
-        cfg["cookies_browser"]  = self._cookies_browser.get()
-        cfg["cookies_profile"]  = self._cookies_profile.get()
-        cfg["cookie_file"]      = self._cookie_file.get()
-        cfg["auto_add_to_watchlist"] = self._auto_add_to_watchlist.get()
-        save_config(cfg)
+        self._settings.update({
+            "geo_bypass":    self._geo_bypass.get(),
+            "rotate_ua":     self._rotate_ua.get(),
+            "sleep_enabled": self._sleep_enabled.get(),
+            "sleep_mode":    self._sleep_mode.get(),
+            "sleep_preset":  self._sleep_preset.get(),
+            "sleep_min":     self._sleep_min.get(),
+            "sleep_max":     self._sleep_max.get(),
+            "use_cookies":      self._use_cookies.get(),
+            "cookie_method":    self._cookie_method.get(),
+            "cookies_browser":  self._cookies_browser.get(),
+            "cookies_profile":  self._cookies_profile.get(),
+            "cookie_file":      self._cookie_file.get(),
+            "auto_add_to_watchlist": self._auto_add_to_watchlist.get(),
+        })
 
     def _autosave_automation_settings(self, *_):
         """Persist the auto-download interval, tray, startup-scan toggle, and the
         last-download schedule anchor."""
-        cfg = load_config()
-        cfg["auto_download_interval"] = self._auto_dl_interval.get()
-        cfg["minimize_to_tray"] = self._minimize_to_tray.get()
-        cfg["start_minimized"] = self._start_minimized.get()
-        cfg["watchlist_scan_on_startup"] = self._watchlist_scan_on_startup.get()
-        cfg["watchlist_last_download"] = self._watchlist_last_download
-        save_config(cfg)
+        self._settings.update({
+            "auto_download_interval": self._auto_dl_interval.get(),
+            "minimize_to_tray": self._minimize_to_tray.get(),
+            "start_minimized": self._start_minimized.get(),
+            "watchlist_scan_on_startup": self._watchlist_scan_on_startup.get(),
+            "watchlist_last_download": self._watchlist_last_download,
+        })
         # Reschedule the timer whenever the interval changes.
         self._reschedule_auto_download()
 
@@ -7335,9 +7387,7 @@ class MP3DownloaderApp(tk.Tk):
                 "Startup", "Could not register the app to run at startup.")
         # Persisted here (not in _autosave_automation_settings) because the
         # registry is the source of truth for this flag; keep them in sync.
-        cfg = load_config()
-        cfg["run_at_startup"] = self._run_at_startup.get()
-        save_config(cfg)
+        self._settings.set("run_at_startup", self._run_at_startup.get())
 
     # ══════════════════════════════════════════════════════════════════════════
     # Self-update — nightly build channel (logic in cratebuilder/updater_core.py)
@@ -7374,9 +7424,8 @@ class MP3DownloaderApp(tk.Tk):
     def _on_update_interval_changed(self, *_):
         """Persist the chosen auto-update-check interval and re-arm the timer."""
         try:
-            cfg = load_config()
-            cfg["update_check_interval"] = self._update_check_interval.get()
-            save_config(cfg)
+            self._settings.set("update_check_interval",
+                               self._update_check_interval.get())
         except Exception:
             pass
         self._reschedule_update_check()
@@ -7492,9 +7541,7 @@ class MP3DownloaderApp(tk.Tk):
         url = UPDATE_MANIFEST_URL_LINUX if ucore.is_linux() else UPDATE_MANIFEST_URL
         manifest = ucore.fetch_manifest(url)
         try:
-            cfg = load_config()
-            cfg["last_update_check"] = time.time()
-            save_config(cfg)
+            self._settings.set("last_update_check", time.time())
         except Exception:
             pass
         self.after(0, lambda: self._on_check_result(manifest, manual))
@@ -8795,9 +8842,7 @@ class MP3DownloaderApp(tk.Tk):
         # Update the combobox dropdown values
         self._url_entry["values"] = self._url_history
         # Persist to config
-        cfg = load_config()
-        cfg["url_history"] = self._url_history
-        save_config(cfg)
+        self._settings.set("url_history", self._url_history)
 
     @staticmethod
     def _detect_platform(url):
@@ -13091,8 +13136,7 @@ class MP3DownloaderApp(tk.Tk):
             if getattr(self, "_rebuild_in_progress", False) or \
                     getattr(self, "_artwork_session", None) is not None:
                 return                      # busy; the button still works
-            cfg = load_config()
-            if cfg.get(self._DEDUPE_PROMPT_KEY) == APP_BUILD:
+            if self._settings.get(self._DEDUPE_PROMPT_KEY) == APP_BUILD:
                 return                      # already answered for this build
             files, extra = self._db.count_duplicate_downloads()
             if not extra:
@@ -13104,8 +13148,7 @@ class MP3DownloaderApp(tk.Tk):
         # Record the answer before acting: if the run itself fails, the user
         # still isn't asked again on every launch.
         try:
-            cfg[self._DEDUPE_PROMPT_KEY] = APP_BUILD
-            save_config(cfg)
+            self._settings.set(self._DEDUPE_PROMPT_KEY, APP_BUILD)
         except Exception:
             pass
 

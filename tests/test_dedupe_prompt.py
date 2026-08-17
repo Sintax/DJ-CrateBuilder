@@ -93,10 +93,9 @@ def test_asks_again_after_the_next_update(app, cb_mod, tmp_path, monkeypatch):
     app._prompt_dedupe_after_update()
     assert seen["asked"] is not None
 
-    cfg_path = tmp_path / ".dj_cratebuilder_config.json"
-    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-    cfg[app._DEDUPE_PROMPT_KEY] = cb_mod.APP_BUILD - 1   # an older build
-    cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+    # The answer recorded against an older build (as a relaunch after the
+    # next update would find it in the app's settings store).
+    app._settings.set(app._DEDUPE_PROMPT_KEY, cb_mod.APP_BUILD - 1)
 
     seen["asked"] = None
     app._prompt_dedupe_after_update()
