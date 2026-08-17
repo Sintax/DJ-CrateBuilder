@@ -653,8 +653,8 @@ class DownloadsDatabase:
         """Return {video_id: reason} for every track on *platform* currently
         hidden by the unavailable-track memory.
 
-        Fetched once per scan and handed to classify_scan_entries as its
-        is_unavailable predicate (dict.get), so a scan costs one query rather
+        Fetched once per scan and handed to crate.ChannelCrate as its
+        suppressed_reason oracle (dict.get), so a scan costs one query rather
         than one per entry. Returns {} on failure."""
         ts = int(now if now is not None else time.time())
         try:

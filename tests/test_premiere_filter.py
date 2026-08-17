@@ -5,8 +5,8 @@ Two independent defences are covered here: the scan-side live_status filter
 YouTube's markup changes and live_status stops arriving)."""
 import pytest
 
-from cratebuilder.sidecar import (UNRELEASED_LIVE_STATUSES,
-                                  classify_scan_entries, is_unreleased_entry)
+from cratebuilder.crate import (UNRELEASED_LIVE_STATUSES,
+                                classify_scan_entries, is_unreleased_entry)
 from cratebuilder.util import classify_deferred_failure, classify_permanent_failure
 
 NOW = 1_700_000_000

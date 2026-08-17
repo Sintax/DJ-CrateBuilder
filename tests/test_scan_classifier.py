@@ -1,11 +1,12 @@
-"""Contract tests for sidecar.classify_scan_entries — the pure watchlist
+"""Contract tests for crate.classify_scan_entries — the pure watchlist
 scan/dedup classifier extracted from MP3DownloaderApp._watchlist_scan_channel.
 
 It buckets yt-dlp flat-playlist entries into 'new' vs 'on_disk' (already owned,
 to be backfilled) and drops entries already in the DB or over the time limit.
 No DB / tkinter / filesystem — the DB check is injected, folder state is a dict.
 """
-from cratebuilder import sidecar
+from cratebuilder import crate
+from cratebuilder.util import normalize_track_key
 
 
 def _never_downloaded(_vid):
@@ -13,7 +14,7 @@ def _never_downloaded(_vid):
 
 
 def test_new_entry_passes_through():
-    out = sidecar.classify_scan_entries(
+    out = crate.classify_scan_entries(
         [{"id": "v1", "title": "Fresh Track", "url": "https://yt/v1",
           "upload_date": "20260101"}],
         is_downloaded=_never_downloaded, folder_keys={}, limit_sec=None,
@@ -24,7 +25,7 @@ def test_new_entry_passes_through():
 
 
 def test_already_in_db_is_dropped():
-    out = sidecar.classify_scan_entries(
+    out = crate.classify_scan_entries(
         [{"id": "v1", "title": "Owned"}],
         is_downloaded=lambda vid: vid == "v1", folder_keys={}, limit_sec=None,
         platform="YouTube")
@@ -34,8 +35,8 @@ def test_already_in_db_is_dropped():
 
 def test_on_disk_match_goes_to_backfill_bucket():
     # "My Track!" normalises to the same key as the saved file.
-    key = sidecar.normalize_track_key("My Track!")
-    out = sidecar.classify_scan_entries(
+    key = normalize_track_key("My Track!")
+    out = crate.classify_scan_entries(
         [{"id": "v1", "title": "My Track!", "upload_date": "20251212"}],
         is_downloaded=_never_downloaded,
         folder_keys={key: r"C:\Music\My Track_.mp3"}, limit_sec=None,
@@ -53,7 +54,7 @@ def test_time_limit_drops_long_videos_but_keeps_short_and_unknown():
         {"id": "live", "title": "Live", "duration": None},    # unknown -> kept
         {"id": "zero", "title": "Zero", "duration": 0},       # 0 -> kept
     ]
-    out = sidecar.classify_scan_entries(
+    out = crate.classify_scan_entries(
         entries, is_downloaded=_never_downloaded, folder_keys={},
         limit_sec=3600, platform="YouTube")
     kept = {e["id"] for e in out["new"]}
@@ -61,7 +62,7 @@ def test_time_limit_drops_long_videos_but_keeps_short_and_unknown():
 
 
 def test_limit_none_disables_duration_filter():
-    out = sidecar.classify_scan_entries(
+    out = crate.classify_scan_entries(
         [{"id": "long", "title": "Long", "duration": 99999}],
         is_downloaded=_never_downloaded, folder_keys={}, limit_sec=None,
         platform="YouTube")
@@ -71,7 +72,7 @@ def test_limit_none_disables_duration_filter():
 def test_limit_zero_drops_all_positive_duration():
     # Degenerate config (limiter on, 0 minutes) is preserved verbatim from the
     # original loop: every video with a positive duration is filtered out.
-    out = sidecar.classify_scan_entries(
+    out = crate.classify_scan_entries(
         [{"id": "a", "title": "A", "duration": 1},
          {"id": "b", "title": "B", "duration": None}],
         is_downloaded=_never_downloaded, folder_keys={}, limit_sec=0,
@@ -85,7 +86,7 @@ def test_url_fallback_prefers_url_then_webpage_then_constructed():
         {"id": "b", "title": "B", "webpage_url": "https://page/b"},
         {"id": "c", "title": "C"},
     ]
-    out = sidecar.classify_scan_entries(
+    out = crate.classify_scan_entries(
         entries, is_downloaded=_never_downloaded, folder_keys={},
         limit_sec=None, platform="YouTube")
     urls = {e["id"]: e["url"] for e in out["new"]}
@@ -95,7 +96,7 @@ def test_url_fallback_prefers_url_then_webpage_then_constructed():
 
 
 def test_non_youtube_no_url_yields_empty_string():
-    out = sidecar.classify_scan_entries(
+    out = crate.classify_scan_entries(
         [{"id": "x", "title": "X"}],
         is_downloaded=_never_downloaded, folder_keys={}, limit_sec=None,
         platform="SoundCloud")
@@ -103,8 +104,8 @@ def test_non_youtube_no_url_yields_empty_string():
 
 
 def test_on_disk_entry_without_id_still_classified_on_disk():
-    key = sidecar.normalize_track_key("No ID Track")
-    out = sidecar.classify_scan_entries(
+    key = normalize_track_key("No ID Track")
+    out = crate.classify_scan_entries(
         [{"title": "No ID Track"}],
         is_downloaded=_never_downloaded,
         folder_keys={key: r"C:\Music\No ID Track.mp3"}, limit_sec=None,
@@ -115,20 +116,40 @@ def test_on_disk_entry_without_id_still_classified_on_disk():
 
 
 def test_empty_entries():
-    out = sidecar.classify_scan_entries(
+    out = crate.classify_scan_entries(
         [], is_downloaded=_never_downloaded, folder_keys={}, limit_sec=None,
         platform="YouTube")
     assert out == {"new": [], "on_disk": [], "unavailable": [], "upcoming": []}
 
 
-def test_classify_scan_entries_delegator(cb):
-    # The monolith's _watchlist_scan_channel uses the same extracted function,
-    # not a private copy.
-    assert cb.classify_scan_entries is sidecar.classify_scan_entries
+def test_the_classification_kernel_is_the_channel_crate_method(cb):
+    # Replaces the old identity assertion (`cb.classify_scan_entries is
+    # sidecar.classify_scan_entries`), which broke when classification moved to
+    # cratebuilder.crate. What is worth pinning here is that the module-level
+    # kernel these tests call is not a second implementation: it must BE
+    # ChannelCrate.classify, and the monolith must be bound to the same class.
+    # (That the real scan routes through it is covered end to end by
+    # tests/test_crate_paths.py::test_the_scan_buckets_a_mixed_listing_through_the_crate,
+    # which drives _watchlist_scan_channel itself.)
+    calls = []
+
+    class Spy(crate.ChannelCrate):
+        def classify(self, entries, now=None):
+            calls.append(entries)
+            return super().classify(entries, now=now)
+
+    assert cb.ChannelCrate is crate.ChannelCrate
+    entries = [{"id": "fresh", "title": "Fresh", "upload_date": "20260101"}]
+    out = crate.classify_scan_entries(
+        entries, is_downloaded=_never_downloaded, folder_keys={},
+        limit_sec=None, platform="YouTube",
+        _crate_class=Spy)
+    assert calls == [entries]
+    assert [e["id"] for e in out["new"]] == ["fresh"]
 
 
 def test_suppressed_entry_goes_to_unavailable_not_new():
-    out = sidecar.classify_scan_entries(
+    out = crate.classify_scan_entries(
         [{"id": "drm1", "title": "Locked Track"}],
         is_downloaded=_never_downloaded, folder_keys={}, limit_sec=None,
         platform="SoundCloud",
@@ -139,7 +160,7 @@ def test_suppressed_entry_goes_to_unavailable_not_new():
 
 
 def test_unsuppressed_entry_still_passes_through():
-    out = sidecar.classify_scan_entries(
+    out = crate.classify_scan_entries(
         [{"id": "ok1", "title": "Fine"}],
         is_downloaded=_never_downloaded, folder_keys={}, limit_sec=None,
         platform="SoundCloud", is_unavailable=lambda _vid: None)
@@ -150,7 +171,7 @@ def test_unsuppressed_entry_still_passes_through():
 def test_downloaded_takes_precedence_over_suppressed():
     # Once a track has downloaded it is a download, full stop — it must not
     # reappear in the unavailable bucket.
-    out = sidecar.classify_scan_entries(
+    out = crate.classify_scan_entries(
         [{"id": "v1", "title": "Owned"}],
         is_downloaded=lambda vid: vid == "v1", folder_keys={}, limit_sec=None,
         platform="YouTube", is_unavailable=lambda _vid: "Removed")
@@ -161,7 +182,7 @@ def test_downloaded_takes_precedence_over_suppressed():
 
 def test_suppression_is_skipped_for_entries_without_an_id():
     # No id means nothing could have been recorded against it.
-    out = sidecar.classify_scan_entries(
+    out = crate.classify_scan_entries(
         [{"title": "No ID"}],
         is_downloaded=_never_downloaded, folder_keys={}, limit_sec=None,
         platform="YouTube", is_unavailable=lambda _vid: "Removed")
@@ -172,8 +193,8 @@ def test_suppression_is_skipped_for_entries_without_an_id():
 def test_suppression_beats_the_duration_filter_and_folder_match():
     # A suppressed track is reported as unavailable regardless of how it
     # would otherwise have been bucketed.
-    key = sidecar.normalize_track_key("On Disk")
-    out = sidecar.classify_scan_entries(
+    key = normalize_track_key("On Disk")
+    out = crate.classify_scan_entries(
         [{"id": "a", "title": "Too Long", "duration": 99999},
          {"id": "b", "title": "On Disk"}],
         is_downloaded=_never_downloaded,

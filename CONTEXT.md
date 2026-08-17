@@ -25,7 +25,13 @@ design conversations use these words exactly.
   hand-built yt-dlp options dict.
 - **CrateLayout** — the single answer to "where does this track live?": the
   channel folder path and the track's file name. Pure naming — it never
-  reads the disk and never creates a folder (callers still do that). The
+  creates a folder (callers still do that), and its only disk access is
+  `find_existing`, which resolves which of the two exact filename spellings a
+  download actually wrote. The 40-char prefix tier that used to sit beside
+  those two is retired: for any title under 40 characters the "prefix" was the
+  whole title, so an original was claimed as owned by any remix extending it.
+  A padded genre is kept verbatim (it names a real folder and is stored that
+  way); only a whitespace-only genre normalises to the no-genre folder. The
   only place allowed to translate between the in-app no-genre value
   `"(none)"` and the on-disk folder name `_No Genre`; the third form (blank,
   from `genrefix.genre_from_dir_name`) is retired. Lives in

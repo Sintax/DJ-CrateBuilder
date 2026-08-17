@@ -1,19 +1,20 @@
 """Which CrateBuilder genre each library track belongs to, read from its path."""
 import os
 
+from cratebuilder.crate import CrateLayout
 from cratebuilder.rebuild import AUDIO_EXTS
 
-# The bucket a download lands in when no genre was picked. Tracks under it have
-# no genre, which is a real answer — their tag gets cleared, not skipped.
-NO_GENRE_DIR = "_No Genre"
 
+def _tag_genre_for_dir(genre_dir):
+    """The genre tag value a `<platform>/<genre_dir>/` folder implies.
 
-def genre_from_dir_name(genre_dir):
-    """The genre a `<platform>/<genre_dir>/` folder represents. '' for the
-    _No Genre bucket, so callers can pass the result straight to a tag write
-    and have it strip the field."""
-    name = (genre_dir or "").strip()
-    return "" if name == NO_GENRE_DIR else name
+    CrateLayout owns reading a folder name back as a genre; all this adds is
+    the tag-write convention that no genre is written as '' so the frame gets
+    cleared rather than filled with the in-app sentinel. Tracks in the no-genre
+    bucket have no genre, which is a real answer — the tag is cleared, not
+    skipped."""
+    value = CrateLayout.genre_value(genre_dir)
+    return "" if value == CrateLayout.NO_GENRE_VALUE else value
 
 
 def iter_library_tracks(platform_dirs):
@@ -39,7 +40,7 @@ def iter_library_tracks(platform_dirs):
             genre_path = os.path.join(platform_dir, genre_dir)
             if not os.path.isdir(genre_path):
                 continue
-            genre = genre_from_dir_name(genre_dir)
+            genre = _tag_genre_for_dir(genre_dir)
             try:
                 channel_dirs = sorted(os.listdir(genre_path))
             except OSError:
