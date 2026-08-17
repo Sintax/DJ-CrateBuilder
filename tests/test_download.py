@@ -1,0 +1,756 @@
+"""Contract tests for cratebuilder.download.TrackDownloader — one track, end
+to end.
+
+Every test injects a fake runner, so yt-dlp is never imported, nothing is ever
+downloaded and the network is never touched. The Canceller is injected too, so
+no test ever waits out a real backoff. All disk writes go to tmp_path.
+"""
+import pytest
+
+from cratebuilder.crate import CrateLayout
+from cratebuilder.db import DownloadsDatabase
+from cratebuilder.download import (
+    MAX_ATTEMPTS, NullSink, Outcome, TrackDownloader, TrackPlan,
+    classify_download_failure, download_opts_builder, looks_age_restricted,
+    parse_percent, rung_kbps, strip_ansi,
+)
+from cratebuilder.settings import CookieConfig, DownloadPolicy
+
+
+# ── doubles ──────────────────────────────────────────────────────────────────
+class FakeRunner:
+    """Records (opts, url) per call and replays one queued result per call.
+
+    An Exception instance is raised, a callable is invoked with (opts, url) so
+    it can drive the progress hook, anything else is returned as the info dict.
+    Running out of results is an error — a test that under-queues is a test
+    whose ladder ran a rung it should not have."""
+
+    def __init__(self, *results):
+        self.results = list(results)
+        self.calls = []
+
+    def __call__(self, opts, url):
+        self.calls.append((opts, url))
+        assert self.results, f"runner called {len(self.calls)}x, unqueued"
+        result = self.results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        if callable(result):
+            return result(opts, url)
+        return result
+
+    @property
+    def opts(self):
+        return self.calls[-1][0]
+
+
+class RecordingSink:
+    """Every Sink event, in order, as a tuple."""
+
+    def __init__(self):
+        self.events = []
+
+    def started(self, title):
+        self.events.append(("started", title))
+
+    def progress(self, percent=None, speed_text=""):
+        self.events.append(("progress", percent, speed_text))
+
+    def bitrate_detected(self, source_abr, target_kbps):
+        self.events.append(("bitrate_detected", source_abr, target_kbps))
+
+    def title_corrected(self, title):
+        self.events.append(("title_corrected", title))
+
+    def finished(self):
+        self.events.append(("finished",))
+
+    def kinds(self):
+        return [e[0] for e in self.events]
+
+
+class FakeCanceller:
+    """Records every backoff it is asked to wait out. Reports cancellation on
+    the *cancel_on*-th wait (1-based); never, when that is None. Never sleeps."""
+
+    def __init__(self, cancel_on=None):
+        self.waits = []
+        self.cancel_on = cancel_on
+
+    def wait(self, timeout=None):
+        self.waits.append(timeout)
+        return self.cancel_on is not None and len(self.waits) >= self.cancel_on
+
+
+class RecordingLog:
+    """Stand-in for the app's activity logger and debug logger."""
+
+    def __init__(self):
+        self.lines = []
+
+    def info(self, message):
+        self.lines.append(("info", message))
+
+    def warning(self, message):
+        self.lines.append(("warning", message))
+
+    def error(self, message):
+        self.lines.append(("error", message))
+
+    def debug(self, message):
+        self.lines.append(("debug", message))
+
+    def at(self, level):
+        return [m for lvl, m in self.lines if lvl == level]
+
+
+class FakeDb:
+    """Records the two DB calls a download makes, with their kwargs."""
+
+    def __init__(self):
+        self.downloads = []
+        self.unavailable = []
+
+    def add_download(self, **kwargs):
+        self.downloads.append(kwargs)
+
+    def record_unavailable(self, **kwargs):
+        self.unavailable.append(kwargs)
+        return True
+
+
+def _policy(**over):
+    """A real DownloadPolicy snapshot, so the field names a download reads are
+    pinned against the declared record rather than a loose stub."""
+    fields = dict(
+        skip_existing=True, skip_mode="In Folder Only", limit_enabled=False,
+        limit_minutes=8, bitrate_quality="192", no_conversion=False,
+        sleep_enabled=True, sleep_mode="Auto", sleep_preset="Light  (1–5 s)",
+        sleep_min=1, sleep_max=5, geo_bypass=True, rotate_ua=True,
+        cover_art_enabled=True, cover_art_mode="crop")
+    fields.update(over)
+    return DownloadPolicy(**fields)
+
+
+def _cookies(use_cookies=True):
+    return CookieConfig(use_cookies=use_cookies, cookie_method="Browser",
+                        cookies_browser="Firefox", cookies_profile="",
+                        cookie_file="")
+
+
+def _plan(tmp_path, **over):
+    fields = dict(
+        url="https://youtu.be/v1", title="Track 1",
+        save_dir=str(tmp_path), genre="DnB", platform="YouTube",
+        video_id="v1", expected_path=str(tmp_path / "Track 1.mp3"),
+        target_kbps="192")
+    fields.update(over)
+    return TrackPlan(**fields)
+
+
+def _downloader(runner, **over):
+    kwargs = dict(runner=runner, db=FakeDb(), policy=_policy(),
+                  canceller=FakeCanceller())
+    kwargs.update(over)
+    return TrackDownloader(**kwargs)
+
+
+def _hook_driver(info, *hook_dicts):
+    """A runner result that feeds *hook_dicts* to the opts' progress hook (as
+    yt-dlp would) and then returns *info*."""
+    def run(opts, url):
+        for d in hook_dicts:
+            for hook in opts["progress_hooks"]:
+                hook(d)
+        return info
+    return run
+
+
+AGE_ERROR = RuntimeError("Content warning: this video may be inappropriate "
+                         "for some users. Confirm your age")
+TRANSIENT = "[WinError 10054] An existing connection was forcibly closed"
+# yt-dlp's commonest transient wrapper — and "age" matches inside "webpage",
+# so looks_age_restricted reads it as an age gate.
+TRANSIENT_WEBPAGE = "Unable to download webpage: The read operation timed out"
+
+
+# ── success path, end to end ─────────────────────────────────────────────────
+def test_success_writes_file_tags_db_row_and_outcome(tmp_path):
+    save_dir = tmp_path / "crate"
+    save_dir.mkdir()
+    mp3 = save_dir / "Real Track.mp3"
+    mp3.write_bytes(b"ID3 audio")
+    art = tmp_path / "art.jpg"
+    art.write_bytes(b"jpg")
+
+    db = DownloadsDatabase(str(tmp_path / "cb.db"))
+    tagged, remembered = [], []
+    runner = FakeRunner(_hook_driver(
+        {"title": "Real Track", "id": "vid9", "upload_date": "20240102",
+         "thumbnail": "https://img/9.jpg",
+         "requested_downloads": [{"filepath": str(mp3)}]},
+        {"status": "downloading", "total_bytes": 200, "downloaded_bytes": 100,
+         "info_dict": {"abr": 160, "title": "Real Track"}}))
+
+    dl = TrackDownloader(
+        runner=runner, db=db, policy=_policy(), canceller=FakeCanceller(),
+        tag=lambda path, title, url, genre=None: tagged.append(
+            (path, title, url, genre)),
+        harvest_art=lambda path, vid, title, source_url=None, genre=None: (
+            str(art), True, path),
+        remember=remembered.append)
+
+    plan = _plan(tmp_path, title="Real Track", save_dir=str(save_dir),
+                 video_id="", channel_name="UKF", channel_url="https://yt/c",
+                 channel_id="UC1", thumbnail_url="",
+                 expected_path=str(save_dir / "Real Track.mp3"))
+    outcome = dl.run(plan, NullSink())
+
+    assert outcome == Outcome(
+        kind="downloaded", title="Real Track", path=str(mp3),
+        bitrate_text="160k → 192k",
+        quality_text="160 kbps src → 192 kbps MP3",
+        artwork_path=str(art), artwork_embedded=True)
+    assert tagged == [(str(mp3), "Real Track", plan.url, "DnB")]
+    assert remembered == [str(mp3)]
+
+    rows = db.get_all_downloads()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["video_id"] == "vid9"
+    assert row["title"] == "Real Track"
+    assert row["file_path"] == str(mp3)
+    assert row["genre"] == "DnB"
+    assert row["bitrate"] == "160 kbps src → 192 kbps MP3"
+    assert row["upload_date"] == "20240102"
+    assert row["thumbnail_url"] == "https://img/9.jpg"
+    assert row["channel_name"] == "UKF"
+    assert row["artwork_path"] == str(art)
+
+
+def test_success_without_source_bitrate_reports_target_only(tmp_path):
+    runner = FakeRunner({"title": "T"})
+    dl = _downloader(runner)
+    outcome = dl.run(_plan(tmp_path), NullSink())
+    assert outcome.bitrate_text == "→ 192k"
+    assert outcome.quality_text == "192 kbps MP3"
+
+
+# ── the age-gate ladder: one builder, one difference ─────────────────────────
+def _age_gate_run(tmp_path, sink=None, **over):
+    """Fail the authenticated rung with an age error, succeed unauthenticated.
+    Returns (outcome, first_opts, second_opts)."""
+    runner = FakeRunner(AGE_ERROR, {"title": "T"})
+    kwargs = dict(cookies=_cookies(), ffmpeg_dir=str(tmp_path / "ffmpeg"),
+                  probe_formats=lambda url: [{"vcodec": "none", "abr": 256}])
+    kwargs.update(over)
+    dl = _downloader(runner, **kwargs)
+    plan = _plan(tmp_path, sleep_range=(1, 5), session_ua="UA/1",
+                 cover_art=True)
+    outcome = dl.run(plan, sink or NullSink())
+    assert len(runner.calls) == 2
+    return outcome, runner.calls[0][0], runner.calls[1][0]
+
+
+def test_age_retry_opts_differ_by_exactly_auth_and_derived_bitrate(tmp_path):
+    outcome, first, second = _age_gate_run(tmp_path)
+    assert outcome.kind == "downloaded"
+
+    # The two differences that are allowed to exist.
+    assert first.pop("cookiesfrombrowser") == ("firefox",)
+    assert "cookiesfrombrowser" not in second
+    assert first.pop("postprocessors") == [{
+        "key": "FFmpegExtractAudio", "preferredcodec": "mp3",
+        "preferredquality": "256"}]
+    assert second.pop("postprocessors") == [{
+        "key": "FFmpegExtractAudio", "preferredcodec": "mp3",
+        "preferredquality": "192"}]
+
+    # Nothing else may drift. This is the assertion the phase exists for.
+    assert first == second
+
+
+def test_age_retry_reports_the_bitrate_it_actually_encoded(tmp_path):
+    outcome, _, _ = _age_gate_run(tmp_path)
+    assert outcome.quality_text == "192 kbps MP3"
+
+
+def test_ffmpeg_location_is_present_on_both_rungs(tmp_path):
+    _, first, second = _age_gate_run(tmp_path)
+    expected = str(tmp_path / "ffmpeg")
+    assert first["ffmpeg_location"] == expected
+    assert second["ffmpeg_location"] == expected
+
+
+def test_no_ffmpeg_location_key_when_running_from_source(tmp_path):
+    _, first, second = _age_gate_run(tmp_path, ffmpeg_dir=None)
+    assert "ffmpeg_location" not in first
+    assert "ffmpeg_location" not in second
+
+
+def test_keep_original_format_is_honoured_on_both_rungs(tmp_path):
+    _, first, second = _age_gate_run(
+        tmp_path, policy=_policy(no_conversion=True))
+    assert "postprocessors" not in first
+    assert "postprocessors" not in second
+    # With no conversion the bitrate is not expressed at all, so the rungs
+    # differ by the auth key alone.
+    assert first.pop("cookiesfrombrowser") == ("firefox",)
+    assert first == second
+
+
+def test_sleep_throttle_is_applied_on_both_rungs(tmp_path):
+    _, first, second = _age_gate_run(tmp_path)
+    for opts in (first, second):
+        assert opts["sleep_interval"] == 1
+        assert opts["max_sleep_interval"] == 5
+
+
+def test_cover_art_and_user_agent_and_geo_are_on_both_rungs(tmp_path):
+    _, first, second = _age_gate_run(tmp_path)
+    for opts in (first, second):
+        assert opts["writethumbnail"] is True
+        assert opts["http_headers"] == {"User-Agent": "UA/1"}
+        assert opts["geo_bypass"] is True
+
+
+def test_js_runtime_is_on_both_rungs_from_the_shared_helper(tmp_path):
+    _, first, second = _age_gate_run(tmp_path)
+    for opts in (first, second):
+        assert opts["js_runtimes"] == {"node": {"path": None}}
+        assert opts["remote_components"] == ["ejs:github"]
+
+
+def test_unauthenticated_first_rung_never_climbs_the_age_rung(tmp_path):
+    runner = FakeRunner(AGE_ERROR)
+    dl = _downloader(runner, cookies=_cookies(use_cookies=False))
+    outcome = dl.run(_plan(tmp_path), NullSink())
+    assert len(runner.calls) == 1
+    assert outcome.kind == "failed"
+
+
+def test_non_age_failure_never_climbs_the_age_rung(tmp_path):
+    runner = FakeRunner(RuntimeError("Video unavailable"))
+    dl = _downloader(runner, cookies=_cookies())
+    outcome = dl.run(_plan(tmp_path), NullSink())
+    assert len(runner.calls) == 1
+    assert outcome == Outcome(kind="failed", reason="unavailable",
+                              title="Track 1")
+
+
+def test_bitrate_probe_only_runs_authenticated(tmp_path):
+    probed = []
+    runner = FakeRunner({"title": "T"})
+    dl = _downloader(runner, cookies=_cookies(use_cookies=False),
+                     probe_formats=lambda url: probed.append(url) or [])
+    dl.run(_plan(tmp_path), NullSink())
+    assert probed == []
+    assert runner.opts["postprocessors"][0]["preferredquality"] == "192"
+
+
+def test_cookie_settings_that_produce_no_options_are_not_authentication(
+        tmp_path):
+    """"Cookie File" with a path that is not on disk yields {} — so cookies are
+    switched on and yet the attempt is anonymous.
+
+    Treating use_cookies alone as authentication spent a probe round-trip that
+    could never see an authenticated ladder, and climbed an age rung whose
+    options were byte-identical to the one that just failed."""
+    probed = []
+    runner = FakeRunner(AGE_ERROR)
+    cookies = CookieConfig(use_cookies=True, cookie_method="Cookie File",
+                           cookies_browser="Firefox", cookies_profile="",
+                           cookie_file=str(tmp_path / "not-here.txt"))
+    dl = _downloader(runner, cookies=cookies,
+                     probe_formats=lambda url: probed.append(url) or [
+                         {"vcodec": "none", "abr": 256}])
+    outcome = dl.run(_plan(tmp_path), NullSink())
+
+    assert "cookiefile" not in runner.opts
+    assert "cookiesfrombrowser" not in runner.opts
+    assert probed == []
+    assert len(runner.calls) == 1
+    assert outcome == Outcome(kind="failed", reason="age-restricted",
+                              title="Track 1")
+
+
+def test_bitrate_probe_failure_falls_back_to_configured_bitrate(tmp_path):
+    def boom(url):
+        raise RuntimeError("probe exploded")
+
+    runner = FakeRunner({"title": "T"})
+    dbg = RecordingLog()
+    dl = _downloader(runner, cookies=_cookies(), probe_formats=boom, debug=dbg)
+    outcome = dl.run(_plan(tmp_path), NullSink())
+    assert outcome.kind == "downloaded"
+    assert runner.opts["postprocessors"][0]["preferredquality"] == "192"
+    assert any("BITRATE PROBE FAIL" in m for m in dbg.at("warning"))
+
+
+# ── transient retry ladder ───────────────────────────────────────────────────
+def test_transient_error_retries_then_succeeds_waiting_the_backoff(tmp_path):
+    runner = FakeRunner(RuntimeError(TRANSIENT), {"title": "T"})
+    canceller = FakeCanceller()
+    log = RecordingLog()
+    dl = _downloader(runner, canceller=canceller, logger=log)
+    outcome = dl.run(_plan(tmp_path), NullSink())
+    assert outcome.kind == "downloaded"
+    assert len(runner.calls) == 2
+    assert canceller.waits == [2]
+    assert any("NET RETRY" in m for m in log.at("info"))
+
+
+def test_transient_error_gives_up_after_max_attempts(tmp_path):
+    runner = FakeRunner(*[RuntimeError(TRANSIENT)] * MAX_ATTEMPTS)
+    canceller = FakeCanceller()
+    dl = _downloader(runner, canceller=canceller)
+    outcome = dl.run(_plan(tmp_path), NullSink())
+    assert len(runner.calls) == MAX_ATTEMPTS
+    assert canceller.waits == [2, 4]
+    assert outcome.kind == "failed"
+
+
+def test_age_rung_gets_its_own_transient_retry_ladder(tmp_path):
+    runner = FakeRunner(AGE_ERROR, RuntimeError(TRANSIENT), {"title": "T"})
+    canceller = FakeCanceller()
+    dl = _downloader(runner, canceller=canceller, cookies=_cookies())
+    outcome = dl.run(_plan(tmp_path), NullSink())
+    assert outcome.kind == "downloaded"
+    assert len(runner.calls) == 3
+    assert canceller.waits == [2]
+
+
+def test_cancel_during_backoff_is_an_outcome_not_an_error(tmp_path):
+    runner = FakeRunner(RuntimeError(TRANSIENT), RuntimeError(TRANSIENT))
+    canceller = FakeCanceller(cancel_on=1)
+    log = RecordingLog()
+    errors = []
+    db = FakeDb()
+    dl = _downloader(runner, canceller=canceller, db=db, logger=log,
+                     log_error=lambda *a: errors.append(a))
+    outcome = dl.run(_plan(tmp_path), NullSink())
+
+    assert outcome == Outcome(kind="cancelled", title="Track 1")
+    assert len(runner.calls) == 1
+    assert canceller.waits == [2]
+    assert errors == []
+    assert log.at("error") == []
+    assert db.downloads == [] and db.unavailable == []
+
+
+# ── failure recording ────────────────────────────────────────────────────────
+def test_permanent_failure_is_remembered_as_unavailable(tmp_path):
+    runner = FakeRunner(RuntimeError("ERROR: HTTP Error 404: Not Found"))
+    db = FakeDb()
+    dl = _downloader(runner, db=db)
+    plan = _plan(tmp_path, channel_url="",
+                 suppress_channel_url="https://youtube.com/@ukf/")
+    outcome = dl.run(plan, NullSink())
+    assert outcome == Outcome(kind="unavailable", reason="Removed",
+                              title="Track 1")
+    assert db.unavailable == [dict(
+        platform="YouTube", video_id="v1",
+        channel_url="https://youtube.com/@ukf", title="Track 1",
+        reason="Removed")]
+
+
+def test_deferred_failure_is_remembered_nowhere(tmp_path):
+    runner = FakeRunner(RuntimeError("This live event will begin in 3 hours"))
+    db = FakeDb()
+    errors = []
+    dl = _downloader(runner, db=db, log_error=lambda *a: errors.append(a))
+    outcome = dl.run(_plan(tmp_path), NullSink())
+    assert outcome == Outcome(kind="deferred", reason="Not out yet",
+                              title="Track 1")
+    assert db.unavailable == []
+    assert errors == [("Track 1", "https://youtu.be/v1", "Not out yet")]
+
+
+def test_failure_logs_the_full_error_once_to_the_activity_log(tmp_path):
+    runner = FakeRunner(RuntimeError("\x1b[0;31mERROR:\x1b[0m Video "
+                                     "unavailable"))
+    log = RecordingLog()
+    dl = _downloader(runner, logger=log)
+    dl.run(_plan(tmp_path), NullSink())
+    assert len(log.at("error")) == 1
+    assert log.at("error")[0].startswith("ERROR       | Title: Track 1 | ")
+
+
+# ── the classification ladder ────────────────────────────────────────────────
+@pytest.mark.parametrize("error_text,kind,reason", [
+    ("This video premieres in 5 hours", "deferred", "Not out yet"),
+    ("Only DRM-protected formats are available", "unavailable",
+     "DRM-protected"),
+    ("ERROR: HTTP Error 404: Not Found", "unavailable", "Removed"),
+    ("Video not available from your location", "unavailable", "Geo-blocked"),
+    ("ffmpeg not found; install it", "failed", "FFmpeg missing"),
+    ("Sign in to confirm you are not a bot", "failed", "login required"),
+    ("Video unavailable", "failed", "unavailable"),
+    ("This is a private video", "failed", "private"),
+    ("Blocked on copyright grounds", "failed", "copyright claim"),
+    ("This video is available to members only", "failed", "members only"),
+    ("This video has been removed by the uploader", "failed", "removed"),
+    ("The uploader has blocked it in your country", "failed", "blocked"),
+    ("Requested format is not available", "failed", "format unavailable"),
+])
+def test_classification_ladder_branches(error_text, kind, reason):
+    failure = classify_download_failure(error_text)
+    assert (failure.kind, failure.reason) == (kind, reason)
+
+
+def test_deferred_beats_permanent():
+    # A premiere whose message also carries a 404. Read as "Removed" it would
+    # be filed in the permanently-unavailable memory and buried for good.
+    failure = classify_download_failure(
+        "ERROR: HTTP Error 404: Not Found - this video premieres in 2 days")
+    assert (failure.kind, failure.reason) == ("deferred", "Not out yet")
+
+
+def test_is_age_is_sticky_and_sits_below_ffmpeg_and_sign_in():
+    # The retry's own error says nothing about age, but the first failure did.
+    assert classify_download_failure(
+        "Requested format is not available", is_age=True).reason \
+        == "age-restricted"
+    # Order is preserved: both of these outrank the sticky age verdict.
+    assert classify_download_failure(
+        "ffmpeg exited with code 1", is_age=True).reason == "FFmpeg missing"
+    assert classify_download_failure(
+        "Sign in to confirm your age", is_age=True).reason == "login required"
+
+
+def test_unclassified_error_falls_back_to_sixty_characters():
+    text = "Kaboom " + "x" * 100
+    failure = classify_download_failure(text)
+    assert failure.kind == "failed"
+    assert failure.reason == text[:60]
+    assert len(failure.reason) == 60
+
+
+def test_sticky_age_survives_a_second_rung_with_a_different_error(tmp_path):
+    runner = FakeRunner(AGE_ERROR, RuntimeError("Requested format is not "
+                                                "available"))
+    dl = _downloader(runner, cookies=_cookies())
+    outcome = dl.run(_plan(tmp_path), NullSink())
+    assert outcome == Outcome(kind="failed", reason="age-restricted",
+                              title="Track 1")
+
+
+def test_looks_age_restricted_matches_the_original_substring_test():
+    assert looks_age_restricted("Confirm your age to continue")
+    assert looks_age_restricted("This is ADULT content")
+    assert not looks_age_restricted("Video unavailable")
+
+
+def test_a_transient_webpage_timeout_never_climbs_the_age_rung(tmp_path):
+    """The "age" in "webpage" must not buy a flaky connection a second ladder.
+
+    looks_age_restricted says yes to this text, so without the transient guard
+    every timed-out track paid 6 attempts and 12s of backoff instead of 3 and
+    6s — twice as long to give up on a connection that is simply wobbling."""
+    assert looks_age_restricted(TRANSIENT_WEBPAGE)
+
+    runner = FakeRunner(*[RuntimeError(TRANSIENT_WEBPAGE)] * MAX_ATTEMPTS)
+    canceller = FakeCanceller()
+    dl = _downloader(runner, canceller=canceller, cookies=_cookies())
+    outcome = dl.run(_plan(tmp_path), NullSink())
+
+    assert len(runner.calls) == MAX_ATTEMPTS
+    assert canceller.waits == [2, 4]
+    assert all("cookiesfrombrowser" in opts for opts, _ in runner.calls)
+    assert outcome.kind == "failed"
+
+
+# ── sink events ──────────────────────────────────────────────────────────────
+def test_sink_event_stream_for_a_successful_download(tmp_path):
+    sink = RecordingSink()
+    runner = FakeRunner(_hook_driver(
+        {"title": "Real Title"},
+        {"status": "downloading", "total_bytes": 200, "downloaded_bytes": 50,
+         "_speed_str": "\x1b[0;32m1.20MiB/s\x1b[0m", "_eta_str": "00:42",
+         "_percent_str": " 25.0%",
+         "info_dict": {"abr": 160, "title": "Real Title"}},
+        {"status": "finished"}))
+    dl = _downloader(runner)
+    dl.run(_plan(tmp_path), sink)
+
+    assert sink.events == [
+        ("started", "Track 1"),
+        ("bitrate_detected", 160, "192"),
+        ("progress", 25.0, "1.20MiB/s  00:42"),
+        ("title_corrected", "Real Title"),
+        ("finished",),
+    ]
+
+
+def test_progress_prefers_bytes_and_falls_back_to_the_percent_string(tmp_path):
+    sink = RecordingSink()
+    runner = FakeRunner(_hook_driver(
+        {"title": "T"},
+        {"status": "downloading", "total_bytes": 200, "downloaded_bytes": 100,
+         "_percent_str": " 99.9%"},
+        {"status": "downloading", "downloaded_bytes": 100,
+         "_percent_str": " 42.5%"},
+        {"status": "downloading", "downloaded_bytes": 100,
+         "_percent_str": " N/A%"}))
+    _downloader(runner).run(_plan(tmp_path), sink)
+    progress = [e for e in sink.events if e[0] == "progress"]
+    assert progress == [("progress", 50.0, ""), ("progress", 42.5, "")]
+
+
+def test_bitrate_detected_fires_once_for_the_first_source_bitrate(tmp_path):
+    sink = RecordingSink()
+    downloading = {"status": "downloading", "total_bytes": 4,
+                   "downloaded_bytes": 1, "info_dict": {"tbr": 128}}
+    runner = FakeRunner(_hook_driver({"title": "T"}, downloading,
+                                     dict(downloading, downloaded_bytes=2)))
+    _downloader(runner).run(_plan(tmp_path), sink)
+    assert sink.kinds().count("bitrate_detected") == 1
+    assert ("bitrate_detected", 128, "192") in sink.events
+
+
+def test_bitrate_detected_fires_again_on_the_second_rung(tmp_path):
+    """The source bitrate is per rung, not per track.
+
+    The authenticated rung reported 256k and then age-failed; the label, the
+    queue row and the downloads row's bitrate column all used to attribute that
+    to the unauthenticated rung's actual 128k download."""
+    def abr_then_age_fail(opts, url):
+        for hook in opts["progress_hooks"]:
+            hook({"status": "downloading", "total_bytes": 4,
+                  "downloaded_bytes": 1, "info_dict": {"abr": 256}})
+        raise AGE_ERROR
+
+    sink = RecordingSink()
+    db = FakeDb()
+    runner = FakeRunner(abr_then_age_fail, _hook_driver(
+        {"title": "T"},
+        {"status": "downloading", "total_bytes": 4, "downloaded_bytes": 1,
+         "info_dict": {"abr": 128}}))
+    dl = _downloader(
+        runner, db=db, cookies=_cookies(),
+        probe_formats=lambda url: [{"vcodec": "none", "abr": 256}])
+    outcome = dl.run(_plan(tmp_path), sink)
+
+    assert outcome.kind == "downloaded"
+    assert [e for e in sink.events if e[0] == "bitrate_detected"] == [
+        ("bitrate_detected", 256, "256"),
+        ("bitrate_detected", 128, "192"),
+    ]
+    # Everything recorded describes the rung that actually downloaded.
+    assert outcome.quality_text == "128 kbps src → 192 kbps MP3"
+    assert outcome.bitrate_text == "128k → 192k"
+    assert db.downloads[0]["bitrate"] == "128 kbps src → 192 kbps MP3"
+
+
+def test_title_corrected_replaces_the_queue_write_after_the_download(tmp_path):
+    sink = RecordingSink()
+    runner = FakeRunner({"title": "The Real Name"})
+    outcome = _downloader(runner).run(_plan(tmp_path), sink)
+    assert ("title_corrected", "The Real Name") in sink.events
+    assert outcome.title == "The Real Name"
+
+
+def test_title_corrected_does_not_repeat_a_title_the_hook_reported(tmp_path):
+    sink = RecordingSink()
+    runner = FakeRunner(_hook_driver(
+        {"title": "Real Title"},
+        {"status": "downloading", "total_bytes": 2, "downloaded_bytes": 1,
+         "info_dict": {"title": "Real Title"}}))
+    _downloader(runner).run(_plan(tmp_path), sink)
+    assert sink.kinds().count("title_corrected") == 1
+
+
+def test_unchanged_title_reports_no_correction(tmp_path):
+    sink = RecordingSink()
+    runner = FakeRunner({"title": "Track 1"})
+    _downloader(runner).run(_plan(tmp_path), sink)
+    assert "title_corrected" not in sink.kinds()
+
+
+def test_run_without_a_sink_is_silent_not_fatal(tmp_path):
+    runner = FakeRunner(_hook_driver(
+        {"title": "T"},
+        {"status": "downloading", "total_bytes": 2, "downloaded_bytes": 1},
+        {"status": "finished"}))
+    assert _downloader(runner).run(_plan(tmp_path)).kind == "downloaded"
+
+
+# ── "Never raises" is a guarantee the batch driver leans on ──────────────────
+def test_a_raise_from_the_db_row_is_one_failed_track_not_a_dead_batch(tmp_path):
+    """A raise out of run() returns no counts at all, and the batch driver
+    reads that as a fatal error and breaks out of every remaining URL. So
+    everything after the download — the DB row included — has to end as an
+    Outcome."""
+    class ExplodingDb(FakeDb):
+        def add_download(self, **kwargs):
+            raise RuntimeError("database is locked")
+
+    dbg = RecordingLog()
+    runner = FakeRunner({"title": "T"})
+    outcome = _downloader(runner, db=ExplodingDb(), debug=dbg).run(
+        _plan(tmp_path), NullSink())
+
+    assert outcome.kind == "failed"
+    assert "database is locked" in outcome.reason
+    assert any("DOWNLOAD ABORT" in m for m in dbg.at("error"))
+
+
+def test_a_raise_from_the_activity_log_is_also_only_one_failed_track(tmp_path):
+    def boom(*a, **kw):
+        raise OSError("activity.log is read-only")
+
+    runner = FakeRunner({"title": "T"})
+    outcome = _downloader(runner, log_download=boom).run(
+        _plan(tmp_path), NullSink())
+    assert outcome == Outcome(kind="failed",
+                              reason="activity.log is read-only")
+
+
+# ── the pure pieces ─────────────────────────────────────────────────────────
+def test_rung_kbps_states_the_bitrate_rule_once(tmp_path):
+    plan = _plan(tmp_path, target_kbps="192")
+    assert rung_kbps(plan, True, "256") == "256"
+    assert rung_kbps(plan, False, "256") == "192"
+    assert rung_kbps(plan, True, None) == "192"
+
+
+def test_one_builder_yields_two_dicts_differing_only_by_auth(tmp_path):
+    plan = _plan(tmp_path, target_kbps="320")
+    build = download_opts_builder(plan, cookies=_cookies(),
+                                  no_conversion=True)
+    authed, anon = build(True), build(False)
+    assert authed.pop("cookiesfrombrowser") == ("firefox",)
+    assert authed == anon
+
+
+def test_strip_ansi_and_parse_percent():
+    assert strip_ansi("\x1b[0;32mgo\x1b[0m") == "go"
+    assert parse_percent(" \x1b[0m12.5%") == 12.5
+    assert parse_percent(" N/A%") is None
+    assert parse_percent("") is None
+
+
+def test_expected_path_is_used_when_the_info_dict_names_no_file(tmp_path):
+    save_dir = tmp_path / "crate"
+    save_dir.mkdir()
+    runner = FakeRunner({"title": "Track 1"})
+    db = FakeDb()
+    dl = _downloader(runner, db=db)
+    plan = _plan(tmp_path, save_dir=str(save_dir),
+                 expected_path=str(save_dir / "Track 1.mp3"))
+    outcome = dl.run(plan, NullSink())
+    assert outcome.path == str(save_dir / "Track 1.mp3")
+    assert db.downloads[0]["file_path"] == str(save_dir / "Track 1.mp3")
+
+
+def test_real_file_on_disk_wins_over_the_guessed_name(tmp_path):
+    save_dir = tmp_path / "crate"
+    save_dir.mkdir()
+    real = save_dir / CrateLayout.track_file_name("Real Track")
+    real.write_bytes(b"audio")
+    runner = FakeRunner({"title": "Real Track"})
+    dl = _downloader(runner)
+    plan = _plan(tmp_path, save_dir=str(save_dir),
+                 expected_path=str(save_dir / "Track 1.mp3"))
+    assert dl.run(plan, NullSink()).path == str(real)

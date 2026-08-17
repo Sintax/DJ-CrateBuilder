@@ -283,28 +283,76 @@ def test_app_reachability_probe_delegates_to_the_ydl_module(app, monkeypatch):
     assert seen == [0.5]
 
 
-# ── the download sites keep their own option builders ─────────────────────────
+# ── the download site shares the read-only site's option helpers ──────────────
 
-def test_the_download_option_helpers_still_exist_for_the_download_path(app):
-    """_apply_cookie_opts / _apply_js_runtime / _dbg_ydl_opts survive only for
-    the two download sites; the read-only sites must no longer need them."""
-    opts = {}
+def test_the_download_path_authenticates_through_the_shared_helpers(app):
+    """What _apply_cookie_opts / _apply_js_runtime used to guard, at the seam
+    that replaced them.
+
+    The download options now come out of cratebuilder.download's one builder,
+    fed the same CookieConfig snapshot a YdlSession authenticates with — so the
+    authenticated attempt carries the user's cookies and the JS runtime, and the
+    unauthenticated age-gate attempt differs by the cookies alone."""
+    from cratebuilder import download as cb_download
+
     app._use_cookies.set(True)
     app._cookie_method.set("Browser")
     app._cookies_browser.set("Brave")
     app._cookies_profile.set("")
-    app._apply_cookie_opts(opts)
-    app._apply_js_runtime(opts)
-    assert opts["cookiesfrombrowser"] == ("brave",)
-    assert opts["js_runtimes"] == {"node": {"path": None}}
+    plan = cb_download.TrackPlan(url="https://yt/watch?v=x", title="T",
+                                 save_dir="C:/crate", genre="DnB",
+                                 platform="YouTube")
+    opts_for = cb_download.download_opts_builder(
+        plan, cookies=app._cookie_config())
+
+    authed = opts_for(True)
+    assert authed["cookiesfrombrowser"] == ("brave",)
+    assert authed["js_runtimes"] == {"node": {"path": None}}
+
+    anon = opts_for(False)
+    assert "cookiesfrombrowser" not in anon
+    assert anon["js_runtimes"] == {"node": {"path": None}}
 
 
-def test_read_only_sites_build_no_options_dict_of_their_own(cb_mod):
-    """One YoutubeDL construction per download site and no more: every
-    read-only question goes through cratebuilder.ydl."""
+def test_the_monolith_builds_no_yt_dlp_options_dict_at_all(cb_mod):
+    """Zero YoutubeDL constructions in the app file: every read-only question
+    goes through cratebuilder.ydl and the download goes through
+    cratebuilder.download."""
     import inspect
     source = inspect.getsource(cb_mod)
-    assert source.count("yt_dlp.YoutubeDL(") == 2
+    assert source.count("yt_dlp.YoutubeDL(") == 0
+    assert "progress_hooks" not in source
+    assert "FFmpegExtractAudio" not in source
+
+
+def test_the_downloader_is_constructed_once_per_track(cb_mod):
+    """Inside the per-entry loop, not above it.
+
+    The policy and cookie snapshots are read at construction, so building it
+    per URL silently narrows "Keep original format", geo-bypass and use_cookies
+    from per-track to per-URL: a setting the user changes mid-channel would
+    wait for the next URL instead of the next track, which is not what the
+    pre-TrackDownloader code did."""
+    import inspect
+    lines = inspect.getsource(cb_mod.MP3DownloaderApp._process_one_url).splitlines()
+    loop = next(i for i, ln in enumerate(lines)
+                if "for idx, entry in enumerate(entries)" in ln)
+    built = [i for i, ln in enumerate(lines)
+             if "cb_download.TrackDownloader(" in ln]
+    assert len(built) == 1
+    assert built[0] > loop
+
+
+def test_a_cancelled_track_leaves_a_settled_queue_row(cb_mod):
+    """The cancelled branch breaks out of the loop, so it has to render the row
+    on the way past — otherwise the in-flight row stays ST_ACTIVE and spins for
+    the rest of the session."""
+    import inspect
+    source = inspect.getsource(cb_mod.MP3DownloaderApp._process_one_url)
+    body = source.split('if outcome.kind == "cancelled":', 1)[1]
+    head = body.split("break", 1)[0]
+    assert "_set_row_state" in head
+    assert "ST_SKIPPED" in head
 
 
 def test_cookie_config_snapshot_is_what_the_session_authenticates_with(app):

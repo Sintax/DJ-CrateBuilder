@@ -101,9 +101,12 @@ class ChannelIdentity:
     raw: dict
 
 
-def _cookie_opts(cookies):
-    """The session's one auth policy as yt-dlp options: empty when there is no
-    CookieConfig or the user has cookies switched off."""
+def cookie_opts(cookies):
+    """One auth policy as yt-dlp options: empty when there is no CookieConfig
+    or the user has cookies switched off.
+
+    Shared with cratebuilder.download so the authenticated download attempt
+    authenticates through exactly the code a read-only probe does."""
     if cookies is None or not cookies.use_cookies:
         return {}
     return util.build_cookie_opts(
@@ -112,6 +115,25 @@ def _cookie_opts(cookies):
         cookies.cookies_browser,
         (cookies.cookies_profile or "").strip(),
     )
+
+
+_cookie_opts = cookie_opts
+
+
+def js_runtime_opts():
+    """Options that enable a JavaScript runtime so yt-dlp can solve YouTube's
+    "n" signature challenge. Without it, YouTube returns only storyboard
+    ("images") formats and every real download fails with "Requested format is
+    not available". Node >= 22 plus the yt-dlp-ejs solver scripts are required;
+    if neither is present yt-dlp simply falls back (the download then skips
+    gracefully). See yt-dlp wiki: EJS.
+
+    Only needed on opts that extract real formats — flat listing/scan opts
+    don't trip the challenge. remote_components is the fallback for machines
+    without the local yt-dlp-ejs package: let yt-dlp fetch the solver scripts
+    from GitHub on demand."""
+    return {"js_runtimes": {"node": {"path": None}},
+            "remote_components": ["ejs:github"]}
 
 
 def _flatten_tabs(entries):
@@ -153,7 +175,7 @@ class YdlSession:
 
     def __init__(self, cookies=None, runner=None, debug=None,
                  network_probe=None):
-        self._cookie_opts = _cookie_opts(cookies)
+        self._cookie_opts = cookie_opts(cookies)
         self._runner = runner or extract_info
         self._debug = debug
         self._network_probe = network_probe or network_is_reachable
@@ -274,10 +296,8 @@ class YdlSession:
         opts.update(extra)
         opts.update(self._cookie_opts)
         if js_runtime:
-            opts["js_runtimes"] = {"node": {"path": None}}
-            # Fallback for machines without the local yt-dlp-ejs package: let
-            # yt-dlp fetch the solver scripts from GitHub on demand.
-            opts.setdefault("remote_components", ["ejs:github"])
+            for key, value in js_runtime_opts().items():
+                opts.setdefault(key, value)
         return opts
 
     def _run(self, intent, target, opts, shape=None, require_answer=False):
