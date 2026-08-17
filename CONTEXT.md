@@ -51,16 +51,28 @@ design conversations use these words exactly.
   skip · download · confirm-redownload; the Tk prompt stays at the caller.
 - **TrackDownloader** — owns one track end-to-end: build options, run the
   attempt ladder, tag, harvest cover art, write the downloads row, classify
-  and record failures. Constructed once per batch with its dependencies
-  (ydl runner, db, tagging, artwork, canceller, `DownloadPolicy`, ffmpeg
-  locator); `run(plan, sink) -> Outcome` per track. Options exist only via
+  and record failures. Constructed once per **track**, with its dependencies
+  (ydl runner, db, `DownloadPolicy` and `CookieConfig` snapshots, canceller,
+  ffmpeg locator, format probe, and callables for tagging, artwork, the
+  crate's `remember`, and the two activity-log writers); `run(plan, sink) ->
+  Outcome`. Per track and not per batch because the two snapshots are read at
+  construction: reading them per track is what keeps a setting the user
+  changes mid-batch — "Keep original format", geo-bypass, cookies — taking
+  effect on the next track rather than the next URL. Options exist only via
   one builder taking an `authenticated` flag, so the age-gate attempt can
-  differ from the first by exactly that flag and nothing else. The per-entry
+  differ from the first by exactly that flag and the bitrate it implies, and
+  by nothing else. `run` never raises: the batch driver has no per-track
+  guard, so a raise would abandon every remaining track. The per-entry
   loop, pause gate and counters stay in the monolith for now.
-- **Attempt ladder** — the declared retry policy inside a `TrackDownloader`:
-  transient network errors retry with interruptible exponential backoff;
-  an age-gate failure retries once with authentication dropped. Both are
-  the module's, not the caller's.
+- **Attempt ladder** — the declared retry policy inside a `TrackDownloader`,
+  two rungs deep: authenticated, then unauthenticated. Each rung is the same
+  transient-retry loop (3 attempts, interruptible exponential backoff), so an
+  age-gate retry is no longer a one-shot that a dropped connection can kill.
+  The second rung is climbed only when the first authenticated *and* its
+  failure reads like an age gate *and* that failure was not transient — the
+  age test is a substring match that also fires inside "webpage", so without
+  the last condition a common network wrapper would double every failing
+  track's give-up time. The whole policy is the module's, not the caller's.
 - **Sink** — the seam a `TrackDownloader` reports progress through, as
   semantic events (`started`, `progress`, `bitrate_detected`,
   `title_corrected`, `finished`) rather than raw yt-dlp hook dicts. Tk

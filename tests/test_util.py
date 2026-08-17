@@ -1,3 +1,4 @@
+import pathlib
 import re
 import datetime as _dt
 
@@ -129,10 +130,32 @@ def test_build_cookie_opts_browser_without_profile():
     assert out == {"cookiesfrombrowser": ("firefox",)}
 
 
-def test_build_cookie_opts_delegator(cb):
-    # The monolith's _apply_cookie_opts uses the same extracted helper, so the
-    # metadata / probe / download / scan cookie blocks share one source.
-    assert cb.build_cookie_opts is util.build_cookie_opts
+def test_build_cookie_opts_has_exactly_one_caller_chain():
+    # ydl.cookie_opts is the only thing that turns a CookieConfig into cookie
+    # options, and it does it with this helper — so the probe, scan, search and
+    # download cookie blocks all share one source. The monolith no longer names
+    # the helper at all.
+    import inspect
+    from cratebuilder import download as cb_download
+    from cratebuilder import ydl as cb_ydl
+    from cratebuilder.settings import CookieConfig
+    assert cb_ydl.cookie_opts(CookieConfig(
+        use_cookies=True, cookie_method="From Browser",
+        cookies_browser="Chrome", cookies_profile="Default",
+        cookie_file="")) == util.build_cookie_opts(
+            "From Browser", "", "Chrome", "Default")
+
+    # The uniqueness half of the claim, in the style of the pin in
+    # tests/test_ydl_call_sites.py: across the whole package the builder is
+    # named in exactly two modules — the one that defines it and the one
+    # caller chain that uses it. download.py in particular reaches cookies
+    # only through ydl.cookie_opts.
+    package = pathlib.Path(util.__file__).parent
+    namers = sorted(p.stem for p in package.glob("*.py")
+                    if "build_cookie_opts" in p.read_text(encoding="utf-8"))
+    assert namers == ["util", "ydl"], namers
+    assert "build_cookie_opts" not in inspect.getsource(cb_download)
+    assert "cookie_opts(" in inspect.getsource(cb_download)
 
 
 # ── derive_collection_name ────────────────────────────────────────────────────

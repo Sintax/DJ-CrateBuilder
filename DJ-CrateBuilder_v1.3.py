@@ -21,11 +21,9 @@ from cratebuilder.util import (
     format_yyyymmdd_readable, format_timestamp_relative,
     interval_label_to_seconds,
     safe_filename, push_mru,
-    detect_platform, redact_ydl_opts, build_cookie_opts,
-    derive_collection_name, find_matching_watchlist_row,
+    detect_platform, derive_collection_name, find_matching_watchlist_row,
     soundcloud_profile_handle, merge_soundcloud_candidates,
-    runtime_data_dir, classify_permanent_failure, classify_deferred_failure,
-    download_result_facts, ensure_usable_tempdir, default_base_dir,
+    runtime_data_dir, ensure_usable_tempdir, default_base_dir,
 )
 from cratebuilder.sidecar import (
     channel_url_from_id, channel_id_from_url,
@@ -47,6 +45,7 @@ from cratebuilder import genrefix as cb_genrefix
 from cratebuilder import rebuild as cb_rebuild
 from cratebuilder import links as cb_links
 from cratebuilder import ydl as cb_ydl
+from cratebuilder import download as cb_download
 from cratebuilder.singleton import (
     acquire_single_instance, request_show, listen_for_show_requests,
     SINGLE_INSTANCE_PORT)
@@ -4289,7 +4288,68 @@ class _ArtworkBackfillSession:
                 getattr(self.app, _btn).config(state="normal")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# TkDownloadSink — the Tk end of a TrackDownloader's Sink
+# ══════════════════════════════════════════════════════════════════════════════
+class _TkDownloadSink:
+    """Turn one track's download events into widget updates for its queue row.
+
+    A TrackDownloader reports semantic events (started, bitrate_detected,
+    progress, title_corrected, finished); this is the only place they become
+    Tk. Every method here runs on a worker thread — progress and
+    title_corrected run on yt-dlp's own thread, inside the progress hook — so
+    every single widget touch goes through `app.after(0, …)` and nothing in
+    this class reads or writes a widget directly.
+
+    The queue row's title is written here too, and only here: it used to be
+    assigned straight from the yt-dlp thread with no marshalling at all, from
+    three separate places."""
+
+    def __init__(self, app, idx):
+        self.app = app
+        self.idx = idx
+
+    def started(self, title):
+        self.app.after(0, lambda t=title: (
+            self.app._cur_lbl.config(text=t[:80]),
+            self.app._vid_progress.config(value=0),
+        ))
+
+    def bitrate_detected(self, source_abr, target_kbps):
+        text = f"{int(source_abr)}k → {target_kbps}k"
+        self.app.after(0, lambda t=text: (
+            self.app._bitrate_lbl.config(text=f"src {t}"),
+            self.app._set_row_bitrate(self.idx, t),
+        ))
+
+    def progress(self, percent=None, speed_text=""):
+        if percent is not None:
+            self.app.after(0, lambda p=percent:
+                self.app._vid_progress.config(value=p))
+        if speed_text:
+            self.app.after(0, lambda s=speed_text:
+                self.app._speed_lbl.config(text=s))
+
+    def title_corrected(self, title):
+        self.app.after(0, lambda t=title: self._adopt_title(t))
+
+    def finished(self):
+        self.app.after(0, lambda: (
+            self.app._vid_progress.config(value=95),
+            self.app._speed_lbl.config(text="converting…"),
+        ))
+
+    def _adopt_title(self, title):
+        """Main thread only: rename the queue row so it matches the file yt-dlp
+        is actually writing, and re-render the row and the current-track label
+        with the new name."""
+        if self.idx >= len(self.app._queue):
+            return
+        self.app._queue[self.idx]["title"] = title
+        self.app._cur_lbl.config(text=title[:80])
+        self.app._set_row_state(self.idx, ST_ACTIVE)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MP3DownloaderApp — main application window (Tk root)
 #   __init__ / lifecycle, the four notebook tabs, the download engine, and the
@@ -4746,45 +4806,6 @@ class MP3DownloaderApp(tk.Tk):
                 f"COOKIE CONFIG | browser={browser!r}  "
                 f"profile={profile!r}  "
                 f"tuple={((browser.lower(), profile) if profile else (browser.lower(),))!r}")
-
-    def _apply_js_runtime(self, opts):
-        """Enable a JavaScript runtime so yt-dlp can solve YouTube's "n"
-        signature challenge. Without it, YouTube returns only storyboard
-        ("images") formats and every real download fails with "Requested
-        format is not available". Node ≥22 plus the yt-dlp-ejs solver scripts
-        are required; if neither is present yt-dlp simply falls back (the
-        download then skips gracefully). See yt-dlp wiki: EJS.
-
-        Only needed on opts that extract real formats — flat listing/scan opts
-        don't trip the challenge. Now serves the two download opts blocks only;
-        every read-only probe gets this rule applied inside
-        cratebuilder.ydl.YdlSession instead."""
-        opts["js_runtimes"] = {"node": {"path": None}}
-        # Fallback for machines without the local yt-dlp-ejs package: let
-        # yt-dlp fetch the solver scripts from GitHub on demand.
-        opts.setdefault("remote_components", ["ejs:github"])
-        return opts
-
-    def _dbg_ydl_opts(self, label, opts):
-        """Log yt-dlp options to debug.log with auth-bearing values redacted
-        (delegates to cratebuilder.util.redact_ydl_opts). Serves the download
-        opts only — YdlSession logs its own line per intent."""
-        self._dbg.info(f"YDL OPTS ({label}) | {redact_ydl_opts(opts)}")
-
-    def _apply_cookie_opts(self, opts):
-        """Merge the user's cookie settings into a yt-dlp *opts* dict in place,
-        but only when cookies are enabled (no-op otherwise). Serves the two
-        download opts blocks; every read-only probe authenticates through
-        cratebuilder.ydl.YdlSession, which takes one policy for the whole
-        session from _cookie_config()."""
-        if not self._use_cookies.get():
-            return
-        opts.update(build_cookie_opts(
-            self._cookie_method.get(),
-            self._cookie_file.get().strip(),
-            self._cookies_browser.get(),
-            self._cookies_profile.get().strip(),
-        ))
 
     def _log_download(self, title, filepath, url, platform, genre,
                       quality="192 kbps MP3"):
@@ -6978,7 +6999,15 @@ class MP3DownloaderApp(tk.Tk):
         """DownloadPolicy snapshot of the live Tk download-behavior variables:
         skip / limiter / bitrate / sleep / geo / UA / cover-art, in the same
         stored forms the config file uses (bare bitrate number, bare cover-art
-        formatting mode). Main thread only (it reads Tk vars)."""
+        formatting mode) — the frozen, Tk-free record a worker thread carries
+        instead of the variables.
+
+        Reading the variables off the main thread is the same pattern
+        _cookie_config() uses (Tk marshals a variable read while the main loop
+        is running), and the read is what makes the snapshot reflect what the
+        user currently has set. The download path deliberately takes it on the
+        batch worker thread, once per track, so a behaviour setting changed
+        mid-batch reaches the next track."""
         return DownloadPolicy(
             skip_existing=self._skip_existing.get(),
             skip_mode=self._skip_mode.get(),
@@ -6999,8 +7028,13 @@ class MP3DownloaderApp(tk.Tk):
 
     def _automation_config(self):
         """AutomationConfig snapshot of the live Tk automation variables:
-        intervals, startup-scan, and tray behavior. Main thread only (it reads
-        Tk vars)."""
+        intervals, startup-scan, and tray behavior — the frozen, Tk-free record
+        a worker thread carries instead of the variables.
+
+        The same read-the-live-vars pattern as _cookie_config() and
+        _download_policy(): Tk marshals a variable read while the main loop is
+        running, and the read is what makes the snapshot reflect what the user
+        currently has set."""
         return AutomationConfig(
             auto_download_interval=self._auto_dl_interval.get(),
             watchlist_scan_on_startup=self._watchlist_scan_on_startup.get(),
@@ -9290,7 +9324,7 @@ class MP3DownloaderApp(tk.Tk):
         """
         self._last_url_error = None   # short reason if this URL fails softly
         try:
-            import yt_dlp, time
+            import time
 
             item_word = cfg["item_word"]
 
@@ -9548,270 +9582,79 @@ class MP3DownloaderApp(tk.Tk):
                         self.after(0, self._update_ov_stats)
                         continue
 
-                # Resolve configured output bitrate (strip any " kbps" suffix)
-                output_kbps = self._bitrate_quality.get().split()[0]
+                # ── The download itself ───────────────────────────────────────
+                # Everything from here to the Outcome is the TrackDownloader's:
+                # the options, the transient-retry and age-gate ladder, the
+                # bitrate auto-upgrade probe, tagging, cover art, the downloads
+                # row and the failure classification. What stays here is what
+                # the batch owns — the counters and the queue row's final state.
+                #
+                # Built once per TRACK, not once per URL: the policy and cookie
+                # snapshots are read right here, so a setting the user changes
+                # mid-batch — "Keep original format", geo-bypass, cookies on or
+                # off — reaches the very next track, exactly as it did when
+                # these were read off live Tk vars per entry. Per-URL
+                # construction would silently hold them until the next URL.
+                downloader = cb_download.TrackDownloader(
+                    runner=cb_download.download_with,
+                    db=self._db,
+                    policy=self._download_policy(),
+                    canceller=self._cancel_flag,
+                    cookies=self._cookie_config(),
+                    ffmpeg_dir=bundled_ffmpeg_dir(),
+                    probe_formats=lambda u: self._ydl_session().probe_formats(u),
+                    tag=self._tag_track,
+                    harvest_art=self._harvest_cover_art,
+                    remember=channel_crate.remember,
+                    log_download=self._log_download,
+                    log_error=self._log_error,
+                    logger=self._logger,
+                    debug=self._dbg)
 
-                # ── Auto-upgrade MP3 bitrate when source exceeds user setting ──
-                # If YouTube serves a higher-bitrate audio stream than the
-                # user's configured MP3 output (e.g. 256 kbps AAC with a
-                # Premium-authenticated account, while the user has selected
-                # 192 kbps), encode the MP3 at that source bitrate instead
-                # of downgrading. Only probe when cookies are enabled and
-                # conversion is actually happening — free-tier YouTube maxes
-                # out at 160 kbps Opus, so a probe would never yield an
-                # upgrade and would just add an extra network round-trip.
-                # Also skip the probe if the user has already chosen the
-                # 320 kbps MP3 ceiling, since no source can exceed it.
-                effective_kbps = output_kbps
-                if (self._use_cookies.get()
-                        and not self._no_conversion.get()
-                        and int(output_kbps) < 320):
-                    try:
-                        # The session carries the same cookie policy as the
-                        # download, so the probe sees the same authenticated
-                        # format ladder.
-                        best_abr = 0
-                        for f in self._ydl_session().probe_formats(item_url):
-                            # Audio-only streams have vcodec == "none"
-                            if f.get("vcodec") == "none":
-                                abr_val = f.get("abr") or f.get("tbr")
-                                if abr_val:
-                                    try:
-                                        best_abr = max(best_abr, int(abr_val))
-                                    except (TypeError, ValueError):
-                                        pass
-                        # Cap at 320 (MP3 ceiling). Upgrade only if we
-                        # actually found a higher bitrate than the user's.
-                        if best_abr > int(output_kbps):
-                            effective_kbps = str(min(best_abr, 320))
-                            self._dbg.info(
-                                f"BITRATE AUTO-UPGRADE | {item_title!r}  "
-                                f"source={best_abr}k > setting={output_kbps}k  "
-                                f"→ encoding MP3 at {effective_kbps}k")
-                    except Exception as probe_exc:
-                        # Probe failures are non-fatal; fall back to
-                        # the user's configured bitrate.
-                        self._dbg.warning(
-                            f"BITRATE PROBE FAIL | {item_title!r}  "
-                            f"{probe_exc}")
+                plan = cb_download.TrackPlan(
+                    url=item_url,
+                    title=item_title,
+                    save_dir=save_dir,
+                    genre=genre,
+                    platform=platform,
+                    video_id=entry.get("id") or "",
+                    upload_date=entry.get("upload_date", "") or "",
+                    thumbnail_url=entry.get("thumbnail") or "",
+                    channel_name=channel_name_override or collection_name,
+                    channel_url=url if is_collection else "",
+                    channel_id=coll_channel_id or None,
+                    expected_path=expected_path,
+                    session_ua=session_ua,
+                    sleep_range=(self._resolve_sleep_range()
+                                 if self._sleep_enabled.get() else None),
+                    cover_art=(self._cover_art_mode_value() != "off"
+                               and cb_artwork.artwork_available()),
+                    target_kbps=self._bitrate_quality.get().split()[0],
+                    # The downloads row keys on the collection URL; the
+                    # permanently-unavailable memory keys on the channel a
+                    # one-off track came from. For a collection they agree.
+                    suppress_channel_url=(url if is_collection
+                                          else coll_channel_url),
+                )
 
-                # Track the best source bitrate seen during this download
-                source_abr = [None]
+                outcome = downloader.run(plan, _TkDownloadSink(self, idx))
 
-                # Progress hook
-                def make_hook(i=idx, abr_ref=source_abr):
-                    _ansi_re = re.compile(r'\x1b\[[0-9;]*m')
-                    def hook(d):
-                        st = d.get("status")
-                        if st == "downloading":
-                            tb = d.get("total_bytes") or \
-                                 d.get("total_bytes_estimate", 0)
-                            db = d.get("downloaded_bytes", 0)
-                            sp = _ansi_re.sub('', d.get("_speed_str", "")).strip()
-                            eta = _ansi_re.sub('', d.get("_eta_str", "")).strip()
-                            pct = _ansi_re.sub('', d.get("_percent_str", "")).strip()
-                            # Capture source audio bitrate if yt-dlp provides it
-                            abr = d.get("info_dict", {}).get("abr") or \
-                                  d.get("info_dict", {}).get("tbr")
-                            if abr and abr_ref[0] is None:
-                                abr_ref[0] = abr
-                                self.after(0, lambda b=abr:
-                                    self._bitrate_lbl.config(
-                                        text=f"src {int(b)}k → {effective_kbps}k"))
-                                # Show source bitrate on the queue row
-                                self.after(0, lambda b=abr, ii=i:
-                                    self._set_row_bitrate(
-                                        ii, f"{int(b)}k → {effective_kbps}k"))
-                            if tb:
-                                self.after(0, lambda p=db/tb*100:
-                                    self._vid_progress.config(value=p))
-                            if sp:
-                                speed_txt = f"{sp}  {eta}" if eta else sp
-                                self.after(0, lambda s=speed_txt:
-                                    self._speed_lbl.config(text=s))
-                            # Update queue row title from actual yt-dlp filename
-                            # so the queue always matches the saved file name.
-                            real_title = d.get("info_dict", {}).get("title", "")
-                            if real_title and i < len(self._queue):
-                                if self._queue[i]["title"] != real_title:
-                                    self._queue[i]["title"] = real_title
-                                    self.after(0, lambda ii=i, t=real_title: (
-                                        self._cur_lbl.config(text=t[:80]),
-                                        self._set_row_state(ii, ST_ACTIVE),
-                                    ))
-                        elif st == "finished":
-                            self.after(0, lambda: (
-                                self._vid_progress.config(value=95),
-                                self._speed_lbl.config(text="converting…"),
-                            ))
-                    return hook
+                # ── Counters ──────────────────────────────────────────────────
+                # `done` is every entry accounted for; the summary subtracts the
+                # non-download kinds back out of it. A cancelled backoff is not
+                # an outcome the tallies see at all — it is the same break the
+                # cancel check at the top of the loop performs. The row still
+                # has to be rendered on the way out, or the track the user
+                # cancelled spins as active for the rest of the session.
+                if outcome.kind == "cancelled":
+                    self.after(0, lambda i=idx: self._set_row_state(
+                        i, ST_SKIPPED, "cancelled"))
+                    break
 
-                ydl_opts = {
-                    # Prefer highest-bitrate audio-only stream.
-                    # abr>=160 targets Opus 160k (itag 251) or better;
-                    # falls back to plain bestaudio, then muxed best.
-                    "format":   "bestaudio[abr>=160]/bestaudio/best",
-                    "outtmpl":  os.path.join(save_dir, "%(title)s.%(ext)s"),
-                    "progress_hooks": [make_hook(idx)],
-                    "quiet":       True,
-                    "no_warnings": True,
-                }
-
-                # Point yt-dlp at the bundled FFmpeg (packaged build) so it does
-                # not depend on FFmpeg being on PATH. None when run from source.
-                _ffmpeg_dir = bundled_ffmpeg_dir()
-                if _ffmpeg_dir:
-                    ydl_opts["ffmpeg_location"] = _ffmpeg_dir
-
-                # Ask yt-dlp to save the thumbnail beside the audio. We embed it
-                # ourselves rather than using the EmbedThumbnail postprocessor,
-                # so we control the crop and keep the .artwork sidecar copy.
-                _cover_mode = self._cover_art_mode_value()
-                if _cover_mode != "off" and cb_artwork.artwork_available():
-                    ydl_opts["writethumbnail"] = True
-
-                # Only add the FFmpeg MP3 postprocessor if conversion is enabled.
-                # When "Keep original format" is checked, the file is saved
-                # as-is in whatever container YouTube/SoundCloud served
-                # (typically .webm/Opus or .m4a/AAC for YT; .mp3 or .webm for SC).
-                if not self._no_conversion.get():
-                    ydl_opts["postprocessors"] = [{
-                        "key":              "FFmpegExtractAudio",
-                        "preferredcodec":   "mp3",
-                        "preferredquality": effective_kbps,
-                    }]
-
-                # ── Download behavior options ─────────────────────────
-                if self._geo_bypass.get():
-                    ydl_opts["geo_bypass"] = True
-
-                if session_ua:
-                    ydl_opts.setdefault("http_headers", {})["User-Agent"] = session_ua
-
-                if self._sleep_enabled.get():
-                    s_min, s_max = self._resolve_sleep_range()
-                    ydl_opts["sleep_interval"]     = s_min
-                    ydl_opts["max_sleep_interval"] = s_max
-
-                using_cookies = self._use_cookies.get()
-                self._apply_cookie_opts(ydl_opts)
-
-                self._apply_js_runtime(ydl_opts)
-                self._dbg.info(f"─── DOWNLOAD ─── {item_title!r}  URL: {item_url}")
-                self._dbg_ydl_opts("download", ydl_opts)
-
-                try:
-                    # Transient-network retry loop. Handles ConnectionReset
-                    # (Winsock 10054), timeouts, and "connection broken"
-                    # errors — common with VPNs and rate-limiting. Up to 3
-                    # attempts with exponential backoff (2s, 4s). Permanent
-                    # errors (age-gate, unavailable, etc.) fall through on
-                    # the first raise.
-                    _attempt = 0
-                    _max_attempts = 3
-                    _dl_info = None
-                    while True:
-                        _attempt += 1
-                        try:
-                            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                                _dl_info = ydl.extract_info(
-                                    item_url, download=True)
-                            break
-                        except Exception as _net_exc:
-                            _ne = str(_net_exc).lower()
-                            _transient = (
-                                "10054" in _ne
-                                or "connection reset" in _ne
-                                or "connection broken" in _ne
-                                or "connection aborted" in _ne
-                                or "connectionreseterror" in _ne
-                                or "timed out" in _ne
-                                or "read timeout" in _ne
-                                or "temporary failure" in _ne
-                                or "remote end closed" in _ne
-                            )
-                            if _transient and _attempt < _max_attempts:
-                                _delay = 2 ** _attempt
-                                self._dbg.warning(
-                                    f"NET RETRY   | {item_title!r}  "
-                                    f"attempt {_attempt}/{_max_attempts-1} "
-                                    f"after transient error "
-                                    f"(sleeping {_delay}s): "
-                                    f"{str(_net_exc)[:120]}")
-                                self._logger.info(
-                                    f"NET RETRY   | "
-                                    f"Title: {item_title} | "
-                                    f"Attempt {_attempt}/{_max_attempts-1} "
-                                    f"after network error, "
-                                    f"retrying in {_delay}s")
-                                time.sleep(_delay)
-                                if self._cancel_flag.is_set():
-                                    raise
-                                continue
-                            raise
+                if outcome.kind == "downloaded":
                     done += 1
                     self._grand_dl += 1
-                    # SoundCloud set flat-extraction returns no title or
-                    # thumbnail, so item_title may still be the "Track N"
-                    # placeholder and expected_path a guess that matches
-                    # nothing on disk. The info dict the download itself just
-                    # returned carries the real values — adopt them so the
-                    # log, tags, cover harvest, DB row, and queue label all
-                    # point at the file yt-dlp actually wrote.
-                    _r_title, _r_path, _r_thumb, _r_vid = (
-                        download_result_facts(_dl_info))
-                    if _r_title:
-                        item_title = _r_title
-                        if idx < len(self._queue):
-                            self._queue[idx]["title"] = _r_title
-                    if _r_path and os.path.isfile(_r_path):
-                        expected_path = _r_path
-                    src_str = (f"{int(source_abr[0])} kbps src → "
-                               f"{effective_kbps} kbps MP3"
-                               if source_abr[0] else f"{effective_kbps} kbps MP3")
-                    self._dbg.info(
-                        f"DOWNLOAD OK   | {item_title!r}  quality={src_str}")
-                    self._log_download(item_title, expected_path, item_url,
-                                       platform, genre, quality=src_str)
-                    # Stamp ID3 tags (title / encoded-by / genre / source URL)
-                    # on the file just written. Resolve the real path first,
-                    # since yt-dlp's sanitiser may differ from expected_path.
-                    _real_path = (CrateLayout.find_existing(save_dir, item_title)
-                                  or expected_path)
-                    # The crate indexed the folder once, before this loop, so
-                    # tell it what we just wrote — otherwise a later entry in
-                    # the same batch whose title normalises alike downloads
-                    # again over the same file.
-                    channel_crate.remember(_real_path)
-                    self._tag_track(_real_path, item_title, item_url,
-                                    genre=genre)
-                    # Embed the source thumbnail as cover art and keep the
-                    # sidecar copy. Runs after _tag_track so the APIC frame is
-                    # written onto the tag mutagen has already created.
-                    _art_path, _art_embedded, _real_path = (
-                        self._harvest_cover_art(
-                            _real_path, entry.get("id") or _r_vid, item_title,
-                            source_url=item_url, genre=genre))
-                    # ── Record in the downloads database ──────────────
-                    _vid_upload = (entry.get("upload_date", "")
-                                   or (_dl_info or {}).get("upload_date", "")
-                                   or "")
-                    self._db.add_download(
-                        video_id=entry.get("id") or _r_vid,
-                        title=item_title,
-                        channel_name=channel_name_override or collection_name,
-                        channel_url=url if is_collection else "",
-                        channel_id=coll_channel_id or None,
-                        platform=platform, genre=genre or "(none)",
-                        file_path=_real_path,
-                        upload_date=_vid_upload,
-                        bitrate=src_str,
-                        artwork_path=_art_path,
-                        artwork_embedded=_art_embedded,
-                        thumbnail_url=entry.get("thumbnail") or _r_thumb)
-                    brate_txt = (f"{int(source_abr[0])}k → {effective_kbps}k"
-                                 if source_abr[0] else f"→ {effective_kbps}k")
-                    self.after(0, lambda i=idx, b=brate_txt:
+                    self.after(0, lambda i=idx, b=outcome.bitrate_text:
                         self._set_row_bitrate(i, b, SUCCESS))
                     self.after(0, lambda i=idx: self._set_row_state(
                         i, ST_DONE, "✓ done"))
@@ -9819,197 +9662,21 @@ class MP3DownloaderApp(tk.Tk):
                         self._vid_progress.config(value=100),
                         self._speed_lbl.config(text=""),
                     ))
-                except Exception as exc:
-                    raw_err = str(exc)
-                    clean = re.sub(r'\x1b\[[0-9;]*m', '', raw_err).strip()
-                    clean_lower = clean.lower()
-                    self._dbg.error(
-                        f"DOWNLOAD FAIL | {item_title!r}  URL: {item_url}")
-                    self._dbg.error(f"DOWNLOAD FAIL | error: {clean}")
-                    import traceback
-                    self._dbg.debug(
-                        f"DOWNLOAD FAIL | traceback:\n{traceback.format_exc()}")
-
-                    # Age-restricted videos fail with cookies because
-                    # YouTube forces the main player which requires age
-                    # verification. Without cookies, yt-dlp uses the
-                    # embedded player which bypasses age gates. Retry
-                    # without cookies for age-restricted content.
-                    is_age = ("age" in clean_lower or
-                              "verify your age" in clean_lower or
-                              "adult" in clean_lower)
-                    if is_age and using_cookies:
-                        self._dbg.info(
-                            f"AGE-RETRY   | {item_title!r}  "
-                            f"Retrying without cookies to bypass age gate")
-                        self._logger.info(
-                            f"AGE-RETRY   | "
-                            f"Title: {item_title} | "
-                            f"URL: {item_url} | "
-                            f"Retrying without cookies to bypass age gate")
-                        retry_opts = {
-                            "format":   "bestaudio[abr>=160]/bestaudio/best",
-                            "outtmpl":  os.path.join(save_dir,
-                                            "%(title)s.%(ext)s"),
-                            "postprocessors": [{
-                                "key":              "FFmpegExtractAudio",
-                                "preferredcodec":   "mp3",
-                                "preferredquality": output_kbps,
-                            }],
-                            "progress_hooks": [make_hook(idx)],
-                            "quiet":       True,
-                            "no_warnings": True,
-                        }
-                        if _cover_mode != "off" and cb_artwork.artwork_available():
-                            retry_opts["writethumbnail"] = True
-                        if self._geo_bypass.get():
-                            retry_opts["geo_bypass"] = True
-                        if session_ua:
-                            retry_opts.setdefault(
-                                "http_headers", {})["User-Agent"] = \
-                                session_ua
-                        try:
-                            self._apply_js_runtime(retry_opts)
-                            with yt_dlp.YoutubeDL(retry_opts) as ydl:
-                                _dl_info = ydl.extract_info(
-                                    item_url, download=True)
-                            done += 1
-                            self._grand_dl += 1
-                            # Same real-result adoption as the main path —
-                            # see the comment there.
-                            _r_title, _r_path, _r_thumb, _r_vid = (
-                                download_result_facts(_dl_info))
-                            if _r_title:
-                                item_title = _r_title
-                                if idx < len(self._queue):
-                                    self._queue[idx]["title"] = _r_title
-                            if _r_path and os.path.isfile(_r_path):
-                                expected_path = _r_path
-                            src_str = (
-                                f"{int(source_abr[0])} kbps src → "
-                                f"{output_kbps} kbps MP3"
-                                if source_abr[0]
-                                else f"{output_kbps} kbps MP3")
-                            self._log_download(
-                                item_title, expected_path, item_url,
-                                platform, genre, quality=src_str)
-                            _real_path = (
-                                CrateLayout.find_existing(save_dir, item_title)
-                                or expected_path)
-                            channel_crate.remember(_real_path)
-                            self._tag_track(_real_path, item_title, item_url,
-                                            genre=genre)
-                            _art_path, _art_embedded, _real_path = (
-                                self._harvest_cover_art(
-                                    _real_path, entry.get("id") or _r_vid,
-                                    item_title, source_url=item_url,
-                                    genre=genre))
-                            # ── Record retry success in DB ────────────
-                            _vid_upload = (
-                                entry.get("upload_date", "")
-                                or (_dl_info or {}).get("upload_date", "")
-                                or "")
-                            self._db.add_download(
-                                video_id=entry.get("id") or _r_vid,
-                                title=item_title,
-                                channel_name=(channel_name_override
-                                              or collection_name),
-                                channel_url=url if is_collection else "",
-                                channel_id=coll_channel_id or None,
-                                platform=platform,
-                                genre=genre or "(none)",
-                                file_path=_real_path,
-                                upload_date=_vid_upload,
-                                bitrate=src_str,
-                                artwork_path=_art_path,
-                                artwork_embedded=_art_embedded,
-                                thumbnail_url=entry.get("thumbnail")
-                                              or _r_thumb)
-                            brate_txt = (
-                                f"{int(source_abr[0])}k → {output_kbps}k"
-                                if source_abr[0]
-                                else f"→ {output_kbps}k")
-                            self.after(0, lambda i=idx, b=brate_txt:
-                                self._set_row_bitrate(i, b, SUCCESS))
-                            self.after(0, lambda i=idx:
-                                self._set_row_state(
-                                    i, ST_DONE, "✓ done"))
-                            self.after(0, lambda: (
-                                self._vid_progress.config(value=100),
-                                self._speed_lbl.config(text=""),
-                            ))
-                            self.after(0, lambda d=done, t=total: (
-                                self._overall_progress.config(value=d),
-                                self._ov_lbl.config(text=f"{d} / {t}"),
-                            ))
-                            self.after(0, self._update_ov_stats)
-                            continue   # skip the error handling below
-                        except Exception as retry_exc:
-                            raw_err = str(retry_exc)
-                            clean = re.sub(
-                                r'\x1b\[[0-9;]*m', '', raw_err).strip()
-                            clean_lower = clean.lower()
-                            # Fall through to error handling
-
-                    self._dbg.error(
-                        f"FINAL ERROR | {item_title!r}  "
-                        f"URL: {item_url}  "
-                        f"cookies={using_cookies}  "
-                        f"full_error: {raw_err}")
-                    self._logger.error(
-                        f"ERROR       | "
-                        f"Title: {item_title} | "
-                        f"URL: {item_url} | "
-                        f"Full error: {raw_err}")
-                    # Backstop for a premiere the scan let through (its
-                    # live_status was missing, e.g. YouTube changed the channel
-                    # markup). Checked FIRST so an upcoming track can never be
-                    # read as "Removed" and filed in the permanent memory,
-                    # which would bury it for good — it fails today and
-                    # succeeds by itself once it airs.
-                    _defer = classify_deferred_failure(clean)
-                    # Permanently-unavailable causes (SoundCloud DRM,
-                    # removed/private 404s, geo-blocks) are nothing on our
-                    # side — surface an honest status and count them apart
-                    # from real errors so the batch summary isn't alarming.
-                    _perm = None if _defer else classify_permanent_failure(clean)
-                    if _defer:                           err = _defer
-                    elif _perm:                          err = _perm
-                    elif "ffmpeg"        in clean_lower: err = "FFmpeg missing"
-                    elif "sign in"       in clean_lower: err = "login required"
-                    elif is_age:                         err = "age-restricted"
-                    elif "unavailable"   in clean_lower: err = "unavailable"
-                    elif "private"       in clean_lower: err = "private"
-                    elif "copyright"     in clean_lower: err = "copyright claim"
-                    elif "members"       in clean_lower: err = "members only"
-                    elif "removed"       in clean_lower: err = "removed"
-                    elif "blocked"       in clean_lower: err = "blocked"
-                    elif "not available" in clean_lower: err = "format unavailable"
-                    else:                                err = clean[:60]
-                    if _defer:
-                        # Deliberately NOT remembered anywhere: the track stays
-                        # pending so the next run after it airs picks it up,
-                        # and it is not a failure, so it stays out of both the
-                        # error tally and the grand "Failed" count.
+                else:
+                    if outcome.kind == "deferred":
+                        # Deliberately not a failure: the track stays pending so
+                        # the next run after it airs picks it up, and it stays
+                        # out of both the error tally and the grand Failed count.
                         deferred += 1
-                    elif _perm:
+                    elif outcome.kind == "unavailable":
                         unavail += 1
-                        # Remember it so the Watch List stops reporting a track
-                        # that can never be downloaded as "new" on every scan.
-                        self._db.record_unavailable(
-                            platform=platform,
-                            video_id=entry.get("id") or "",
-                            channel_url=canonical_channel_url(
-                                url if is_collection else coll_channel_url),
-                            title=item_title,
-                            reason=_perm)
                     else:
                         errors += 1
-                    done   += 1
-                    if not _defer:
+                    done += 1
+                    if outcome.kind != "deferred":
                         self._grand_er += 1
-                    self._log_error(item_title, item_url, err)
-                    self.after(0, lambda i=idx, e=err, d=bool(_defer):
+                    self.after(0, lambda i=idx, e=outcome.reason,
+                               d=(outcome.kind == "deferred"):
                         self._set_row_state(
                             i, ST_SKIPPED if d else ST_ERROR, e))
 
