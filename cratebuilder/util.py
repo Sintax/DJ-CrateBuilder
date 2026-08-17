@@ -331,6 +331,71 @@ def interval_label_to_seconds(value):
         return None
 
 
+# ── Automation timer decisions ────────────────────────────────────────────────
+# Pure functions taking *now* as an argument. ADR 0001 declined injecting a
+# clock into the app's scheduling methods; these carry the arithmetic and the
+# rules instead, so the decisions are testable without one.
+
+# A scheduled run that finds a manual scan or download already in flight waits
+# this long and asks again, rather than interrupting the user's own work.
+BUSY_RETRY_MS = 60_000
+
+# The post-scan settle poll: how often to look, and how many looks before
+# giving up so a wedged scan cannot poll forever (150 × 2s ≈ 5 minutes).
+SCAN_SETTLE_POLL_MS = 2000
+SCAN_SETTLE_MAX_POLLS = 150
+
+
+def next_run_delay_ms(interval_seconds, last_run_ts, now):
+    """When the next scheduled auto-download is due, as (delay_ms, next_ts).
+
+    Returns None when there is no interval ('Off'), which is the caller's
+    signal to disarm the timer and show no next-run time.
+
+    *last_run_ts* is the anchor the interval counts from — falsy (never run)
+    counts as the epoch, so a first launch is immediately overdue. An overdue
+    run is scheduled 1 second out rather than at once: it still has to reach
+    the caller through the event loop, and firing from inside the arming call
+    would re-enter the scheduler."""
+    if not interval_seconds:
+        return None
+    now = int(now)
+    elapsed = now - int(last_run_ts or 0)
+    delay_ms = 1000 if elapsed >= interval_seconds else int(
+        (interval_seconds - elapsed) * 1000)
+    return delay_ms, now + delay_ms // 1000
+
+
+def scan_settle_verdict(scans_active, polls_so_far):
+    """What a post-scan settle poll should do: "proceed" · "wait" · "give_up".
+
+    "give_up" means the scans never settled inside the cap; the caller stamps
+    the run anchor anyway so the next cycle is a full interval away instead of
+    retrying a wedged scan forever."""
+    if scans_active <= 0:
+        return "proceed"
+    if polls_so_far + 1 <= SCAN_SETTLE_MAX_POLLS:
+        return "wait"
+    return "give_up"
+
+
+def next_run_label(ts, prefix="⏰  Next auto-download:  "):
+    """The Watch List's next-run line: *prefix* plus a local timestamp, "Off"
+    when there is no next run, or "—" if the timestamp will not render.
+
+    The hour is stripped of its leading zero by hand rather than with a
+    platform-specific strftime flag ('%-I' is not portable to Windows)."""
+    if not ts:
+        return f"{prefix}Off"
+    try:
+        dt = datetime.fromtimestamp(ts)
+        hour = dt.strftime("%I").lstrip("0") or "12"
+        return (f"{prefix}{dt.strftime('%a %b')} {dt.day}, "
+                f"{dt.strftime('%Y')}  ·  {hour}:{dt.strftime('%M %p')}")
+    except (ValueError, OSError, OverflowError):
+        return f"{prefix}—"
+
+
 # SoundCloud routes that are site structure, not artist profiles. The first
 # path segment of a soundcloud.com URL is the artist handle UNLESS it is one of
 # these reserved words.
