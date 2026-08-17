@@ -47,6 +47,11 @@ _ERROR_TYPES = {
     "unknown": YdlUnclassified,
 }
 
+# yt-dlp handed back something that isn't an info dict. Unclassified on
+# purpose: it is a failed fetch, not a verdict about the channel, so callers
+# must keep what they already know rather than treat it as an empty answer.
+_NO_ANSWER = "yt-dlp returned no answer"
+
 # Stable, high-availability endpoints for the reachability probe. Mixed hosts
 # and ports so a single blocked port or poisoned DNS entry can't make a live
 # connection look dead.
@@ -206,8 +211,9 @@ class YdlSession:
         extra = {"extract_flat": "in_playlist", "lazy_playlist": True}
         if ignore_no_formats:
             extra["ignore_no_formats_error"] = True
-        info = self._run("list_channel", url, self._opts(**extra))
-        return _flatten_tabs(info.get("entries") or [])
+        return self._run(
+            "list_channel", url, self._opts(**extra), require_answer=True,
+            shape=lambda info: _flatten_tabs(info.get("entries") or []))
 
     def search_channels(self, name, max_results=3):
         """Search YouTube for a channel by display name. Returns up to
@@ -274,16 +280,35 @@ class YdlSession:
             opts.setdefault("remote_components", ["ejs:github"])
         return opts
 
-    def _run(self, intent, target, opts):
-        """Log, call the runner, and turn any failure into a typed error.
-        Returns {} when yt-dlp returns a non-dict, so intents can read fields
-        off the result without guarding."""
+    def _run(self, intent, target, opts, shape=None, require_answer=False):
+        """Log, call the runner, shape the result, and turn any failure into a
+        typed error.
+
+        *shape* reads the fields an intent wants, and runs inside the same
+        guard as the call: a lazily paginated listing does its real fetching
+        while being enumerated, so shaping it anywhere else would let a
+        mid-pagination failure escape untyped.
+
+        Returns {} when yt-dlp answers with a non-dict, so intents can read
+        fields off the result without guarding. *require_answer* refuses that
+        instead — for intents where "no answer" and "nothing to report" must
+        not look alike, such as a channel listing whose emptiness would be
+        read as the channel having no uploads."""
         self._log(intent, opts)
         try:
             info = self._runner(opts, target)
         except Exception as exc:
             raise self._classify(exc, intent, target) from exc
-        return info if isinstance(info, dict) else {}
+        if not isinstance(info, dict):
+            if require_answer:
+                raise YdlUnclassified(_NO_ANSWER, intent=intent, target=target)
+            info = {}
+        if shape is None:
+            return info
+        try:
+            return shape(info)
+        except Exception as exc:
+            raise self._classify(exc, intent, target) from exc
 
     def _classify(self, exc, intent, target):
         """Pick the typed error for a failure, applying the captive-portal
