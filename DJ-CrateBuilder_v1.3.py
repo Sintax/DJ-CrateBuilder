@@ -20,6 +20,8 @@ from cratebuilder.util import (
     today_yyyymmdd,
     format_yyyymmdd_readable, format_timestamp_relative,
     interval_label_to_seconds,
+    next_run_delay_ms, scan_settle_verdict, next_run_label,
+    BUSY_RETRY_MS, SCAN_SETTLE_POLL_MS,
     safe_filename, push_mru,
     detect_platform, derive_collection_name, find_matching_watchlist_row,
     soundcloud_profile_handle, merge_soundcloud_candidates,
@@ -7152,15 +7154,14 @@ class MP3DownloaderApp(tk.Tk):
             except Exception:
                 pass
             self._auto_dl_after_id = None
-        secs = interval_label_to_seconds(self._auto_dl_interval.get())
-        if secs is None:
+        due = next_run_delay_ms(
+            interval_label_to_seconds(self._auto_dl_interval.get()),
+            self._watchlist_last_download, time.time())
+        if due is None:
             self._wl_next_dl_ts = None      # 'Off' — no timer
             self._wl_update_next_dl_label()
             return
-        now = int(time.time())
-        elapsed = now - (self._watchlist_last_download or 0)
-        delay_ms = 1000 if elapsed >= secs else int((secs - elapsed) * 1000)
-        self._wl_next_dl_ts = now + delay_ms // 1000
+        delay_ms, self._wl_next_dl_ts = due
         self._auto_dl_after_id = self.after(delay_ms, self._auto_download_tick)
         self._wl_update_next_dl_label()
 
@@ -7175,26 +7176,26 @@ class MP3DownloaderApp(tk.Tk):
         # Skip (don't interrupt) if a manual scan/download is already running;
         # try again shortly.
         if self._downloading or self._wl_download_active or self._wl_scan_active:
-            self._auto_dl_after_id = self.after(60_000, self._auto_download_tick)
+            self._auto_dl_after_id = self.after(
+                BUSY_RETRY_MS, self._auto_download_tick)
             return
         self._watchlist_log("⏰ Scheduled auto-download starting…", "info")
         self._auto_dl_poll_count = 0
         self._watchlist_scan_all()
         # Poll for scan completion, then download + notify.
-        self.after(2000, self._auto_download_after_scan)
-
-    # Cap the post-scan wait so a stuck scan can't poll forever (~5 min @ 2s).
-    _AUTO_DOWNLOAD_MAX_POLLS = 150
+        self.after(SCAN_SETTLE_POLL_MS, self._auto_download_after_scan)
 
     def _auto_download_after_scan(self):
         """Once scans settle (or we give up waiting), download new tracks + notify.
         When a download starts, _watchlist_download_all_new owns the schedule
         anchor; otherwise advance it here so the next run is a full interval away."""
-        if self._wl_scan_active > 0:
+        verdict = scan_settle_verdict(self._wl_scan_active,
+                                      self._auto_dl_poll_count)
+        if verdict == "wait":
             self._auto_dl_poll_count += 1
-            if self._auto_dl_poll_count <= self._AUTO_DOWNLOAD_MAX_POLLS:
-                self.after(2000, self._auto_download_after_scan)
-                return
+            self.after(SCAN_SETTLE_POLL_MS, self._auto_download_after_scan)
+            return
+        if verdict == "give_up":
             # Timed out waiting — record the attempt and reschedule next cycle.
             self._watchlist_log(
                 "⏰ Auto-download gave up waiting for scans to finish.", "info")
@@ -7221,20 +7222,8 @@ class MP3DownloaderApp(tk.Tk):
         lbl = getattr(self, "_wl_next_dl_lbl", None)
         if lbl is None:
             return
-        ts = self._wl_next_dl_ts
-        if not ts:
-            txt = "⏰  Next auto-download:  Off"
-        else:
-            try:
-                dt = datetime.fromtimestamp(ts)
-                hour = dt.strftime("%I").lstrip("0") or "12"
-                txt = (f"⏰  Next auto-download:  {dt.strftime('%a %b')} "
-                       f"{dt.day}, {dt.strftime('%Y')}  ·  "
-                       f"{hour}:{dt.strftime('%M %p')}")
-            except Exception:
-                txt = "⏰  Next auto-download:  —"
         try:
-            lbl.config(text=txt)
+            lbl.config(text=next_run_label(self._wl_next_dl_ts))
         except Exception:
             pass
 
