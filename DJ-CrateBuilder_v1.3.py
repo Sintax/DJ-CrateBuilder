@@ -168,6 +168,24 @@ def app_icon_path():
     return None
 
 
+def about_avatar_path():
+    """Absolute path to the author's avatar (about_avatar.png), or None.
+
+    Same resolution order as app_icon_path(): beside the frozen executable
+    (or in _MEIPASS), beside this script from source. Missing is fine — the
+    About tab simply renders without the picture."""
+    if getattr(sys, "frozen", False):
+        cands = (os.path.dirname(sys.executable), getattr(sys, "_MEIPASS", None))
+    else:
+        cands = (os.path.dirname(os.path.abspath(__file__)),)
+    for cand in cands:
+        if cand:
+            p = os.path.join(cand, "about_avatar.png")
+            if os.path.isfile(p):
+                return p
+    return None
+
+
 def _wheel_delta(event):
     """Normalise a mouse-wheel event to a Windows-style delta (±120 per notch).
 
@@ -8173,6 +8191,19 @@ class MP3DownloaderApp(tk.Tk):
             tk.Label(row, text=label, font=("Segoe UI", 12, "bold"),
                      fg=TEXT, bg=BG, width=14, anchor="w"
                      ).pack(side="left", anchor="n")
+            if email:
+                # The author's avatar, sized to sit level with the name/email
+                # pair beside it. Held on self so Tk can't garbage-collect the
+                # PhotoImage out of the label; missing file = no picture.
+                avatar = about_avatar_path()
+                if avatar:
+                    try:
+                        self._about_avatar_img = tk.PhotoImage(file=avatar)
+                        tk.Label(row, image=self._about_avatar_img, bg=BG,
+                                 bd=0).pack(side="left", padx=(8, 0),
+                                            anchor="n")
+                    except Exception:
+                        pass
             val_col = tk.Frame(row, bg=BG)
             val_col.pack(side="left", padx=(8, 0))
             tk.Label(val_col, text=value, font=("Segoe UI", 11),
@@ -10761,7 +10792,14 @@ class MP3DownloaderApp(tk.Tk):
              "Re-download every track from this channel, including ones "
              "already in your library."),
             (WL_DL_NEW_LABEL,
-                           lambda c=cid: self._watchlist_download_new(c), False, None),
+                           lambda c=cid: self._watchlist_download_new(c), False,
+             "Download this channel's new tracks — the ones counted since "
+             "the last scan — into its folder.\n\n"
+             "If another Watch List download is already running, this "
+             "channel is added to that run's queue instead: it appears in "
+             "the Main tab's Batch Queue behind the channels already "
+             "listed and downloads in turn. Pressing it again while queued "
+             "does nothing — a channel is never queued twice."),
         ]
         WL_FIX_LINK_LABEL = "🛠 Fix Link"
         if is_unresolved_channel(ch):
