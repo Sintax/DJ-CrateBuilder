@@ -170,8 +170,8 @@ def _hook_driver(info, *hook_dicts):
 AGE_ERROR = RuntimeError("Content warning: this video may be inappropriate "
                          "for some users. Confirm your age")
 TRANSIENT = "[WinError 10054] An existing connection was forcibly closed"
-# yt-dlp's commonest transient wrapper — and "age" matches inside "webpage",
-# so looks_age_restricted reads it as an age gate.
+# yt-dlp's commonest transient wrapper. The retired bare-"age" substring test
+# read this as an age gate, because "age" sits inside "webpage".
 TRANSIENT_WEBPAGE = "Unable to download webpage: The read operation timed out"
 
 
@@ -536,19 +536,38 @@ def test_sticky_age_survives_a_second_rung_with_a_different_error(tmp_path):
                               title="Track 1")
 
 
-def test_looks_age_restricted_matches_the_original_substring_test():
+def test_looks_age_restricted_matches_what_youtube_actually_says():
     assert looks_age_restricted("Confirm your age to continue")
+    assert looks_age_restricted("Sign in to verify your age")
+    assert looks_age_restricted(
+        "This video may be inappropriate for some users")
+    assert looks_age_restricted("This video is age-restricted")
     assert looks_age_restricted("This is ADULT content")
     assert not looks_age_restricted("Video unavailable")
 
 
-def test_a_transient_webpage_timeout_never_climbs_the_age_rung(tmp_path):
-    """The "age" in "webpage" must not buy a flaky connection a second ladder.
+def test_ordinary_words_containing_age_are_not_an_age_gate():
+    """The retired test was a bare `"age" in text` match.
 
-    looks_age_restricted says yes to this text, so without the transient guard
-    every timed-out track paid 6 attempts and 12s of backoff instead of 3 and
-    6s — twice as long to give up on a connection that is simply wobbling."""
-    assert looks_age_restricted(TRANSIENT_WEBPAGE)
+    It fired on every error carrying "webpage", "message" or "package", which
+    both mislabelled network trouble as an age restriction in the user's log and
+    bought it a second attempt ladder."""
+    for innocent in (TRANSIENT_WEBPAGE,
+                     "Unable to download webpage: HTTP Error 500",
+                     "Got error: message from server",
+                     "package not found"):
+        assert not looks_age_restricted(innocent)
+
+
+def test_a_transient_webpage_timeout_never_climbs_the_age_rung(tmp_path):
+    """A flaky connection must not buy itself a second attempt ladder.
+
+    Two independent conditions stop it now — the text is no longer read as an
+    age gate, and the call site also requires a non-transient failure — so this
+    stays pinned end to end rather than trusting either one alone. When only the
+    substring test guarded it, every timed-out track paid 6 attempts and 12s of
+    backoff instead of 3 and 6s."""
+    assert not looks_age_restricted(TRANSIENT_WEBPAGE)
 
     runner = FakeRunner(*[RuntimeError(TRANSIENT_WEBPAGE)] * MAX_ATTEMPTS)
     canceller = FakeCanceller()
@@ -559,6 +578,10 @@ def test_a_transient_webpage_timeout_never_climbs_the_age_rung(tmp_path):
     assert canceller.waits == [2, 4]
     assert all("cookiesfrombrowser" in opts for opts, _ in runner.calls)
     assert outcome.kind == "failed"
+    # And it is reported as the network problem it is. The sticky age verdict
+    # used to relabel it "age-restricted", sending the user looking for a
+    # cookie problem they did not have.
+    assert outcome.reason == TRANSIENT_WEBPAGE[:60]
 
 
 # ── sink events ──────────────────────────────────────────────────────────────

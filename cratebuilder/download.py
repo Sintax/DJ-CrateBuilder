@@ -164,25 +164,36 @@ def parse_percent(text):
 
 
 # ── Failure classification ────────────────────────────────────────────────────
+# What YouTube actually says when it age-gates a video. The bare word "age" is
+# deliberately NOT among them: it matches inside "webpage" and "message", and
+# "Unable to download webpage" is one of yt-dlp's commonest transient wrappers.
+AGE_GATE_MARKERS = (
+    "confirm your age",
+    "verify your age",
+    "age-restricted",
+    "age restricted",
+    "age-gate",
+    "age gate",
+    "inappropriate for some users",
+    "adult",
+)
+
+
 def looks_age_restricted(error_text):
     """Whether an error reads like YouTube's age gate.
 
-    Deliberately the original substring test, warts included: "age" matches
-    inside ordinary words ("webpage", "message"), so this over-fires. It is the
-    gate on dropping authentication for one more attempt, and a needless
-    unauthenticated retry costs one request — narrowing it would change which
-    tracks get that second chance, which is a behaviour decision, not a port.
+    Two things ride on this: whether to drop authentication for one more
+    attempt, and whether the track is reported to the user as "age-restricted".
+    The original test was a bare `"age" in text` substring match, which fired on
+    any error containing "webpage" — so a wobbling connection was announced as
+    an age restriction and bought itself a second attempt ladder. Matching the
+    phrases YouTube actually uses costs nothing and makes both answers honest.
 
-    The over-firing is contained at the call site instead: TrackDownloader
-    requires the failure to be non-transient as well, because "Unable to
-    download webpage: The read operation timed out" matches "age" inside
-    "webpage" and is one of yt-dlp's commonest transient wrappers. Without that
-    second condition every flaky-connection failure paid for a whole second
-    transient ladder before giving up."""
+    A non-transient failure is still required at the call site, which keeps the
+    two conditions independent: a genuine age gate reported inside a transient
+    wrapper stays classified as the network problem it also is."""
     text = (error_text or "").lower()
-    return ("age" in text
-            or "verify your age" in text
-            or "adult" in text)
+    return any(marker in text for marker in AGE_GATE_MARKERS)
 
 
 def classify_download_failure(error_text, is_age=False):

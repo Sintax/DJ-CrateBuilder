@@ -69,10 +69,13 @@ design conversations use these words exactly.
   transient-retry loop (3 attempts, interruptible exponential backoff), so an
   age-gate retry is no longer a one-shot that a dropped connection can kill.
   The second rung is climbed only when the first authenticated *and* its
-  failure reads like an age gate *and* that failure was not transient — the
-  age test is a substring match that also fires inside "webpage", so without
-  the last condition a common network wrapper would double every failing
-  track's give-up time. The whole policy is the module's, not the caller's.
+  failure reads like an age gate *and* that failure was not transient. The age
+  test matches the phrases YouTube actually uses, never the bare word "age" —
+  that matched inside "webpage", which both mislabelled network trouble as an
+  age restriction and doubled every failing track's give-up time. The
+  non-transient condition is kept independently of it, so a real age gate
+  wrapped in a transient error stays classified as the network problem it also
+  is. The whole policy is the module's, not the caller's.
 - **Sink** — the seam a `TrackDownloader` reports progress through, as
   semantic events (`started`, `progress`, `bitrate_detected`,
   `title_corrected`, `finished`) rather than raw yt-dlp hook dicts. Tk
