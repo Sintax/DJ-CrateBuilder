@@ -6680,7 +6680,37 @@ class MP3DownloaderApp(tk.Tk):
             short = self._db_path.replace(os.path.expanduser("~"), "~")
             self._db_path_lbl.config(text=short)
 
+        self._wheel_proof_settings_combos()
         self._refresh_limit_label()
+
+    # Every dropdown on the Settings tab. Changing one of these autosaves, so
+    # none of them may be reachable by an accidental wheel notch.
+    _SETTINGS_COMBOS = (
+        "_auto_dl_combo", "_bitrate_combo", "_cover_art_combo",
+        "_sleep_mode_combo", "_sleep_preset_combo", "_cookie_method_combo",
+        "_cookies_browser_combo", "_log_limit_combo",
+    )
+
+    def _wheel_proof_settings_combos(self):
+        """Make the Settings dropdowns deaf to the scroll wheel.
+
+        ttk's own TCombobox class binding steps the value on every wheel
+        notch, so wheeling down the page over a dropdown silently changes —
+        and autosaves — a setting. A widget-level binding runs before the
+        class binding, so returning "break" suppresses both that step and the
+        global page-scroll handler; the page scroll is then forwarded to the
+        Settings canvas by hand, leaving a dropdown no different from any
+        other widget to scroll past. Values change only by click or keyboard.
+        """
+        def _swallow(event):
+            self._settings_canvas.yview_scroll(
+                int(-1 * (_wheel_delta(event) / 120)), "units")
+            return "break"
+
+        for name in self._SETTINGS_COMBOS:
+            combo = getattr(self, name, None)
+            if combo is not None:
+                _bind_wheel(combo, _swallow)
 
     def _settings_browse(self):
         """Prompt for a new base save folder and apply it to the Settings field."""
