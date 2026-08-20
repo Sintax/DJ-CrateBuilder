@@ -57,7 +57,6 @@ EXPECTED_DEFAULTS = {
     "last_update_check": 0.0,
     "url_history": [],
     "dupe_check_enabled": True,
-    "dedupe_prompt_count": None,
     "db_dl_col_widths": None,
     "db_wl_col_widths": None,
     "db_art_col_widths": None,
