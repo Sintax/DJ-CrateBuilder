@@ -11,6 +11,26 @@ from cratebuilder import ydl as cb_ydl
 from cratebuilder.settings import CookieConfig
 
 
+# Every Tk variable a test in this file flips. Nothing here touches the DB or
+# the crate folders, so one shared app serves the whole file — each test just
+# starts from the fresh-app value of these vars.
+_COOKIE_VARS = ("_use_cookies", "_cookie_method", "_cookies_browser",
+                "_cookies_profile", "_cookie_file")
+
+
+@pytest.fixture(scope="module")
+def _cookie_defaults(shared_app):
+    return {name: getattr(shared_app, name).get() for name in _COOKIE_VARS}
+
+
+@pytest.fixture
+def app(shared_app, _cookie_defaults):
+    """This file's `app` IS the module-shared app, cookie vars reset."""
+    for name, value in _cookie_defaults.items():
+        getattr(shared_app, name).set(value)
+    return shared_app
+
+
 class RecordingRunner:
     """A YdlSession runner that records every (opts, target) it is handed and
     replays a canned answer — or raises one."""

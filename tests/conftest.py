@@ -39,7 +39,7 @@ def cb():
 
 
 # Fixtures whose use means the test builds (or maps) a real Tk window.
-_GUI_FIXTURES = {"app", "make_app", "show"}
+_GUI_FIXTURES = {"app", "make_app", "shared_app", "show"}
 
 
 def pytest_collection_modifyitems(items):
@@ -95,23 +95,27 @@ def _cancel_pending_afters(app):
             pass
 
 
-@pytest.fixture
-def make_app(cb_mod, tmp_path, monkeypatch):
-    """Factory: make_app(quiet=True, **kwargs) -> isolated MP3DownloaderApp.
+def _isolate_runtime(mp, mod, tmp_path):
+    """Point every runtime artefact of the monolith *mod* into *tmp_path*.
 
-    Isolation applied before any app is built (and active for the whole
-    test): HOME/USERPROFILE point at tmp_path, the monolith's
-    runtime_data_dir binding returns tmp_path/'runtime' (so cratebuilder.db,
-    activity.log, debug.log land there), DEFAULT_BASE points at
-    tmp_path/'Music', and cratebuilder.startup.startup_is_enabled returns
-    False so app init never reads the real Windows registry.
+    HOME/USERPROFILE point at tmp_path, the monolith's runtime_data_dir
+    binding returns tmp_path/'runtime' (so cratebuilder.db, activity.log,
+    debug.log land there), DEFAULT_BASE points at tmp_path/'Music', and
+    cratebuilder.startup.startup_is_enabled returns False so app init never
+    reads the real Windows registry.
+    """
+    mp.setenv("HOME", str(tmp_path))
+    mp.setenv("USERPROFILE", str(tmp_path))
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(exist_ok=True)
+    mp.setattr(mod, "runtime_data_dir",
+               lambda script_path=None: str(runtime_dir))
+    mp.setattr(mod, "DEFAULT_BASE", str(tmp_path / "Music"))
+    mp.setattr(cb_startup, "startup_is_enabled", lambda: False)
 
-    To pre-seed a config, write tmp_path/'.dj_cratebuilder_config.json'
-    BEFORE calling make_app() — load_config() resolves '~' at call time.
 
-    quiet=True (the default) suppresses ambient startup side effects; pass
-    quiet=False for a production-faithful init. Extra kwargs pass through
-    to MP3DownloaderApp.
+def _build_app(mod, quiet=True, **kwargs):
+    """One MP3DownloaderApp, with the Tk-init retry dance.
 
     Tk init is retried up to three times (a root created right after an
     earlier one was torn down can fail Tcl init spuriously), destroying any
@@ -119,56 +123,43 @@ def make_app(cb_mod, tmp_path, monkeypatch):
     SKIPPED only when the error looks like Tk being unavailable on the
     machine; any other TclError propagates as a failure, so a genuine
     widget-construction regression can never hide behind a skip.
-
-    Teardown (for every app created): cancel all pending 'after' callbacks,
-    then destroy(), swallowing teardown-only errors; finally close the file
-    handlers the app attached to the process-global CrateBuilder loggers.
     """
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    runtime_dir = tmp_path / "runtime"
-    runtime_dir.mkdir(exist_ok=True)
-    monkeypatch.setattr(cb_mod, "runtime_data_dir",
-                        lambda script_path=None: str(runtime_dir))
-    monkeypatch.setattr(cb_mod, "DEFAULT_BASE", str(tmp_path / "Music"))
-    monkeypatch.setattr(cb_startup, "startup_is_enabled", lambda: False)
-
-    created = []
-
-    def _make(quiet=True, **kwargs):
-        last_err = None
-        for attempt in range(3):
-            if attempt:
-                time.sleep(0.25)
+    last_err = None
+    for attempt in range(3):
+        if attempt:
+            time.sleep(0.25)
             gc.collect()
-            root_before = tk._default_root
-            try:
-                application = cb_mod.MP3DownloaderApp(quiet=quiet, **kwargs)
-            except tk.TclError as e:
-                last_err = e
-                debris = tk._default_root
-                if debris is not None and debris is not root_before:
-                    _cancel_pending_afters(debris)
-                    try:
-                        debris.destroy()
-                    except Exception:
-                        pass
-                continue
-            created.append(application)
-            return application
-        msg = str(last_err).lower()
-        if any(sig in msg for sig in _TK_UNAVAILABLE):
-            pytest.skip(f"Tk unavailable after 3 attempts: {last_err}")
-        raise last_err
-
-    yield _make
-
-    for application in created:
-        _cancel_pending_afters(application)
+        root_before = tk._default_root
         try:
-            application.destroy()
-        except Exception:
-            pass
+            return mod.MP3DownloaderApp(quiet=quiet, **kwargs)
+        except tk.TclError as e:
+            last_err = e
+            debris = tk._default_root
+            if debris is not None and debris is not root_before:
+                _cancel_pending_afters(debris)
+                try:
+                    debris.destroy()
+                except Exception:
+                    pass
+    msg = str(last_err).lower()
+    if any(sig in msg for sig in _TK_UNAVAILABLE):
+        pytest.skip(f"Tk unavailable after 3 attempts: {last_err}")
+    raise last_err
+
+
+def _destroy_app(application):
+    """Cancel pending 'after' callbacks, then destroy(), swallowing
+    teardown-only errors."""
+    _cancel_pending_afters(application)
+    try:
+        application.destroy()
+    except Exception:
+        pass
+
+
+def _close_crate_log_handlers():
+    """Close the file handlers the app attached to the process-global
+    CrateBuilder loggers, so tmp_path log files can be deleted."""
     for name in ("CrateBuilder", "CrateBuilder.debug"):
         logger = logging.getLogger(name)
         for handler in list(logger.handlers):
@@ -180,9 +171,59 @@ def make_app(cb_mod, tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def make_app(cb_mod, tmp_path, monkeypatch):
+    """Factory: make_app(quiet=True, **kwargs) -> isolated MP3DownloaderApp.
+
+    Isolation applied before any app is built (and active for the whole
+    test): see _isolate_runtime.
+
+    To pre-seed a config, write tmp_path/'.dj_cratebuilder_config.json'
+    BEFORE calling make_app() — load_config() resolves '~' at call time.
+
+    quiet=True (the default) suppresses ambient startup side effects; pass
+    quiet=False for a production-faithful init. Extra kwargs pass through
+    to MP3DownloaderApp. Tk-init retry/skip semantics: see _build_app.
+    """
+    _isolate_runtime(monkeypatch, cb_mod, tmp_path)
+
+    created = []
+
+    def _make(quiet=True, **kwargs):
+        application = _build_app(cb_mod, quiet=quiet, **kwargs)
+        created.append(application)
+        return application
+
+    yield _make
+
+    for application in created:
+        _destroy_app(application)
+    _close_crate_log_handlers()
+
+
+@pytest.fixture
 def app(make_app):
     """Convenience: one isolated quiet app, built with make_app() defaults."""
     return make_app()
+
+
+@pytest.fixture(scope="module")
+def shared_app(cb_mod, tmp_path_factory):
+    """One isolated quiet app shared by every test in the requesting file.
+
+    STRICTLY for read-only tests: anything that mutates app state (Tk
+    variables it doesn't restore, the app's DB, files under its crate root)
+    belongs on `app` / `make_app` instead, or the mutation leaks into the
+    file's other tests. Same isolation and Tk-retry semantics as make_app,
+    against a module-lifetime tmp dir.
+    """
+    mp = pytest.MonkeyPatch()
+    tmp_path = tmp_path_factory.mktemp("shared_app")
+    _isolate_runtime(mp, cb_mod, tmp_path)
+    application = _build_app(cb_mod)
+    yield application
+    _destroy_app(application)
+    _close_crate_log_handlers()
+    mp.undo()
 
 
 @pytest.fixture

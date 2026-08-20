@@ -6,8 +6,10 @@ purpose and say so at the assertion: a whitespace-only genre now normalises to
 the no-genre folder on both path builders, and the 40-char prefix tier that
 used to claim an original as owned because a remix of it existed is retired.
 
-No network, no real config file, no real library — every path lives under the
-test's tmp_path via the `app` / `make_app` fixtures.
+No network, no real config file, no real library — every path lives under a
+tmp_path via the app fixtures. Read-only tests ride the module-shared
+`shared_app`; anything that mutates app state, the DB, or the crate folders
+gets its own `app`.
 """
 import os
 
@@ -31,19 +33,22 @@ def _plat(app, platform="YouTube"):
 # MP3DownloaderApp._channel_save_path — base/Platform/[Genre|_No Genre]/[Channel]
 # ══════════════════════════════════════════════════════════════════════════════
 # ── genre component ───────────────────────────────────────────────────────────
-def test_save_path_real_genre(app):
+def test_save_path_real_genre(shared_app):
+    app = shared_app
     assert app._channel_save_path("Drum & Bass", platform="YouTube") == \
         os.path.join(_plat(app), "Drum & Bass")
 
 
 @pytest.mark.parametrize("genre", [None, "", "(none)"])
-def test_save_path_no_genre_sentinels_all_become_no_genre_dir(app, genre):
+def test_save_path_no_genre_sentinels_all_become_no_genre_dir(shared_app,
+                                                              genre):
     # The three in-app "no genre" spellings collapse to the one on-disk name.
-    assert app._channel_save_path(genre, platform="YouTube") == \
-        os.path.join(_plat(app), "_No Genre")
+    assert shared_app._channel_save_path(genre, platform="YouTube") == \
+        os.path.join(_plat(shared_app), "_No Genre")
 
 
-def test_save_path_whitespace_genre_becomes_no_genre_dir(app):
+def test_save_path_whitespace_genre_becomes_no_genre_dir(shared_app):
+    app = shared_app
     # THE ONE INTENDED DIVERGENCE (inventory DECISION 3). Before the
     # CrateLayout extraction the app builder treated "  " as a real genre and
     # built a folder component made of spaces — which Win32 then trimmed to
@@ -56,7 +61,8 @@ def test_save_path_whitespace_genre_becomes_no_genre_dir(app):
     assert app._channel_save_path("  ", "Some Channel", platform="YouTube") == \
         os.path.join(_plat(app), "_No Genre", "Some Channel")
 
-def test_save_path_keeps_a_padded_real_genre_verbatim(app):
+def test_save_path_keeps_a_padded_real_genre_verbatim(shared_app):
+    app = shared_app
     # A padded genre names a real folder: _scan_genres offers whatever
     # os.listdir returned, and that value is what gets stored in the DB and the
     # sidecars. Trimming it here would send the download to a NEW sibling
@@ -68,12 +74,13 @@ def test_save_path_keeps_a_padded_real_genre_verbatim(app):
 
 # ── channel component ─────────────────────────────────────────────────────────
 @pytest.mark.parametrize("channel", [None, ""])
-def test_save_path_empty_channel_stops_at_the_genre(app, channel):
-    assert app._channel_save_path("DnB", channel, platform="YouTube") == \
-        os.path.join(_plat(app), "DnB")
+def test_save_path_empty_channel_stops_at_the_genre(shared_app, channel):
+    assert shared_app._channel_save_path("DnB", channel, platform="YouTube") \
+        == os.path.join(_plat(shared_app), "DnB")
 
 
-def test_save_path_channel_is_sanitised_and_stripped(app):
+def test_save_path_channel_is_sanitised_and_stripped(shared_app):
+    app = shared_app
     raw = '  UKF: Drum\\Bass / Mix*Q? "x" <y> |z|  '
     got = app._channel_save_path("DnB", raw, platform="YouTube")
     assert got == os.path.join(_plat(app), "DnB",
@@ -83,7 +90,8 @@ def test_save_path_channel_is_sanitised_and_stripped(app):
     assert os.path.basename(got) == safe_filename(raw, strip=True)
 
 
-def test_save_path_channel_that_sanitises_to_empty_is_dropped(app):
+def test_save_path_channel_that_sanitises_to_empty_is_dropped(shared_app):
+    app = shared_app
     # Whitespace-only survives the `if channel_name:` truth test but
     # safe_filename(strip=True) empties it, so no channel component is added.
     assert safe_filename("   ", strip=True) == ""
@@ -91,7 +99,9 @@ def test_save_path_channel_that_sanitises_to_empty_is_dropped(app):
         os.path.join(_plat(app), "DnB")
 
 
-def test_save_path_channel_of_only_illegal_chars_is_kept_as_underscores(app):
+def test_save_path_channel_of_only_illegal_chars_is_kept_as_underscores(
+        shared_app):
+    app = shared_app
     # safe_filename maps each illegal char to "_", so the result is truthy and
     # a folder named "___" IS created. Not dropped.
     assert app._channel_save_path("DnB", "?:|", platform="YouTube") == \
@@ -99,7 +109,8 @@ def test_save_path_channel_of_only_illegal_chars_is_kept_as_underscores(app):
 
 
 # ── platform component ────────────────────────────────────────────────────────
-def test_save_path_explicit_platform_selects_the_subdir(app):
+def test_save_path_explicit_platform_selects_the_subdir(shared_app):
+    app = shared_app
     assert app._channel_save_path("DnB", "Chan", platform="SoundCloud") == \
         os.path.join(app._base_dir, "SoundCloud", "DnB", "Chan")
     assert app._channel_save_path("DnB", "Chan", platform="YouTube") == \
@@ -115,7 +126,8 @@ def test_save_path_platform_none_falls_back_to_the_main_tab_variable(app):
         os.path.join(app._base_dir, "SoundCloud", "DnB", "Chan")
 
 
-def test_save_path_unknown_platform_raises(app):
+def test_save_path_unknown_platform_raises(shared_app):
+    app = shared_app
     # The app builder has no platform guard: an unrecognised name is a KeyError
     # out of PLATFORMS. The viewer's twin swallows it instead (see below).
     with pytest.raises(KeyError):
@@ -146,14 +158,22 @@ def test_save_path_is_pure_and_resolve_save_dir_creates(app, tmp_path):
 # ══════════════════════════════════════════════════════════════════════════════
 # DatabaseViewerWindow._wl_channel_folder — the same shape from a row dict
 # ══════════════════════════════════════════════════════════════════════════════
-@pytest.fixture
-def viewer(cb_mod, app, tmp_path):
+@pytest.fixture(scope="module")
+def viewer(cb_mod, shared_app, tmp_path_factory):
     """A real viewer over an empty throwaway DB, parented to the isolated app —
-    how production reaches _wl_channel_folder (App._open_db_viewer)."""
-    db = cb_mod.DownloadsDatabase(str(tmp_path / "viewer.db"))
-    v = cb_mod.DatabaseViewerWindow(app, db)
+    how production reaches _wl_channel_folder (App._open_db_viewer).
+
+    Module-scoped over shared_app: every test below only READS through
+    _wl_channel_folder, so one viewer serves the file."""
+    db_dir = tmp_path_factory.mktemp("viewer_db")
+    db = cb_mod.DownloadsDatabase(str(db_dir / "viewer.db"))
+    v = cb_mod.DatabaseViewerWindow(shared_app, db)
     v.update()
-    return v
+    yield v
+    try:
+        v.destroy()
+    except Exception:
+        pass
 
 
 def _row(**kw):
@@ -162,18 +182,22 @@ def _row(**kw):
     return row
 
 
-def test_wl_folder_matches_the_app_builder_for_the_normal_case(viewer, app):
+def test_wl_folder_matches_the_app_builder_for_the_normal_case(viewer,
+                                                               shared_app):
     assert viewer._wl_channel_folder(_row()) == \
-        app._channel_save_path("DnB", "Chan", platform="YouTube")
+        shared_app._channel_save_path("DnB", "Chan", platform="YouTube")
 
 
 @pytest.mark.parametrize("genre", [None, "", "(none)"])
-def test_wl_folder_no_genre_sentinels_all_become_no_genre_dir(viewer, app, genre):
+def test_wl_folder_no_genre_sentinels_all_become_no_genre_dir(viewer,
+                                                              shared_app,
+                                                              genre):
     assert viewer._wl_channel_folder(_row(genre=genre)) == \
-        os.path.join(_plat(app), "_No Genre", "Chan")
+        os.path.join(_plat(shared_app), "_No Genre", "Chan")
 
 
-def test_wl_folder_whitespace_genre_becomes_no_genre_dir(viewer, app):
+def test_wl_folder_whitespace_genre_becomes_no_genre_dir(viewer, shared_app):
+    app = shared_app
     # DIVERGENCE from the app builder: the viewer .strip()s genre first, so
     # "  " becomes "" and lands in "_No Genre". This is the behaviour Phase 4
     # adopts for both builders.
@@ -181,7 +205,9 @@ def test_wl_folder_whitespace_genre_becomes_no_genre_dir(viewer, app):
         os.path.join(_plat(app), "_No Genre", "Chan")
 
 
-def test_wl_folder_strips_platform_and_name_but_not_the_genre(viewer, app):
+def test_wl_folder_strips_platform_and_name_but_not_the_genre(viewer,
+                                                              shared_app):
+    app = shared_app
     # Platform and channel name are still stripped (the platform has to match
     # the PLATFORMS table, and the channel name is sanitised anyway), but the
     # genre is now used verbatim — which is what makes the viewer's Folder
@@ -195,19 +221,19 @@ def test_wl_folder_strips_platform_and_name_but_not_the_genre(viewer, app):
 
 
 @pytest.mark.parametrize("name", [None, "", "   "])
-def test_wl_folder_empty_channel_stops_at_the_genre(viewer, app, name):
+def test_wl_folder_empty_channel_stops_at_the_genre(viewer, shared_app, name):
     assert viewer._wl_channel_folder(_row(display_name=name)) == \
-        os.path.join(_plat(app), "DnB")
+        os.path.join(_plat(shared_app), "DnB")
 
 
-def test_wl_folder_sanitises_the_channel_name(viewer, app):
+def test_wl_folder_sanitises_the_channel_name(viewer, shared_app):
     got = viewer._wl_channel_folder(_row(display_name='A: B / C?'))
-    assert got == os.path.join(_plat(app), "DnB", "A_ B _ C_")
+    assert got == os.path.join(_plat(shared_app), "DnB", "A_ B _ C_")
 
 
-def test_wl_folder_soundcloud_row(viewer, app):
+def test_wl_folder_soundcloud_row(viewer, shared_app):
     assert viewer._wl_channel_folder(_row(platform="SoundCloud")) == \
-        os.path.join(app._base_dir, "SoundCloud", "DnB", "Chan")
+        os.path.join(shared_app._base_dir, "SoundCloud", "DnB", "Chan")
 
 
 @pytest.mark.parametrize("platform", [None, "", "   ", "Bandcamp", "youtube"])

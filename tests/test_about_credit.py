@@ -26,18 +26,19 @@ def test_about_fields_carry_the_email_as_an_optional_third_element(cb_mod):
     assert len(by_label["Built with"]) == 2   # rows without an email still work
 
 
-def test_name_and_email_render_as_two_stacked_labels(app, cb_mod):
-    name = _labels(app, cb_mod.ABOUT_CREATED_BY)
-    mail = _labels(app, cb_mod.ABOUT_CONTACT_EMAIL)
+def test_name_and_email_render_as_two_stacked_labels(shared_app, cb_mod):
+    name = _labels(shared_app, cb_mod.ABOUT_CREATED_BY)
+    mail = _labels(shared_app, cb_mod.ABOUT_CONTACT_EMAIL)
     assert len(name) == 1 and len(mail) == 1
     assert mail[0].master is name[0].master        # same value column
     assert mail[0].cget("cursor") == "hand2"
     assert "underline" in str(mail[0].cget("font"))
 
 
-def test_clicking_the_email_opens_a_mailto_url(app, cb_mod, monkeypatch, show):
+def test_clicking_the_email_opens_a_mailto_url(shared_app, cb_mod,
+                                               monkeypatch, show):
     opened = []
     monkeypatch.setattr(cb_mod.webbrowser, "open", opened.append)
-    mail = show(_labels(app, cb_mod.ABOUT_CONTACT_EMAIL)[0])
+    mail = show(_labels(shared_app, cb_mod.ABOUT_CONTACT_EMAIL)[0])
     mail.event_generate("<Button-1>", when="now")
     assert opened == [f"mailto:{cb_mod.ABOUT_CONTACT_EMAIL}"]
