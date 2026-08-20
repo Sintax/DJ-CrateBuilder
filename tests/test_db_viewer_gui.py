@@ -141,3 +141,25 @@ def test_viewer_column_order_persists(cb_mod, tmp_path, app):
     v2 = cb_mod.DatabaseViewerWindow(app, db)
     v2.update()
     assert list(v2._wl_tree.cget("displaycolumns")) == new_order
+
+
+def _buttons(widget):
+    """Every tk.Button in the subtree, in creation order."""
+    import tkinter as tk
+    out = [widget] if isinstance(widget, tk.Button) else []
+    for child in widget.winfo_children():
+        out += _buttons(child)
+    return out
+
+
+def test_destructive_toolbar_buttons_are_dark_red(cb_mod, tmp_path, app):
+    db = cb_mod.DownloadsDatabase(str(tmp_path / "t.db"))
+    v = cb_mod.DatabaseViewerWindow(app, db)
+    v.update()
+    reds = {b.cget("text") for b in _buttons(v)
+            if str(b.cget("fg")).lower() == cb_mod.YT_DARK}
+    assert reds == {"🧹  Folders Cleanup ‹Smart›", "🖼  Fetch Missing Artwork"}
+    # Everything else keeps the ordinary dim toolbar colour.
+    dims = {b.cget("text") for b in _buttons(v)
+            if str(b.cget("fg")).lower() == cb_mod.TEXT_DIM}
+    assert "⟳  Refresh" in dims
