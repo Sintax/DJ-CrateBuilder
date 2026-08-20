@@ -4461,6 +4461,7 @@ class MP3DownloaderApp(tk.Tk):
         self._downloading   = False
         self._cancel_flag   = threading.Event()
         self._pause_flag    = threading.Event()   # set = paused, clear = running
+        self._url_skipped   = False   # the URL just processed was Skipped
         self._wl_scan_active = 0   # count of in-flight Watch List scans
         self._wl_cancel_cids = set()  # channel ids the user asked to cancel
         self._queue         = []
@@ -5139,6 +5140,8 @@ class MP3DownloaderApp(tk.Tk):
     def _build_batch_panel(self, parent):
         """Build the compact batch-URL list panel."""
         self._batch_urls = []   # list of {"url", "genre", "platform"} dicts
+        self._batch_run_active = False   # a manual batch is running right now
+        self._batch_active_idx = -1      # row the manual batch is working on
 
         hdr = ttk.Frame(parent)
         hdr.pack(fill="x", pady=(0, 4))
@@ -5246,6 +5249,30 @@ class MP3DownloaderApp(tk.Tk):
                 self._batch_urls[new_idx], self._batch_urls[idx]
             self._batch_rebuild_rows()
 
+    def _batch_skip(self, item):
+        """Mark one queued URL to be passed over by the batch that is running.
+
+        The mark lives on the item dict itself, which is the only channel that
+        already crosses to the worker thread: _start snapshots _batch_urls into
+        a new list holding the SAME dicts, so an in-place key change is visible
+        to _batch_worker immediately. Keying by row index instead would desync
+        the moment the user presses ✕ or ▲▼ mid-run.
+
+        A URL the batch has not reached yet costs nothing — the worker passes
+        over it without a single network call. The URL currently downloading
+        finishes its in-flight track first (the worker only consults the mark
+        between tracks), then abandons whatever is left of that URL, exactly
+        the promise Cancel makes for the batch as a whole.
+
+        One-way and run-scoped: there is no un-skip, and _start clears every
+        mark before it snapshots, so a skip never leaks into the next run.
+        """
+        if not self._batch_run_active or item.get("skip"):
+            return
+        item["skip"] = True
+        self._batch_rebuild_rows()
+        self._set_status(f"Skipping  {item['url'][:60]}…")
+
     def _batch_clear(self):
         self._batch_urls.clear()
         self._batch_rebuild_rows()
@@ -5276,6 +5303,10 @@ class MP3DownloaderApp(tk.Tk):
         else:
             for i, item in enumerate(self._batch_urls):
                 self._batch_build_row(i, item)
+            # Rebuilding throws away the dimming _batch_set_active applied, so
+            # a mid-run rebuild (pressing Skip) has to put it back.
+            if self._batch_run_active and self._batch_active_idx >= 0:
+                self._batch_highlight(self._batch_active_idx)
 
         self._batch_canvas.update_idletasks()
         self._batch_canvas.configure(
@@ -5307,6 +5338,27 @@ class MP3DownloaderApp(tk.Tk):
         tk.Label(row, text=genre_str, font=("Segoe UI", 9),
                   fg=TEXT_DIM, bg=SURFACE2, anchor="e"
                   ).pack(side="left", padx=(4, 6))
+
+        # A Button, not a Label: _batch_highlight repaints every Label in every
+        # row while the batch runs, which would grey this one out mid-run.
+        marked = bool(item.get("skip"))
+        skip_btn = tk.Button(
+            row, text="Skipped" if marked else "Skip", font=("Segoe UI", 9),
+            bg=SURFACE2, fg=YT_DARK, disabledforeground=TEXT_DIM,
+            relief="flat", bd=0,
+            activebackground="#3b0000", activeforeground=YT_RED,
+            cursor="hand2", padx=4,
+            state="disabled" if (marked or not self._batch_run_active)
+                  else "normal",
+            command=lambda it=item: self._batch_skip(it))
+        skip_btn.pack(side="left", padx=(0, 2))
+        Tooltip(skip_btn,
+                "Skipped — this URL is being passed over by the running batch."
+                if marked else
+                "Pass over this URL in the running batch. If it's the one "
+                "downloading now, the current track finishes first, then the "
+                "batch moves on to the next URL.\n\n"
+                "Only available while a batch is running.")
 
         for sym, delta, tip in [("▲", -1, "Move this URL up in the queue"),
                                  ("▼", 1, "Move this URL down in the queue")]:
@@ -9262,6 +9314,8 @@ class MP3DownloaderApp(tk.Tk):
 
         # Build the run list: use batch if populated, else fall back to URL field
         if self._batch_urls:
+            for it in self._batch_urls:
+                it.pop("skip", None)   # a skip mark belongs to one run only
             run_batch = list(self._batch_urls)
         else:
             url = self._normalize_url(self._url_var.get().strip())
@@ -9288,6 +9342,12 @@ class MP3DownloaderApp(tk.Tk):
             self._record_url_history(url)
 
         self._begin_download_session("Preparing batch…")
+        # Armed here rather than in _begin_download_session: a Watch List forced
+        # download opens a session too, and the rows on screen during one are
+        # the user's manual queue, which that run is NOT processing.
+        self._batch_run_active = True
+        self._batch_active_idx = -1
+        self._batch_rebuild_rows()
         self._set_status(f"Starting batch of {len(run_batch)} URL(s)…")
 
         self._run_bg(self._batch_worker, run_batch)
@@ -9418,21 +9478,34 @@ class MP3DownloaderApp(tk.Tk):
                 # Watch List channel highlight in the Batch Queue panel.
                 self.after(0, lambda i=url_idx: self._batch_set_active(i))
 
+                # Skipped before the batch ever got here: no metadata fetch, no
+                # network, and — like every other non-clean outcome — no
+                # retiring of this channel's pending list.
+                if item.get("skip"):
+                    self._wl_dl_log(
+                        f"⊘ {(item.get('title') or url)[:60]} (skipped)",
+                        "info")
+                    continue
+
                 dl, sk, er = self._process_one_url(
                     url, genre, platform, cfg, session_ua,
-                    channel_name_override=item.get("channel_name"))
+                    channel_name_override=item.get("channel_name"),
+                    skip_requested=lambda it=item: bool(it.get("skip")))
                 if dl is None:   # fatal error inside _process_one_url
                     fatal_error = self._last_fatal_error
                     self._wl_dl_log(f"✗ Stopped: {fatal_error}", "err")
                     break
 
-                if not er and not self._cancel_flag.is_set():
+                if (not er and not self._cancel_flag.is_set()
+                        and not self._url_skipped):
                     clean_urls.add(url_idx)
 
                 # Mirror this track's outcome into the Watch List scan log
                 # (only fires while a Watch List batch is active).
                 wl_title = (item.get("title") or url)[:60]
-                if er:
+                if self._url_skipped:
+                    self._wl_dl_log(f"⊘ {wl_title} (skipped)", "info")
+                elif er:
                     self._wl_dl_log(
                         f"✗ {wl_title} — {self._last_url_error or 'failed'}", "err")
                 elif dl:
@@ -9540,6 +9613,7 @@ class MP3DownloaderApp(tk.Tk):
             self._wl_batch_active_idx = idx
             self._batch_rebuild_rows()
         else:
+            self._batch_active_idx = idx
             self._batch_highlight(idx)
 
     def _batch_highlight(self, active_idx):
@@ -9555,13 +9629,29 @@ class MP3DownloaderApp(tk.Tk):
 
     # ── Per-URL worker ────────────────────────────────────────────────────────
     def _process_one_url(self, url, genre, platform, cfg, session_ua=None,
-                         channel_name_override=None):
+                         channel_name_override=None, skip_requested=None):
         """
         Download all entries from a single URL.
         Returns (downloaded, skipped, errors) counts, or (None, None, None) on
         a fatal error.  Does NOT call _finish — that is the batch_worker's job.
+
+        *skip_requested* is an optional predicate asked, between tracks, whether
+        the user has pressed Skip on this URL's queue row. It is consulted only
+        at points where no track is in flight, so the track downloading when
+        Skip lands still finishes and settles its counters before the URL is
+        abandoned — the same promise Cancel makes. A skip is not an error and
+        not fatal: the counts returned are whatever the URL genuinely achieved
+        before it stopped, and self._url_skipped tells the caller that the rest
+        of the URL was never attempted (so it must not be treated as clean).
         """
         self._last_url_error = None   # short reason if this URL fails softly
+        self._url_skipped = False
+
+        def _skip_now():
+            if skip_requested is not None and skip_requested():
+                self._url_skipped = True
+            return self._url_skipped
+
         try:
             import time
 
@@ -9636,6 +9726,11 @@ class MP3DownloaderApp(tk.Tk):
                 return 0, 0, 1
 
             if self._cancel_flag.is_set():
+                return 0, 0, 0
+
+            # A channel listing can take half a minute; Skip pressed during it
+            # must not be answered by downloading the whole channel anyway.
+            if _skip_now():
                 return 0, 0, 0
 
             # Normalise: single item vs collection
@@ -9714,15 +9809,21 @@ class MP3DownloaderApp(tk.Tk):
                 if self._cancel_flag.is_set():
                     break
 
+                # The load-bearing Skip checkpoint: the previous track's
+                # downloader has already returned and settled its row and its
+                # counters, and the next one has not started.
+                if _skip_now():
+                    break
+
                 # ── Pause gate ────────────────────────────────────────────────
                 if self._pause_flag.is_set():
                     self.after(0, lambda: self._set_status(
                         "⏸  Paused — press Resume to continue…"))
                     while self._pause_flag.is_set():
-                        if self._cancel_flag.is_set():
+                        if self._cancel_flag.is_set() or _skip_now():
                             break
                         time.sleep(0.2)
-                    if self._cancel_flag.is_set():
+                    if self._cancel_flag.is_set() or self._url_skipped:
                         break
                     self.after(0, lambda: self._set_status("Resuming…"))
 
@@ -9935,6 +10036,8 @@ class MP3DownloaderApp(tk.Tk):
             if errors:  parts.append(f"✗ {errors} failed")
             if self._cancel_flag.is_set():
                 parts.insert(0, "Cancelled.")
+            elif self._url_skipped:
+                parts.insert(0, "Skipped.")
             self.after(0, lambda s="  ".join(parts): self._set_status(s))
 
             # ── Auto-add to Watch List (collections only) ─────────────
@@ -9977,8 +10080,16 @@ class MP3DownloaderApp(tk.Tk):
         self._ov_stats_lbl.config(text="    ".join(parts) if parts else "")
 
     def _finish(self):
-        """Reset controls and status when a download run completes or is cancelled."""
+        """Reset controls and status when a download run completes or is cancelled.
+
+        The batch worker rebuilds the queue rows from its own `finally` while
+        this flag is still set, so the rows have to be drawn once more here —
+        otherwise the Skip buttons stay live over a queue nothing is running.
+        """
         self._downloading = False
+        self._batch_run_active = False
+        self._batch_active_idx = -1
+        self._batch_rebuild_rows()
         self._stall_stop()
         self._pause_flag.clear()
         self._dl_btn.config(state="normal")
