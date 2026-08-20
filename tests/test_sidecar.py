@@ -1,3 +1,5 @@
+import pytest
+
 from cratebuilder import sidecar
 
 
@@ -140,6 +142,28 @@ def test_watch_scan_url():
         "SoundCloud", "https://soundcloud.com/artist/tracks"
         ) == "https://soundcloud.com/artist/tracks"
     assert watch_scan_url("YouTube", "") == ""
+
+
+@pytest.mark.parametrize("tab", ["featured", "shorts", "releases"])
+def test_watch_scan_url_replaces_non_listing_tabs(tab):
+    from cratebuilder.sidecar import watch_scan_url
+    assert watch_scan_url(
+        "YouTube", f"https://www.youtube.com/@chan/{tab}"
+        ) == "https://www.youtube.com/@chan/videos"
+    assert watch_scan_url(
+        "YouTube", f"https://www.youtube.com/channel/UCx/{tab}/"
+        ) == "https://www.youtube.com/channel/UCx/videos"
+
+
+@pytest.mark.parametrize("url", [
+    "https://www.youtube.com/@chan/streams",
+    "https://www.youtube.com/channel/UCx/streams",
+    "https://www.youtube.com/@chan/playlists",
+    "https://www.youtube.com/playlist?list=PLx",
+])
+def test_watch_scan_url_leaves_deliberate_listings_alone(url):
+    from cratebuilder.sidecar import watch_scan_url
+    assert watch_scan_url("YouTube", url) == url
 
 
 def test_watch_fetch_url():

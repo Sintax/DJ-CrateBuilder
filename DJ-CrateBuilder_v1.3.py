@@ -8086,8 +8086,10 @@ class MP3DownloaderApp(tk.Tk):
 
             ("Q: Does pasting a YouTube channel URL download all videos?",
              "A: Yes. When you paste a bare channel URL (like https://www.youtube.com/@ChannelName), the app "
-             "automatically appends /videos to ensure it fetches the full video list rather than just the channel's "
-             "featured page."),
+             "automatically switches it to the /videos tab so it fetches the full upload list. It does the same for "
+             "a /featured, /shorts or /releases link, since none of those list a channel's videos — /featured is the "
+             "Home page and returns only a few curated shelves. A /videos, /streams or /playlists link is used "
+             "as-is."),
 
             ("Q: What does the bitrate display in the Queue mean?",
              "A: The format \"128k → 192k\" shows the source audio bitrate from YouTube followed by the bitrate your "
@@ -8844,12 +8846,17 @@ class MP3DownloaderApp(tk.Tk):
 
     @staticmethod
     def _normalize_url(url):
-        """Append /videos to bare YouTube channel URLs so yt-dlp fetches
-        the full video list instead of the channel's featured page."""
-        # Match youtube.com/@ChannelName with no trailing path segment
-        if re.match(r'https?://(www\.)?youtube\.com/@[^/]+/?$', url):
-            url = url.rstrip("/") + "/videos"
-        return url
+        """Point a YouTube channel URL at its /videos tab so yt-dlp fetches the
+        full upload list.
+
+        Covers the bare @handle and the three tabs that never list a channel's
+        uploads: /featured is the Home page, which yt-dlp returns as a few
+        curated shelves (three, for a channel with 943 videos), while /shorts
+        and /releases are separate catalogues. /videos, /streams and
+        /playlists are left alone — those are deliberate choices."""
+        m = re.match(r'(https?://(?:www\.)?youtube\.com/@[^/]+)'
+                     r'(?:/(?:featured|shorts|releases))?/?$', url, re.I)
+        return m.group(1) + "/videos" if m else url
 
     # ══════════════════════════════════════════════════════════════════════════
     # Download engine — dependency check, queue UI, and the worker pipeline
