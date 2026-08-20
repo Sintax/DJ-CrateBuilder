@@ -291,6 +291,17 @@ STATE_ICON = {
     ST_ERROR:   ("✗", YT_RED),
 }
 
+# Seconds a track may spend trying to start before the queue row says so. The
+# throttle's own maximum sleep is added on top when throttling is enabled —
+# without that, every throttled download would report a "wait" that is really
+# yt-dlp obeying the delay we asked it for.
+STALL_GRACE_SECONDS = 3
+
+# Anything that would break one queue row across two lines of the Text
+# widget, or knock its fixed-width columns out of true. Ordinary spaces
+# are left alone: a title's own spacing belongs to the title.
+_ONE_LINE_RE = re.compile(r"[\r\n\v\f\t  ]+")
+
 # ── User-Agent pool (one is chosen per batch session) ────────────────────────
 USER_AGENT_POOL = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -4314,19 +4325,39 @@ class _TkDownloadSink:
 
     The queue row's title is written here too, and only here: it used to be
     assigned straight from the yt-dlp thread with no marshalling at all, from
-    three separate places."""
+    three separate places.
+
+    _beat is the one exception to the marshalling rule, and deliberately so —
+    see its own docstring."""
 
     def __init__(self, app, idx):
         self.app = app
         self.idx = idx
 
+    def _beat(self, phase):
+        """Record this track's latest sign of life for the queue's connect-wait
+        ticker: an immutable (row, phase, monotonic) tuple stored straight onto
+        the app.
+
+        This is the only widget-adjacent write here that does NOT go through
+        after(0), and that is the point: a single store of an immutable tuple
+        cannot tear, and the reader is the Tk ticker, which is already
+        serialised against this by the GIL. Routing it through after(0) would
+        queue one callback per progress chunk for no gain at all.
+
+        monotonic, never time(): a clock change mid-download must not be able
+        to invent an hour-long wait."""
+        self.app._stall = (self.idx, phase, time.monotonic())
+
     def started(self, title):
+        self._beat("connecting")
         self.app.after(0, lambda t=title: (
             self.app._cur_lbl.config(text=t[:80]),
             self.app._vid_progress.config(value=0),
         ))
 
     def bitrate_detected(self, source_abr, target_kbps):
+        self._beat("flowing")
         text = f"{int(source_abr)}k → {target_kbps}k"
         self.app.after(0, lambda t=text: (
             self.app._bitrate_lbl.config(text=f"src {t}"),
@@ -4334,6 +4365,7 @@ class _TkDownloadSink:
         ))
 
     def progress(self, percent=None, speed_text=""):
+        self._beat("flowing")
         if percent is not None:
             self.app.after(0, lambda p=percent:
                 self.app._vid_progress.config(value=p))
@@ -4342,9 +4374,11 @@ class _TkDownloadSink:
                 self.app._speed_lbl.config(text=s))
 
     def title_corrected(self, title):
+        self._beat("flowing")
         self.app.after(0, lambda t=title: self._adopt_title(t))
 
     def finished(self):
+        self._beat("converting")
         self.app.after(0, lambda: (
             self.app._vid_progress.config(value=95),
             self.app._speed_lbl.config(text="converting…"),
@@ -4563,6 +4597,10 @@ class MP3DownloaderApp(tk.Tk):
         self._watchlist_last_download = int(time.time())
         self._auto_dl_after_id = None
         self._wl_next_dl_ts = None      # wall-clock of the next scheduled run
+        # Latest (queue row, phase, monotonic) beat from the running track's
+        # sink, and the once-a-second tick that turns it into a counter.
+        self._stall = None
+        self._stall_after_id = None
         self._tray_icon = None  # set when tray is active
         self._tray_title_after_id = None   # recurring hover-tooltip refresh
         self._tray_dl_label = "Download All New (0)"  # live tray menu label
@@ -7405,13 +7443,20 @@ class MP3DownloaderApp(tk.Tk):
         self.lift()
         self.focus_force()
 
+    # Every self-arming after() loop on this class. _quit_app cancels the lot;
+    # a loop left running fires into a half-destroyed interpreter.
+    _RECURRING_TIMERS = ("_auto_dl_after_id", "_stall_after_id",
+                         "_tray_title_after_id", "_update_check_after_id")
+
     def _quit_app(self):
-        """Real exit: stop tray, cancel timer, destroy."""
-        if self._auto_dl_after_id is not None:
-            try:
-                self.after_cancel(self._auto_dl_after_id)
-            except Exception:
-                pass
+        """Real exit: stop tray, cancel timers, destroy."""
+        for name in self._RECURRING_TIMERS:
+            after_id = getattr(self, name, None)
+            if after_id is not None:
+                try:
+                    self.after_cancel(after_id)
+                except Exception:
+                    pass
         if self._tray_icon is not None:
             self._tray_icon.stop()
         self.destroy()
@@ -8983,10 +9028,18 @@ class MP3DownloaderApp(tk.Tk):
 
     # ── Queue UI ──────────────────────────────────────────────────────────────
     def _clear_queue(self):
+        """Empty the queue widget and the rows behind it.
+
+        The last connect-wait beat goes with them: it names a row by index, and
+        clearing the queue is exactly the moment those indices stop meaning
+        anything. A batch clears the queue between every URL, so without this a
+        beat left over from the previous URL's last failed track would paint a
+        multi-minute wait onto the next URL's first row."""
         self._qtxt.config(state="normal")
         self._qtxt.delete("1.0", "end")
         self._qtxt.config(state="disabled")
         self._queue.clear()
+        self._stall = None
         self._qcount_lbl.config(text="")
 
     def _build_queue_ui(self, entries, item_word="item"):
@@ -9001,13 +9054,44 @@ class MP3DownloaderApp(tk.Tk):
         self._qcount_lbl.config(
             text=f"{n} {item_word}{'s' if n != 1 else ''}")
 
-    def _format_queue_line(self, idx, icon, title, bitrate="", note=""):
-        """Format a fixed-width queue line for the Text widget."""
+    def _format_queue_line(self, idx, icon, title, bitrate="", note="",
+                           stall=""):
+        """Format a fixed-width queue line for the Text widget.
+
+        *note* and *stall* share the right-hand column and *note* always wins
+        it: a terminal verdict ("skipped", "✓ done", an error) is the last word
+        on a row, so a connect-wait tick left over from the moment before can
+        never paint over it.
+
+        A row is one logical line, and every writer repaints by deleting one:
+        so a line break arriving inside a SoundCloud title or a yt-dlp error
+        message is flattened here. Left in, it would add a line the repaint
+        never removes and push every row below it out of step with its index."""
         num    = f"{idx+1:>4}."
-        trunc  = title[:48] + ("…" if len(title) > 48 else "")
+        flat   = _ONE_LINE_RE.sub(" ", title)
+        trunc  = flat[:48] + ("…" if len(flat) > 48 else "")
         brate  = bitrate.rjust(14) if bitrate else " " * 14
-        status = note.rjust(14) if note else " " * 14
+        right  = _ONE_LINE_RE.sub(" ", note or stall)
+        status = right.rjust(14) if right else " " * 14
         return f"{num} {icon}  {trunc:<50}{brate}  {status}\n"
+
+    @staticmethod
+    def connect_wait_text(elapsed, grace):
+        """Render how long a track has been trying to start, or "" while it is
+        still inside *grace*.
+
+        Seconds up to 99 ("⏳ 42s"), then m:ss ("⏳ 1:45") so the string stays
+        inside the 14-character status column; anything past 99 minutes is a
+        hung process rather than a wait, and saturates."""
+        if elapsed < grace:
+            return ""
+        secs = int(elapsed)
+        if secs < 100:
+            return f"⏳ {secs}s"
+        mins, rem = divmod(secs, 60)
+        if mins > 99:
+            return "⏳ 99:59+"
+        return f"⏳ {mins}:{rem:02d}"
 
     def _add_row(self, idx, title):
         """Append a pending row for one track to the queue widget."""
@@ -9016,39 +9100,17 @@ class MP3DownloaderApp(tk.Tk):
         # Insert without switching state (caller manages state)
         self._qtxt.insert("end", line, ("q_pending", tag))
         self._queue.append({"title": title, "state": ST_PENDING,
-                             "bitrate": "", "note": ""})
+                             "bitrate": "", "note": "", "stall": ""})
 
-    def _set_row_state(self, idx, state, note=""):
-        """Update a queue row's icon/colour to reflect its download state."""
-        if idx >= len(self._queue):
-            return
-        e = self._queue[idx]
-        e["state"] = state
-        e["note"]  = note
-        icon_ch, _ = STATE_ICON[state]
-        tag_map = {
-            ST_PENDING: "q_pending",
-            ST_ACTIVE:  "q_active",
-            ST_DONE:    "q_done",
-            ST_SKIPPED: "q_skipped",
-            ST_ERROR:   "q_error",
-        }
-        line = self._format_queue_line(idx, icon_ch, e["title"],
-                                        e["bitrate"], note)
-        line_start = f"{idx+1}.0"
-        line_end   = f"{idx+1}.end+1c"
-        self._qtxt.config(state="normal")
-        self._qtxt.delete(line_start, line_end)
-        self._qtxt.insert(line_start, line, tag_map.get(state, "q_pending"))
-        self._qtxt.config(state="disabled")
-        self.after(80, lambda i=idx: self._scroll_to_row(i))
+    def _render_row(self, idx):
+        """Repaint queue row *idx* from its own dict — icon, colour tag and the
+        fixed-width line — leaving the Text widget disabled again afterwards.
 
-    def _set_row_bitrate(self, idx, text, color=None):
-        """Update the bitrate text on a queue row and re-render the line."""
-        if idx >= len(self._queue):
-            return
+        Every writer of a row goes through here, so the row on screen is always
+        the whole dict and never one field's idea of it. Deliberately does NOT
+        scroll: the connect-wait ticker repaints once a second and must never
+        yank the viewport out from under someone reading the queue."""
         e = self._queue[idx]
-        e["bitrate"] = text
         icon_ch, _ = STATE_ICON[e["state"]]
         tag_map = {
             ST_PENDING: "q_pending",
@@ -9057,14 +9119,36 @@ class MP3DownloaderApp(tk.Tk):
             ST_SKIPPED: "q_skipped",
             ST_ERROR:   "q_error",
         }
-        line = self._format_queue_line(idx, icon_ch, e["title"],
-                                        text, e["note"])
+        line = self._format_queue_line(idx, icon_ch, e["title"], e["bitrate"],
+                                        e["note"], e.get("stall", ""))
         line_start = f"{idx+1}.0"
         line_end   = f"{idx+1}.end+1c"
         self._qtxt.config(state="normal")
         self._qtxt.delete(line_start, line_end)
         self._qtxt.insert(line_start, line, tag_map.get(e["state"], "q_pending"))
         self._qtxt.config(state="disabled")
+
+    def _set_row_state(self, idx, state, note=""):
+        """Update a queue row's icon/colour to reflect its download state.
+
+        A row that is no longer being worked on drops its connect-wait tick:
+        the counter only ever meant "still trying to start this one"."""
+        if idx >= len(self._queue):
+            return
+        e = self._queue[idx]
+        e["state"] = state
+        e["note"]  = note
+        if state != ST_ACTIVE:
+            e["stall"] = ""
+        self._render_row(idx)
+        self.after(80, lambda i=idx: self._scroll_to_row(i))
+
+    def _set_row_bitrate(self, idx, text, color=None):
+        """Update the bitrate text on a queue row and re-render the line."""
+        if idx >= len(self._queue):
+            return
+        self._queue[idx]["bitrate"] = text
+        self._render_row(idx)
 
     def _scroll_to_row(self, idx):
         """Scroll the queue Text widget so the given row is centered vertically."""
@@ -9078,6 +9162,97 @@ class MP3DownloaderApp(tk.Tk):
             self._qtxt.yview_moveto(frac)
         except Exception:
             pass
+
+    # ── Connect-wait ticker ───────────────────────────────────────────────────
+    def _stall_grace(self):
+        """Seconds a track may spend connecting before the queue admits it.
+
+        The flat grace plus, when throttling is on, one of the throttle's own
+        maximum sleeps, so a configured delay is never reported as trouble.
+        One and not the ladder's worth: yt-dlp sleeps again on every retry, but
+        a track that has reached its second attempt is in trouble, and that is
+        exactly the moment the counter is there for."""
+        grace = STALL_GRACE_SECONDS
+        try:
+            if self._sleep_enabled.get():
+                grace += self._resolve_sleep_range()[1]
+        except Exception:
+            pass
+        return grace
+
+    def _stall_start(self):
+        """Arm the once-a-second connect-wait tick for a new batch."""
+        self._stall = None
+        if self._stall_after_id is None:
+            self._stall_after_id = self.after(1000, self._stall_tick)
+
+    def _stall_tick(self):
+        """Once a second, show how long the running row has been trying to start.
+
+        The sink's last (row, phase, monotonic) beat is validated against the
+        queue on every tick — the row must still exist and must still be the
+        one being worked on — so a track that finished, failed or was skipped
+        goes quiet without anyone having to tell this loop about it. Only the
+        "connecting" phase produces text: this counts the wait before a
+        download, and nothing else. Once bytes have arrived the phase is
+        "flowing" and stays that way through any retry, so a track that stalls
+        after downloading part of itself is deliberately not flagged; the gap
+        between "finished" and FFmpeg completing has no signal at all, so a
+        counter there would slander a healthy track.
+
+        The row is only repainted when the rendered string actually changes, so
+        a download that is behaving costs one string comparison a second rather
+        than a Text rewrite. The body is guarded because a raise here would not
+        just lose one tick — it would take the rest of the batch's ticks with
+        it, and this is the only self-arming loop on the class that writes to a
+        widget."""
+        self._stall_after_id = None
+        if not self._downloading:
+            return
+        try:
+            self._stall_paint()
+        except Exception as e:
+            self._dbg.warning(f"STALL TICK | skipped: {e}")
+        self._stall_after_id = self.after(1000, self._stall_tick)
+
+    def _stall_paint(self):
+        """One tick's worth of work: validate the last beat and repaint its row."""
+        beat = self._stall
+        if beat is None:
+            return
+        idx, phase, since = beat
+        if not (0 <= idx < len(self._queue)
+                and self._queue[idx]["state"] == ST_ACTIVE):
+            return
+        text = ""
+        if phase == "connecting":
+            text = self.connect_wait_text(time.monotonic() - since,
+                                          self._stall_grace())
+        if self._queue[idx].get("stall", "") != text:
+            self._queue[idx]["stall"] = text
+            self._render_row(idx)
+
+    def _stall_stop(self):
+        """Disarm the connect-wait tick, forget the last beat, and wipe any tick
+        still on screen.
+
+        A batch that ends mid-track — cancelled, or broken out of by a fatal
+        error — leaves its row ACTIVE and unsettled. Without this the last
+        number painted would sit there frozen until the next batch."""
+        if self._stall_after_id is not None:
+            try:
+                self.after_cancel(self._stall_after_id)
+            except Exception:
+                pass
+            self._stall_after_id = None
+        for idx, row in enumerate(self._queue):
+            if row.get("stall"):
+                row["stall"] = ""
+                try:
+                    self._render_row(idx)
+                except Exception:
+                    pass
+        self._stall = None
 
     # ── Start / Cancel ────────────────────────────────────────────────────────
     def _start(self):
@@ -9147,6 +9322,7 @@ class MP3DownloaderApp(tk.Tk):
         self._last_fatal_error = None
         self._batch_start = time.time()
         self._clear_queue()
+        self._stall_start()
 
     def _set_download_lock(self, locked):
         """Freeze settings that must not change while tracks are downloading:
@@ -9803,6 +9979,7 @@ class MP3DownloaderApp(tk.Tk):
     def _finish(self):
         """Reset controls and status when a download run completes or is cancelled."""
         self._downloading = False
+        self._stall_stop()
         self._pause_flag.clear()
         self._dl_btn.config(state="normal")
         self._batch_add_btn.config(state="normal")

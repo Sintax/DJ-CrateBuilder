@@ -80,6 +80,9 @@ def test_progress_with_nothing_to_say_schedules_nothing(wired, app):
     sink, deferred = wired
     sink.progress(percent=None, speed_text="")
     assert deferred.scheduled == []
+    # …but the hook firing at all is still a sign of life for the queue's
+    # connect-wait counter, and recording it costs no callback.
+    assert app._stall[1] == "flowing"
 
 
 def test_progress_reports_zero_percent_rather_than_swallowing_it(wired, app):
@@ -122,3 +125,48 @@ def test_title_corrected_past_the_end_of_the_queue_is_a_no_op(cb_mod, app,
     cb_mod._TkDownloadSink(app, 7).title_corrected("nope")
     deferred.run()
     assert [row["title"] for row in app._queue] == ["Only"]
+
+
+# ── The connect-wait beat ─────────────────────────────────────────────────────
+# _beat is the one write here that deliberately does NOT go through after(0):
+# a single store of an immutable tuple cannot tear, and marshalling it would
+# queue a callback per progress chunk. These pin that, and the phase each
+# event reports.
+@pytest.mark.parametrize("event, args, phase", [
+    ("started", ("Real Title",), "connecting"),
+    ("bitrate_detected", (160, "192"), "flowing"),
+    ("progress", (42.5, "1.20MiB/s"), "flowing"),
+    ("title_corrected", ("The Real File Name",), "flowing"),
+    ("finished", (), "converting"),
+])
+def test_every_event_beats_its_phase_without_being_marshalled(wired, app,
+                                                              event, args,
+                                                              phase):
+    sink, deferred = wired
+    app._stall = None
+    getattr(sink, event)(*args)
+    assert app._stall is not None, "the beat has to land before after(0) runs"
+    idx, seen, since = app._stall
+    assert (idx, seen) == (0, phase)
+    assert isinstance(since, float)
+
+
+def test_the_beat_uses_a_monotonic_clock_not_the_wall_clock(wired, app):
+    """A clock change mid-download must not be able to invent an hour-long
+    wait, so the beat is stamped with monotonic()."""
+    import time
+    before = time.monotonic()
+    sink, _deferred = wired
+    sink.started("Real Title")
+    after = time.monotonic()
+    assert before <= app._stall[2] <= after
+
+
+def test_a_later_event_overwrites_the_earlier_beat(wired, app):
+    sink, _deferred = wired
+    sink.started("Real Title")
+    assert app._stall[1] == "connecting"
+    sink.progress(percent=1.0)
+    assert app._stall[1] == "flowing"
+    sink.finished()
+    assert app._stall[1] == "converting"
