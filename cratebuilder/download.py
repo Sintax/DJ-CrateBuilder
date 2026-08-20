@@ -141,6 +141,43 @@ class _NeverCancelled:
             time.sleep(timeout)
         return False
 
+    def is_set(self):
+        return False
+
+
+class _AbortRequested(Exception):
+    """Raised inside the progress hook to abort the in-flight download the
+    moment the canceller trips. yt-dlp propagates it out of the download
+    call; _attempts recognises the tripped canceller and reports the rung
+    cancelled rather than failed."""
+
+
+class SkipOrCancel:
+    """A Canceller over a threading.Event plus an extra predicate — the
+    per-row Skip. Either one cancels. wait() polls the predicate in short
+    slices so a Skip pressed during a retry backoff interrupts the sleep
+    instead of waiting it out, exactly as the Event itself would."""
+
+    def __init__(self, event, extra=None):
+        self._event = event
+        self._extra = extra or (lambda: False)
+
+    def is_set(self):
+        return self._event.is_set() or bool(self._extra())
+
+    def wait(self, timeout=None):
+        if not timeout:
+            return self.is_set()
+        deadline = time.monotonic() + timeout
+        while True:
+            if self._extra():
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return self.is_set()
+            if self._event.wait(min(0.2, remaining)):
+                return True
+
 
 # ── Progress text ─────────────────────────────────────────────────────────────
 _ANSI_RE = re.compile(r'\x1b\[[0-9;]*m')
@@ -481,16 +518,21 @@ class TrackDownloader:
         interruptible exponential backoff (2s, 4s).
 
         Returns ("ok", info) · ("cancelled", None) · ("error", exception).
-        Cancelling during a backoff is an outcome, not an error: the wait
-        returns True, the rung stops, and nothing is logged — the alternative
-        was sleeping out the full delay and then filing a spurious ERROR line
-        for a track the user cancelled."""
+        Cancelling — during a backoff, or mid-download via the hook's
+        _AbortRequested — is an outcome, not an error: the rung stops and
+        nothing is logged. The alternative was sleeping out the full delay
+        (or finishing the whole track) and then filing a spurious ERROR line
+        for a track the user cancelled or skipped."""
         attempt = 0
         while True:
             attempt += 1
+            if self._canceller.is_set():
+                return "cancelled", None
             try:
                 return "ok", self._runner(opts, plan.url)
             except Exception as exc:
+                if self._canceller.is_set():
+                    return "cancelled", None
                 if not (looks_transient(str(exc)) and attempt < MAX_ATTEMPTS):
                     return "error", exc
                 delay = 2 ** attempt
@@ -567,6 +609,11 @@ class TrackDownloader:
         counts and falls back to yt-dlp's own percent string, which the old hook
         computed and then threw away."""
         def hook(d):
+            if self._canceller.is_set():
+                # The one interruption point yt-dlp offers mid-download: an
+                # exception from a progress hook aborts the transfer now,
+                # leaving a .part file yt-dlp resumes if ever re-attempted.
+                raise _AbortRequested("cancelled mid-download")
             status = d.get("status")
             if status == "downloading":
                 total = (d.get("total_bytes")

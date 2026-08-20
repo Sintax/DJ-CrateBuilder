@@ -5278,10 +5278,12 @@ class MP3DownloaderApp(tk.Tk):
         the moment the user presses ✕ or ▲▼ mid-run.
 
         A URL the batch has not reached yet costs nothing — the worker passes
-        over it without a single network call. The URL currently downloading
-        finishes its in-flight track first (the worker only consults the mark
-        between tracks), then abandons whatever is left of that URL, exactly
-        the promise Cancel makes for the batch as a whole.
+        over it without a single network call. The URL currently running is
+        interrupted immediately: the downloader's canceller aborts the
+        in-flight transfer and cuts retry backoffs short, and the worker
+        moves straight on to the next URL. The one wait that cannot be cut
+        is a metadata listing already in flight — its result is discarded
+        the instant it returns.
 
         One-way and run-scoped: there is no un-skip, and _start clears every
         mark before it snapshots, so a skip never leaks into the next run.
@@ -5353,11 +5355,6 @@ class MP3DownloaderApp(tk.Tk):
                   fg=TEXT_MED, bg=SURFACE2, anchor="w"
                   ).pack(side="left", fill="x", expand=True)
 
-        genre_str = item["genre"] if item["genre"] != "(none)" else ""
-        tk.Label(row, text=genre_str, font=("Segoe UI", 9),
-                  fg=TEXT_DIM, bg=SURFACE2, anchor="e"
-                  ).pack(side="left", padx=(4, 6))
-
         # A Button, not a Label: _batch_highlight repaints every Label in every
         # row while the batch runs, which would grey this one out mid-run.
         marked = bool(item.get("skip"))
@@ -5374,10 +5371,15 @@ class MP3DownloaderApp(tk.Tk):
         Tooltip(skip_btn,
                 "Skipped — this URL is being passed over by the running batch."
                 if marked else
-                "Pass over this URL in the running batch. If it's the one "
-                "downloading now, the current track finishes first, then the "
-                "batch moves on to the next URL.\n\n"
+                "Skip this URL in the running batch, immediately: if it's the "
+                "one downloading now, the download is interrupted on the spot "
+                "and the batch moves straight on to the next URL.\n\n"
                 "Only available while a batch is running.")
+
+        genre_str = item["genre"] if item["genre"] != "(none)" else ""
+        tk.Label(row, text=genre_str, font=("Segoe UI", 9),
+                  fg=TEXT_DIM, bg=SURFACE2, anchor="e"
+                  ).pack(side="left", padx=(4, 6))
 
         for sym, delta, tip in [("▲", -1, "Move this URL up in the queue"),
                                  ("▼", 1, "Move this URL down in the queue")]:
@@ -5445,15 +5447,6 @@ class MP3DownloaderApp(tk.Tk):
                      fg=name_col, bg=bg, anchor="w"
                      ).pack(side="left", fill="x", expand=True)
 
-            # Genre/folder this channel saves into, mirroring the Batch Queue's
-            # static rows so the user can see where each download lands.
-            genres = getattr(self, "_wl_batch_genres", [])
-            gval = genres[i] if i < len(genres) else ""
-            genre_str = gval if gval and gval != "(none)" else ""
-            tk.Label(row, text=genre_str, font=("Segoe UI", 9),
-                     fg=(name_col if i == active else TEXT_DIM), bg=bg,
-                     anchor="e").pack(side="left", padx=(4, 6))
-
             if i == active and n > 1 and item:
                 marked = bool(item.get("skip"))
                 skip_btn = tk.Button(
@@ -5467,19 +5460,30 @@ class MP3DownloaderApp(tk.Tk):
                     command=lambda it=item: self._wl_batch_skip(it))
                 skip_btn.pack(side="left", padx=(4, 4))
                 Tooltip(skip_btn,
-                        "Skipped — moving to the next channel once the "
-                        "current track finishes." if marked else
-                        "Pass over this channel: the track downloading now "
-                        "finishes first, then the batch moves to the next "
-                        "channel. Its new tracks stay pending for a retry.")
+                        "Skipped — moving to the next channel."
+                        if marked else
+                        "Skip this channel immediately: whatever it is doing "
+                        "— downloading a track, waiting out a retry — is "
+                        "interrupted on the spot and the batch moves to the "
+                        "next channel. Its new tracks stay pending for a "
+                        "retry.")
+
+            # Genre/folder this channel saves into, mirroring the Batch Queue's
+            # static rows so the user can see where each download lands.
+            genres = getattr(self, "_wl_batch_genres", [])
+            gval = genres[i] if i < len(genres) else ""
+            genre_str = gval if gval and gval != "(none)" else ""
+            tk.Label(row, text=genre_str, font=("Segoe UI", 9),
+                     fg=(name_col if i == active else TEXT_DIM), bg=bg,
+                     anchor="e").pack(side="left", padx=(4, 6))
 
     def _wl_batch_skip(self, item):
-        """Mark the Watch List batch's active channel to be passed over.
+        """Mark the Watch List batch's active channel to be passed over, now.
 
         Same channel as the manual queue's Skip: the mark lands on the run's
-        own item dict, the worker consults it only between tracks, and a
-        skipped channel is never counted clean — so its pending list, and
-        with it the card's new-track count, survives for a retry."""
+        own item dict, the downloader's canceller interrupts whatever is in
+        flight, and a skipped channel is never counted clean — so its pending
+        list, and with it the card's new-track count, survives for a retry."""
         if not getattr(self, "_wl_download_active", False) or item.get("skip"):
             return
         item["skip"] = True
@@ -8355,11 +8359,12 @@ class MP3DownloaderApp(tk.Tk):
              "additions never join it mid-flight."),
 
             ("Q: What does the Skip button on a batch row do?",
-             "A: It passes over that URL. A URL that hasn't started yet is dropped without a single network request. "
-             "Skipping the one that's running lets the track currently downloading finish normally, then stops the "
-             "rest of that URL's tracks and moves on to the next URL — the same promise Cancel makes. Skipping is "
-             "one-way for the run, and a skipped Watch-List channel keeps its pending tracks so nothing is quietly "
-             "forgotten. The buttons are live only while a batch is actually running."),
+             "A: It passes over that URL, immediately. A URL that hasn't started yet is dropped without a single "
+             "network request. Skipping the one that's running interrupts it on the spot — a track downloading is "
+             "aborted mid-stream, a retry wait is cut short — and the batch moves straight to the next URL. (An "
+             "aborted track leaves a .part file that yt-dlp resumes if the track is ever downloaded again.) Skipping "
+             "is one-way for the run, and a skipped Watch-List channel keeps its pending tracks so nothing is "
+             "quietly forgotten. The buttons are live only while a batch is actually running."),
 
             ("Q: Can I change settings while a download is running?",
              "A: Mostly no. Options that affect the files being written — Skip files already downloaded, "
@@ -9881,14 +9886,17 @@ class MP3DownloaderApp(tk.Tk):
         Returns (downloaded, skipped, errors) counts, or (None, None, None) on
         a fatal error.  Does NOT call _finish — that is the batch_worker's job.
 
-        *skip_requested* is an optional predicate asked, between tracks, whether
-        the user has pressed Skip on this URL's queue row. It is consulted only
-        at points where no track is in flight, so the track downloading when
-        Skip lands still finishes and settles its counters before the URL is
-        abandoned — the same promise Cancel makes. A skip is not an error and
-        not fatal: the counts returned are whatever the URL genuinely achieved
-        before it stopped, and self._url_skipped tells the caller that the rest
-        of the URL was never attempted (so it must not be treated as clean).
+        *skip_requested* is an optional predicate asked whether the user has
+        pressed Skip on this URL's queue row. It acts immediately: between
+        tracks at the loop head and pause gate, and mid-track through the
+        downloader's canceller, which aborts the in-flight transfer and
+        interrupts retry backoffs the way Cancel's flag does. (The one thing
+        it cannot cut short is a metadata listing already in flight — yt-dlp
+        offers no interruption point there — so that result is discarded the
+        instant it returns.) A skip is not an error and not fatal: the counts
+        returned are whatever the URL genuinely achieved before it stopped,
+        and self._url_skipped tells the caller that the rest of the URL was
+        never attempted (so it must not be treated as clean).
         """
         self._last_url_error = None   # short reason if this URL fails softly
         self._url_skipped = False
@@ -10185,7 +10193,13 @@ class MP3DownloaderApp(tk.Tk):
                     runner=cb_download.download_with,
                     db=self._db,
                     policy=self._download_policy(),
-                    canceller=self._cancel_flag,
+                    # Skip cancels this track exactly like Cancel does, and
+                    # immediately: the composite trips the progress hook's
+                    # abort mid-download and interrupts retry backoffs. Going
+                    # through _skip_now keeps _url_skipped coherent however
+                    # the skip lands.
+                    canceller=cb_download.SkipOrCancel(self._cancel_flag,
+                                                       _skip_now),
                     cookies=self._cookie_config(),
                     ffmpeg_dir=bundled_ffmpeg_dir(),
                     probe_formats=lambda u: self._ydl_session().probe_formats(u),
@@ -10233,8 +10247,10 @@ class MP3DownloaderApp(tk.Tk):
                 # has to be rendered on the way out, or the track the user
                 # cancelled spins as active for the rest of the session.
                 if outcome.kind == "cancelled":
-                    self.after(0, lambda i=idx: self._set_row_state(
-                        i, ST_SKIPPED, "cancelled"))
+                    note = ("skipped" if self._url_skipped
+                            and not self._cancel_flag.is_set() else "cancelled")
+                    self.after(0, lambda i=idx, s=note: self._set_row_state(
+                        i, ST_SKIPPED, s))
                     break
 
                 if outcome.kind == "downloaded":

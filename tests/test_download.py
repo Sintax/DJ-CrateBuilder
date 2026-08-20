@@ -72,15 +72,23 @@ class RecordingSink:
 
 class FakeCanceller:
     """Records every backoff it is asked to wait out. Reports cancellation on
-    the *cancel_on*-th wait (1-based); never, when that is None. Never sleeps."""
+    the *cancel_on*-th wait (1-based); never, when that is None. Never sleeps.
+    `now` is the immediate signal is_set() reports — the hook's mid-download
+    abort and the pre-attempt check read it."""
 
     def __init__(self, cancel_on=None):
         self.waits = []
         self.cancel_on = cancel_on
+        self.now = False
 
     def wait(self, timeout=None):
         self.waits.append(timeout)
+        if self.now:
+            return True
         return self.cancel_on is not None and len(self.waits) >= self.cancel_on
+
+    def is_set(self):
+        return self.now
 
 
 class RecordingLog:
@@ -777,3 +785,92 @@ def test_real_file_on_disk_wins_over_the_guessed_name(tmp_path):
     plan = _plan(tmp_path, save_dir=str(save_dir),
                  expected_path=str(save_dir / "Track 1.mp3"))
     assert dl.run(plan, NullSink()).path == str(real)
+
+
+# ── immediate abort — Skip/Cancel mid-download ───────────────────────────────
+def test_a_tripped_canceller_aborts_the_download_from_inside_the_hook(
+        tmp_path):
+    """The one interruption point yt-dlp offers: the progress hook raises the
+    moment the canceller reads set, and the rung reports cancelled — never an
+    error, never a logged failure."""
+    canceller = FakeCanceller()
+    log = RecordingLog()
+    errors = []
+    db = FakeDb()
+
+    def runner(opts, url):
+        canceller.now = True                     # Skip lands mid-transfer
+        opts["progress_hooks"][0]({"status": "downloading",
+                                   "downloaded_bytes": 10, "total_bytes": 100})
+        raise AssertionError("the hook must abort before this")
+
+    dl = _downloader(runner, canceller=canceller, db=db, logger=log,
+                     log_error=lambda *a: errors.append(a))
+    outcome = dl.run(_plan(tmp_path), NullSink())
+
+    assert outcome == Outcome(kind="cancelled", title="Track 1")
+    assert errors == [] and log.at("error") == []
+    assert db.downloads == [] and db.unavailable == []
+
+
+def test_a_canceller_already_set_never_starts_the_attempt(tmp_path):
+    canceller = FakeCanceller()
+    canceller.now = True
+    calls = []
+    dl = _downloader(lambda opts, url: calls.append(url), canceller=canceller)
+    outcome = dl.run(_plan(tmp_path), NullSink())
+    assert outcome.kind == "cancelled"
+    assert calls == []
+
+
+def test_an_error_landing_after_cancel_is_cancelled_not_an_error(tmp_path):
+    """A connection torn down BY the abort raises whatever it raises; with the
+    canceller set, that noise must not be recorded as a track failure."""
+    canceller = FakeCanceller()
+    errors = []
+
+    def runner(opts, url):
+        canceller.now = True
+        raise RuntimeError("connection reset by peer")
+
+    dl = _downloader(runner, canceller=canceller,
+                     log_error=lambda *a: errors.append(a))
+    outcome = dl.run(_plan(tmp_path), NullSink())
+    assert outcome.kind == "cancelled"
+    assert errors == []
+
+
+# ── SkipOrCancel — the composite Canceller ───────────────────────────────────
+def test_skip_or_cancel_is_set_by_either_source():
+    import threading
+    from cratebuilder.download import SkipOrCancel
+    event = threading.Event()
+    flag = {"skip": False}
+    c = SkipOrCancel(event, lambda: flag["skip"])
+    assert c.is_set() is False
+    flag["skip"] = True
+    assert c.is_set() is True
+    flag["skip"] = False
+    event.set()
+    assert c.is_set() is True
+
+
+def test_skip_or_cancel_wait_is_interrupted_by_the_predicate():
+    import threading, time as _time
+    from cratebuilder.download import SkipOrCancel
+    flag = {"skip": False}
+    c = SkipOrCancel(threading.Event(), lambda: flag["skip"])
+    timer = threading.Timer(0.05, lambda: flag.update(skip=True))
+    timer.start()
+    t0 = _time.monotonic()
+    assert c.wait(5) is True                     # 5 s backoff, cut short
+    assert _time.monotonic() - t0 < 2
+    timer.cancel()
+
+
+def test_skip_or_cancel_wait_times_out_quietly_when_nothing_cancels():
+    import threading
+    from cratebuilder.download import SkipOrCancel
+    c = SkipOrCancel(threading.Event(), lambda: False)
+    assert c.wait(0.05) is False
+    assert c.wait(None) is False                 # no timeout = a plain poll
