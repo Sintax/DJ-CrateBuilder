@@ -69,6 +69,9 @@ class _StubDB:
     def update_watchlist_status(self, cid, status):
         self.statuses.append((cid, status))
 
+    def set_watchlist_download_started(self, cids, ts):
+        pass
+
 
 def _two_track_listing():
     first = {"id": "vone", "title": "Cascade",
@@ -509,3 +512,115 @@ def test_wl_batch_skip_is_dead_outside_a_wl_run(app):
     app._wl_download_active = False
     app._wl_batch_skip(item)
     assert "skip" not in item
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Joining a running Watch List batch from a card's Download New
+# ══════════════════════════════════════════════════════════════════════════════
+import json
+
+
+def _arm_running_wl(app, n=1):
+    """A live single-or-multi channel WL run, with a stub DB behind it."""
+    items = _wl_items(n)
+    cids = list(range(1, n + 1))
+    db = _StubDB(cids + [99])
+    extra = db.get_watchlist_channel(99)
+    extra["pending_entries_json"] = json.dumps(
+        [{"id": "vnew", "title": "New Track", "url": "https://yt/w?v=vnew"}])
+    app._db = db
+    app._downloading = True
+    app._wl_download_active = True
+    app._active_watchlist_batch = {"channel_ids": list(cids)}
+    app._wl_batch_channels = [it["channel_name"] for it in items]
+    app._wl_batch_genres = [it["genre"] for it in items]
+    app._wl_batch_items = items
+    app._wl_batch_active_idx = 0
+    app._batch_rebuild_rows()
+    return items, db
+
+
+def test_a_card_press_mid_run_joins_the_queue_and_reveals_skip(
+        app, monkeypatch):
+    """The user's scenario end to end: one channel downloading (no Skip —
+    single-channel runs have none), press another card's Download New, and
+    the panel now lists both with Skip on the one being worked."""
+    monkeypatch.setattr(app, "_watchlist_update_card", lambda *a: None)
+    items, db = _arm_running_wl(app, n=1)
+    assert _mirror_buttons(app) == []            # single channel: no Skip yet
+
+    assert app._watchlist_append_to_running(99) is True
+
+    assert len(items) == 2                       # the worker's own list grew
+    assert items[1]["channel_name"] == "ch99"
+    assert app._active_watchlist_batch["channel_ids"] == [1, 99]
+    assert app._wl_batch_channels == ["ch1", "ch99"]
+    buttons = _mirror_buttons(app)
+    assert [i for i, _b in buttons] == [0]       # Skip on the active row now
+    assert buttons[0][1].cget("text") == "Skip"
+
+
+def test_joining_declines_when_no_wl_batch_is_running(app):
+    """A manual Main-tab batch (or Force Download) is not a Watch List run —
+    the caller keeps today's wait-your-turn popup."""
+    app._downloading = True
+    app._wl_download_active = False
+    assert app._watchlist_append_to_running(99) is False
+
+
+def test_joining_twice_does_not_double_queue(app, monkeypatch):
+    monkeypatch.setattr(app, "_watchlist_update_card", lambda *a: None)
+    items, db = _arm_running_wl(app, n=1)
+    app._watchlist_append_to_running(99)
+    assert app._watchlist_append_to_running(99) is True
+    assert len(items) == 2
+    assert app._active_watchlist_batch["channel_ids"] == [1, 99]
+
+
+def test_joining_with_nothing_pending_queues_nothing(app, monkeypatch):
+    infos = []
+    monkeypatch.setattr("cb_main.messagebox.showinfo",
+                        lambda *a, **k: infos.append(a))
+    items, db = _arm_running_wl(app, n=1)
+    db.get_watchlist_channel(99)["pending_new_count"] = 0
+    assert app._watchlist_append_to_running(99) is True   # handled, not queued
+    assert len(items) == 1
+    assert infos, "the user deserves to hear why nothing happened"
+
+
+def test_the_worker_downloads_a_channel_appended_mid_run(make_app,
+                                                         monkeypatch):
+    """The load-bearing mechanics: run_batch and _wl_batch_items are the SAME
+    list, so an append lands inside the worker's own loop, runs, and — having
+    run clean — retires the appended channel's pending list too."""
+    app = make_app()
+    items = _wl_items(1)
+    db = _StubDB([1, 99])
+    db.get_watchlist_channel(99)["pending_entries_json"] = json.dumps(
+        [{"id": "vnew", "title": "New Track", "url": "https://yt/w?v=vnew"}])
+    app._db = db
+    app._downloading = True
+    app._wl_download_active = True
+    app._active_watchlist_batch = {"channel_ids": [1]}
+    app._wl_batch_channels = [items[0]["channel_name"]]
+    app._wl_batch_genres = [items[0]["genre"]]
+    app._wl_batch_items = items                  # identity with run_batch
+    app._wl_batch_active_idx = 0
+    app._last_url_error = None
+    seen = []
+
+    def _process(url, *a, **kw):
+        if len(seen) == 0:                       # mid-first-channel: card press
+            app._watchlist_append_to_running(99)
+        seen.append(url)
+        return (1, 0, 0)
+
+    monkeypatch.setattr(app, "_process_one_url", _process)
+    monkeypatch.setattr(app, "_watchlist_update_card", lambda *a: None)
+    monkeypatch.setattr(app, "_watchlist_update_cards", lambda *a, **k: None)
+    monkeypatch.setattr(app, "_refresh_genre_list", lambda *a, **k: None)
+    app._batch_worker(items)
+    app.update()
+
+    assert len(seen) == 2                        # the appended channel ran
+    assert db.cleared == [1, 99]                 # and ran clean

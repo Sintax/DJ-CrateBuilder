@@ -9647,9 +9647,13 @@ class MP3DownloaderApp(tk.Tk):
 
     # ── Batch worker ─────────────────────────────────────────────────────────
     def _batch_worker(self, run_batch):
-        """Outer loop: iterate over all batch items, call _process_one_url for each."""
-        total_urls  = len(run_batch)
+        """Outer loop: iterate over all batch items, call _process_one_url for each.
 
+        *run_batch* may GROW while this runs: a Watch List card's Download New
+        pressed mid-run appends its channel to this very list (see
+        _watchlist_append_to_running), and iterating a list picks appended
+        items up. Everything sized off the batch therefore reads len(run_batch)
+        live rather than a length captured at entry."""
         # Pick a consistent User-Agent for this entire batch session
         session_ua = random.choice(USER_AGENT_POOL) if self._rotate_ua.get() else None
 
@@ -9675,9 +9679,9 @@ class MP3DownloaderApp(tk.Tk):
                 platform = item["platform"]
                 cfg      = PLATFORMS[platform]
 
-                label = f"Batch {url_idx+1} of {total_urls}  —  {url[:55]}…" \
+                label = f"Batch {url_idx+1} of {len(run_batch)}  —  {url[:55]}…" \
                         if len(url) > 55 else \
-                        f"Batch {url_idx+1} of {total_urls}  —  {url}"
+                        f"Batch {url_idx+1} of {len(run_batch)}  —  {url}"
 
                 self.after(0, lambda l=label: (
                     self._set_status(l),
@@ -9727,7 +9731,7 @@ class MP3DownloaderApp(tk.Tk):
                     break
 
                 # Brief pause between URLs so the queue panel is readable
-                if url_idx < total_urls - 1:
+                if url_idx < len(run_batch) - 1:
                     time.sleep(0.4)
                     self.after(0, self._clear_queue)
 
@@ -9760,8 +9764,8 @@ class MP3DownloaderApp(tk.Tk):
                     self._log_separator(
                         f"BATCH COMPLETE  —  {grand_dl} downloaded, "
                         f"{grand_sk} skipped, {grand_er} failed")
-                if total_urls > 1:
-                    summary_parts.append(f"({total_urls} URLs)")
+                if len(run_batch) > 1:
+                    summary_parts.append(f"({len(run_batch)} URLs)")
                 summary_parts.append(f"[{elapsed_str}]")
                 summary = "  ".join(summary_parts)
 
@@ -12569,8 +12573,16 @@ class MP3DownloaderApp(tk.Tk):
 
     # ── Download new for one channel ──────────────────────────────────────────
     def _watchlist_download_new(self, cid):
-        """Download the pending new tracks for one watched channel."""
+        """Download the pending new tracks for one watched channel.
+
+        Pressed while a Watch List batch is already running, the channel joins
+        that batch's queue instead of being refused — it appears in the Batch
+        Queue panel behind the channels already listed and downloads in turn.
+        Only a manual Main-tab batch (or a Force Download, which runs outside
+        the Watch List cleanup context) still gets the wait-your-turn answer."""
         if self._downloading:
+            if self._watchlist_append_to_running(cid):
+                return
             messagebox.showinfo(
                 "Download in Progress",
                 "A download is already running. Wait for it to finish first.",
@@ -12633,6 +12645,62 @@ class MP3DownloaderApp(tk.Tk):
         self._run_bg(self._batch_worker, run_batch)
         # Update just this card so the downloading channel shows a Cancel button.
         self._watchlist_update_card(cid)
+
+    def _watchlist_append_to_running(self, cid):
+        """Join *cid* onto the Watch List batch that is downloading right now.
+
+        Returns True when the press was handled here (appended, already
+        queued, or nothing pending) and False when no Watch List batch is
+        running — the caller then falls back to the wait-your-turn answer,
+        which is still right for a manual Main-tab batch or a Force Download.
+
+        The append lands on _wl_batch_items, which IS the worker's run_batch —
+        the same list object, handed over at launch — and iterating a list
+        picks up appended items, so the channel simply runs after the ones
+        already queued. The batch context's channel_ids grows in lockstep so
+        the finally-block cleanup keeps its index alignment, and the mirror
+        gains the channel's row, which also puts Skip on the active row the
+        moment the run holds more than one channel."""
+        if not (getattr(self, "_wl_download_active", False)
+                and self._active_watchlist_batch
+                and self._wl_batch_items):
+            return False
+        if cid in self._active_watchlist_batch.get("channel_ids", []):
+            self._watchlist_log(
+                "Already in the running download batch.", "info")
+            return True
+
+        ch = self._db.get_watchlist_channel(cid)
+        if not ch or ch.get("pending_new_count", 0) == 0:
+            messagebox.showinfo(
+                "Nothing to Download",
+                "No new tracks pending. Try scanning first.",
+                parent=self)
+            return True
+        pending = json.loads(ch.get("pending_entries_json", "[]"))
+        if not pending:
+            return True
+        pending_count = ch.get("pending_new_count", len(pending))
+
+        platform = ch.get("platform", "YouTube")
+        genre = ch.get("genre", "(none)")
+        self._active_watchlist_batch["channel_ids"].append(cid)
+        self._db.set_watchlist_download_started([cid], int(time.time()))
+        self._wl_batch_channels.append(ch["display_name"])
+        self._wl_batch_genres.append(genre)
+        self._wl_batch_items.append({
+            "url":          watch_fetch_url(platform, ch["url"]),
+            "genre":        genre,
+            "platform":     platform,
+            "channel_name": ch["display_name"],
+            "title":        ch["display_name"],
+        })
+        self._batch_rebuild_rows()
+        self._watchlist_log(
+            f"Queued {ch['display_name']} ({pending_count} new) behind the "
+            f"running download…", "info")
+        self._watchlist_update_card(cid)
+        return True
 
     # ── Download all new across all channels ──────────────────────────────────
     def _watchlist_download_all_new(self):
