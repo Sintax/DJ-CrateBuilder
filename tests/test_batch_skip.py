@@ -433,3 +433,79 @@ def test_the_run_snapshot_shares_the_dicts_the_rows_mark(app, monkeypatch):
 
     assert captured[0][0] is items[0]
     assert captured[0][0].get("skip") is True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Skip on the Watch List mirror — active row only, multi-channel runs only
+# ══════════════════════════════════════════════════════════════════════════════
+def _wl_mirror(app, n=3, active=1):
+    """Arm the Batch Queue panel's Watch List mirror with n channels."""
+    items = [{"url": f"https://ch/{i}", "genre": "(none)",
+              "platform": "YouTube", "channel_name": f"Chan {i}"}
+             for i in range(n)]
+    app._wl_download_active = True
+    app._wl_batch_channels = [it["channel_name"] for it in items]
+    app._wl_batch_genres = [it["genre"] for it in items]
+    app._wl_batch_items = items
+    app._wl_batch_active_idx = active
+    app._batch_rebuild_rows()
+    return items
+
+
+def _mirror_buttons(app):
+    """(row_index, button) for every Button in the mirror's rows."""
+    out = []
+    for i, row in enumerate(app._batch_frame.winfo_children()):
+        for w in row.winfo_children():
+            if isinstance(w, tk.Button):
+                out.append((i, w))
+    return out
+
+
+def test_wl_mirror_shows_skip_on_the_active_row_only(app):
+    _wl_mirror(app, n=3, active=1)
+    buttons = _mirror_buttons(app)
+    assert [i for i, _b in buttons] == [1]
+    btn = buttons[0][1]
+    assert btn.cget("text") == "Skip"
+    assert str(btn.cget("fg")).lower() == "#ffffff"
+    assert "bold" in str(btn.cget("font"))
+    assert str(btn.cget("bg")).lower() == "#cc2222"   # sits on the red row
+
+
+def test_wl_mirror_single_channel_run_has_no_skip(app):
+    _wl_mirror(app, n=1, active=0)
+    assert _mirror_buttons(app) == []
+
+
+def test_wl_mirror_skip_marks_the_active_item_and_disables(app):
+    items = _wl_mirror(app, n=3, active=1)
+    _i, btn = _mirror_buttons(app)[0]
+    btn.invoke()
+    assert items[1].get("skip") is True
+    assert [it.get("skip") for it in items] == [None, True, None]
+    # The rebuild replaced the button with a disabled "Skipping…" one.
+    _i, btn2 = _mirror_buttons(app)[0]
+    assert btn2.cget("text") == "Skipping…"
+    assert str(btn2.cget("state")) == "disabled"
+
+
+def test_wl_mirror_a_passed_over_channel_renders_skipped(app):
+    items = _wl_mirror(app, n=3, active=1)
+    items[1]["skip"] = True
+    app._wl_batch_active_idx = 2          # the worker moved on
+    app._batch_rebuild_rows()
+    rows = app._batch_frame.winfo_children()
+    texts1 = [w.cget("text") for w in rows[1].winfo_children()
+              if isinstance(w, tk.Label)]
+    texts0 = [w.cget("text") for w in rows[0].winfo_children()
+              if isinstance(w, tk.Label)]
+    assert "⊘" in texts1                  # skipped, not ✓
+    assert "✓" in texts0                  # a genuinely finished channel
+
+
+def test_wl_batch_skip_is_dead_outside_a_wl_run(app):
+    item = {"url": "https://ch/0", "channel_name": "Chan 0"}
+    app._wl_download_active = False
+    app._wl_batch_skip(item)
+    assert "skip" not in item
