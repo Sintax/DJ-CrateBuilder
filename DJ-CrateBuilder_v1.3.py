@@ -8169,8 +8169,18 @@ class MP3DownloaderApp(tk.Tk):
         faq_hdr.pack(fill="x", pady=(0, 16))
         ttk.Label(faq_hdr, text="Frequently Asked Questions",
                   style="White.Section.TLabel").pack(side="left")
+        for sym, opened, tip in (("⊞", True, "Expand all answers"),
+                                 ("⊟", False, "Collapse all answers")):
+            b = tk.Button(faq_hdr, text=sym, font=("Segoe UI", 9),
+                          relief="flat", bd=0, bg=BG, fg=TEXT_DIM,
+                          activebackground=BORDER, activeforeground=TEXT,
+                          padx=8, pady=2, cursor="hand2",
+                          command=lambda o=opened: self._faq_set_all(o))
+            b.pack(side="right", padx=2)
+            Tooltip(b, tip)
 
         faq = [
+            # ── Getting started ───────────────────────────────────────────
             ("Q: What is DJ-CrateBuilder?",
              "A: A tool that downloads audio from YouTube and SoundCloud as MP3 files, organized by platform, genre, "
              "and channel. It's designed for DJs and music collectors who want to build local music libraries from "
@@ -8186,17 +8196,45 @@ class MP3DownloaderApp(tk.Tk):
              "date on their own — when a newer FFmpeg is available it's fetched and swapped in during a normal update "
              "check, with no action needed from you."),
 
-            ("Q: Why are some downloads marked \"login required\"?",
-             "A: YouTube sometimes requires account authentication for certain content, especially when accessing from "
-             "VPN or datacenter IP addresses. The most reliable fix is to enable \"Use browser cookies\" in the "
-             "Settings tab and pick the browser you're signed into YouTube with — the app then borrows that session "
-             "so downloads authenticate as you. (Use a throwaway account in a separate browser profile if you'd "
-             "rather not risk your main one.) Otherwise, try disconnecting your VPN, switching to a different VPN "
-             "server, or waiting a while before retrying."),
+            ("Q: Windows says the installer is unrecognised. Is something wrong?",
+             "A: No. The app isn't code-signed, so Windows SmartScreen shows a warning the first time you install or "
+             "run it: click \"More info\", then \"Run anyway\". Some antivirus tools flag it for the same reason, plus "
+             "the fact that it bundles yt-dlp and FFmpeg. Code-signing certificates cost money per year, which is why "
+             "certificate-free freeware behaves like this. Every update payload is SHA-256 verified against the "
+             "manifest on GitHub before anything is written to disk."),
 
-            ("Q: Why are some downloads marked \"unavailable\" or \"private\"?",
-             "A: The video has been removed by the uploader, made private, or is restricted in your region. These "
-             "cannot be downloaded."),
+            # ── Downloading ───────────────────────────────────────────────
+            ("Q: Where are my downloaded files saved?",
+             "A: By default, files are saved to your Music folder under \"DJ-CrateBuilder,\" organized by "
+             "platform (YouTube/SoundCloud), then by genre and channel name. You can change the base directory in the "
+             "Settings tab. The \"Open Main Folder\" button on the Main tab opens the current download directory."),
+
+            ("Q: Does pasting a YouTube channel URL download all videos?",
+             "A: Yes. When you paste a bare channel URL (like https://www.youtube.com/@ChannelName), the app "
+             "automatically switches it to the /videos tab so it fetches the full upload list. It does the same for "
+             "a /featured, /shorts or /releases link, since none of those list a channel's videos — /featured is the "
+             "Home page and returns only a few curated shelves. A /videos, /streams or /playlists link is used "
+             "as-is."),
+
+            ("Q: What MP3 bitrate should I choose?",
+             "A: The dropdown offers 128, 192, 224, 256 and 320 kbps. 192 kbps is a good balance of quality and file "
+             "size for most listening; 320 kbps is the maximum MP3 quality and is the one to pick if you play the "
+             "files on professional sound systems. Output quality can never exceed the source, so if YouTube serves "
+             "audio at 128 kbps, converting to 320 kbps won't improve it. There is also a \"Do not convert to MP3!\" "
+             "checkbox that saves whatever format the source served (usually Opus or M4A) with no re-encoding at all, "
+             "which keeps the original quality but may not import into every DJ program."),
+
+            ("Q: What does the bitrate display in the Queue mean?",
+             "A: The format \"128k → 192k\" shows the source audio bitrate from YouTube followed by the bitrate your "
+             "MP3 was saved at. This helps you see whether the source quality matched your output setting."),
+
+            ("Q: A queue row shows a ⏳ with a rising number. What is it?",
+             "A: That track is still trying to start — the connection to the media server hasn't produced any audio "
+             "yet — and the counter shows how many seconds it has been trying. It appears only after a few seconds of "
+             "silence (longer when request throttling is on, so a delay you configured is never reported as a "
+             "problem), and it disappears the moment data starts arriving. A track that sits there for 30 seconds or "
+             "more is usually being timed out by the server; the app retries on its own and then moves to the next "
+             "track."),
 
             ("Q: What does \"Skip files already downloaded\" do?",
              "A: It prevents re-downloading files you already have. There are three modes: \"In Database ~ In Folder\" "
@@ -8210,11 +8248,17 @@ class MP3DownloaderApp(tk.Tk):
              "DJ mixes, podcasts, or full album uploads when you only want individual tracks. The default is 8 "
              "minutes."),
 
-            ("Q: What MP3 bitrate should I choose?",
-             "A: 192 kbps is a good balance of quality and file size for most listening. 320 kbps is the maximum "
-             "MP3 quality and is recommended if you plan to play the files on professional sound systems. Note that "
-             "the output quality can never exceed the source — if YouTube serves audio at 128 kbps, converting to "
-             "320 kbps won't improve it."),
+            ("Q: Why are some downloads marked \"login required\"?",
+             "A: YouTube sometimes requires account authentication for certain content, especially when accessing from "
+             "VPN or datacenter IP addresses. The most reliable fix is to enable \"Use browser cookies\" in the "
+             "Settings tab and pick the browser you're signed into YouTube with — the app then borrows that session "
+             "so downloads authenticate as you. (Use a throwaway account in a separate browser profile if you'd "
+             "rather not risk your main one.) Otherwise, try disconnecting your VPN, switching to a different VPN "
+             "server, or waiting a while before retrying."),
+
+            ("Q: Why are some downloads marked \"unavailable\" or \"private\"?",
+             "A: The video has been removed by the uploader, made private, or is restricted in your region. These "
+             "cannot be downloaded."),
 
             ("Q: What do the Download Behavior settings do?",
              "A: These are optional measures to reduce the chance of being throttled or blocked during large batch "
@@ -8227,105 +8271,225 @@ class MP3DownloaderApp(tk.Tk):
              "under 50 files, Moderate (3–8 seconds) for 50–200 files, and Aggressive (5–15 seconds) for 200+ files. "
              "Manual mode lets you set your own minimum and maximum delay in seconds."),
 
+            # ── The batch queue ───────────────────────────────────────────
+            ("Q: Can I add URLs to the batch while a download is running?",
+             "A: Yes. The URL field and \"Add to Batch\" stay enabled the whole time, and anything you queue waits for "
+             "the next run. The batch that is running is a snapshot taken when you pressed \"Start Downloads\", so "
+             "additions never join it mid-flight."),
+
+            ("Q: What does the Skip button on a batch row do?",
+             "A: It passes over that URL. A URL that hasn't started yet is dropped without a single network request. "
+             "Skipping the one that's running lets the track currently downloading finish normally, then stops the "
+             "rest of that URL's tracks and moves on to the next URL — the same promise Cancel makes. Skipping is "
+             "one-way for the run, and a skipped Watch-List channel keeps its pending tracks so nothing is quietly "
+             "forgotten. The buttons are live only while a batch is actually running."),
+
             ("Q: Can I change settings while a download is running?",
              "A: Mostly no. Options that affect the files being written — Skip files already downloaded, "
              "the Time Limiter, all File Output options, the save directory, the database tools, and app "
              "updates — are locked while tracks are downloading; press Cancel first to change them. "
              "You CAN still add URLs to the batch queue, create new Genres, and adjust Download Behavior."),
 
-            ("Q: Where are my downloaded files saved?",
-             "A: By default, files are saved to your Music folder under \"DJ-CrateBuilder,\" organized by "
-             "platform (YouTube/SoundCloud), then by genre and channel name. You can change the base directory in the "
-             "Settings tab. The \"Open Main Folder\" button on the Main tab opens the current download directory."),
+            # ── Cover art and tags ────────────────────────────────────────
+            ("Q: Do downloads get cover art?",
+             "A: Yes, when \"Attach cover art to files\" is on in Settings. The video thumbnail is embedded into the "
+             "file itself, so it shows up in your DJ software and in Windows Explorer. The format dropdown beside it "
+             "chooses between cropping to a square (what most DJ software expects) and keeping the original 16:9 "
+             "frame. For tracks you downloaded before turning it on, \"Fetch Missing Artwork\" finds art for every "
+             "track that has none and embeds it, using the recorded thumbnail URL, an existing sidecar file, or the "
+             "source page — whichever is cheapest. It's in Settings and in the Database Viewer's Artwork tab, and you "
+             "can cancel it at any point without losing the art it already wrote."),
 
+            ("Q: What does \"Fix ID3 Genre Fields\" do?",
+             "A: It rewrites the Genre tag on every track in your library so it matches the folder it is filed under: "
+             "a track in YouTube/Drum & Bass ends up tagged \"Drum & Bass\". It covers MP3, M4A and Opus/Ogg files, "
+             "and clears the tag on anything under the no-genre folder. Tracks whose tag is already right are left "
+             "alone, so re-running it costs nothing. Use it after moving tracks between genre folders, or to backfill "
+             "tracks downloaded before genres were written into files."),
+
+            # ── The database ──────────────────────────────────────────────
+            ("Q: What is the Database Viewer?",
+             "A: A separate window (\"Open Database Viewer\" in Settings) that browses everything the app has "
+             "recorded: your downloads, the Watch List, and an Artwork tab showing which tracks still have no cover "
+             "art. You can group the downloads by platform, genre or channel, sort and reorder columns, search, and "
+             "export to CSV. Its Folders Cleanup and Fetch Missing Artwork buttons are dark red because they change "
+             "files on disk; everything else in that window only reads."),
+
+            ("Q: What is \"Rebuild Database from Files\"?",
+             "A: It throws away the downloads table and rebuilds it by scanning the audio files actually in your "
+             "library folders. Use it if the database is lost, corrupted, or badly out of step with the disk — after "
+             "you've moved your library by hand, for example. It is safe to run at any time, it never deletes audio, "
+             "and cover art already on disk is reused rather than re-downloaded. Your Watch List is not part of the "
+             "downloads table and survives a rebuild."),
+
+            ("Q: What are duplicate entries, and why does the app warn me about them?",
+             "A: One file on disk should mean one row in the database. Older builds could log the same track several "
+             "times, so a history could show a track four or five times over. The app enforces one-row-per-file with "
+             "a unique index, and it cannot switch that index on while duplicates are already present — so until they "
+             "are merged, the protection stays off and new duplicates keep accumulating. \"Remove Duplicates\" in "
+             "Settings merges them: only the database is touched, no audio file or cover art or Watch List entry is "
+             "removed, and everything the repeated rows knew is kept on the single row that remains. The startup "
+             "warning appears once per count, so ignoring it stays quiet until the number moves; untick \"Warn about "
+             "duplicates at startup\" to silence it for good."),
+
+            ("Q: What is Folders Cleanup ‹Smart›?",
+             "A: It compares each ticked channel's folder against that channel's live YouTube or SoundCloud listing "
+             "and flags tracks in the folder that no longer appear on the channel — deleted uploads, or files that "
+             "were never on that channel to begin with. Nothing is removed until you review and confirm each channel, "
+             "and what you confirm goes to the Recycle Bin rather than being erased. If a channel's listing can't be "
+             "read, that channel is skipped instead of being treated as empty."),
+
+            # ── Logs ──────────────────────────────────────────────────────
             ("Q: What is the Activity Log?",
-             "A: A text file that records every downloaded, skipped, and failed file with timestamps. It lives in "
-             "your base save directory as \"activity.log\". Under the \"Activity Log\" heading in the Settings tab, "
-             "\"View Log\" opens it in the built-in color-coded viewer and \"Open in System Viewer\" opens it in your "
-             "default text editor. The path beneath is a clickable link that opens its folder in your file explorer."),
+             "A: A text file that records every downloaded, skipped, and failed file with timestamps. It lives beside "
+             "the app itself as \"activity.log\" — in the install folder on Windows, falling back to "
+             "%LOCALAPPDATA%\\DJ-CrateBuilder when that folder isn't writable (which is what a system-wide Linux "
+             "install does). Under the \"Activity Log\" heading in the Settings tab, \"View Log\" opens it in the "
+             "built-in colour-coded viewer and \"Open in System Viewer\" opens it in your default text editor. The "
+             "path beneath is a clickable link that opens its folder in your file explorer."),
 
-            ("Q: Why does the Queue stop showing entries after a large number of files?",
-             "A: This was a known issue in v1.0 caused by a Tk Canvas widget limitation. It has been fixed in v1.1 "
-             "— the queue now uses a Text widget that handles any number of entries."),
+            ("Q: What is debug.log, and what is the log size limit for?",
+             "A: activity.log is the readable history of what was downloaded. debug.log is the technical one: yt-dlp "
+             "errors, cookie problems, retry attempts, and the reason behind any failure. It's the file to look at "
+             "when a download fails for no obvious reason. Both sit in the same folder and both obey the \"Limit log "
+             "file size\" dropdown in Settings — when a log passes the chosen size the oldest entries are trimmed, so "
+             "a long-running install never fills a disk. Set it to Unlimited to keep everything."),
 
-            ("Q: Can I add URLs to the batch while a download is running?",
-             "A: No. The URL field and Add to Batch button are disabled during downloads to prevent confusion. The "
-             "batch is locked when you press \"Start Downloads\" and processes only the URLs that were queued at that "
-             "moment. You can start a new batch after the current one finishes."),
-
-            ("Q: Does pasting a YouTube channel URL download all videos?",
-             "A: Yes. When you paste a bare channel URL (like https://www.youtube.com/@ChannelName), the app "
-             "automatically switches it to the /videos tab so it fetches the full upload list. It does the same for "
-             "a /featured, /shorts or /releases link, since none of those list a channel's videos — /featured is the "
-             "Home page and returns only a few curated shelves. A /videos, /streams or /playlists link is used "
-             "as-is."),
-
-            ("Q: What does the bitrate display in the Queue mean?",
-             "A: The format \"128k → 192k\" shows the source audio bitrate from YouTube followed by the bitrate your "
-             "MP3 was saved at. This helps you see whether the source quality matched your output setting."),
-
+            # ── The Watch List ────────────────────────────────────────────
             ("Q: What is the Watch List?",
-             "A: It tracks YouTube and SoundCloud channels you care about and "
-             "surfaces only genuinely-new uploads — tracks you haven't already "
-             "downloaded — so you never re-grab your whole library. New-track counts "
-             "refresh whenever you press 'Scan All', on each scheduled auto-download "
-             "run, and (optionally) at launch if you enable 'Scan Watch List for new "
-             "uploads when the app starts' in Settings."),
-            ("Q: What's the difference between 'Scan All' and 'Download All New'?",
-             "A: 'Scan All' only checks every watched channel for new uploads and "
-             "updates the new-track counts on each card — it never downloads "
-             "anything. 'Download All New' downloads the tracks already counted as "
-             "new across all channels without first re-scanning. (The scheduled "
-             "auto-download does both: it scans first, then downloads.) Each card "
-             "also has its own buttons to scan or download just that one channel."),
+             "A: It tracks YouTube and SoundCloud channels you care about and surfaces only genuinely-new uploads — "
+             "tracks you haven't already downloaded — so you never re-grab your whole library. New-track counts "
+             "refresh whenever you press \"🔍 Scan for new\", on each scheduled auto-download run, and (optionally) "
+             "at launch if you enable \"Scan Watch List for new uploads when the app starts\" in Settings."),
+
+            ("Q: What's the difference between \"Scan for new\" and \"Download All New\"?",
+             "A: \"🔍 Scan for new\" only checks every watched channel for new uploads and updates the new-track "
+             "counts on each card — it never downloads anything. \"⬇ Download All New\" downloads the tracks already "
+             "counted as new across all channels without first re-scanning. (The scheduled auto-download does both: "
+             "it scans first, then downloads.) Each card also has its own buttons to scan or download just that one "
+             "channel."),
+
+            ("Q: What does the ⚡ Force Download button on a card do?",
+             "A: It re-downloads every track from that channel, including ones already in your library, ignoring the "
+             "skip settings. Use it when files were deleted or corrupted, or when you've changed bitrate and want the "
+             "whole channel re-encoded. On a large channel this can be a very long run, so the ordinary \"⬇ Download "
+             "New\" is almost always what you want."),
+
+            ("Q: A scan says \"N scheduled\". What are those?",
+             "A: Premieres and scheduled live streams that appear on the channel but haven't aired yet. They're "
+             "counted separately and deliberately not downloaded, because there is no audio to fetch. They're also "
+             "not recorded as seen, so once they actually air, the next scan picks them up as new."),
+
             ("Q: How do channels get added to the Watch List?",
-             "A: Three ways: manually with 'Add Channel' (paste a youtube.com or "
-             "soundcloud.com channel/artist URL); automatically after you download "
-             "from a channel or SoundCloud artist (if 'Auto-add channels' is on in "
-             "Settings); and auto-discovered from your existing download folders each "
-             "time the app starts."),
+             "A: Three ways: manually with \"Add Channel\" (paste a youtube.com or soundcloud.com channel/artist "
+             "URL); automatically after you download from a channel or SoundCloud artist (if \"Auto-add channels\" is "
+             "on in Settings); and auto-discovered from your existing download folders each time the app starts."),
+
             ("Q: Can I watch SoundCloud artists too?",
-             "A: Yes. SoundCloud artists are first-class Watch List entries. Add one "
-             "via 'Add Channel' with a soundcloud.com profile URL, or let it be "
-             "auto-added after you download from a SoundCloud artist. Each entry "
-             "scans the artist's /tracks page and downloads new tracks into your "
-             "SoundCloud folder."),
-            ("Q: What does 'needs channel ID' / the 'Fix Link' button mean?",
-             "A: An entry whose link couldn't be resolved to a usable target (often "
-             "added from a folder name). For YouTube, click 'Fix Link', pick the "
-             "right channel from the search results, and it's healed; for SoundCloud "
-             "it simply asks you to paste the soundcloud.com URL. If the fix resolves "
-             "to a channel you already track, the app detects the duplicate and "
-             "offers to remove the redundant entry. Resolved entries don't show the "
-             "button."),
+             "A: Yes. SoundCloud artists are first-class Watch List entries. Add one via \"Add Channel\" with a "
+             "soundcloud.com profile URL, or let it be auto-added after you download from a SoundCloud artist. Each "
+             "entry scans the artist's /tracks page and downloads new tracks into your SoundCloud folder."),
+
+            ("Q: What does \"needs channel ID\" / the \"Fix Link\" button mean?",
+             "A: An entry whose link couldn't be resolved to a usable target (often added from a folder name). For "
+             "YouTube, click \"Fix Link\", pick the right channel from the search results, and it's healed; for "
+             "SoundCloud it simply asks you to paste the soundcloud.com URL. If the fix resolves to a channel you "
+             "already track, the app detects the duplicate and offers to remove the redundant entry. Resolved entries "
+             "don't show the button."),
+
+            ("Q: What is the cratebuilder.json file in my channel folders?",
+             "A: A small sidecar the app writes into each channel folder, holding that channel's canonical ID and the "
+             "track keys it has already seen. It's what lets new-upload detection survive a database rebuild, a "
+             "renamed folder, or the library being moved to another machine — the folder carries its own identity "
+             "with it. Leave it in place. Deleting one doesn't lose any audio, but that channel has to work out what "
+             "it already owns from scratch."),
+
             ("Q: How does automatic checking and downloading work?",
-             "A: In Settings → Automation/Startup, set 'Auto-download Watch-List "
-             "channels every…' (default 1 day; choose 'Off' to disable it). On that "
-             "interval the app scans every watched channel first, then automatically "
-             "downloads any new tracks into their folders using your "
-             "bitrate/throttle/skip settings, and shows a tray notification "
-             "summarising what it grabbed. The countdown runs from app launch and "
-             "re-anchors each time a 'Download All New' completes; the Watch List tab "
-             "shows when the next run is due."),
+             "A: In Settings → Automation/Startup, set \"Auto-download Watch-List channels every…\" (default 1 day; "
+             "choose \"Off\" to disable it). On that interval the app scans every watched channel first, then "
+             "automatically downloads any new tracks into their folders using your bitrate/throttle/skip settings, "
+             "and shows a tray notification summarising what it grabbed. The countdown runs from app launch and "
+             "re-anchors each time a \"Download All New\" completes; the Watch List tab shows when the next run is "
+             "due."),
+
+            ("Q: What do the tray and startup options do?",
+             "A: \"Run App on Startup\" launches the app when you sign in to Windows, so the auto-download schedule "
+             "keeps running without you thinking about it. \"Minimize to System Tray\" sends the window to the tray "
+             "instead of the taskbar when you minimise it, and the app keeps scanning and downloading while it's "
+             "there. \"Start App Minimized to System Tray\" combines the two: it launches straight to the tray with "
+             "no window. The tray icon's menu shows how many new tracks are waiting and can start a download without "
+             "opening the window. Closing the window with the X always asks first, and really does quit — nothing "
+             "runs after that."),
+
+            # ── Updates ───────────────────────────────────────────────────
+            ("Q: How do updates work?",
+             "A: The About tab has a \"Check for updates\" button that turns into \"Update Now\" once a newer build "
+             "is found, and the app also checks quietly in the background on the interval beside it. Updates come "
+             "from the nightly channel on the project's GitHub repository and are SHA-256 verified before anything is "
+             "installed; most are small delta payloads containing only the files that changed. The display version "
+             "stays pinned at 1.3 and only the build number advances. Installing one closes the app, swaps the files, "
+             "and relaunches. Running from source instead of the installer? There's nothing to self-update — git pull "
+             "the latest changes."),
         ]
 
+        # Every entry starts collapsed inside its own container frame, so an
+        # answer re-packs into its container rather than at the bottom of the
+        # tab (the containment trick the sleep-mode rows already use).
+        self._faq_rows = []
         for question, answer in faq:
-            tk.Label(outer, text=question,
-                     font=("Segoe UI", 11, "bold"), fg=TEXT, bg=BG,
-                     anchor="w", justify="left", wraplength=660
-                     ).pack(fill="x", pady=(0, 4))
-            # Render the leading "A:" in the question's font/color, with the
-            # answer body beside it (hanging indent so wrapped lines align under
-            # the body, not the marker).
-            arow = tk.Frame(outer, bg=BG)
-            arow.pack(fill="x", pady=(0, 16))
+            container = tk.Frame(outer, bg=BG)
+            container.pack(fill="x", pady=(0, 8))
+
+            hdr_row = tk.Frame(container, bg=BG, cursor="hand2")
+            hdr_row.pack(fill="x")
+            chev = tk.Label(hdr_row, text="▸", font=("Segoe UI", 11),
+                            fg=TEXT_DIM, bg=BG, width=2, anchor="w")
+            chev.pack(side="left")
+            q_lbl = tk.Label(hdr_row, text=question,
+                             font=("Segoe UI", 11, "bold"), fg=TEXT, bg=BG,
+                             anchor="w", justify="left", wraplength=640)
+            q_lbl.pack(side="left", fill="x", expand=True)
+
+            arow = tk.Frame(container, bg=BG)   # packed only when expanded
             tk.Label(arow, text="A:",
                      font=("Segoe UI", 11, "bold"), fg=TEXT, bg=BG,
-                     anchor="nw").pack(side="left", padx=(0, 5))
+                     anchor="nw").pack(side="left", padx=(18, 5))
             tk.Label(arow, text=answer.removeprefix("A:").lstrip(),
                      font=("Segoe UI", 10), fg=TEXT_DIM, bg=BG,
-                     anchor="w", justify="left", wraplength=638
+                     anchor="w", justify="left", wraplength=620
                      ).pack(side="left", fill="x")
+
+            row = {"question": question, "answer": answer,
+                   "chev": chev, "frame": arow, "open": False}
+            for w in (hdr_row, chev, q_lbl):
+                w.bind("<Button-1>", lambda _e, r=row: self._faq_toggle(r))
+            self._faq_rows.append(row)
+
+    def _faq_toggle(self, row):
+        """Expand or collapse one FAQ entry in place.
+
+        The answer frame lives inside the entry's own container, so packing it
+        again lands it back under its question, never at the tab's end. The
+        scrollregion follows on its own via the scroll frame's <Configure>
+        binding."""
+        if row["open"]:
+            row["frame"].pack_forget()
+            row["chev"].config(text="▸")
+        else:
+            row["frame"].pack(fill="x", pady=(4, 0))
+            row["chev"].config(text="▾")
+        row["open"] = not row["open"]
+
+    def _faq_set_all(self, opened):
+        """Expand or collapse every FAQ entry, then re-measure the About tab's
+        scrollregion in one go — a bulk change outruns the per-widget
+        <Configure> events."""
+        for row in self._faq_rows:
+            if row["open"] != opened:
+                self._faq_toggle(row)
+        self._about_canvas.update_idletasks()
+        self._about_canvas.configure(
+            scrollregion=self._about_canvas.bbox("all"))
 
     # ── Genre management ──────────────────────────────────────────────────────
     def _refresh_log_path_label(self):
