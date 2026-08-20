@@ -15,6 +15,7 @@ import os
 import sys
 import time
 import tkinter as tk
+from tkinter import ttk
 
 import pytest
 
@@ -166,6 +167,28 @@ def make_app(cb_mod, tmp_path, monkeypatch):
 def app(make_app):
     """Convenience: one isolated quiet app, built with make_app() defaults."""
     return make_app()
+
+
+@pytest.fixture
+def show():
+    """show(widget) -> widget, mapped so synthesised pointer events reach it.
+
+    Tk discards <Button-1> / <MouseWheel> aimed at an unmapped window, so a
+    test that generates one must first raise every notebook tab between the
+    widget and the toplevel, then let the toplevel map.
+    """
+    def _show(widget):
+        chain, node = [], widget
+        while node.master is not None:
+            chain.append(node)
+            node = node.master
+        for child in chain:
+            if isinstance(child.master, ttk.Notebook):
+                child.master.select(child)
+        node.deiconify()
+        node.update()
+        return widget
+    return _show
 
 
 import shutil
