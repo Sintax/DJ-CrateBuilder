@@ -4566,6 +4566,7 @@ class MP3DownloaderApp(tk.Tk):
         # shows these channels with the active one highlighted.
         self._wl_batch_channels = []          # ordered display names in the batch
         self._wl_batch_genres = []            # genre per channel, parallel list
+        self._wl_batch_items = []             # the run's item dicts, same order
         self._wl_batch_active_idx = -1        # index currently downloading
 
         # Automation settings (auto-download / startup / tray)
@@ -5380,9 +5381,18 @@ class MP3DownloaderApp(tk.Tk):
 
     def _wl_batch_render_rows(self):
         """Render the running Watch List batch's channels in the Batch Queue
-        panel, marking finished channels, the one currently downloading, and
-        those still pending. Display-only — driven by _wl_batch_active_idx."""
+        panel, marking finished, skipped and pending channels around the one
+        currently downloading. Driven by _wl_batch_active_idx.
+
+        The active row of a multi-channel run carries the one control in this
+        view: a Skip button, closing over that channel's run item exactly like
+        the manual queue's buttons do. Skipping keeps the channel's pending
+        list (the batch worker never counts a skipped URL clean), so the
+        channel's new-track count survives for a retry. A single-channel run
+        gets no button — with no next channel to move on to, Skip would just
+        be Cancel wearing different clothes, and the card already has Cancel."""
         chans  = self._wl_batch_channels
+        items  = getattr(self, "_wl_batch_items", [])
         n      = len(chans)
         active = self._wl_batch_active_idx
         pos    = (active + 1) if active >= 0 else 1
@@ -5391,7 +5401,10 @@ class MP3DownloaderApp(tk.Tk):
                  f"channel{'s' if n != 1 else ''}")
 
         for i, name in enumerate(chans):
-            if i < active:                       # finished
+            item = items[i] if i < len(items) else {}
+            if i < active and item.get("skip"):  # passed over
+                sym, sym_col, name_col, bg = "⊘", SKIP_COL, SKIP_COL, SURFACE2
+            elif i < active:                     # finished
                 sym, sym_col, name_col, bg = "✓", SUCCESS, TEXT_DIM, SURFACE2
             elif i == active:                    # currently downloading
                 sym, sym_col, name_col, bg = "⬇", "#ffffff", "#ffffff", YT_DARK
@@ -5422,6 +5435,39 @@ class MP3DownloaderApp(tk.Tk):
             tk.Label(row, text=genre_str, font=("Segoe UI", 9),
                      fg=(name_col if i == active else TEXT_DIM), bg=bg,
                      anchor="e").pack(side="left", padx=(4, 6))
+
+            if i == active and n > 1 and item:
+                marked = bool(item.get("skip"))
+                skip_btn = tk.Button(
+                    row, text="Skipping…" if marked else "Skip",
+                    font=("Segoe UI", 9, "bold"),
+                    bg=bg, fg="#ffffff", disabledforeground="#e8b4b4",
+                    relief="flat", bd=0,
+                    activebackground="#3b0000", activeforeground="#ffffff",
+                    cursor="hand2", padx=6,
+                    state="disabled" if marked else "normal",
+                    command=lambda it=item: self._wl_batch_skip(it))
+                skip_btn.pack(side="left", padx=(4, 4))
+                Tooltip(skip_btn,
+                        "Skipped — moving to the next channel once the "
+                        "current track finishes." if marked else
+                        "Pass over this channel: the track downloading now "
+                        "finishes first, then the batch moves to the next "
+                        "channel. Its new tracks stay pending for a retry.")
+
+    def _wl_batch_skip(self, item):
+        """Mark the Watch List batch's active channel to be passed over.
+
+        Same channel as the manual queue's Skip: the mark lands on the run's
+        own item dict, the worker consults it only between tracks, and a
+        skipped channel is never counted clean — so its pending list, and
+        with it the card's new-track count, survives for a retry."""
+        if not getattr(self, "_wl_download_active", False) or item.get("skip"):
+            return
+        item["skip"] = True
+        self._batch_rebuild_rows()
+        self._set_status(
+            f"Skipping  {item.get('channel_name') or item.get('url', '')}…")
 
     # ══════════════════════════════════════════════════════════════════════════
     # UI construction — ttk styles, the notebook, and the Main tab
@@ -9765,6 +9811,7 @@ class MP3DownloaderApp(tk.Tk):
             self._wl_download_active = False
             # Restore the Batch Queue panel to the user's manual batch view.
             self._wl_batch_channels = []
+            self._wl_batch_items = []
             self._wl_batch_active_idx = -1
             self.after(0, self._batch_rebuild_rows)
             self.after(0, self._finish)
@@ -12568,6 +12615,7 @@ class MP3DownloaderApp(tk.Tk):
         # Show this channel in the Main tab's Batch Queue panel.
         self._wl_batch_channels = [ch["display_name"]]
         self._wl_batch_genres = [genre]
+        self._wl_batch_items = run_batch
         self._wl_batch_active_idx = 0
 
         self._watchlist_log(
@@ -12641,6 +12689,7 @@ class MP3DownloaderApp(tk.Tk):
         # in the same order the worker processes them.
         self._wl_batch_channels = [item["channel_name"] for item in run_batch]
         self._wl_batch_genres = [item["genre"] for item in run_batch]
+        self._wl_batch_items = run_batch
         self._wl_batch_active_idx = 0
 
         self._watchlist_log(
@@ -12710,6 +12759,7 @@ class MP3DownloaderApp(tk.Tk):
         self._autosave_automation_settings()
         self._wl_batch_channels = [item["channel_name"] for item in run_batch]
         self._wl_batch_genres = [item["genre"] for item in run_batch]
+        self._wl_batch_items = run_batch
         self._wl_batch_active_idx = 0
 
         self._watchlist_log(
