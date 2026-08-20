@@ -6741,8 +6741,8 @@ class MP3DownloaderApp(tk.Tk):
         self._settings_help(db_tools_row,
             "Checks the database at launch and warns you if it is holding "
             "duplicate rows, since duplicate protection stays switched off "
-            "until they are merged. It warns once per count — ignore it and "
-            "it stays quiet until the number changes.").pack(
+            "until they are merged. The warning appears on every launch while "
+            "any duplicates exist; untick this to silence it.").pack(
                 side="left", padx=(0, 16))
 
         file_tools_row = ttk.Frame(outer)
@@ -8329,7 +8329,7 @@ class MP3DownloaderApp(tk.Tk):
              "are merged, the protection stays off and new duplicates keep accumulating. \"Remove Duplicates\" in "
              "Settings merges them: only the database is touched, no audio file or cover art or Watch List entry is "
              "removed, and everything the repeated rows knew is kept on the single row that remains. The startup "
-             "warning appears once per count, so ignoring it stays quiet until the number moves; untick \"Warn about "
+             "warning appears at every launch while any duplicates exist; untick \"Warn about "
              "duplicates at startup\" to silence it for good."),
 
             ("Q: What is Folders Cleanup ‹Smart›?",
@@ -13166,8 +13166,6 @@ class MP3DownloaderApp(tk.Tk):
     # De-dup — collapse repeated rows that point at the same file
     # ══════════════════════════════════════════════════════════════════════════
 
-    _DEDUPE_PROMPT_KEY = "dedupe_prompt_count"
-
     def _prompt_dedupe_after_update(self):
         """Warn at launch while the database is holding duplicate rows.
 
@@ -13177,11 +13175,11 @@ class MP3DownloaderApp(tk.Tk):
         Asking is all this does; the rows are only touched after the user
         agrees.
 
-        Warns once per count. Ignoring it records the number of duplicates
-        seen, so the app stays quiet until that number moves — which it will,
-        because every fresh download against an unprotected database adds
-        more. The user can silence it for good from the dialog itself or from
-        Settings; the Remove Duplicates button is always there in between."""
+        Every launch, deliberately: duplicate protection stays switched off
+        while duplicates exist, so the nagging is the point. The one and only
+        off-switch is the "Warn about duplicates at startup" setting, tickable
+        from the dialog itself or from Settings; the Remove Duplicates button
+        is always there in between."""
         try:
             if not self._dupe_check_enabled.get():
                 return                      # switched off, deliberately
@@ -13193,18 +13191,9 @@ class MP3DownloaderApp(tk.Tk):
             files, extra = self._db.count_duplicate_downloads()
             if not extra:
                 return
-            if self._settings.get(self._DEDUPE_PROMPT_KEY) == extra:
-                return                      # already warned at this count
         except Exception as e:              # never block startup over a prompt
             self._dbg.warning(f"DEDUPE PROMPT | skipped: {e}")
             return
-
-        # Record the answer before acting: if the run itself fails, the user
-        # still isn't asked again on every launch.
-        try:
-            self._settings.set(self._DEDUPE_PROMPT_KEY, extra)
-        except Exception:
-            pass
 
         self._dbg.info(f"DEDUPE PROMPT | {extra} redundant rows across "
                        f"{files} files — asking the user")

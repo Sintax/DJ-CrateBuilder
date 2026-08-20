@@ -33,14 +33,6 @@ def _wire(app, cb_mod, monkeypatch, *, indexed=False, files=3, extra=7,
     return seen
 
 
-def _saved_count(app, tmp_path):
-    path = tmp_path / ".dj_cratebuilder_config.json"
-    if not path.exists():
-        return None
-    cfg = json.loads(path.read_text(encoding="utf-8"))
-    return cfg.get(app._DEDUPE_PROMPT_KEY)
-
-
 def test_warns_and_runs_when_duplicates_block_the_index(
         app, cb_mod, monkeypatch):
     seen = _wire(app, cb_mod, monkeypatch, files=3, extra=7, answer=True)
@@ -72,40 +64,23 @@ def test_silent_when_the_count_comes_back_clean(app, cb_mod, monkeypatch):
     assert seen["asked"] is None
 
 
-def test_warns_only_once_per_count(app, cb_mod, tmp_path, monkeypatch):
-    """Ignoring the warning must not mean seeing it again on every launch."""
+def test_warns_on_every_launch_while_duplicates_exist(app, cb_mod,
+                                                      monkeypatch):
+    """Ignoring the warning silences nothing: duplicate protection stays off
+    while duplicates exist, so the nagging is the point. Same count, same
+    warning, every time."""
     seen = _wire(app, cb_mod, monkeypatch, answer=False)
-    app._prompt_dedupe_after_update()
-    assert seen["asked"] is not None
-    assert _saved_count(app, tmp_path) == 7
-
-    seen["asked"] = None
-    app._prompt_dedupe_after_update()
-    assert seen["asked"] is None, "warned twice at the same count"
+    for _ in range(3):
+        seen["asked"] = None
+        app._prompt_dedupe_after_update()
+        assert seen["asked"] == (3, 7)
 
 
-def test_warns_again_once_the_count_moves(app, cb_mod, tmp_path, monkeypatch):
-    """Every download against an unprotected database adds more duplicates,
-    so a changed number is new information and worth re-raising."""
-    seen = _wire(app, cb_mod, monkeypatch, answer=False)
-    app._prompt_dedupe_after_update()
-    assert seen["asked"] == (3, 7)
-
-    seen["asked"] = None
-    app._db = _StubDB(files=4, extra=9)
-    app._prompt_dedupe_after_update()
-    assert seen["asked"] == (4, 9)
-    assert _saved_count(app, tmp_path) == 9
-
-
-def test_the_setting_switches_the_warning_off_entirely(
-        app, cb_mod, tmp_path, monkeypatch):
+def test_the_setting_is_the_only_off_switch(app, cb_mod, monkeypatch):
     seen = _wire(app, cb_mod, monkeypatch)
     app._dupe_check_enabled.set(False)
     app._prompt_dedupe_after_update()
     assert seen["asked"] is None
-    # ...and having stayed quiet, it has not burned this count's one warning.
-    assert _saved_count(app, tmp_path) is None
     # Switching it back on brings the warning straight back.
     app._dupe_check_enabled.set(True)
     app._prompt_dedupe_after_update()
@@ -124,24 +99,11 @@ def test_the_setting_is_on_by_default_and_persists(app, cb_mod, tmp_path):
     assert cfg["dupe_check_enabled"] is False
 
 
-def test_the_answer_is_recorded_before_the_run(app, cb_mod, tmp_path,
-                                               monkeypatch):
-    """If the de-dup itself fails, the user still must not be re-warned on
-    every launch — so the count lands before the work starts."""
-    seen = _wire(app, cb_mod, monkeypatch, answer=True)
-    app._prompt_dedupe_after_update()
-    assert seen["started"] is not None
-    assert _saved_count(app, tmp_path) == 7
-
-
-def test_stays_quiet_while_a_rebuild_is_running(app, cb_mod, tmp_path,
-                                                monkeypatch):
+def test_stays_quiet_while_a_rebuild_is_running(app, cb_mod, monkeypatch):
     seen = _wire(app, cb_mod, monkeypatch)
     app._rebuild_in_progress = True
     app._prompt_dedupe_after_update()
     assert seen["asked"] is None
-    # ...and having stayed quiet, it has not burned this count's one warning.
-    assert _saved_count(app, tmp_path) is None
 
 
 def test_stays_quiet_while_an_artwork_backfill_is_running(app, cb_mod,
