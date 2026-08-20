@@ -81,9 +81,15 @@ design conversations use these words exactly.
   `title_corrected`, `finished`) rather than raw yt-dlp hook dicts. Tk
   adapter in the app, recording adapter in tests. ANSI stripping and
   percent/speed parsing live behind it.
-- **Canceller** — anything with `wait(timeout) -> bool` (`threading.Event`
-  satisfies it natively): waits out a backoff and reports True if cancelled
-  meanwhile, so cancellation interrupts a retry instead of waiting it out.
+- **Canceller** — anything with `wait(timeout) -> bool` and `is_set()`
+  (`threading.Event` satisfies both natively): waits out a backoff and
+  reports True if cancelled meanwhile, so cancellation interrupts a retry
+  instead of waiting it out. `is_set` is what makes cancellation *immediate*:
+  the progress hook checks it per chunk and aborts the in-flight transfer by
+  raising, which `_attempts` reports as cancelled, never as an error.
+  `SkipOrCancel` composes the batch's cancel Event with a per-row Skip
+  predicate, polling the predicate in short slices so either source
+  interrupts a backoff.
 - **Settings** — the single in-memory owner of the user config
   (`~/.dj_cratebuilder_config.json`). One declared schema (key → default →
   legacy migration) behind a generic `get`/`set`; every write persists the

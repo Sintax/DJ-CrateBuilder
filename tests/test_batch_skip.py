@@ -2,9 +2,10 @@
 
 Skip is a promise about timing, not just a flag: a URL the batch has not
 reached yet is passed over without a single network call, and the URL that is
-downloading right now lets its in-flight track finish before the rest of it is
-abandoned — the same promise Cancel makes. The mark rides on the queue item's
-own dict, which is the one channel that already crosses to the worker thread.
+running right now is interrupted immediately — the downloader's canceller
+aborts the in-flight transfer and cuts retry backoffs short. The mark rides on
+the queue item's own dict, which is the one channel that already crosses to
+the worker thread.
 
 The safety-critical case has its own test: a skipped URL must never be counted
 clean, because a clean Watch List item retires that channel's pending list and
@@ -114,12 +115,12 @@ def _queue(app, *urls):
 # ══════════════════════════════════════════════════════════════════════════════
 # Timing — what Skip promises about the track that is already downloading
 # ══════════════════════════════════════════════════════════════════════════════
-def test_skip_stops_the_url_after_the_in_flight_track_finishes(
+def test_a_track_that_completes_before_the_abort_lands_still_counts(
         cb_mod, app, monkeypatch):
-    """The whole point of the feature.
-
-    Skip lands while track 1 is downloading. Track 1 must still complete —
-    file written, counted, recorded — and track 2 must never be attempted.
+    """Skip is immediate, but not retroactive: a track whose download wins the
+    race and returns success is kept — file written, counted, recorded — and
+    track 2 must never be attempted. (The abort itself is the downloader's
+    canceller; its mid-stream behaviour is pinned in test_download.py.)
     """
     attempts = []
     mark = {"skip": False}
@@ -624,3 +625,72 @@ def test_the_worker_downloads_a_channel_appended_mid_run(make_app,
 
     assert len(seen) == 2                        # the appended channel ran
     assert db.cleared == [1, 99]                 # and ran clean
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Layout — Skip sits left of the genre, in both row types
+# ══════════════════════════════════════════════════════════════════════════════
+def _packed_index(row, match):
+    for i, w in enumerate(row.pack_slaves()):
+        if match(w):
+            return i
+    raise AssertionError("widget not found in row")
+
+
+def test_skip_precedes_the_genre_on_manual_rows(app):
+    _queue(app, "https://a", "https://b")
+    app._batch_run_active = True
+    app._batch_rebuild_rows()
+    row = app._batch_frame.winfo_children()[0]
+    skip_i = _packed_index(row, lambda w: isinstance(w, tk.Button)
+                           and str(w.cget("text")) == "Skip")
+    genre_i = _packed_index(row, lambda w: isinstance(w, tk.Label)
+                            and str(w.cget("text")) == "DnB")
+    assert skip_i < genre_i
+
+
+def test_skip_precedes_the_genre_on_wl_mirror_rows(app):
+    items = _wl_mirror(app, n=3, active=1)
+    app._wl_batch_genres = ["DnB"] * 3
+    app._batch_rebuild_rows()
+    row = app._batch_frame.winfo_children()[1]
+    skip_i = _packed_index(row, lambda w: isinstance(w, tk.Button))
+    genre_i = _packed_index(row, lambda w: isinstance(w, tk.Label)
+                            and str(w.cget("text")) == "DnB")
+    assert skip_i < genre_i
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Immediacy — the mark reaches the downloader's canceller
+# ══════════════════════════════════════════════════════════════════════════════
+def test_the_downloader_is_built_on_a_skip_or_cancel_canceller(
+        cb_mod, app, monkeypatch):
+    """The wiring that makes Skip immediate: the TrackDownloader's canceller
+    must compose the batch cancel flag with this URL's skip predicate, so a
+    mark aborts the in-flight transfer instead of waiting it out."""
+    from cratebuilder import download as cb_download
+    built = []
+    real = cb_download.TrackDownloader
+
+    def spy(**kw):
+        built.append(kw["canceller"])
+        return real(**kw)
+
+    monkeypatch.setattr(cb_download, "TrackDownloader", spy)
+    mark = {"skip": False}
+    first, second = _two_track_listing()
+    titles = {first["url"]: "Cascade", second["url"]: "Undertow"}
+    _arm_two_track_url(app, monkeypatch,
+                       lambda opts: _WritingYdl([], titles, opts))
+    app._process_one_url(
+        "https://yt/c", "DnB", "YouTube", cb_mod.PLATFORMS["YouTube"],
+        channel_name_override="Chan",
+        skip_requested=lambda: mark["skip"])
+
+    assert built and all(isinstance(c, cb_download.SkipOrCancel)
+                         for c in built)
+    canceller = built[0]
+    assert canceller.is_set() is False
+    mark["skip"] = True
+    assert canceller.is_set() is True            # the mark reaches the abort
+    assert app._url_skipped is True              # via _skip_now, coherently
