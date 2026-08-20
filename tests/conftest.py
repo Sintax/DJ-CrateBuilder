@@ -38,6 +38,22 @@ def cb():
     return _load_main()
 
 
+# Fixtures whose use means the test builds (or maps) a real Tk window.
+_GUI_FIXTURES = {"app", "make_app", "show"}
+
+
+def pytest_collection_modifyitems(items):
+    """Auto-mark every Tk-window test as `gui`.
+
+    Any test requesting one of the window-building fixtures gets the marker,
+    so the fast lane (`pytest -m "not gui"`) stays correct without per-file
+    marker lists — new GUI tests are covered the moment they use `app`.
+    """
+    for item in items:
+        if _GUI_FIXTURES & set(getattr(item, "fixturenames", ())):
+            item.add_marker(pytest.mark.gui)
+
+
 @pytest.fixture(scope="module")
 def cb_mod():
     """Fresh monolith module for the requesting test file.
