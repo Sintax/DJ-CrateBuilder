@@ -4550,6 +4550,12 @@ class MP3DownloaderApp(tk.Tk):
         # On by default; the user can opt out via Settings.
         self._watchlist_scan_on_startup = tk.BooleanVar(
             value=self._settings.get("watchlist_scan_on_startup"))
+        # Warn at launch when the database is carrying duplicate rows. On by
+        # default — duplicate protection stays switched off until they are
+        # merged, so silence is the wrong default. Untickable from the warning
+        # itself or from Settings; both share this one var.
+        self._dupe_check_enabled = tk.BooleanVar(
+            value=self._settings.get("dupe_check_enabled"))
         # The auto-download schedule counts from when the app starts: the next
         # run is always (this launch time + interval), regardless of any stored
         # value from a previous session. A later Download All New re-anchors to
@@ -4574,6 +4580,9 @@ class MP3DownloaderApp(tk.Tk):
         self._start_minimized.trace_add("write", self._autosave_automation_settings)
         self._watchlist_scan_on_startup.trace_add(
             "write", self._autosave_automation_settings)
+        self._dupe_check_enabled.trace_add(
+            "write", lambda *_: self._settings.set(
+                "dupe_check_enabled", self._dupe_check_enabled.get()))
         self._update_check_interval.trace_add(
             "write", self._on_update_interval_changed)
 
@@ -6632,6 +6641,18 @@ class MP3DownloaderApp(tk.Tk):
             "entry is removed, and everything the repeated rows knew is "
             "merged onto the single row that remains. It also switches on the "
             "protection that stops them coming back.").pack(
+                side="left", padx=(0, 16))
+
+        self._dupe_check_cb = ttk.Checkbutton(
+            db_tools_row, text="Warn about duplicates at startup",
+            variable=self._dupe_check_enabled,
+            style="S.Opt.TCheckbutton")
+        self._dupe_check_cb.pack(side="left")
+        self._settings_help(db_tools_row,
+            "Checks the database at launch and warns you if it is holding "
+            "duplicate rows, since duplicate protection stays switched off "
+            "until they are merged. It warns once per count — ignore it and "
+            "it stays quiet until the number changes.").pack(
                 side="left", padx=(0, 16))
 
         file_tools_row = ttk.Frame(outer)
@@ -12693,32 +12714,35 @@ class MP3DownloaderApp(tk.Tk):
     # De-dup — collapse repeated rows that point at the same file
     # ══════════════════════════════════════════════════════════════════════════
 
-    _DEDUPE_PROMPT_KEY = "dedupe_prompt_build"
+    _DEDUPE_PROMPT_KEY = "dedupe_prompt_count"
 
     def _prompt_dedupe_after_update(self):
-        """Offer the de-dup once, after an update lands on a database that
-        still holds duplicate rows.
+        """Warn at launch while the database is holding duplicate rows.
 
-        The build that introduced the unique index wants one row per file, and
-        says so by failing to create that index — so has_unique_path_index is
-        the signal, not a version comparison: it is true exactly when there is
-        nothing to offer. Asking is all this does; the rows are only touched
-        after the user agrees.
+        The database wants one row per file and says so by failing to create
+        the unique index — so has_unique_path_index is the signal, not a
+        version comparison: it is true exactly when there is nothing to offer.
+        Asking is all this does; the rows are only touched after the user
+        agrees.
 
-        Answered once per build. Declining is remembered against the current
-        APP_BUILD, so the prompt returns after the next update but never on
-        the next launch — and the Settings button is always there in between."""
+        Warns once per count. Ignoring it records the number of duplicates
+        seen, so the app stays quiet until that number moves — which it will,
+        because every fresh download against an unprotected database adds
+        more. The user can silence it for good from the dialog itself or from
+        Settings; the Remove Duplicates button is always there in between."""
         try:
+            if not self._dupe_check_enabled.get():
+                return                      # switched off, deliberately
             if self._db.has_unique_path_index:
                 return                      # nothing to clean, nothing to ask
             if getattr(self, "_rebuild_in_progress", False) or \
                     getattr(self, "_artwork_session", None) is not None:
                 return                      # busy; the button still works
-            if self._settings.get(self._DEDUPE_PROMPT_KEY) == APP_BUILD:
-                return                      # already answered for this build
             files, extra = self._db.count_duplicate_downloads()
             if not extra:
                 return
+            if self._settings.get(self._DEDUPE_PROMPT_KEY) == extra:
+                return                      # already warned at this count
         except Exception as e:              # never block startup over a prompt
             self._dbg.warning(f"DEDUPE PROMPT | skipped: {e}")
             return
@@ -12726,31 +12750,103 @@ class MP3DownloaderApp(tk.Tk):
         # Record the answer before acting: if the run itself fails, the user
         # still isn't asked again on every launch.
         try:
-            self._settings.set(self._DEDUPE_PROMPT_KEY, APP_BUILD)
+            self._settings.set(self._DEDUPE_PROMPT_KEY, extra)
         except Exception:
             pass
 
         self._dbg.info(f"DEDUPE PROMPT | {extra} redundant rows across "
                        f"{files} files — asking the user")
-        ok = messagebox.askyesno(
-            "Duplicate Entries Found",
-            f"This update changes how the database records your library: one "
-            f"file on disk now means one entry, which stops the same track "
-            f"being logged twice.\n\n"
-            f"Your database still holds {extra:,} duplicate entr"
-            f"{'ies' if extra != 1 else 'y'} across {files:,} "
-            f"file{'s' if files != 1 else ''}, left by earlier builds. Until "
-            f"they are merged, the new protection stays switched off.\n\n"
-            f"Clean them up now?\n\n"
-            f"Your audio files, cover art and Watch List are not touched — "
-            f"only the duplicate database entries. Anything a removed entry "
-            f"knew is kept on the one that remains. This cannot be undone.\n\n"
-            f"You can also do this later from Settings ▸ Remove Duplicates.",
-            parent=self)
-        if not ok:
+        if not self._ask_dedupe(files, extra):
             self._dbg.info("DEDUPE PROMPT | declined")
             return
         self._start_dedupe(files, extra)
+
+    def _ask_dedupe(self, files, extra):
+        """Show the duplicate-rows warning; return True to run the de-dup now.
+
+        A messagebox cannot host a checkbox, and the "stop telling me this"
+        control belongs on the thing doing the telling — so this is a real
+        dialog, modelled on _ask_redownload. The checkbox drives the same
+        BooleanVar as the one in Settings, so the two can never disagree and
+        the var's own trace does the persisting."""
+        result = [False]
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Duplicate Entries Found")
+        dlg.configure(bg=BG)
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        dlg.grab_set()
+
+        outer = tk.Frame(dlg, bg=BG, padx=24, pady=20)
+        outer.pack(fill="both", expand=True)
+
+        tk.Label(outer, text="🧹  Duplicate database entries",
+                 font=("Segoe UI", 12, "bold"), fg=TEXT, bg=BG
+                 ).pack(anchor="w", pady=(0, 10))
+
+        tk.Label(outer, justify="left", wraplength=460,
+                 font=("Segoe UI", 10), fg=TEXT, bg=BG,
+                 text=(f"Your database holds {extra:,} duplicate entr"
+                       f"{'ies' if extra != 1 else 'y'} across {files:,} "
+                       f"file{'s' if files != 1 else ''} — the same track "
+                       f"logged more than once. Until they are merged, the "
+                       f"protection that stops new ones appearing stays "
+                       f"switched off.")
+                 ).pack(anchor="w", pady=(0, 12))
+
+        tk.Label(outer, justify="left", wraplength=460,
+                 font=("Segoe UI", 10), fg=TEXT_DIM, bg=BG,
+                 text=("Your audio files, cover art and Watch List are not "
+                       "touched — only the duplicate database entries. "
+                       "Anything a removed entry knew is kept on the one that "
+                       "remains. This cannot be undone.\n\n"
+                       "You can also do this later from "
+                       "Settings ▸ Remove Duplicates.")
+                 ).pack(anchor="w", pady=(0, 16))
+
+        ttk.Checkbutton(outer, text="Don't check for this again",
+                        variable=self._dupe_check_enabled,
+                        onvalue=False, offvalue=True,
+                        style="S.Opt.TCheckbutton").pack(anchor="w",
+                                                         pady=(0, 16))
+
+        btn_row = tk.Frame(outer, bg=BG)
+        btn_row.pack(fill="x")
+
+        def _run(_event=None):
+            result[0] = True
+            dlg.destroy()
+
+        def _later(_event=None):
+            dlg.destroy()
+
+        tk.Button(btn_row, text="🧹  Remove Duplicates Now",
+                  font=("Segoe UI", 10, "bold"),
+                  bg=YT_DARK, fg=TEXT,
+                  activebackground=YT_RED, activeforeground=TEXT,
+                  relief="flat", padx=16, pady=7,
+                  cursor="hand2", command=_run
+                  ).pack(side="left", padx=(0, 10))
+
+        tk.Button(btn_row, text="Not Now",
+                  font=("Segoe UI", 10),
+                  bg=SURFACE2, fg=TEXT_DIM,
+                  activebackground=BORDER, activeforeground=TEXT,
+                  relief="flat", padx=16, pady=7,
+                  cursor="hand2", command=_later
+                  ).pack(side="left")
+
+        dlg.protocol("WM_DELETE_WINDOW", _later)
+
+        # Centre over the main window, once the contents have a size.
+        dlg.update_idletasks()
+        px = self.winfo_x() + (self.winfo_width() - dlg.winfo_reqwidth()) // 2
+        py = self.winfo_y() + (self.winfo_height() - dlg.winfo_reqheight()) // 2
+        dlg.geometry(f"+{max(0, px)}+{max(0, py)}")
+
+        self.wait_window(dlg)
+        return result[0]
 
     def _dedupe_downloads_db(self):
         """Entry point for the 'Remove Duplicate Rows' button.
