@@ -34,7 +34,7 @@ def test_is_unresolved_truth_table():
         {"status": "idle", "url": "https://www.youtube.com/channel/UC/videos"}) is False
 
 
-def test_the_monolith_keeps_no_private_copy_of_these_answers(cb_mod):
+def test_the_monolith_keeps_no_private_copy_of_these_answers(cb):
     """Replaces two identity tests that asserted App._is_unresolved_channel and
     App._channel_id_from_url still forwarded to the module functions.
 
@@ -45,7 +45,7 @@ def test_the_monolith_keeps_no_private_copy_of_these_answers(cb_mod):
     must ask cratebuilder rather than re-derive a platform, an unresolved
     verdict or a channel id of its own."""
     import inspect
-    source = inspect.getsource(cb_mod)
+    source = inspect.getsource(cb)
     for gone in ("def _detect_platform", "def _is_unresolved_channel",
                  "def _channel_id_from_url"):
         assert gone not in source, f"{gone} is back in the monolith"

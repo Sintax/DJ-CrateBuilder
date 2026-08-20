@@ -10,8 +10,8 @@ DAY = 86400
 HOUR = 3600
 
 
-def test_interval_label_to_seconds(cb_mod):
-    f = cb_mod.interval_label_to_seconds
+def test_interval_label_to_seconds(cb):
+    f = cb.interval_label_to_seconds
     assert f("Off") is None
     assert f("6 hours") == 6 * 3600
     assert f("12 hours") == 12 * 3600
