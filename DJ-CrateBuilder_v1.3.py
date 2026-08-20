@@ -64,8 +64,9 @@ APP_VERSION = "1.3"
 # you publish to the nightly channel. Publish with: python scripts/release.py
 APP_BUILD   = 54
 
-ABOUT_CREATED_BY  = "CorruptSintax@Gmail.com"
-ABOUT_DESCRIPTION = "Vibe-Coded entirely with Claude-AI"
+ABOUT_CREATED_BY    = "Corrupt Sintax"
+ABOUT_CONTACT_EMAIL = "CorruptSintax@Gmail.com"
+ABOUT_DESCRIPTION   = "Vibe-Coded entirely with Claude-AI"
 GITHUB_URL        = "https://github.com/Sintax/DJ-CrateBuilder"
 GITHUB_ISSUES_URL = "https://github.com/Sintax/DJ-CrateBuilder/issues/new"
 # Raw manifest for the in-app updater. Lives on a dedicated `nightly` branch so
@@ -90,9 +91,11 @@ UPDATE_BTN_UPDATE = "  ⟳  Update Now  "
 APP_VERSION_FULL = f"{APP_VERSION}.{APP_BUILD}"
 
 # ── Add or remove lines below to customize the About tab content. ──────────
-# ── Each tuple is  ("Label", "Value")  and will display as a row. ──────────
+# ── Each tuple is  ("Label", "Value")  and will display as a row.  An ──────
+# ── optional third element is an email address, shown as a clickable ───────
+# ── mailto link on a second line beneath the value. ────────────────────────
 ABOUT_FIELDS = [
-    ("Created by",   ABOUT_CREATED_BY),
+    ("Created by",   ABOUT_CREATED_BY, ABOUT_CONTACT_EMAIL),
     ("Built with",   ABOUT_DESCRIPTION),
 ]
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2504,10 +2507,15 @@ class DatabaseViewerWindow(tk.Toplevel):
         self._help_btn.lift()
         Tooltip(self._help_btn, self._HELP_TOOLTIP, wraplength=420)
 
-    def _tb_btn(self, parent, label, cmd, side="left", padx=(2, 2)):
-        """Small flat toolbar button matching the app palette."""
+    def _tb_btn(self, parent, label, cmd, side="left", padx=(2, 2),
+                fg=TEXT_DIM):
+        """Small flat toolbar button matching the app palette.
+
+        `fg` exists for the destructive actions — the ones that move files to
+        the Recycle Bin or rewrite tags in place wear YT_DARK so they read
+        differently from Refresh and Export."""
         b = tk.Button(parent, text=label, font=("Segoe UI", 9),
-                      relief="flat", bd=0, bg=SURFACE2, fg=TEXT_DIM,
+                      relief="flat", bd=0, bg=SURFACE2, fg=fg,
                       activebackground=BORDER, activeforeground=TEXT,
                       padx=8, pady=4, cursor="hand2", command=cmd)
         b.pack(side=side, padx=padx, pady=6)
@@ -2659,7 +2667,7 @@ class DatabaseViewerWindow(tk.Toplevel):
         self._tb_btn(bar, "⟳  Refresh", self.refresh, side="right")
         clean_btn = self._tb_btn(
             bar, "🧹  Folders Cleanup ‹Smart›",
-            self._start_folders_cleanup, side="right")
+            self._start_folders_cleanup, side="right", fg=YT_DARK)
         Tooltip(clean_btn,
                 "Scans each ticked channel's live YouTube/SoundCloud listing, "
                 "then flags downloaded tracks in that channel's folder that no "
@@ -2775,7 +2783,8 @@ class DatabaseViewerWindow(tk.Toplevel):
         tk.Frame(toolbar, width=1, bg=BORDER).pack(side="right", fill="y",
                                                    padx=4, pady=6)
         fetch_btn = self._tb_btn(toolbar, "🖼  Fetch Missing Artwork",
-                                 self._art_fetch_missing, side="right")
+                                 self._art_fetch_missing, side="right",
+                                 fg=YT_DARK)
         Tooltip(fetch_btn,
                 "Finds cover art for every track that has none and embeds it "
                 "into the file. Uses the recorded thumbnail URL, an existing "
@@ -5113,7 +5122,7 @@ class MP3DownloaderApp(tk.Tk):
                 "same thing.")
 
         outer = tk.Frame(parent, bg=SURFACE2,
-                         highlightthickness=1, highlightbackground=YT_RED)
+                         highlightthickness=1, highlightbackground=YT_DARK)
         outer.pack(fill="x", pady=(0, 12))
 
         self._batch_canvas = tk.Canvas(outer, bg=SURFACE2, bd=0,
@@ -7963,13 +7972,25 @@ class MP3DownloaderApp(tk.Tk):
         info_col = tk.Frame(top_sec, bg=BG)
         info_col.pack(side="left", anchor="n")
 
-        for label, value in ABOUT_FIELDS:
+        for field in ABOUT_FIELDS:
+            label, value, email = (tuple(field) + (None,))[:3]
             row = tk.Frame(info_col, bg=BG)
             row.pack(fill="x", pady=(0, 14))
             tk.Label(row, text=label, font=("Segoe UI", 12, "bold"),
-                     fg=TEXT, bg=BG, width=14, anchor="w").pack(side="left")
-            tk.Label(row, text=value, font=("Segoe UI", 11),
-                     fg=TEXT, bg=BG, anchor="w").pack(side="left", padx=(8, 0))
+                     fg=TEXT, bg=BG, width=14, anchor="w"
+                     ).pack(side="left", anchor="n")
+            val_col = tk.Frame(row, bg=BG)
+            val_col.pack(side="left", padx=(8, 0))
+            tk.Label(val_col, text=value, font=("Segoe UI", 11),
+                     fg=TEXT, bg=BG, anchor="w").pack(anchor="w")
+            if email:
+                mail_lbl = tk.Label(
+                    val_col, text=email, font=("Segoe UI", 11, "underline"),
+                    fg=LINK_COL, bg=BG, cursor="hand2", anchor="w")
+                mail_lbl.pack(anchor="w", pady=(3, 0))
+                mail_lbl.bind("<Button-1>", lambda _e, a=email:
+                              webbrowser.open(f"mailto:{a}"))
+                Tooltip(mail_lbl, "Write to the author in your mail client")
 
         self._github_btn = _about_btn(
             info_col, "View on GitHub",
