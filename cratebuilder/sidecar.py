@@ -115,22 +115,32 @@ def classify_scan_error(message):
     return _SCAN_STATUS_FOR[classify_ydl_error(message)]
 
 
+NON_LISTING_TABS = ("/featured", "/shorts", "/releases")
+
+
 def watch_scan_url(platform, url):
     """Return the URL to hand yt-dlp for a *listing* scan of this entry.
 
-    YouTube: ensure the /videos tab for an @handle or /channel. SoundCloud:
-    ensure the /tracks tab for a user. Idempotent — never double-appends, and
-    leaves playlist/other URLs untouched."""
+    YouTube: ensure the /videos tab for an @handle or /channel, replacing a
+    NON_LISTING_TABS suffix if the stored URL carries one — /featured is the
+    channel's Home page, which yt-dlp returns as a handful of curated shelves
+    rather than the uploads. SoundCloud: ensure the /tracks tab for a user.
+    Idempotent — never double-appends, and leaves playlist, /streams and
+    other URLs untouched."""
     url = (url or "").rstrip("/")
     if not url:
         return url
     if platform == "SoundCloud":
         return url if url.endswith("/tracks") else url + "/tracks"
     # YouTube
+    for tab in NON_LISTING_TABS:
+        if url.lower().endswith(tab):
+            url = url[:-len(tab)]
+            break
     if "/videos" in url:
         return url
-    last = url.split("/")[-1]
-    if last.startswith("@") or "/channel/" in url:
+    parts = url.split("/")
+    if parts[-1].startswith("@") or (len(parts) >= 2 and parts[-2] == "channel"):
         return url + "/videos"
     return url
 
