@@ -325,9 +325,13 @@ def download_opts_builder(plan, *, no_conversion=False, geo_bypass=False,
     def opts(authenticated):
         built = {
             # Prefer highest-bitrate audio-only stream.
-            # abr>=160 targets Opus 160k (itag 251) or better;
-            # falls back to plain bestaudio, then muxed best.
-            "format":   "bestaudio[abr>=160]/bestaudio/best",
+            # abr>=160 targets Opus 160k (itag 251) or better, falling back
+            # to plain bestaudio. Deliberately NO muxed-"best" tier: when the
+            # JS challenge breaks and no audio-only formats are offered, that
+            # fallback silently downloaded the entire video (~83s a track for
+            # the same audio). Better to fail as "format unavailable" — the
+            # track stays pending and retries clean once yt-dlp is patched.
+            "format":   "bestaudio[abr>=160]/bestaudio",
             "outtmpl":  os.path.join(plan.save_dir, "%(title)s.%(ext)s"),
             "progress_hooks": [progress_hook] if progress_hook else [],
             "quiet":       True,
