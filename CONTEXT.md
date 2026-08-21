@@ -99,8 +99,9 @@ design conversations use these words exactly.
   remains its source of truth at the UI layer.
 - **Snapshot** — a frozen, Tk-free, per-concern record handed to worker
   threads instead of live Tk variables: `CookieConfig` (what a `YdlSession`
-  authenticates with), `DownloadPolicy` (skip / limiter / bitrate / sleep /
-  geo / UA / cover art), `AutomationConfig` (intervals, startup-scan, tray).
+  authenticates with), `DownloadPolicy` (skip / limiter / bitrate and its
+  opt-in auto-upgrade probe / sleep / geo / UA / cover art),
+  `AutomationConfig` (intervals, startup-scan, tray).
   Each consumer receives only the fields it reads. **Workers are handed the
   app's `_cookie_config()` / `_download_policy()` / `_automation_config()`,
   built from the live Tk vars** — that is what the user currently sees, and

@@ -4500,6 +4500,10 @@ class MP3DownloaderApp(tk.Tk):
             value=_bitrate if _bitrate.endswith("kbps")
                   else _bitrate + " kbps")
         self._bitrate_quality.trace_add("write", self._autosave_bitrate_setting)
+        self._bitrate_auto_upgrade = tk.BooleanVar(
+            value=self._settings.get("bitrate_auto_upgrade"))
+        self._bitrate_auto_upgrade.trace_add(
+            "write", self._autosave_bitrate_setting)
         self._no_conversion = tk.BooleanVar(
             value=self._settings.get("no_conversion"))
         self._no_conversion.trace_add("write", self._autosave_bitrate_setting)
@@ -6283,6 +6287,26 @@ class MP3DownloaderApp(tk.Tk):
             "192 kbps = good quality  •  320 kbps = maximum MP3 quality").pack(
                 side="left", padx=(0, 0))
 
+        # ── Bitrate auto-upgrade checkbox ─────────────────────────────────────
+        upgrade_row = ttk.Frame(outer)
+        upgrade_row.pack(fill="x", pady=(0, 4))
+        self._bitrate_upgrade_cb = ttk.Checkbutton(upgrade_row,
+                        text="Auto-upgrade bitrate when the source is higher"
+                             " (slower)",
+                        variable=self._bitrate_auto_upgrade,
+                        style="S.Opt.TCheckbutton")
+        self._bitrate_upgrade_cb.pack(side="left")
+        self._settings_help(
+            upgrade_row,
+            "Probes each track's real formats before downloading and, when "
+            "the source stream is higher-bitrate than your Output Quality "
+            "(e.g. 256 kbps on a Premium-authenticated account), encodes the "
+            "MP3 at that source bitrate instead of downgrading. Adds ~4 "
+            "seconds per track and only ever helps with a YouTube Premium "
+            "login — free-tier YouTube serves at most ~130-160 kbps, so this "
+            "can be left off.",
+            wraplength=400).pack(side="left", padx=(8, 0))
+
         # ── No-conversion checkbox ────────────────────────────────────────────
         no_conv_row = ttk.Frame(outer)
         no_conv_row.pack(fill="x", pady=(0, 4))
@@ -6915,6 +6939,7 @@ class MP3DownloaderApp(tk.Tk):
             "limit_enabled":  self._limit_enabled.get(),
             "limit_minutes":  self._limit_minutes.get(),
             "bitrate_quality": self._bitrate_quality.get().split()[0],
+            "bitrate_auto_upgrade": self._bitrate_auto_upgrade.get(),
             "no_conversion":  self._no_conversion.get(),
             "cover_art_enabled": self._cover_art_enabled.get(),
             "cover_art_mode": self._cover_art_format_value(),
@@ -7003,6 +7028,7 @@ class MP3DownloaderApp(tk.Tk):
         """Auto-save bitrate setting and no-conversion flag to config."""
         self._settings.update({
             "bitrate_quality": self._bitrate_quality.get().split()[0],
+            "bitrate_auto_upgrade": self._bitrate_auto_upgrade.get(),
             "no_conversion":   self._no_conversion.get(),
         })
 
@@ -7055,12 +7081,16 @@ class MP3DownloaderApp(tk.Tk):
                 fh.maybe_trim()
 
     def _on_no_conversion_toggle(self):
-        """Grey out the bitrate combobox when 'no conversion' is enabled."""
+        """Grey out the bitrate combobox (and the auto-upgrade checkbox —
+        there is no MP3 bitrate to upgrade) when 'no conversion' is
+        enabled."""
+        no_conv = self._no_conversion.get()
         if hasattr(self, "_bitrate_combo"):
-            if self._no_conversion.get():
-                self._bitrate_combo.config(state="disabled")
-            else:
-                self._bitrate_combo.config(state="readonly")
+            self._bitrate_combo.config(
+                state="disabled" if no_conv else "readonly")
+        if hasattr(self, "_bitrate_upgrade_cb"):
+            self._bitrate_upgrade_cb.config(
+                state="disabled" if no_conv else "normal")
 
     def _autosave_skip_settings(self, *_):
         """Auto-save skip checkbox and mode to config whenever either value changes."""
@@ -7234,6 +7264,7 @@ class MP3DownloaderApp(tk.Tk):
             limit_enabled=self._limit_enabled.get(),
             limit_minutes=self._limit_minutes.get(),
             bitrate_quality=self._bitrate_quality.get().split()[0],
+            bitrate_auto_upgrade=self._bitrate_auto_upgrade.get(),
             no_conversion=self._no_conversion.get(),
             sleep_enabled=self._sleep_enabled.get(),
             sleep_mode=self._sleep_mode.get(),
@@ -9642,7 +9673,8 @@ class MP3DownloaderApp(tk.Tk):
         for w in ("_skip_existing_cb", "_limit_enable_cb", "_limit_minus_btn",
                   "_limit_plus_btn", "_limit_slider", "_settings_dir_entry",
                   "_settings_browse_btn", "_rebuild_db_btn", "_fetch_art_btn",
-                  "_dedupe_db_btn", "_no_conv_cb", "_update_btn"):
+                  "_dedupe_db_btn", "_no_conv_cb", "_bitrate_upgrade_cb",
+                  "_update_btn"):
             widget = getattr(self, w, None)
             if widget is not None:
                 try:
