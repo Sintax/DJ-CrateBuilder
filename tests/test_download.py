@@ -402,6 +402,15 @@ def test_bitrate_probe_is_opt_in(tmp_path):
     assert runner.opts["postprocessors"][0]["preferredquality"] == "192"
 
 
+def test_format_selector_never_falls_back_to_muxed_best(tmp_path):
+    """No muxed-"best" tier: with no audio-only stream on offer the track must
+    fail as "format unavailable" (staying pending for a retry), not silently
+    download the entire video to extract the same audio."""
+    runner = FakeRunner({"title": "T"})
+    _downloader(runner).run(_plan(tmp_path), NullSink())
+    assert runner.opts["format"] == "bestaudio[abr>=160]/bestaudio"
+
+
 def test_bitrate_probe_failure_falls_back_to_configured_bitrate(tmp_path):
     def boom(url):
         raise RuntimeError("probe exploded")
