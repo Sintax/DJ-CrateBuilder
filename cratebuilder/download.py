@@ -559,14 +559,17 @@ class TrackDownloader:
         If YouTube serves a higher-bitrate audio stream than the user's
         configured MP3 output (e.g. 256 kbps AAC on a Premium-authenticated
         account while the user selected 192), encode at that source bitrate
-        instead of downgrading. Only probe when the cookie settings really
-        produced cookie options (*authenticated*) and conversion is actually
-        happening — free-tier YouTube maxes out at 160
-        kbps Opus, so a probe would never yield an upgrade and would just add a
-        network round-trip — and skip it at the 320 kbps MP3 ceiling, which no
-        source can exceed. Probe failures are non-fatal."""
+        instead of downgrading. Opt-in via the policy's bitrate_auto_upgrade:
+        the probe is a real network round-trip (~4s) before every track, and
+        on a free-tier account it can never find an upgrade — YouTube serves
+        at most ~160 kbps Opus there — so it defaults off and the Settings
+        checkbox says what it costs. Even opted in, only probe when the cookie
+        settings really produced cookie options (*authenticated*) and
+        conversion is actually happening, and skip it at the 320 kbps MP3
+        ceiling, which no source can exceed. Probe failures are non-fatal."""
         target = plan.target_kbps
-        if not (authenticated and self._probe_formats
+        if not (self._policy.bitrate_auto_upgrade
+                and authenticated and self._probe_formats
                 and not self._policy.no_conversion
                 and 0 < _kbps_int(target) < 320):
             return target

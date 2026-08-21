@@ -133,7 +133,8 @@ def _policy(**over):
     pinned against the declared record rather than a loose stub."""
     fields = dict(
         skip_existing=True, skip_mode="In Folder Only", limit_enabled=False,
-        limit_minutes=8, bitrate_quality="192", no_conversion=False,
+        limit_minutes=8, bitrate_quality="192", bitrate_auto_upgrade=False,
+        no_conversion=False,
         sleep_enabled=True, sleep_mode="Auto", sleep_preset="Light  (1–5 s)",
         sleep_min=1, sleep_max=5, geo_bypass=True, rotate_ua=True,
         cover_art_enabled=True, cover_art_mode="crop")
@@ -251,6 +252,7 @@ def _age_gate_run(tmp_path, sink=None, **over):
     Returns (outcome, first_opts, second_opts)."""
     runner = FakeRunner(AGE_ERROR, {"title": "T"})
     kwargs = dict(cookies=_cookies(), ffmpeg_dir=str(tmp_path / "ffmpeg"),
+                  policy=_policy(bitrate_auto_upgrade=True),
                   probe_formats=lambda url: [{"vcodec": "none", "abr": 256}])
     kwargs.update(over)
     dl = _downloader(runner, **kwargs)
@@ -351,6 +353,7 @@ def test_bitrate_probe_only_runs_authenticated(tmp_path):
     probed = []
     runner = FakeRunner({"title": "T"})
     dl = _downloader(runner, cookies=_cookies(use_cookies=False),
+                     policy=_policy(bitrate_auto_upgrade=True),
                      probe_formats=lambda url: probed.append(url) or [])
     dl.run(_plan(tmp_path), NullSink())
     assert probed == []
@@ -371,6 +374,7 @@ def test_cookie_settings_that_produce_no_options_are_not_authentication(
                            cookies_browser="Firefox", cookies_profile="",
                            cookie_file=str(tmp_path / "not-here.txt"))
     dl = _downloader(runner, cookies=cookies,
+                     policy=_policy(bitrate_auto_upgrade=True),
                      probe_formats=lambda url: probed.append(url) or [
                          {"vcodec": "none", "abr": 256}])
     outcome = dl.run(_plan(tmp_path), NullSink())
@@ -383,13 +387,30 @@ def test_cookie_settings_that_produce_no_options_are_not_authentication(
                               title="Track 1")
 
 
+def test_bitrate_probe_is_opt_in(tmp_path):
+    """With bitrate_auto_upgrade off (the default), the probe never runs even
+    on a fully authenticated session — it is a ~4s network round-trip per
+    track that a free-tier account can never benefit from."""
+    probed = []
+    runner = FakeRunner({"title": "T"})
+    dl = _downloader(runner, cookies=_cookies(),
+                     probe_formats=lambda url: probed.append(url) or [
+                         {"vcodec": "none", "abr": 256}])
+    outcome = dl.run(_plan(tmp_path), NullSink())
+    assert outcome.kind == "downloaded"
+    assert probed == []
+    assert runner.opts["postprocessors"][0]["preferredquality"] == "192"
+
+
 def test_bitrate_probe_failure_falls_back_to_configured_bitrate(tmp_path):
     def boom(url):
         raise RuntimeError("probe exploded")
 
     runner = FakeRunner({"title": "T"})
     dbg = RecordingLog()
-    dl = _downloader(runner, cookies=_cookies(), probe_formats=boom, debug=dbg)
+    dl = _downloader(runner, cookies=_cookies(),
+                     policy=_policy(bitrate_auto_upgrade=True),
+                     probe_formats=boom, debug=dbg)
     outcome = dl.run(_plan(tmp_path), NullSink())
     assert outcome.kind == "downloaded"
     assert runner.opts["postprocessors"][0]["preferredquality"] == "192"
@@ -660,6 +681,7 @@ def test_bitrate_detected_fires_again_on_the_second_rung(tmp_path):
          "info_dict": {"abr": 128}}))
     dl = _downloader(
         runner, db=db, cookies=_cookies(),
+        policy=_policy(bitrate_auto_upgrade=True),
         probe_formats=lambda url: [{"vcodec": "none", "abr": 256}])
     outcome = dl.run(_plan(tmp_path), sink)
 

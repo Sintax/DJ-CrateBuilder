@@ -20,6 +20,7 @@ def _schema_defaults():
         "limit_enabled": True,
         "limit_minutes": 8,
         "bitrate_quality": "192",
+        "bitrate_auto_upgrade": False,
         "no_conversion": False,
         "cover_art_enabled": True,
         "cover_art_mode": DEFAULT_COVER_ART_MODE,
@@ -81,6 +82,7 @@ class DownloadPolicy:
     limit_enabled: bool
     limit_minutes: int
     bitrate_quality: str
+    bitrate_auto_upgrade: bool
     no_conversion: bool
     sleep_enabled: bool
     sleep_mode: str
