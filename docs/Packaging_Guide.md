@@ -106,7 +106,15 @@ Run one short YouTube download to confirm yt-dlp + FFmpeg work.
 4. Confirm the `[Files]` Source path points to your `dist\DJ-CrateBuilder\` folder
 5. Ctrl+F9 to compile
 
-Output: `Output\DJ-CrateBuilder_v1.3_Setup_Windows.exe`
+Output: `releases\Build_Output\DJ-CrateBuilder_v1.3_Setup_Windows.exe`
+
+`OutputDir` in the `.iss` is relative to the script's own folder (`docs\`), so
+`..\releases\Build_Output` lands at the repo root.
+
+The installer attached to the GitHub release carries the build number as well —
+`DJ-CrateBuilder_v1.3.<N>_Setup_Windows.exe`, where `<N>` is `APP_BUILD`. That
+suffix is added when the release is cut, not by the `.iss` script, so a build
+from source uses the plain name above.
 
 ---
 
