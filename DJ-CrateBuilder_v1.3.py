@@ -4713,7 +4713,14 @@ class MP3DownloaderApp(tk.Tk):
         # sink, and the once-a-second tick that turns it into a counter.
         self._stall = None
         self._stall_after_id = None
-        self._geometry_after_id = None  # debounce for remembering the geometry
+        # Where the window is, held in memory as it moves. A drag emits two
+        # <Configure> events per pixel and every config write rewrites the
+        # whole store, so the captured value is flushed on a slow tick, when
+        # the window is hidden, and on exit — never per event.
+        self._placement_geometry = self._settings.get("window_geometry")
+        self._placement_maximized = bool(self._settings.get("window_maximized"))
+        self._placement_dirty = False
+        self._placement_after_id = None
         self._tray_icon = None  # set when tray is active
         self._tray_title_after_id = None   # recurring hover-tooltip refresh
         self._tray_dl_label = "Download All New (0)"  # live tray menu label
@@ -4765,6 +4772,7 @@ class MP3DownloaderApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_window_close)
         self.bind("<Unmap>", self._on_minimize)
         self.bind("<Configure>", self._on_root_configure)
+        self._placement_tick()
 
         # Start in the System Tray only when the user ticked "Start App
         # Minimized to System Tray" — this is the sole control for it, and it
@@ -7671,7 +7679,11 @@ class MP3DownloaderApp(tk.Tk):
         self._tray_title_after_id = self.after(2000, self._tray_title_tick)
 
     def _hide_to_tray(self):
-        """Withdraw the window; keep the app (and scheduler) running."""
+        """Withdraw the window; keep the app (and scheduler) running.
+
+        Flushes the window's place on the way out: the app can sit in the tray
+        for hours, and quitting from there never brings the window back."""
+        self._save_window_placement()
         if self._ensure_tray() is not None:
             self.withdraw()
         else:
@@ -7687,16 +7699,17 @@ class MP3DownloaderApp(tk.Tk):
     # a loop left running fires into a half-destroyed interpreter.
     _RECURRING_TIMERS = ("_auto_dl_after_id", "_stall_after_id",
                          "_tray_title_after_id", "_update_check_after_id",
-                         "_geometry_after_id")
+                         "_placement_after_id")
 
     # ══════════════════════════════════════════════════════════════════════════
     # Window placement — where and how big the window opens, carried between
     # sessions (the fitting rules are pure logic in cratebuilder/util.py)
     # ══════════════════════════════════════════════════════════════════════════
 
-    # A drag emits a <Configure> per pixel of travel and every save rewrites the
-    # whole config file, so the write waits for the window to sit still.
-    _GEOMETRY_SAVE_MS = 700
+    # How often a moved window's placement is written out. The value itself is
+    # captured as it moves, so this only bounds how much a hard kill can lose —
+    # every ordinary way of leaving flushes it immediately.
+    _PLACEMENT_FLUSH_MS = 60_000
 
     def _screen_rects(self):
         """The monitors a window may be placed on, as (x, y, w, h) work areas.
@@ -7734,19 +7747,12 @@ class MP3DownloaderApp(tk.Tk):
             pass
 
     def _on_root_configure(self, event):
-        """Debounce a move or resize, then remember where it settled."""
-        if event.widget is not self:
-            return
-        if self._geometry_after_id is not None:
-            try:
-                self.after_cancel(self._geometry_after_id)
-            except Exception:
-                pass
-        self._geometry_after_id = self.after(
-            self._GEOMETRY_SAVE_MS, self._save_window_placement)
+        """Capture where the window is now. Does no I/O and starts no timer.
 
-    def _save_window_placement(self):
-        """Persist the window's own geometry, if it currently has a real one.
+        A drag runs this hundreds of times a second, so the config write is
+        left to _save_window_placement. The placement is read *here* rather
+        than at flush time because by then the window may have been minimized
+        or hidden to the tray, and its geometry would describe nothing.
 
         A maximized window reports the size of the screen it fills, and a
         minimized or tray-hidden one reports where it last was plus an
@@ -7754,30 +7760,49 @@ class MP3DownloaderApp(tk.Tk):
         returns to the size the user actually chose, so only the 'normal'
         state updates the geometry — 'zoomed' records the maximized flag and
         leaves the underlying size alone to unmaximize back into."""
-        self._geometry_after_id = None
+        if event.widget is not self:
+            return
         try:
             state = self.state()
+            geometry = self.geometry()
         except Exception:
             return
         if state == "zoomed":
-            if not self._settings.get("window_maximized"):
-                self._settings.set("window_maximized", True)
+            geometry, maximized = self._placement_geometry, True
+        elif state == "normal" and parse_window_geometry(geometry):
+            maximized = False
+        else:
             return
-        if state != "normal":
+        if (geometry, maximized) != (self._placement_geometry,
+                                     self._placement_maximized):
+            self._placement_geometry = geometry
+            self._placement_maximized = maximized
+            self._placement_dirty = True
+
+    def _placement_tick(self):
+        """Flush a moved window's placement on a slow loop, and keep looping."""
+        self._placement_after_id = self.after(
+            self._PLACEMENT_FLUSH_MS, self._placement_tick)
+        self._save_window_placement()
+
+    def _save_window_placement(self):
+        """Write the captured placement out, if it has moved since the last
+        write. Cheap enough to call from anywhere the window is going away."""
+        if not self._placement_dirty:
             return
-        geometry = self.geometry()
-        if not parse_window_geometry(geometry):
+        try:
+            self._settings.update({
+                "window_geometry": self._placement_geometry,
+                "window_maximized": self._placement_maximized})
+        except Exception:
             return
-        updates = {}
-        if geometry != self._settings.get("window_geometry"):
-            updates["window_geometry"] = geometry
-        if self._settings.get("window_maximized"):
-            updates["window_maximized"] = False
-        if updates:
-            self._settings.update(updates)
+        self._placement_dirty = False
 
     def _quit_app(self):
-        """Real exit: stop tray, cancel timers, destroy."""
+        """Real exit: save the window's place, stop tray, cancel timers,
+        destroy. The flush comes first — the timer that would otherwise have
+        done it is cancelled two lines down."""
+        self._save_window_placement()
         for name in self._RECURRING_TIMERS:
             after_id = getattr(self, name, None)
             if after_id is not None:
