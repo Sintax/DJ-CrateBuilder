@@ -11,8 +11,8 @@ from cratebuilder.crate import CrateLayout
 from cratebuilder.db import DownloadsDatabase
 from cratebuilder.download import (
     MAX_ATTEMPTS, NullSink, Outcome, REASON_WIDTH, TrackDownloader, TrackPlan,
-    classify_download_failure, condense_error, download_opts_builder,
-    looks_age_restricted, parse_percent, rung_kbps, strip_ansi,
+    classify_download_failure, download_opts_builder, looks_age_restricted,
+    parse_percent, rung_kbps, strip_ansi,
 )
 from cratebuilder.settings import CookieConfig, DownloadPolicy
 
@@ -621,32 +621,6 @@ def test_every_reason_the_ladder_can_produce_fits_the_queue_column():
         if reason in grandfathered:
             continue
         assert len(reason) <= REASON_WIDTH, (text, reason)
-
-
-def test_condense_error_strips_yt_dlp_decoration():
-    # Doubled severity prefix, extractor stamp, CLI advice and the wiki link:
-    # all of it true, and none of it sayable in fourteen characters.
-    assert condense_error(
-        "ERROR: [youtube] TmSjSbCqeJo: Something odd happened. "
-        "Use --cookies-from-browser for the authentication. "
-        "See  https://github.com/yt-dlp/yt-dlp/wiki") == "Something odd…"
-
-
-def test_condense_error_on_pure_decoration_says_failed():
-    # yt-dlp's read-timeout give-up raises with an empty message, so the whole
-    # string is its own "ERROR:" prefix. "" in the column would read as a row
-    # that never finished rendering.
-    for text in ("", None, "ERROR:", "ERROR: ERROR:   ", "[youtube] abc123:"):
-        assert condense_error(text) == "failed"
-
-
-def test_condense_error_keeps_a_clipped_second_word_over_a_bare_first_one():
-    # Breaking on the space after "nsig" leaves a label that says nothing.
-    assert condense_error(
-        "nsig extraction failed: Some formats may be missing") \
-        == "nsig extracti…"
-    # But a word ending late enough is worth breaking on.
-    assert condense_error("database is locked") == "database is…"
 
 
 def test_unclassified_error_is_condensed_to_the_column_width():

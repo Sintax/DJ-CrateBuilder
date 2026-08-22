@@ -709,6 +709,87 @@ def classify_ydl_error(message):
     return "unknown"
 
 
+_WHITESPACE_RE = re.compile(r"\s+")
+
+# Decoration yt-dlp writes for someone reading a terminal, which carries nothing
+# once the message has to become a short label: its own severity prefix (often
+# doubled, because the raised DownloadError already contains one), the
+# "[extractor] <id>:" stamp, and the "[download] Got error:" progress-line
+# wrapper that arrives glued on behind a carriage return.
+_ERROR_NOISE_RE = re.compile(
+    r"^(?:\s*(?:ERROR|WARNING)\s*:"
+    r"|\s*\[download\]\s*Got error\s*:"
+    r"|\s*\[[^\]]{1,20}\]\s*[\w.-]{1,40}\s*:)+", re.I)
+
+_URL_RE = re.compile(r"\bhttps?://\S+")
+
+# The CLI advice and issue-tracker pointer yt-dlp appends. True, and useless in
+# a label — the untouched message is in activity.log for anyone who wants it.
+# Applied BEFORE the URL is dropped: "See  https://…" stripped the other way
+# round leaves a bare "See" that no longer matches anything.
+_ADVICE_RE = re.compile(r"\b(?:Use|See|Try|Pass)\s+\S.*$", re.I)
+
+
+def condense_error(error_text, limit=60):
+    """An error message as something short enough to show in a label.
+
+    Slicing the first N characters is how a queue row came to read "ERROR:
+    unable to download video data: HTTP Error 403: Forbid" — a sentence cut
+    mid-word with its tail off the edge of a widget that does not scroll.
+
+    So: strip yt-dlp's decoration, drop the URL and the CLI advice it appends,
+    keep the first sentence of what is left, and truncate that on a word
+    boundary. What comes out is a phrase rather than a fragment. Nothing is
+    lost by it — every caller writes the untouched error to the logs before
+    ever asking for a label. Returns "failed" when the message was pure
+    decoration, which is exactly what a bare "ERROR:" is."""
+    text = _WHITESPACE_RE.sub(" ", error_text or "").strip()
+    text = _ERROR_NOISE_RE.sub("", text)
+    text = _URL_RE.sub("", _ADVICE_RE.sub("", text))
+    text = _WHITESPACE_RE.sub(" ", text).strip(" .,;:-")
+    if not text:
+        return "failed"
+    text = text.split(". ")[0].strip(" .,;:-")
+    if len(text) <= limit:
+        return text or "failed"
+    cut = text[:limit - 1]
+    # Trim back to a word only when the cut lands mid-word AND the word before
+    # it ends late enough to be worth it. "nsig extraction failed" breaks after
+    # "nsig", which reads as no message at all — keeping the clipped second
+    # word says more than dropping it.
+    if not text[limit - 1:limit].isspace():
+        space = cut.rfind(" ")
+        if space >= limit // 2:
+            cut = cut[:space]
+    return (cut.rstrip(" .,;:-") or text[:limit - 1]) + "…"
+
+
+# What a failed metadata fetch means, keyed by the verdict YdlSession already
+# reached about it. The session weighed the message against the marker lists AND
+# against network reachability (a captive portal answers 404 for everything), so
+# these are keyed off the error's type rather than re-reading its text.
+FETCH_FAILURE_TEXT = {
+    "offline":   "Can't reach the site",
+    "permanent": "Link is gone, private, or not a valid URL",
+    "unknown":   "Fetch failed",
+}
+
+
+def describe_fetch_failure(kind, error_text="", limit=44):
+    """A failed metadata fetch as one sentence for the Current label.
+
+    Says what kind of problem it is first — the part the user can act on — and
+    appends the condensed detail in brackets so a support question still has
+    something to go on. The old text was "Fetch failed (" plus the error's first
+    100 characters, which named no cause and ran off the end of a single-line
+    label that neither wraps nor scrolls."""
+    lead = FETCH_FAILURE_TEXT.get(kind, FETCH_FAILURE_TEXT["unknown"])
+    detail = condense_error(error_text, limit) if error_text else ""
+    if not detail or detail == "failed":
+        return lead
+    return f"{lead} ({detail})"
+
+
 def redact_ydl_opts(opts):
     """Return a shallow copy of a yt-dlp options dict made safe for debug
     logging. Auth-bearing values (cookie file path, browser-cookie source)

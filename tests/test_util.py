@@ -411,6 +411,69 @@ def test_classify_permanent_failure_transient_and_empty_are_none():
     assert util.classify_permanent_failure(None) is None
 
 
+# ── condense_error ───────────────────────────────────────────────────────────
+def test_condense_error_strips_yt_dlp_decoration():
+    # Doubled severity prefix, extractor stamp, CLI advice and the wiki link:
+    # all of it true, and none of it sayable in a label.
+    assert util.condense_error(
+        "ERROR: [youtube] TmSjSbCqeJo: Something odd happened. "
+        "Use --cookies-from-browser for the authentication. "
+        "See  https://github.com/yt-dlp/yt-dlp/wiki", 14) == "Something odd…"
+
+
+def test_condense_error_on_pure_decoration_says_failed():
+    # yt-dlp's read-timeout give-up raises with an empty message, so the whole
+    # string is its own "ERROR:" prefix. "" in a label would read as a widget
+    # that never finished rendering.
+    for text in ("", None, "ERROR:", "ERROR: ERROR:   ", "[youtube] abc123:",
+                 "See  https://github.com/yt-dlp/yt-dlp/wiki"):
+        assert util.condense_error(text) == "failed"
+
+
+def test_condense_error_keeps_a_clipped_second_word_over_a_bare_first_one():
+    # Breaking on the space after "nsig" leaves a label that says nothing.
+    assert util.condense_error(
+        "nsig extraction failed: Some formats may be missing", 14) \
+        == "nsig extracti…"
+    # But a word ending late enough is worth breaking on.
+    assert util.condense_error("database is locked", 14) == "database is…"
+
+
+def test_condense_error_never_exceeds_its_limit():
+    texts = ["Kaboom " + "x" * 100, "one two three four five six seven eight",
+             "SingleEnormousTokenWithNoSpacesAtAll" * 4, "a. b. c.",
+             "ERROR: [youtube] abc123: Video unavailable"]
+    for limit in (8, 14, 30, 44, 60):
+        for text in texts:
+            assert len(util.condense_error(text, limit)) <= limit, (text, limit)
+
+
+# ── describe_fetch_failure ───────────────────────────────────────────────────
+def test_describe_fetch_failure_names_the_cause_before_the_detail():
+    """The old text was "Fetch failed (" plus the error's first 100 characters
+    — it named no cause and ran off the end of a single-line label."""
+    assert util.describe_fetch_failure(
+        "offline",
+        "ERROR: Unable to download webpage: <urlopen error [Errno 11001] "
+        "getaddrinfo failed>").startswith("Can't reach the site (")
+    assert util.describe_fetch_failure(
+        "permanent", "ERROR: [youtube:tab] xyz: This playlist does not exist"
+    ) == "Link is gone, private, or not a valid URL " \
+         "(This playlist does not exist)"
+
+
+def test_describe_fetch_failure_drops_an_empty_detail_rather_than_showing_it():
+    # A bare "ERROR:" condenses to "failed", which appended would read
+    # "Can't reach the site (failed)".
+    for text in ("", None, "ERROR:"):
+        assert util.describe_fetch_failure("offline", text) \
+            == "Can't reach the site"
+
+
+def test_describe_fetch_failure_falls_back_to_unknown_for_a_stray_kind():
+    assert util.describe_fetch_failure("nonsense").startswith("Fetch failed")
+
+
 def test_download_result_facts_full_info():
     info = {
         "id": "2179407447",
