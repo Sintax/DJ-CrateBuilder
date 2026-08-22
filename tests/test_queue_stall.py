@@ -64,11 +64,11 @@ def test_the_line_width_is_unchanged_with_and_without_a_tick(app):
 def test_a_tick_can_never_widen_a_line(app, cb_mod):
     """The width guarantee the counter is actually responsible for.
 
-    The line is not 89 characters unconditionally — a long unclassified error
-    reason (up to 60 characters, from download.py) overruns the 14-wide status
-    column, and always has. But a tick only renders into a column a verdict has
-    left empty, and connect_wait_text is bounded, so no tick can push a line
-    past the width that same line already had."""
+    Some notes are still wider than the 14-wide status column — "format
+    unavailable" is 18 — so the line is not 89 characters unconditionally. But
+    a tick only renders into a column a verdict has left empty, and
+    connect_wait_text is bounded, so no tick can push a line past the width
+    that same line already had, whatever the note does."""
     render = cb_mod.MP3DownloaderApp.connect_wait_text
     ticks = [render(e, 3) for e in (3, 12, 99, 100, 3599, 6000)]
     for note in ("", "skipped", "✓ done", "x" * 60):
@@ -77,6 +77,30 @@ def test_a_tick_can_never_widen_a_line(app, cb_mod):
             with_tick = app._format_queue_line(0, "◉", "T", note=note,
                                                stall=tick)
             assert _width(with_tick) == _width(without), (note, tick)
+
+
+def test_a_real_failure_reason_renders_inside_the_designed_width(app):
+    """The two halves joined up: what the classifier hands back has to fit the
+    line the queue draws it into.
+
+    These three messages were reaching the column verbatim — one ran to 135
+    columns in a Text widget that neither wraps nor scrolls sideways, so its
+    tail was off the edge of the window with no way to reach it."""
+    from cratebuilder.download import classify_download_failure
+
+    raw = [
+        r"[Errno 13] Permission denied: 'C:\WINDOWS\System32\tmpr1yl51yu.tmp'",
+        "ERROR: unable to download video data: HTTP Error 403: Forbidden",
+        "ERROR: \r[download] Got error: HTTPSConnectionPool("
+        "host='rr4---sn-p5qlsn7d.googlevideo.com', port=443): "
+        "Read timed out. (read timeout=20.0)",
+    ]
+    for text in raw:
+        reason = classify_download_failure(text).reason
+        line = app._format_queue_line(0, "✗", "Deonite - Light", note=reason)
+        assert _width(line) == 89, (reason, _width(line))
+        assert reason in line
+        assert "\n" not in line.rstrip("\n")
 
 
 def test_a_terminal_verdict_beats_a_tick_in_the_shared_column(app):

@@ -10,9 +10,9 @@ import pytest
 from cratebuilder.crate import CrateLayout
 from cratebuilder.db import DownloadsDatabase
 from cratebuilder.download import (
-    MAX_ATTEMPTS, NullSink, Outcome, TrackDownloader, TrackPlan,
-    classify_download_failure, download_opts_builder, looks_age_restricted,
-    parse_percent, rung_kbps, strip_ansi,
+    MAX_ATTEMPTS, NullSink, Outcome, REASON_WIDTH, TrackDownloader, TrackPlan,
+    classify_download_failure, condense_error, download_opts_builder,
+    looks_age_restricted, parse_percent, rung_kbps, strip_ansi,
 )
 from cratebuilder.settings import CookieConfig, DownloadPolicy
 
@@ -557,12 +557,105 @@ def test_is_age_is_sticky_and_sits_below_ffmpeg_and_sign_in():
         "Sign in to confirm your age", is_age=True).reason == "login required"
 
 
-def test_unclassified_error_falls_back_to_sixty_characters():
+# The three raw messages that were reaching the queue verbatim, taken from a
+# real batch run's activity.log: yt-dlp's format check failing to make a temp
+# file, googlevideo refusing the media URL, and a read timeout arriving as a
+# bare "ERROR:" glued to yt-dlp's own progress-line wrapper by a carriage
+# return. Pinned as they were logged, ANSI already stripped.
+SEEN_RAW = [
+    (r"[Errno 13] Permission denied: 'C:\WINDOWS\System32\tmpr1yl51yu.tmp'",
+     "write blocked"),
+    ("ERROR: unable to download video data: HTTP Error 403: Forbidden",
+     "refused (403)"),
+    ("ERROR: \r[download] Got error: HTTPSConnectionPool("
+     "host='rr4---sn-p5qlsn7d.googlevideo.com', port=443): "
+     "Read timed out. (read timeout=20.0)", "timed out"),
+]
+
+
+@pytest.mark.parametrize("error_text,reason", SEEN_RAW)
+def test_errors_seen_dumped_raw_into_the_queue_now_have_labels(
+        error_text, reason):
+    failure = classify_download_failure(error_text)
+    assert (failure.kind, failure.reason) == ("failed", reason)
+
+
+@pytest.mark.parametrize("error_text,kind,reason", [
+    ("HTTP Error 429: Too Many Requests", "failed", "rate-limited"),
+    ("HTTP Error 503: Service Unavailable", "failed", "server error"),
+    ("[Errno 28] No space left on device", "failed", "disk full"),
+    ("ConnectionResetError(10054, 'An existing connection was forcibly "
+     "closed')", "failed", "network error"),
+])
+def test_condition_markers_outrank_the_track_level_ones(
+        error_text, kind, reason):
+    """A 503 carries the word "unavailable" and a reset carries none of the
+    track-level markers at all. Read by the older ladder the first became
+    "unavailable" — the track blamed for the server's wobble."""
+    failure = classify_download_failure(error_text)
+    assert (failure.kind, failure.reason) == (kind, reason)
+
+
+def test_every_reason_the_ladder_can_produce_fits_the_queue_column():
+    """The queue row is one fixed-width line in a Text widget that neither
+    wraps nor scrolls sideways, so a label wider than the column is off the
+    edge of the window and unreadable rather than merely untidy.
+
+    Two hand-written labels predate the column budget and are deliberately left
+    alone — they are readable phrases rather than raw error text, "format
+    unavailable" is named in the comment on the format selector, and at one and
+    four characters over they still land inside the window at any size the app
+    opens at. Everything else, the condensed fallback included, fits."""
+    grandfathered = {"copyright claim", "format unavailable"}
+    texts = ["This video premieres in 5 hours", "Only DRM-protected formats",
+             "ERROR: HTTP Error 404: Not Found",
+             "not available from your location", "ffmpeg not found",
+             "Sign in to confirm", "Video unavailable", "a private video",
+             "copyright grounds", "members only", "removed by the uploader",
+             "blocked in your country"]
+    texts += [t for t, _ in SEEN_RAW]
+    texts += ["Kaboom " + "x" * 100, "", "ERROR: ", "\x1b[0;31mERROR:\x1b[0m ",
+              "Requested format is not available"]
+    for text in texts:
+        reason = classify_download_failure(strip_ansi(text)).reason
+        if reason in grandfathered:
+            continue
+        assert len(reason) <= REASON_WIDTH, (text, reason)
+
+
+def test_condense_error_strips_yt_dlp_decoration():
+    # Doubled severity prefix, extractor stamp, CLI advice and the wiki link:
+    # all of it true, and none of it sayable in fourteen characters.
+    assert condense_error(
+        "ERROR: [youtube] TmSjSbCqeJo: Something odd happened. "
+        "Use --cookies-from-browser for the authentication. "
+        "See  https://github.com/yt-dlp/yt-dlp/wiki") == "Something odd…"
+
+
+def test_condense_error_on_pure_decoration_says_failed():
+    # yt-dlp's read-timeout give-up raises with an empty message, so the whole
+    # string is its own "ERROR:" prefix. "" in the column would read as a row
+    # that never finished rendering.
+    for text in ("", None, "ERROR:", "ERROR: ERROR:   ", "[youtube] abc123:"):
+        assert condense_error(text) == "failed"
+
+
+def test_condense_error_keeps_a_clipped_second_word_over_a_bare_first_one():
+    # Breaking on the space after "nsig" leaves a label that says nothing.
+    assert condense_error(
+        "nsig extraction failed: Some formats may be missing") \
+        == "nsig extracti…"
+    # But a word ending late enough is worth breaking on.
+    assert condense_error("database is locked") == "database is…"
+
+
+def test_unclassified_error_is_condensed_to_the_column_width():
     text = "Kaboom " + "x" * 100
     failure = classify_download_failure(text)
     assert failure.kind == "failed"
-    assert failure.reason == text[:60]
-    assert len(failure.reason) == 60
+    assert len(failure.reason) <= REASON_WIDTH
+    assert failure.reason.startswith("Kaboom")
+    assert failure.reason.endswith("…")
 
 
 def test_sticky_age_survives_a_second_rung_with_a_different_error(tmp_path):
@@ -619,7 +712,7 @@ def test_a_transient_webpage_timeout_never_climbs_the_age_rung(tmp_path):
     # And it is reported as the network problem it is. The sticky age verdict
     # used to relabel it "age-restricted", sending the user looking for a
     # cookie problem they did not have.
-    assert outcome.reason == TRANSIENT_WEBPAGE[:60]
+    assert outcome.reason == "timed out"
 
 
 # ── sink events ──────────────────────────────────────────────────────────────
@@ -754,7 +847,11 @@ def test_a_raise_from_the_db_row_is_one_failed_track_not_a_dead_batch(tmp_path):
         _plan(tmp_path), NullSink())
 
     assert outcome.kind == "failed"
-    assert "database is locked" in outcome.reason
+    # Condensed for the queue column, but still recognisably about the database
+    # — and the untouched text is in the debug log below.
+    assert outcome.reason.startswith("database")
+    assert len(outcome.reason) <= REASON_WIDTH
+    assert any("database is locked" in m for m in dbg.at("error"))
     assert any("DOWNLOAD ABORT" in m for m in dbg.at("error"))
 
 
@@ -765,8 +862,7 @@ def test_a_raise_from_the_activity_log_is_also_only_one_failed_track(tmp_path):
     runner = FakeRunner({"title": "T"})
     outcome = _downloader(runner, log_download=boom).run(
         _plan(tmp_path), NullSink())
-    assert outcome == Outcome(kind="failed",
-                              reason="activity.log is read-only")
+    assert outcome == Outcome(kind="failed", reason="activity.log…")
 
 
 # ── the pure pieces ─────────────────────────────────────────────────────────
