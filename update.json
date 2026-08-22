@@ -1,10 +1,10 @@
 {
   "version": "1.3",
-  "build": 55,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.55.zip",
-  "sha256": "e755b5b0e0c4cff311efbb57bd8f23880b06421ece8b4be2ea07cfe618925284",
-  "notes": "Skip any queued channel instantly, faster downloads, refreshed FAQ, and a tidier Settings tab.",
-  "base": 55,
+  "build": 56,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.56.zip",
+  "sha256": "b268eba545600a28e5e536ebf313f7e97cf100bca75229d45baf687df5ae2ee7",
+  "notes": "Maintenance build; internal docs fix, no app changes.",
+  "base": 56,
   "ffmpeg": {
     "version": "8.1-essentials_build-www.gyan.dev+1a65d5b0",
     "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/ffmpeg-8.1-essentials_build-www.gyan.dev_1a65d5b0.zip",
