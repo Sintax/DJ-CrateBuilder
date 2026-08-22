@@ -790,6 +790,85 @@ def describe_fetch_failure(kind, error_text="", limit=44):
     return f"{lead} ({detail})"
 
 
+# ── Window placement ─────────────────────────────────────────────────────────
+_GEOMETRY_RE = re.compile(r"^(\d+)x(\d+)([+-]\d+)([+-]\d+)$")
+
+
+def parse_window_geometry(text):
+    """A Tk geometry string as (width, height, x, y), or None if it isn't one.
+
+    Only the full "WxH+X+Y" form is accepted — a size-only or position-only
+    string tells us too little to place a window safely. X and Y are signed:
+    a monitor arranged to the left of or above the primary one has negative
+    coordinates, and reading those as corrupt is what makes a remembered
+    window jump back to the primary display on every launch."""
+    match = _GEOMETRY_RE.match((text or "").strip())
+    if not match:
+        return None
+    width, height, x, y = match.groups()
+    return int(width), int(height), int(x), int(y)
+
+
+def format_window_geometry(width, height, x, y):
+    """(width, height, x, y) as a Tk geometry string. Tk needs an explicit
+    sign on both offsets, which "+%d" gives for negatives too."""
+    return f"{int(width)}x{int(height)}{int(x):+d}{int(y):+d}"
+
+
+def _overlap(a, b):
+    """Area shared by two (x, y, w, h) rectangles."""
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    wide = min(ax + aw, bx + bw) - max(ax, bx)
+    tall = min(ay + ah, by + bh) - max(ay, by)
+    return wide * tall if wide > 0 and tall > 0 else 0
+
+
+def fit_window_geometry(remembered, screens, min_size=(640, 620)):
+    """Where a remembered window should actually open, given the monitors that
+    exist right now. Returns a Tk geometry string, or None to let the caller
+    fall back to its own default placement.
+
+    A remembered position is only trustworthy while the desktop it was saved on
+    still exists. Restore it blindly and a window saved on a second monitor
+    opens off-screen the next time the laptop is undocked — visible to the
+    window manager, unreachable with the mouse. So the position is checked
+    against the real monitor rectangles rather than against a single screen
+    size, which is also what keeps a monitor arranged to the LEFT of the
+    primary one working: its coordinates are negative, and any check that
+    treats negative as invalid throws that arrangement away.
+
+    *screens* is a list of (x, y, w, h) rectangles, primary first. The window
+    is placed on whichever it overlaps most; if it overlaps none of them —
+    the monitor it was on is gone — it is centred on the primary instead. The
+    size is clamped to that monitor, so a window sized on a 4K display still
+    opens usable on a 1080p laptop panel, and the position is nudged until the
+    whole window is inside it. That nudge can pull a deliberately straddled
+    window fully onto one monitor; a window nobody can reach is the worse of
+    the two outcomes."""
+    parsed = parse_window_geometry(remembered)
+    if not parsed or not screens:
+        return None
+    width, height, x, y = parsed
+    min_w, min_h = min_size
+
+    best = max(screens, key=lambda s: _overlap((x, y, width, height), s))
+    if not _overlap((x, y, width, height), best):
+        best = screens[0]
+        sx, sy, sw, sh = best
+        width = max(min_w, min(width, sw))
+        height = max(min_h, min(height, sh))
+        return format_window_geometry(
+            width, height, sx + (sw - width) // 2, sy + (sh - height) // 2)
+
+    sx, sy, sw, sh = best
+    width = max(min_w, min(width, sw))
+    height = max(min_h, min(height, sh))
+    x = min(max(x, sx), sx + sw - width)
+    y = min(max(y, sy), sy + sh - height)
+    return format_window_geometry(width, height, x, y)
+
+
 def redact_ydl_opts(opts):
     """Return a shallow copy of a yt-dlp options dict made safe for debug
     logging. Auth-bearing values (cookie file path, browser-cookie source)
