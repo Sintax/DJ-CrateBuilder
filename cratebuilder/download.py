@@ -9,7 +9,7 @@ from cratebuilder import ydl
 from cratebuilder.crate import CrateLayout
 from cratebuilder.sidecar import canonical_channel_url
 from cratebuilder.util import (
-    classify_deferred_failure, classify_permanent_failure,
+    classify_deferred_failure, classify_permanent_failure, condense_error,
     download_result_facts, redact_ydl_opts,
 )
 
@@ -260,62 +260,6 @@ _CONDITION_MARKERS = (
       "remote end closed", "10054"),                  "network error"),
 )
 
-_WHITESPACE_RE = re.compile(r"\s+")
-
-# Decoration yt-dlp writes for someone reading a terminal, which carries nothing
-# once the message has to become a queue label: its own severity prefix (often
-# doubled, because the raised DownloadError already contains one), the
-# "[extractor] <id>:" stamp, and the "[download] Got error:" progress-line
-# wrapper that arrives glued on behind a carriage return.
-_ERROR_NOISE_RE = re.compile(
-    r"^(?:\s*(?:ERROR|WARNING)\s*:"
-    r"|\s*\[download\]\s*Got error\s*:"
-    r"|\s*\[[^\]]{1,20}\]\s*[\w.-]{1,40}\s*:)+", re.I)
-
-_URL_RE = re.compile(r"\bhttps?://\S+")
-
-# The CLI advice and issue-tracker pointer yt-dlp appends. True, and useless in
-# fourteen characters — the untouched message is in activity.log for anyone who
-# wants it. Applied BEFORE the URL is dropped: "See  https://…" stripped the
-# other way round leaves a bare "See" that no longer matches anything.
-_ADVICE_RE = re.compile(r"\b(?:Use|See|Try|Pass)\s+\S.*$", re.I)
-
-
-def condense_error(error_text, limit=REASON_WIDTH):
-    """An unrecognised error as something that fits the queue's status column.
-
-    The fallback used to be the error's first 60 characters, which is how a
-    queue row came to read "ERROR: unable to download video data: HTTP Error
-    403: Forbid" — a sentence cut mid-word, four times wider than the column,
-    with its tail off the edge of a widget that does not scroll sideways.
-
-    So: strip yt-dlp's decoration, drop the URL and the CLI advice it appends,
-    keep the first sentence of what is left, and truncate that on a word
-    boundary. What comes out is a phrase rather than a fragment. Nothing is
-    lost by it — _record_failure writes the untouched error to both logs before
-    ever asking for a label. Returns "failed" when the message was pure
-    decoration, which is exactly what a bare "ERROR:" is."""
-    text = _WHITESPACE_RE.sub(" ", error_text or "").strip()
-    text = _ERROR_NOISE_RE.sub("", text)
-    text = _URL_RE.sub("", _ADVICE_RE.sub("", text))
-    text = _WHITESPACE_RE.sub(" ", text).strip(" .,;:-")
-    if not text:
-        return "failed"
-    text = text.split(". ")[0].strip(" .,;:-")
-    if len(text) <= limit:
-        return text or "failed"
-    cut = text[:limit - 1]
-    # Trim back to a word only when the cut lands mid-word AND the word before
-    # it ends late enough to be worth it. "nsig extraction failed" breaks after
-    # "nsig", which reads as no message at all — keeping the clipped second
-    # word says more than dropping it.
-    if not text[limit - 1:limit].isspace():
-        space = cut.rfind(" ")
-        if space >= limit // 2:
-            cut = cut[:space]
-    return (cut.rstrip(" .,;:-") or text[:limit - 1]) + "…"
-
-
 def classify_download_failure(error_text, is_age=False):
     """Classify a failed download into the Outcome kind and the short reason.
 
@@ -361,7 +305,7 @@ def classify_download_failure(error_text, is_age=False):
     elif "removed"       in lower: reason = "removed"
     elif "blocked"       in lower: reason = "blocked"
     elif "not available" in lower: reason = "format unavailable"
-    else:                          reason = condense_error(clean)
+    else:                          reason = condense_error(clean, REASON_WIDTH)
     return Failure("failed", reason)
 
 
@@ -544,7 +488,8 @@ class TrackDownloader:
                 self._dbg.error(f"DOWNLOAD ABORT | {plan.title!r}  {exc}")
             except Exception:
                 pass
-            return Outcome(kind="failed", reason=condense_error(str(exc)))
+            return Outcome(kind="failed",
+                           reason=condense_error(str(exc), REASON_WIDTH))
 
     def _run(self, plan, sink):
         """The ladder itself. Everything that can raise lives here so run()'s

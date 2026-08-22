@@ -7,6 +7,7 @@ typed failure.
 """
 import pytest
 
+from cratebuilder import util as cb_util
 from cratebuilder import ydl as cb_ydl
 from cratebuilder.settings import CookieConfig
 
@@ -261,6 +262,22 @@ def test_wl_scan_verdict_map_covers_every_typed_ydl_error(cb_mod):
     # one of these must still resolve to a verdict.
     for error_type in every_subclass(cb_ydl.YdlError):
         assert cb_mod.wl_scan_verdict_for(error_type("boom")) is not None
+
+
+def test_a_failed_metadata_fetch_names_its_cause_from_the_error_type(cb_mod):
+    """The Main tab's fetch failure reads the same way the Watch List scan
+    does — off the type, because YdlSession has already applied the
+    captive-portal rule and re-reading the message here would undo it."""
+    for error_type, lead in (
+            (cb_ydl.YdlOffline,      "Can't reach the site"),
+            (cb_ydl.YdlPermanent,    "Link is gone"),
+            (cb_ydl.YdlUnclassified, "Fetch failed")):
+        kind = cb_mod.fetch_failure_kind_for(error_type("boom"))
+        assert cb_util.describe_fetch_failure(kind, "boom").startswith(lead)
+
+    # Anything that isn't a typed read failure still gets a sentence rather
+    # than falling through to None and formatting as "None".
+    assert cb_mod.fetch_failure_kind_for(RuntimeError("boom")) == "unknown"
 
 
 @pytest.mark.parametrize("message,expected", [

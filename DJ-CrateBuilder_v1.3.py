@@ -26,6 +26,7 @@ from cratebuilder.util import (
     detect_platform, derive_collection_name, find_matching_watchlist_row,
     soundcloud_profile_handle, merge_soundcloud_candidates,
     runtime_data_dir, ensure_usable_tempdir, default_base_dir,
+    describe_fetch_failure,
 )
 from cratebuilder.sidecar import (
     channel_url_from_id, channel_id_from_url,
@@ -363,6 +364,26 @@ WL_SCAN_VERDICT_BY_YDL_ERROR = {
     cb_ydl.YdlOffline:      "offline",
     cb_ydl.YdlUnclassified: "error",
 }
+
+# ── The same reasoning for the Main tab: which of util.FETCH_FAILURE_TEXT's
+# ── sentences a failed metadata fetch is shown as. Read from the type for the
+# ── same reason — the session has already applied the captive-portal rule, and
+# ── re-reading the message here would undo it.
+FETCH_FAILURE_KIND_BY_YDL_ERROR = {
+    cb_ydl.YdlPermanent:    "permanent",
+    cb_ydl.YdlOffline:      "offline",
+    cb_ydl.YdlUnclassified: "unknown",
+}
+
+
+def fetch_failure_kind_for(exc):
+    """The FETCH_FAILURE_TEXT key for a typed read-only failure, "unknown" for
+    anything else. Matched by isinstance so a future error type derived from
+    one of these inherits its sentence instead of falling through."""
+    for err_type, kind in FETCH_FAILURE_KIND_BY_YDL_ERROR.items():
+        if isinstance(exc, err_type):
+            return kind
+    return "unknown"
 
 
 def wl_scan_verdict_for(exc):
@@ -9970,7 +9991,14 @@ class MP3DownloaderApp(tk.Tk):
                 # Log the full untruncated error to the log file
                 self._logger.error(
                     f"FATAL ERROR | URL: {url} | Full error: {raw_err}")
-                # Provide actionable hints for common cookie errors (UI)
+                # Provide actionable hints for common cookie errors (UI).
+                # Anything these don't recognise falls through to the typed
+                # verdict YdlSession already reached, which names a cause the
+                # user can act on — the raw first-100-characters slice this
+                # used to show named none and ran off the end of a label that
+                # neither wraps nor scrolls.
+                fallback = describe_fetch_failure(
+                    fetch_failure_kind_for(fetch_exc), raw_err)
                 if self._use_cookies.get():
                     method = self._cookie_method.get()
                     err_lower = raw_err.lower()
@@ -9982,12 +10010,12 @@ class MP3DownloaderApp(tk.Tk):
                         elif "no such file" in err_lower or "not found" in err_lower:
                             err = (f"Cookie file not found: {cfile}")
                         else:
-                            err = f"Cookie file error ({raw_err[:100]})"
+                            err = fallback
                     else:
                         bname = self._cookies_browser.get()
                         if "cookie" in err_lower or "decrypt" in err_lower:
-                            err = (f"Cookie error ({bname}): {raw_err[:80]}. "
-                                   "Try closing the browser first, or check the profile name.")
+                            err = (f"Cookie error ({bname}). Try closing the "
+                                   "browser first, or check the profile name.")
                         elif "permission" in err_lower or "locked" in err_lower:
                             err = (f"Cannot read {bname} cookies — the browser may need "
                                    "to be closed, or the profile name may be incorrect.")
@@ -9996,9 +10024,9 @@ class MP3DownloaderApp(tk.Tk):
                             err = (f"Browser profile not found. Check the profile name "
                                    f"in Settings. (got: '{pname or 'default'}')")
                         else:
-                            err = f"Fetch failed ({raw_err[:100]})"
+                            err = fallback
                 else:
-                    err = f"Fetch failed ({raw_err[:100]})"
+                    err = fallback
                 # A metadata-fetch failure is per-video (bot-check, age-gate,
                 # removed, region-block, …) — skip this track and let the batch
                 # continue rather than aborting everything on one bad video.
