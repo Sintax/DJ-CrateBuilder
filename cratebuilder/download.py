@@ -233,6 +233,89 @@ def looks_age_restricted(error_text):
     return any(marker in text for marker in AGE_GATE_MARKERS)
 
 
+# The queue's status column. A queue row is one fixed-width line and the Text
+# widget wraps nowhere and scrolls nowhere sideways, so anything a reason spends
+# beyond this is not merely untidy — it is off the right-hand edge and cannot be
+# read at all. Every label below is written to fit it.
+REASON_WIDTH = 14
+
+# Failures that describe the wire or this machine rather than the track. Checked
+# in order, and ahead of the track-level markers so an HTTP 503 "Service
+# Unavailable" reads as a server wobble instead of claiming the track itself is
+# unavailable. Each of the first three was seen dumping its raw text into the
+# queue: a temp-file PermissionError from yt-dlp's format check, googlevideo
+# refusing the media URL with a 403, and a read timeout arriving as a bare
+# "ERROR:" followed by a carriage return and yt-dlp's own progress-line wrapper.
+_CONDITION_MARKERS = (
+    (("permission denied", "errno 13"),               "write blocked"),
+    (("no space left", "errno 28",
+      "not enough space"),                            "disk full"),
+    (("http error 403", "403: forbidden"),            "refused (403)"),
+    (("http error 429", "too many requests"),         "rate-limited"),
+    (("http error 500", "http error 502",
+      "http error 503", "http error 504"),            "server error"),
+    (("timed out", "timeout"),                        "timed out"),
+    (("connection reset", "connection aborted",
+      "connection broken", "connection refused",
+      "remote end closed", "10054"),                  "network error"),
+)
+
+_WHITESPACE_RE = re.compile(r"\s+")
+
+# Decoration yt-dlp writes for someone reading a terminal, which carries nothing
+# once the message has to become a queue label: its own severity prefix (often
+# doubled, because the raised DownloadError already contains one), the
+# "[extractor] <id>:" stamp, and the "[download] Got error:" progress-line
+# wrapper that arrives glued on behind a carriage return.
+_ERROR_NOISE_RE = re.compile(
+    r"^(?:\s*(?:ERROR|WARNING)\s*:"
+    r"|\s*\[download\]\s*Got error\s*:"
+    r"|\s*\[[^\]]{1,20}\]\s*[\w.-]{1,40}\s*:)+", re.I)
+
+_URL_RE = re.compile(r"\bhttps?://\S+")
+
+# The CLI advice and issue-tracker pointer yt-dlp appends. True, and useless in
+# fourteen characters — the untouched message is in activity.log for anyone who
+# wants it. Applied BEFORE the URL is dropped: "See  https://…" stripped the
+# other way round leaves a bare "See" that no longer matches anything.
+_ADVICE_RE = re.compile(r"\b(?:Use|See|Try|Pass)\s+\S.*$", re.I)
+
+
+def condense_error(error_text, limit=REASON_WIDTH):
+    """An unrecognised error as something that fits the queue's status column.
+
+    The fallback used to be the error's first 60 characters, which is how a
+    queue row came to read "ERROR: unable to download video data: HTTP Error
+    403: Forbid" — a sentence cut mid-word, four times wider than the column,
+    with its tail off the edge of a widget that does not scroll sideways.
+
+    So: strip yt-dlp's decoration, drop the URL and the CLI advice it appends,
+    keep the first sentence of what is left, and truncate that on a word
+    boundary. What comes out is a phrase rather than a fragment. Nothing is
+    lost by it — _record_failure writes the untouched error to both logs before
+    ever asking for a label. Returns "failed" when the message was pure
+    decoration, which is exactly what a bare "ERROR:" is."""
+    text = _WHITESPACE_RE.sub(" ", error_text or "").strip()
+    text = _ERROR_NOISE_RE.sub("", text)
+    text = _URL_RE.sub("", _ADVICE_RE.sub("", text))
+    text = _WHITESPACE_RE.sub(" ", text).strip(" .,;:-")
+    if not text:
+        return "failed"
+    text = text.split(". ")[0].strip(" .,;:-")
+    if len(text) <= limit:
+        return text or "failed"
+    cut = text[:limit - 1]
+    # Trim back to a word only when the cut lands mid-word AND the word before
+    # it ends late enough to be worth it. "nsig extraction failed" breaks after
+    # "nsig", which reads as no message at all — keeping the clipped second
+    # word says more than dropping it.
+    if not text[limit - 1:limit].isspace():
+        space = cut.rfind(" ")
+        if space >= limit // 2:
+            cut = cut[:space]
+    return (cut.rstrip(" .,;:-") or text[:limit - 1]) + "…"
+
+
 def classify_download_failure(error_text, is_age=False):
     """Classify a failed download into the Outcome kind and the short reason.
 
@@ -243,9 +326,11 @@ def classify_download_failure(error_text, is_age=False):
     today and succeeds by itself once it airs. Permanently-unavailable causes
     (SoundCloud DRM, removed/private 404s, geo-blocks) come next: they are
     nothing on our side, so they get an honest status and are counted apart
-    from real errors. Everything after that is plain string matching, longest-
-    standing markers first, falling back to the first 60 characters of the
-    error.
+    from real errors. Then the conditions that are about the wire or this
+    machine, which have to outrank the track-level markers below or a 503
+    "Service Unavailable" gets reported as the track being unavailable.
+    Everything after that is plain string matching, longest-standing markers
+    first, and an error matching none of it is condensed rather than sliced.
 
     *is_age* is the verdict on the FIRST failure of this track, not on
     *error_text* — a track that age-gated and then failed its unauthenticated
@@ -261,17 +346,22 @@ def classify_download_failure(error_text, is_age=False):
     if permanent:
         return Failure("unavailable", permanent)
 
-    if   "ffmpeg"        in lower: reason = "FFmpeg missing"
-    elif "sign in"       in lower: reason = "login required"
-    elif is_age:                   reason = "age-restricted"
-    elif "unavailable"   in lower: reason = "unavailable"
+    if   "ffmpeg"        in lower: return Failure("failed", "FFmpeg missing")
+    elif "sign in"       in lower: return Failure("failed", "login required")
+    elif is_age:                   return Failure("failed", "age-restricted")
+
+    for markers, label in _CONDITION_MARKERS:
+        if any(m in lower for m in markers):
+            return Failure("failed", label)
+
+    if   "unavailable"   in lower: reason = "unavailable"
     elif "private"       in lower: reason = "private"
     elif "copyright"     in lower: reason = "copyright claim"
     elif "members"       in lower: reason = "members only"
     elif "removed"       in lower: reason = "removed"
     elif "blocked"       in lower: reason = "blocked"
     elif "not available" in lower: reason = "format unavailable"
-    else:                          reason = clean[:60]
+    else:                          reason = condense_error(clean)
     return Failure("failed", reason)
 
 
@@ -454,7 +544,7 @@ class TrackDownloader:
                 self._dbg.error(f"DOWNLOAD ABORT | {plan.title!r}  {exc}")
             except Exception:
                 pass
-            return Outcome(kind="failed", reason=str(exc)[:60])
+            return Outcome(kind="failed", reason=condense_error(str(exc)))
 
     def _run(self, plan, sink):
         """The ladder itself. Everything that can raise lives here so run()'s
