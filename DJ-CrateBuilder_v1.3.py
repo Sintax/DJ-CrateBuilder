@@ -27,6 +27,7 @@ from cratebuilder.util import (
     soundcloud_profile_handle, merge_soundcloud_candidates,
     runtime_data_dir, ensure_usable_tempdir, default_base_dir,
     describe_fetch_failure,
+    fit_window_geometry, parse_window_geometry,
 )
 from cratebuilder.sidecar import (
     channel_url_from_id, channel_id_from_url,
@@ -187,6 +188,59 @@ def about_avatar_path():
     return None
 
 
+def screen_work_areas():
+    """Every monitor's usable area as an (x, y, w, h) rectangle, primary first,
+    or [] when the layout cannot be read.
+
+    Tk describes only the primary display — winfo_screenwidth() answers the
+    same number whether one monitor is attached or three — so a window
+    remembered on a second monitor reads as off-screen and gets dragged back
+    to the first on every launch. Windows can describe the real layout through
+    EnumDisplayMonitors, which is also the only way to see a monitor arranged
+    to the LEFT of the primary one, whose coordinates are negative.
+
+    Work areas, not full monitor bounds: a window placed under the taskbar has
+    a title bar the user cannot grab. Primary first (it is the monitor whose
+    work area starts at the origin) so callers can treat screens[0] as the
+    fallback display. Non-Windows returns [] and the caller falls back to the
+    single screen Tk knows about; the Linux build loses the multi-monitor
+    precision and nothing else."""
+    if sys.platform != "win32":
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _MI(ctypes.Structure):
+            _fields_ = [("cbSize",    wintypes.DWORD),
+                        ("rcMonitor", wintypes.RECT),
+                        ("rcWork",    wintypes.RECT),
+                        ("dwFlags",   wintypes.DWORD)]
+
+        MONITORINFOF_PRIMARY = 1
+        user32 = ctypes.windll.user32
+        rects = []
+
+        def _collect(hmon, _hdc, _lprc, _data):
+            mi = _MI(); mi.cbSize = ctypes.sizeof(_MI)
+            if user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+                r = mi.rcWork
+                rects.append((bool(mi.dwFlags & MONITORINFOF_PRIMARY),
+                              (r.left, r.top,
+                               r.right - r.left, r.bottom - r.top)))
+            return 1
+
+        proto = ctypes.WINFUNCTYPE(
+            ctypes.c_int, wintypes.HMONITOR, wintypes.HDC,
+            ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
+        if not user32.EnumDisplayMonitors(None, None, proto(_collect), 0):
+            return []
+        rects.sort(key=lambda entry: not entry[0])
+        return [rect for _primary, rect in rects]
+    except Exception:
+        return []
+
+
 def _wheel_delta(event):
     """Normalise a mouse-wheel event to a Windows-style delta (±120 per notch).
 
@@ -225,6 +279,11 @@ SUCCESS   = "#22c55e"
 WARN      = "#f59e0b"   # amber — inline warning notices in dialogs
 MAROON    = "#800000"   # Overall-progress bar fill
 SKIP_COL  = "#6b7280"
+# Small grey action buttons inside the Settings tab's Download Behavior block
+# (Open Browser, VIEW). Dark enough to sit back into the panel rather than
+# competing with the section headings, and still clearly a button.
+BTN_GREY     = "#4a4a4a"
+BTN_GREY_ACT = "#5c5c5c"
 LINK_COL  = "#60a5fa"   # light blue for clickable links
 
 # Database-viewer grid: hairline dividers + zebra striping over the near-black
@@ -1389,7 +1448,7 @@ Step 6 — Close the Profile Window
 Step 7 — Configure the App
 
   In DJ-CrateBuilder Settings → Download Behavior:
-    ✓  Enable "Use browser cookies"
+    ✓  Enable "Browser Cookie Authentication"
        Browser:  Chrome
        Profile:  Profile 2  (or whatever chrome://version showed)
 
@@ -1473,7 +1532,7 @@ Step 6 — Close the Profile Window
 Step 7 — Configure the App
 
   In DJ-CrateBuilder Settings → Download Behavior:
-    ✓  Enable "Use browser cookies"
+    ✓  Enable "Browser Cookie Authentication"
        Browser:  Firefox
        Profile:  ab12cd34.DJ-CrateBuilder  (from about:profiles)
 
@@ -1550,7 +1609,7 @@ Step 6 — Close the Profile Window
 Step 7 — Configure the App
 
   In DJ-CrateBuilder Settings → Download Behavior:
-    ✓  Enable "Use browser cookies"
+    ✓  Enable "Browser Cookie Authentication"
        Browser:  Edge
        Profile:  Profile 2  (or whatever edge://version showed)
 
@@ -1629,7 +1688,7 @@ Step 6 — Close the Profile Window
 Step 7 — Configure the App
 
   In DJ-CrateBuilder Settings → Download Behavior:
-    ✓  Enable "Use browser cookies"
+    ✓  Enable "Browser Cookie Authentication"
        Browser:  Brave
        Profile:  Profile 2  (or whatever brave://version showed)
 
@@ -1686,7 +1745,7 @@ Step 4 — Export Cookies
 Step 5 — Configure the App
 
   In DJ-CrateBuilder Settings → Download Behavior:
-    ✓  Enable "Use browser cookies"
+    ✓  Enable "Browser Cookie Authentication"
        Method:  Cookie File
        File:    C:\\Users\\YourName\\cookies.txt
 
@@ -1766,7 +1825,7 @@ Step 6 — Close the Profile Window
 Step 7 — Configure the App
 
   In DJ-CrateBuilder Settings → Download Behavior:
-    ✓  Enable "Use browser cookies"
+    ✓  Enable "Browser Cookie Authentication"
        Browser:  Chromium
        Profile:  Profile 2  (or whatever chrome://version showed)
 
@@ -4442,6 +4501,13 @@ class _TkDownloadSink:
 # ══════════════════════════════════════════════════════════════════════════════
 class MP3DownloaderApp(tk.Tk):
 
+    # Window size on a first run, and the floor a remembered size is clamped
+    # to. The minimum is the point below which the Settings tab's rows start
+    # colliding, so a geometry restored from a smaller screen must never go
+    # under it — util.fit_window_geometry is handed these two.
+    WIN_DEFAULT_W, WIN_DEFAULT_H = 850, 950
+    WIN_MIN_W, WIN_MIN_H = 640, 620
+
     # Log-size-limit dropdown choices (label order). 0 MB = Unlimited.
     _LOG_LIMIT_CHOICES = ("1MB", "2MB", "3MB", "4MB",
                           "5MB", "8MB", "10MB", "Unlimited")
@@ -4468,8 +4534,8 @@ class MP3DownloaderApp(tk.Tk):
         every widget and variable exactly as a normal launch does."""
         super().__init__()
         self.title(f"{APP_NAME}  v{APP_VERSION_FULL}")
-        self.geometry("850x950")
-        self.minsize(640, 620)
+        self.geometry(f"{self.WIN_DEFAULT_W}x{self.WIN_DEFAULT_H}")
+        self.minsize(self.WIN_MIN_W, self.WIN_MIN_H)
         self.configure(bg=BG)
         self.resizable(True, True)
 
@@ -4487,8 +4553,8 @@ class MP3DownloaderApp(tk.Tk):
             pass
 
         self.update_idletasks()
-        x = (self.winfo_screenwidth()  - 850) // 2
-        y = (self.winfo_screenheight() - 950) // 2
+        x = (self.winfo_screenwidth()  - self.WIN_DEFAULT_W) // 2
+        y = (self.winfo_screenheight() - self.WIN_DEFAULT_H) // 2
         self.geometry(f"+{x}+{y}")
 
         # Load persisted config. One Settings instance owns the config file for
@@ -4496,6 +4562,7 @@ class MP3DownloaderApp(tk.Tk):
         # legacy migrations (skip_mode renames, auto_check_hours seed, cover-art
         # 'off' split) are applied inside Settings at load.
         self._settings = Settings()
+        self._restore_window_placement()
         self._base_dir      = self._settings.get("base_dir")
         self._downloading   = False
         self._cancel_flag   = threading.Event()
@@ -4646,6 +4713,7 @@ class MP3DownloaderApp(tk.Tk):
         # sink, and the once-a-second tick that turns it into a counter.
         self._stall = None
         self._stall_after_id = None
+        self._geometry_after_id = None  # debounce for remembering the geometry
         self._tray_icon = None  # set when tray is active
         self._tray_title_after_id = None   # recurring hover-tooltip refresh
         self._tray_dl_label = "Download All New (0)"  # live tray menu label
@@ -4696,6 +4764,7 @@ class MP3DownloaderApp(tk.Tk):
         # tray (when the option is enabled).
         self.protocol("WM_DELETE_WINDOW", self._on_window_close)
         self.bind("<Unmap>", self._on_minimize)
+        self.bind("<Configure>", self._on_root_configure)
 
         # Start in the System Tray only when the user ticked "Start App
         # Minimized to System Tray" — this is the sole control for it, and it
@@ -6397,8 +6466,6 @@ class MP3DownloaderApp(tk.Tk):
         _lbl = ttk.Label(beh_title_row, text="Download Behavior",
                   style="S.White.Section.TLabel")
         _lbl.pack(side="left")
-        ttk.Label(beh_title_row, text="(Experimental)",
-                  style="S.Dim.TLabel").pack(side="left", padx=(8, 0))
         self._settings_help(beh_title_row,
             "Options that control how DJ-CrateBuilder connects and paces "
             "requests. These can help avoid throttling, geographic "
@@ -6528,12 +6595,12 @@ class MP3DownloaderApp(tk.Tk):
         self._on_sleep_toggle()
 
         # ── Browser Cookies ───────────────────────────────────────────────────
-        tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(14, 14))
-
+        # No divider above: cookies are part of Download Behavior, and the rule
+        # read as the end of the section rather than a break inside it.
         cookie_row = ttk.Frame(outer)
-        cookie_row.pack(fill="x", pady=(0, 4))
+        cookie_row.pack(fill="x", pady=(10, 4))
         self._use_cookies_cb = ttk.Checkbutton(cookie_row,
-                        text="Use browser cookies",
+                        text="Browser Cookie Authentication",
                         variable=self._use_cookies,
                         command=self._on_cookies_toggle,
                         style="S.Opt.TCheckbutton")
@@ -6569,8 +6636,8 @@ class MP3DownloaderApp(tk.Tk):
 
         self._open_yt_btn = tk.Button(
             cd_method, text="🌐  Open Browser",
-            font=("Segoe UI", 8), bg="#7F7F7F", fg="#ffffff",
-            activebackground="#949494", activeforeground=TEXT,
+            font=("Segoe UI", 8), bg=BTN_GREY, fg="#ffffff",
+            activebackground=BTN_GREY_ACT, activeforeground=TEXT,
             relief="flat", bd=0, padx=8, pady=1, cursor="hand2",
             command=self._open_youtube_in_selected_browser)
         self._open_yt_btn.pack(side="left", padx=(0, 16))
@@ -6663,8 +6730,8 @@ class MP3DownloaderApp(tk.Tk):
                  font=("Segoe UI", 11, "bold"), fg=TEXT_DIM, bg=BG, anchor="w")
         self._howto_lbl.pack(side="left")
         self._howto_btn = tk.Button(howto_row, text="VIEW",
-                  font=("Segoe UI", 8), bg="#7F7F7F", fg="#ffffff",
-                  activebackground="#949494", activeforeground=TEXT,
+                  font=("Segoe UI", 8), bg=BTN_GREY, fg="#ffffff",
+                  activebackground=BTN_GREY_ACT, activeforeground=TEXT,
                   relief="flat", bd=0, padx=8, pady=1, cursor="hand2",
                   command=self._open_cookie_howto)
         self._howto_btn.pack(side="left", padx=(10, 0))
@@ -6701,26 +6768,6 @@ class MP3DownloaderApp(tk.Tk):
 
         # ── Logs & Database ───────────────────────────────────────────────────
         tk.Frame(outer, height=1, bg=BORDER).pack(fill="x", pady=(8, 20))
-
-        # Log size limit — caps activity.log and debug.log (each), trimming the
-        # oldest lines from the top once a file passes the chosen size.
-        limit_row = ttk.Frame(outer)
-        limit_row.pack(fill="x", pady=(0, 14))
-        ttk.Label(limit_row, text="Log Size Limit",
-                  style="S.White.Section.TLabel").pack(side="left")
-        self._log_limit_combo = ttk.Combobox(
-            limit_row, textvariable=self._log_limit_var,
-            values=list(self._LOG_LIMIT_CHOICES),
-            state="readonly", width=12)
-        self._log_limit_combo.pack(side="left", padx=(10, 0))
-        self._log_limit_combo.bind(
-            "<<ComboboxSelected>>", self._autosave_log_limit)
-        self._settings_help(limit_row,
-            "Caps the size of the Activity Log and Debug Log (each file "
-            "separately). When a log grows past this size, the oldest lines at "
-            "the top are removed to make room for the newest — so the file "
-            "keeps the most recent activity and never grows without bound. "
-            "'Unlimited' disables trimming.").pack(side="left", padx=(8, 0))
 
         _hdr = ttk.Frame(outer)
         _hdr.pack(anchor="w", pady=(0, 6))
@@ -6795,6 +6842,27 @@ class MP3DownloaderApp(tk.Tk):
             lambda _e: self._open_containing_folder(self._debug_log_path))
         Tooltip(self._debug_path_lbl, "Open this folder in your file explorer")
         self._refresh_debug_path_label()
+
+        # Log size limit — caps activity.log and debug.log (each), trimming the
+        # oldest lines from the top once a file passes the chosen size. Sits
+        # under both log blocks because it governs both of them.
+        limit_row = ttk.Frame(outer)
+        limit_row.pack(fill="x", pady=(14, 0))
+        ttk.Label(limit_row, text="Log Size Limit",
+                  style="S.White.Section.TLabel").pack(side="left")
+        self._log_limit_combo = ttk.Combobox(
+            limit_row, textvariable=self._log_limit_var,
+            values=list(self._LOG_LIMIT_CHOICES),
+            state="readonly", width=12)
+        self._log_limit_combo.pack(side="left", padx=(10, 0))
+        self._log_limit_combo.bind(
+            "<<ComboboxSelected>>", self._autosave_log_limit)
+        self._settings_help(limit_row,
+            "Caps the size of the Activity Log and Debug Log (each file "
+            "separately). When a log grows past this size, the oldest lines at "
+            "the top are removed to make room for the newest — so the file "
+            "keeps the most recent activity and never grows without bound. "
+            "'Unlimited' disables trimming.").pack(side="left", padx=(8, 0))
 
         # ── Database management ────────────────────────────────────────────────
         _hdr = ttk.Frame(outer)
@@ -7618,7 +7686,95 @@ class MP3DownloaderApp(tk.Tk):
     # Every self-arming after() loop on this class. _quit_app cancels the lot;
     # a loop left running fires into a half-destroyed interpreter.
     _RECURRING_TIMERS = ("_auto_dl_after_id", "_stall_after_id",
-                         "_tray_title_after_id", "_update_check_after_id")
+                         "_tray_title_after_id", "_update_check_after_id",
+                         "_geometry_after_id")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Window placement — where and how big the window opens, carried between
+    # sessions (the fitting rules are pure logic in cratebuilder/util.py)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    # A drag emits a <Configure> per pixel of travel and every save rewrites the
+    # whole config file, so the write waits for the window to sit still.
+    _GEOMETRY_SAVE_MS = 700
+
+    def _screen_rects(self):
+        """The monitors a window may be placed on, as (x, y, w, h) work areas.
+
+        Falls back to the one screen Tk can describe when the real layout isn't
+        readable — on Linux always, on Windows only if the enumeration fails."""
+        return screen_work_areas() or [
+            (0, 0, self.winfo_screenwidth(), self.winfo_screenheight())]
+
+    def _restore_window_placement(self):
+        """Reopen where the last session left the window — when that is still
+        somewhere the user can reach.
+
+        Runs before any widget is built, so the window is sized once rather
+        than being drawn at the default and then jumping. A remembered value
+        that no longer fits the attached monitors is corrected rather than
+        obeyed: fit_window_geometry decides, and answers None when there is
+        nothing to restore, leaving the centred default already set above.
+
+        Never allowed to raise. A config file carrying a nonsense geometry
+        would otherwise stop the app opening at all, with no way to fix it
+        short of deleting the file by hand."""
+        try:
+            geometry = fit_window_geometry(
+                self._settings.get("window_geometry"), self._screen_rects(),
+                min_size=(self.WIN_MIN_W, self.WIN_MIN_H))
+            if geometry:
+                self.geometry(geometry)
+            # Tk only understands 'zoomed' on Windows; X11 wants an attribute,
+            # and the .deb build simply reopens at the remembered size.
+            if (self._settings.get("window_maximized")
+                    and sys.platform == "win32"):
+                self.state("zoomed")
+        except Exception:
+            pass
+
+    def _on_root_configure(self, event):
+        """Debounce a move or resize, then remember where it settled."""
+        if event.widget is not self:
+            return
+        if self._geometry_after_id is not None:
+            try:
+                self.after_cancel(self._geometry_after_id)
+            except Exception:
+                pass
+        self._geometry_after_id = self.after(
+            self._GEOMETRY_SAVE_MS, self._save_window_placement)
+
+    def _save_window_placement(self):
+        """Persist the window's own geometry, if it currently has a real one.
+
+        A maximized window reports the size of the screen it fills, and a
+        minimized or tray-hidden one reports where it last was plus an
+        off-screen origin. Writing either back would mean the window never
+        returns to the size the user actually chose, so only the 'normal'
+        state updates the geometry — 'zoomed' records the maximized flag and
+        leaves the underlying size alone to unmaximize back into."""
+        self._geometry_after_id = None
+        try:
+            state = self.state()
+        except Exception:
+            return
+        if state == "zoomed":
+            if not self._settings.get("window_maximized"):
+                self._settings.set("window_maximized", True)
+            return
+        if state != "normal":
+            return
+        geometry = self.geometry()
+        if not parse_window_geometry(geometry):
+            return
+        updates = {}
+        if geometry != self._settings.get("window_geometry"):
+            updates["window_geometry"] = geometry
+        if self._settings.get("window_maximized"):
+            updates["window_maximized"] = False
+        if updates:
+            self._settings.update(updates)
 
     def _quit_app(self):
         """Real exit: stop tray, cancel timers, destroy."""
@@ -8383,7 +8539,7 @@ class MP3DownloaderApp(tk.Tk):
 
             ("Q: Why are some downloads marked \"login required\"?",
              "A: YouTube sometimes requires account authentication for certain content, especially when accessing from "
-             "VPN or datacenter IP addresses. The most reliable fix is to enable \"Use browser cookies\" in the "
+             "VPN or datacenter IP addresses. The most reliable fix is to enable \"Browser Cookie Authentication\" in the "
              "Settings tab and pick the browser you're signed into YouTube with — the app then borrows that session "
              "so downloads authenticate as you. (Use a throwaway account in a separate browser profile if you'd "
              "rather not risk your main one.) Otherwise, try disconnecting your VPN, switching to a different VPN "

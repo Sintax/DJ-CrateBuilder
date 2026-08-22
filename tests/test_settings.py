@@ -58,6 +58,8 @@ EXPECTED_DEFAULTS = {
     "last_update_check": 0.0,
     "url_history": [],
     "dupe_check_enabled": True,
+    "window_geometry": "",
+    "window_maximized": False,
     "db_dl_col_widths": None,
     "db_wl_col_widths": None,
     "db_art_col_widths": None,
