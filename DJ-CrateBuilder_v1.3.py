@@ -2079,7 +2079,8 @@ class _FoldersCleanupSession:
                  ).pack(padx=24, pady=(18, 4))
         tk.Label(dlg, text=f"Channel {self.idx + 1} of {self.total}",
                  font=("Segoe UI", 9), bg=BG, fg=TEXT_DIM).pack(pady=(0, 8))
-        bar = ttk.Progressbar(dlg, mode="indeterminate", length=260)
+        bar = ttk.Progressbar(dlg, mode="indeterminate", length=260,
+                              style="Dialog.Horizontal.TProgressbar")
         bar.pack(padx=24, pady=(0, 10))
         bar.start(12)
         tk.Button(dlg, text="Cancel", font=("Segoe UI", 9),
@@ -4293,7 +4294,8 @@ class _ArtworkBackfillSession:
                        bg=BG, fg=TEXT_DIM, wraplength=300, height=2)
         sub.pack(pady=(0, 8))
         bar = ttk.Progressbar(dlg, mode="determinate", length=300,
-                              maximum=max(self.total, 1))
+                              maximum=max(self.total, 1),
+                              style="Dialog.Horizontal.TProgressbar")
         bar.pack(padx=24, pady=(0, 10))
         btn_row = tk.Frame(dlg, bg=BG)
         btn_row.pack(pady=(0, 16))
@@ -5841,6 +5843,15 @@ class MP3DownloaderApp(tk.Tk):
                 troughcolor=SURFACE2, background=color,
                 bordercolor=SURFACE2, lightcolor=color,
                 darkcolor=color, thickness=5)
+
+        # The same red for the bars inside popup dialogs (cleanup, artwork,
+        # tag repair, the updater), which otherwise render in clam's pale
+        # default and read as off-white against a dark dialog. Deliberately
+        # no thickness: the 5px above is tuned for the Main tab's Progress
+        # card, and squeezing a dialog's taller bar to match looks broken.
+        s.configure("Dialog.Horizontal.TProgressbar",
+            troughcolor=SURFACE2, background=YT_RED,
+            bordercolor=SURFACE2, lightcolor=YT_RED, darkcolor=YT_RED)
 
         # Scrollbar: light-grey trough, medium-grey thumb
         for sb in ("Vertical.TScrollbar", "Horizontal.TScrollbar"):
@@ -8226,7 +8237,8 @@ class MP3DownloaderApp(tk.Tk):
         tk.Label(dlg, textvariable=status_var, font=("Segoe UI", 11),
                  fg=TEXT, bg=BG, anchor="w", width=44, justify="left"
                  ).pack(padx=20, pady=(18, 8), anchor="w")
-        bar = ttk.Progressbar(dlg, length=320, mode="determinate", maximum=100)
+        bar = ttk.Progressbar(dlg, length=320, mode="determinate", maximum=100,
+                              style="Dialog.Horizontal.TProgressbar")
         bar.pack(padx=20, pady=(0, 18))
         dlg.update_idletasks()
 
@@ -8314,7 +8326,8 @@ class MP3DownloaderApp(tk.Tk):
         tk.Label(dlg, textvariable=status_var, font=("Segoe UI", 11),
                  fg=TEXT, bg=BG, anchor="w", width=44, justify="left"
                  ).pack(padx=20, pady=(18, 8), anchor="w")
-        bar = ttk.Progressbar(dlg, length=320, mode="determinate", maximum=100)
+        bar = ttk.Progressbar(dlg, length=320, mode="determinate", maximum=100,
+                              style="Dialog.Horizontal.TProgressbar")
         bar.pack(padx=20, pady=(0, 18))
         dlg.update_idletasks()
 
@@ -13729,7 +13742,8 @@ class MP3DownloaderApp(tk.Tk):
                        bg=BG, fg=TEXT_DIM, height=2)
         sub.pack(pady=(0, 8))
         bar = ttk.Progressbar(dlg, mode="determinate", length=300,
-                              maximum=max(total, 1))
+                              maximum=max(total, 1),
+                              style="Dialog.Horizontal.TProgressbar")
         bar.pack(padx=24, pady=(0, 10))
         cancel_btn = tk.Button(
             dlg, text="Cancel", font=("Segoe UI", 9), relief="flat", bd=0,
