@@ -894,3 +894,55 @@ def test_rebuild_from_files_preserves_artwork(tmp_path):
 
     # A second snapshot round-trips identically: the rebuild is now idempotent.
     assert db.get_artwork_by_path() == snap
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# The bulk downloaded-id read that replaced one query per scanned entry
+# ══════════════════════════════════════════════════════════════════════════════
+def _add(db, video_id, path):
+    db.add_download(video_id=video_id, title=f"T {video_id}",
+                    channel_name="Chan", channel_url="https://yt/c",
+                    platform="YouTube", genre="DnB", file_path=path,
+                    upload_date="", bitrate="")
+
+
+def test_get_downloaded_video_ids_returns_every_id(tmp_path):
+    db = _new_db(tmp_path)
+    for i, vid in enumerate(("va", "vb", "vc")):
+        _add(db, vid, f"/x/{i}.mp3")
+    assert db.get_downloaded_video_ids() == {"va", "vb", "vc"}
+
+
+def test_get_downloaded_video_ids_is_empty_on_a_fresh_db(tmp_path):
+    assert _new_db(tmp_path).get_downloaded_video_ids() == set()
+
+
+def test_get_downloaded_video_ids_drops_rows_with_no_id(tmp_path):
+    """A rebuilt-from-disk row can have no video_id. Left in, the empty string
+    would land in the set and answer True for every id-less entry a scan
+    classifies."""
+    db = _new_db(tmp_path)
+    _add(db, "va", "/x/a.mp3")
+    _add(db, "", "/x/blank.mp3")
+    _add(db, None, "/x/none.mp3")
+    assert db.get_downloaded_video_ids() == {"va"}
+
+
+def test_get_downloaded_video_ids_agrees_with_the_check_it_replaces(tmp_path):
+    """The contract that matters: same answer as is_video_downloaded, for ids
+    that are present, absent and falsy alike."""
+    db = _new_db(tmp_path)
+    _add(db, "va", "/x/a.mp3")
+    _add(db, "vb", "/x/b.mp3")
+    ids = db.get_downloaded_video_ids()
+    for vid in ("va", "vb", "vmissing", "", None):
+        assert (vid in ids) == db.is_video_downloaded(vid), vid
+
+
+def test_get_downloaded_video_ids_survives_duplicate_rows(tmp_path):
+    """Duplicate file_path rows are a real state this database gets into (the
+    unique index is what the Remove Duplicates action restores)."""
+    db = _new_db(tmp_path)
+    _add(db, "va", "/x/a.mp3")
+    _add(db, "va", "/x/a-copy.mp3")
+    assert db.get_downloaded_video_ids() == {"va"}

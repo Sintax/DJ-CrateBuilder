@@ -757,6 +757,55 @@ def test_the_scan_normalises_a_whitespace_genre_like_the_download_does(
     assert os.path.isdir(os.path.join(_plat(app), "_No Genre", "Blank Genre"))
 
 
+def test_the_scan_reads_the_downloaded_ids_once_not_once_per_entry(
+        app, monkeypatch):
+    """What made a Scan All lag. Asking per entry opened a SQLite connection
+    per video, all through the one lock the UI thread needs to redraw a card —
+    seconds of it on a real channel. The whole answer is one query."""
+    cid = _watched(app, display_name="Bulk Read")
+    bulk = []
+    per_entry = []
+    real_bulk = app._db.get_downloaded_video_ids
+    monkeypatch.setattr(app._db, "get_downloaded_video_ids",
+                        lambda: (bulk.append(1), real_bulk())[1])
+    monkeypatch.setattr(app._db, "is_video_downloaded",
+                        lambda vid: per_entry.append(vid) or False)
+
+    _scan_now(app, monkeypatch, cid, [
+        {"id": f"v{i}", "title": f"Track {i}"} for i in range(50)])
+
+    assert len(bulk) == 1
+    assert per_entry == []
+
+
+def test_the_scan_still_hides_a_track_the_database_already_owns(app,
+                                                                monkeypatch):
+    """The snapshot has to answer exactly what the per-id check did, or a
+    scan starts offering tracks that are already downloaded."""
+    cid = _watched(app, display_name="Owned Check")
+    app._db.add_download(video_id="vowned", title="Owned", channel_name="C",
+                         channel_url="https://yt/c", platform="YouTube",
+                         genre="DnB", file_path="/x/owned.mp3",
+                         upload_date="", bitrate="")
+
+    row = _scan_now(app, monkeypatch, cid, [
+        {"id": "vowned", "title": "Owned"},
+        {"id": "vfresh", "title": "Fresh"},
+    ])
+
+    import json
+    pending = json.loads(row["pending_entries_json"])
+    assert [e["id"] for e in pending] == ["vfresh"]
+
+
+def test_scan_all_runs_one_channel_at_a_time(cb_mod):
+    """Concurrent scans do not finish sooner — a yt-dlp flat-extraction is
+    pure-Python work holding the GIL, so running three only starves the thread
+    painting the window. Measured as how late a 15 ms Tk callback fires: one
+    scan thread 47 ms (17 fps), three 139-175 ms (6 fps)."""
+    assert cb_mod.WATCHLIST_MAX_CONCURRENT_SCANS == 1
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # normalize_track_key — the reconciler between a title and yt-dlp's filename
 # ══════════════════════════════════════════════════════════════════════════════
