@@ -7962,6 +7962,19 @@ class MP3DownloaderApp(tk.Tk):
             self._auto_check_for_updates()
         self._reschedule_update_check()
 
+    def _installed_ffmpeg_build(self, install_dir):
+        """What the bundled ffmpeg.exe reports, probed once per session.
+
+        The update check runs on the UI thread, so the subprocess behind this
+        is spawned at most once a run rather than on every check. Caching is
+        safe because the binary only changes when we swap it ourselves, and
+        that path clears the cache on its way out."""
+        cached = getattr(self, "_ffmpeg_build_cache", False)
+        if cached is False:
+            cached = ucore.probe_ffmpeg_build(install_dir)
+            self._ffmpeg_build_cache = cached
+        return cached
+
     def _maybe_update_ffmpeg(self, manifest):
         """Piggyback the update check: bring bundled FFmpeg to the offered version.
 
@@ -7978,7 +7991,8 @@ class MP3DownloaderApp(tk.Tk):
         if not install_dir:
             return
         action = ucore.ffmpeg_update_action(
-            manifest, ucore.read_ffmpeg_version(install_dir))
+            manifest, ucore.read_ffmpeg_version(install_dir),
+            reported_build=self._installed_ffmpeg_build(install_dir))
         block = manifest.get("ffmpeg") or {}
         version = str(block.get("version", "")).strip()
         if action == "adopt":
@@ -8012,6 +8026,9 @@ class MP3DownloaderApp(tk.Tk):
                     zip_path, block["sha256"], install_dir,
                     os.path.join(ws, "ffmpeg_staged"),
                     os.path.join(ws, "ffmpeg_backup"), version)
+                # The binary on disk just changed, so the session's probe is
+                # stale; drop it and let the next check re-read the truth.
+                self._ffmpeg_build_cache = False
                 self.after(0, lambda: self._set_update_status(
                     f"FFmpeg updated to {version}."))
                 self._dbg.debug(f"FFMPEG UPDATE | swapped to {version}")
