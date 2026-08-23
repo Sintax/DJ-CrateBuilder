@@ -6909,27 +6909,27 @@ class MP3DownloaderApp(tk.Tk):
             db_tools_row, text="🔄  Rebuild Database from Files",
             style="Orange.TButton",
             command=self._rebuild_db_from_files)
-        self._rebuild_db_btn.pack(side="left", padx=(0, 8))
-        self._settings_help(db_tools_row,
-            "Scans the audio files already in your library folders and "
-            "rebuilds the database from them. This is safe to run at any "
-            "time — it clears and rebuilds from scratch. Cover art already "
-            "on disk is reused, never re-downloaded.").pack(
-                side="left", padx=(0, 16))
+        self._rebuild_db_btn.pack(side="left", padx=(0, 16))
+        Tooltip(self._rebuild_db_btn,
+                "Scans the audio files already in your library folders and "
+                "rebuilds the database from them. This is safe to run at any "
+                "time — it clears and rebuilds from scratch. Cover art already "
+                "on disk is reused, never re-downloaded.",
+                wraplength=360)
 
         self._dedupe_db_btn = ttk.Button(
             db_tools_row, text="🧹  Remove Duplicates",
             style="Orange.TButton",
             command=self._dedupe_downloads_db)
-        self._dedupe_db_btn.pack(side="left", padx=(0, 8))
-        self._settings_help(db_tools_row,
-            "Collapses repeated database rows that point at the same file — "
-            "the history could show a track four or five times. Only the "
-            "database is touched: no audio file, cover art or Watch List "
-            "entry is removed, and everything the repeated rows knew is "
-            "merged onto the single row that remains. It also switches on the "
-            "protection that stops them coming back.").pack(
-                side="left", padx=(0, 16))
+        self._dedupe_db_btn.pack(side="left", padx=(0, 16))
+        Tooltip(self._dedupe_db_btn,
+                "Collapses repeated database rows that point at the same file — "
+                "the history could show a track four or five times. Only the "
+                "database is touched: no audio file, cover art or Watch List "
+                "entry is removed, and everything the repeated rows knew is "
+                "merged onto the single row that remains. It also switches on "
+                "the protection that stops them coming back.",
+                wraplength=360)
 
         self._dupe_check_cb = ttk.Checkbutton(
             db_tools_row, text="Warn about duplicates at startup",
@@ -6950,12 +6950,12 @@ class MP3DownloaderApp(tk.Tk):
             file_tools_row, text="🖼  Fetch Missing Artwork",
             style="Orange.TButton",
             command=self._fetch_missing_artwork)
-        self._fetch_art_btn.pack(side="left", padx=(0, 8))
-        self._settings_help(file_tools_row,
-            "Finds cover art for tracks you downloaded before the Cover Art "
-            "feature existed, and embeds it into them. Re-uses artwork already "
-            "on disk where possible, so re-running it is cheap.").pack(
-                side="left", padx=(0, 16))
+        self._fetch_art_btn.pack(side="left", padx=(0, 16))
+        Tooltip(self._fetch_art_btn,
+                "Finds cover art for tracks you downloaded before the Cover Art "
+                "feature existed, and embeds it into them. Re-uses artwork "
+                "already on disk where possible, so re-running it is cheap.",
+                wraplength=360)
 
         self._repair_tags_btn = ttk.Button(
             file_tools_row, text="🏷  Repair Track Tags",
@@ -6975,11 +6975,6 @@ class MP3DownloaderApp(tk.Tk):
                 "nothing. Covers MP3, M4A and Opus/Ogg files. Cancel any "
                 "time — tracks already repaired keep their tags.",
                 wraplength=380)
-        self._settings_help(file_tools_row,
-            "Backfills the Genre tag on tracks you downloaded before genres "
-            "were written into files, and realigns any track whose tag no "
-            "longer matches the genre folder it lives in.").pack(
-                side="left", padx=(0, 16))
 
         self._db_path_lbl = tk.Label(
             db_row, text="", font=("Segoe UI", 11, "underline"),
