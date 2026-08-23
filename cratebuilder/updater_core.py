@@ -18,10 +18,15 @@ Nothing here imports tkinter or touches the GUI, so the logic stays testable.
 import hashlib
 import json
 import os
+import re
 import shutil
+import subprocess
 import sys
 import urllib.request
 import zipfile
+
+# Windows: keep a probed subprocess from flashing a console over the GUI.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 # Required manifest keys and the shape we expect.
 _REQUIRED_KEYS = ("build", "url", "sha256")
@@ -175,18 +180,70 @@ def write_ffmpeg_version(install_dir, version):
     return path
 
 
-def ffmpeg_update_action(manifest, installed_version):
+def ffmpeg_build_token(version):
+    """The build part of a '<build>+<sha8>' version marker.
+
+    ``derive_ffmpeg_version`` in the release script appends '+<sha8>' to what
+    ``ffmpeg -version`` reports, so stripping the last '+' segment yields
+    something directly comparable to a live binary's own answer. A marker in
+    the hash-only fallback form ('ffmpeg-<sha16>') has no '+' and comes back
+    unchanged, which simply never matches a real report — the caller treats an
+    unmatchable pair as 'can't verify', not as proof of a mismatch."""
+    return str(version or "").strip().rsplit("+", 1)[0]
+
+
+def probe_ffmpeg_build(install_dir, _runner=None):
+    """What the bundled ffmpeg.exe actually reports, or None if it can't say.
+
+    The marker file is a claim; this is the evidence. Runs the binary next to
+    the app with ``-version`` and returns its build token. Never raises and
+    never opens a console window: a missing, broken or unrunnable FFmpeg is a
+    normal answer here (None), and the caller then falls back to trusting the
+    marker exactly as before."""
+    exe = os.path.join(install_dir, "ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+    if not os.path.isfile(exe):
+        return None
+    runner = _runner or _run_ffmpeg_version
+    try:
+        lines = (runner(exe) or "").splitlines()
+    except Exception:
+        return None
+    match = re.match(r"ffmpeg version (\S+)", lines[0] if lines else "")
+    return match.group(1) if match else None
+
+
+def _run_ffmpeg_version(exe):
+    """`<exe> -version` stdout, or '' — the one place a subprocess is spawned."""
+    try:
+        proc = subprocess.run([exe, "-version"], capture_output=True,
+                              timeout=15, creationflags=_NO_WINDOW)
+        return proc.stdout.decode("utf-8", "ignore")
+    except Exception:
+        return ""
+
+
+def ffmpeg_update_action(manifest, installed_version, reported_build=None):
     """Classify the ffmpeg state as 'none', 'adopt', or 'update'.
 
-    'none'   → no valid ffmpeg block, or the installed marker already matches.
-    'adopt'  → valid block but no local marker yet: the caller records the
-               offered version WITHOUT downloading (the installer-shipped binary
-               is trusted as current), so the feature's debut doesn't force a
-               large download on every existing install.
-    'update' → valid block and the installed marker differs from the offer.
+    'none'   → no valid ffmpeg block, or the installed marker already matches
+               the offer *and* nothing contradicts it.
+    'adopt'  → valid block but no local marker yet: record the offered version
+               WITHOUT downloading, so the feature's debut doesn't force a
+               large download on an install that already has that build.
+    'update' → the marker differs from the offer, or the binary on disk
+               disagrees with what the marker claims about it.
 
     Decision is installed-vs-offered only — never build-number based — so it is
     immune to skipped builds and to --full baseline resets.
+
+    *reported_build* is what the installed ffmpeg.exe actually reports (see
+    ``probe_ffmpeg_build``); pass None when it can't be determined and the
+    marker is trusted on its own, as it was before. When it IS known it
+    outranks the marker, because the marker is only a note about the binary
+    and can be wrong — build 57 shipped a marker claiming an FFmpeg its own
+    payload deliberately excluded, stranding every install that took it. The
+    same evidence makes 'adopt' honest: adopting is only safe when the binary
+    really is the offered build.
     """
     if not isinstance(manifest, dict):
         return "none"
@@ -195,9 +252,19 @@ def ffmpeg_update_action(manifest, installed_version):
     if not ok:
         return "none"
     offered = str(block["version"]).strip()
+    reported = str(reported_build or "").strip()
+
     if installed_version is None:
+        # No marker. Trust the shipped binary as current only while nothing
+        # says otherwise; a binary that reports a different build IS stale.
+        if reported and reported != ffmpeg_build_token(offered):
+            return "update"
         return "adopt"
-    return "update" if str(installed_version).strip() != offered else "none"
+    if str(installed_version).strip() != offered:
+        return "update"
+    if reported and reported != ffmpeg_build_token(installed_version):
+        return "update"          # the marker is lying about the binary beside it
+    return "none"
 
 
 def fetch_manifest(url, timeout=4.0, _opener=None):

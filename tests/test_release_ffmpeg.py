@@ -308,3 +308,84 @@ def test_a_plain_ffmpeg_publish_makes_no_upstream_call(rel, monkeypatch):
     monkeypatch.setattr(rel.os, "chdir", lambda p: None)
 
     assert rel.main(["--ffmpeg", "--dry-run"]) == 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Payload exclusions — what must never travel in an app update
+# ══════════════════════════════════════════════════════════════════════════════
+# ffmpeg.version describes the BINARIES, and those are excluded from every
+# payload. Shipping the marker alone told installs they held an FFmpeg they did
+# not have, and since the app decided by comparing marker to manifest, it then
+# never fetched the real one. Build 57 did exactly that.
+
+FFMPEG_FILES = ("ffmpeg.exe", "ffprobe.exe", "ffmpeg.version")
+
+
+def _dist(tmp_path, *names):
+    """A dist/ tree containing *names*, each with distinct content."""
+    root = tmp_path / "dist"
+    root.mkdir()
+    for i, name in enumerate(names):
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * (i + 1))
+    return str(root)
+
+
+def test_the_marker_is_excluded_alongside_the_binaries(rel):
+    assert set(rel.FFMPEG_PAYLOAD_EXCLUDES) == set(FFMPEG_FILES)
+
+
+def test_a_full_payload_carries_none_of_the_ffmpeg_files(rel, tmp_path,
+                                                         monkeypatch):
+    dist = _dist(tmp_path, "app.exe", *FFMPEG_FILES)
+    monkeypatch.setattr(rel, "REPO_ROOT", str(tmp_path))
+
+    rels, is_full, _base, _hashes = rel.choose_payload(dist, 58, True)
+
+    assert is_full
+    assert rels == ["app.exe"]
+
+
+def test_a_delta_payload_carries_none_of_them_either(rel, tmp_path,
+                                                     monkeypatch):
+    """THE build-57 regression. The delta branch had no exclusion at all — it
+    rested on "FFmpeg never changes", which stopped being true the moment the
+    build machine got a new FFmpeg. All three files differ from the baseline
+    here, and not one of them may ship."""
+    dist = _dist(tmp_path, "app.exe", *FFMPEG_FILES)
+    monkeypatch.setattr(rel, "REPO_ROOT", str(tmp_path))
+    monkeypatch.setattr(rel, "load_state",
+                        lambda: {"files": {}, "base_build": 50})
+
+    rels, is_full, base_build, _hashes = rel.choose_payload(dist, 58, False)
+
+    assert not is_full and base_build == 50
+    assert rels == ["app.exe"]
+
+
+def test_an_unchanged_file_still_stays_out_of_a_delta(rel, tmp_path,
+                                                      monkeypatch):
+    """The exclusion must not accidentally disable the delta itself."""
+    dist = _dist(tmp_path, "app.exe", "steady.dll", *FFMPEG_FILES)
+    monkeypatch.setattr(rel, "REPO_ROOT", str(tmp_path))
+    hashes = rel.hash_tree(dist)
+    monkeypatch.setattr(rel, "load_state",
+                        lambda: {"files": {"steady.dll": hashes["steady.dll"]},
+                                 "base_build": 50})
+
+    rels, _is_full, _base, _hashes = rel.choose_payload(dist, 58, False)
+
+    assert rels == ["app.exe"]
+
+
+def test_the_baseline_still_records_every_file(rel, tmp_path, monkeypatch):
+    """Exclusion is about what SHIPS, not what is tracked — the returned hash
+    map becomes the next baseline and must stay complete, or the excluded
+    files would read as changed on every future delta."""
+    dist = _dist(tmp_path, "app.exe", *FFMPEG_FILES)
+    monkeypatch.setattr(rel, "REPO_ROOT", str(tmp_path))
+
+    _rels, _is_full, _base, hashes = rel.choose_payload(dist, 58, True)
+
+    assert set(hashes) == {"app.exe", *FFMPEG_FILES}
