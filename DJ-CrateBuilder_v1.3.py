@@ -4572,6 +4572,16 @@ class MP3DownloaderApp(tk.Tk):
         # 'off' split) are applied inside Settings at load.
         self._settings = Settings()
         self._restore_window_placement()
+
+        # Start-minimized: withdraw NOW, before a single widget is built, so
+        # the window is never mapped at all. The old approach let the window
+        # open normally and hid it on a 1.7s timer, which flashed the full UI
+        # at the user on every boot. The tray handoff itself still happens in
+        # the after(0) at the bottom of __init__ — the icon needs the Tk loop
+        # running — but hiding must not wait for it.
+        if not quiet and self._settings.get("start_minimized"):
+            self.withdraw()
+
         self._base_dir      = self._settings.get("base_dir")
         self._downloading   = False
         self._cancel_flag   = threading.Event()
@@ -4787,10 +4797,12 @@ class MP3DownloaderApp(tk.Tk):
         # Minimized to System Tray" — this is the sole control for it, and it
         # applies equally to a manual launch and a Windows run-at-startup
         # ("--startup") launch. When it's unticked, both launch paths just show
-        # the open window. _hide_to_tray falls back to a taskbar minimise if the
-        # tray is unavailable.
+        # the open window. The window itself was already withdrawn at the top
+        # of __init__ (it must never flash); this after(0) only raises the tray
+        # icon, which needs the Tk loop running. _hide_to_tray falls back to a
+        # taskbar minimise if the tray is unavailable.
         if not quiet and self._start_minimized.get():
-            self.after(1700, self._hide_to_tray)
+            self.after(0, self._hide_to_tray)
 
     # ══════════════════════════════════════════════════════════════════════════
     # Filesystem & logging — paths, the activity/debug loggers, dedup helpers
