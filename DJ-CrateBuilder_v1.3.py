@@ -6957,20 +6957,23 @@ class MP3DownloaderApp(tk.Tk):
             "on disk where possible, so re-running it is cheap.").pack(
                 side="left", padx=(0, 16))
 
-        self._fix_genre_btn = ttk.Button(
-            file_tools_row, text="🏷  Fix ID3 Genre Fields",
+        self._repair_tags_btn = ttk.Button(
+            file_tools_row, text="🏷  Repair Track Tags",
             style="Orange.TButton",
-            command=self._fix_id3_genre_fields)
-        self._fix_genre_btn.pack(side="left", padx=(0, 8))
-        Tooltip(self._fix_genre_btn,
-                "Rewrites the Genre tag on every track in your library to match "
-                "the CrateBuilder genre folder it is filed under — so a track "
-                "in YouTube/Drum & Bass gets the genre \"Drum & Bass\". Covers "
-                f"MP3, M4A and Opus/Ogg files. Tracks under "
-                f"{CrateLayout.NO_GENRE_DIR} have their "
-                "genre tag cleared. Any genre already correct is left untouched, "
-                "so re-running costs nothing; anything else is overwritten. "
-                "Cancel any time — tracks already fixed keep their new tag.",
+            command=self._repair_track_tags)
+        self._repair_tags_btn.pack(side="left", padx=(0, 8))
+        Tooltip(self._repair_tags_btn,
+                "Realigns the tags on every track in your library. The Genre "
+                "tag is set to match the CrateBuilder folder the track is "
+                "filed under — a track in YouTube/Drum & Bass gets the genre "
+                "\"Drum & Bass\", and tracks under "
+                f"{CrateLayout.NO_GENRE_DIR} have theirs cleared. Title, "
+                "Encoded-by and the source URL are filled in only where a "
+                "track is missing them, which is what gives a name back to "
+                "tracks downloaded before CrateBuilder wrote tags. Anything "
+                "you edited by hand is left alone, so re-running costs "
+                "nothing. Covers MP3, M4A and Opus/Ogg files. Cancel any "
+                "time — tracks already repaired keep their tags.",
                 wraplength=380)
         self._settings_help(file_tools_row,
             "Backfills the Genre tag on tracks you downloaded before genres "
@@ -8624,12 +8627,21 @@ class MP3DownloaderApp(tk.Tk):
              "source page — whichever is cheapest. It's in Settings and in the Database Viewer's Artwork tab, and you "
              "can cancel it at any point without losing the art it already wrote."),
 
-            ("Q: What does \"Fix ID3 Genre Fields\" do?",
-             "A: It rewrites the Genre tag on every track in your library so it matches the folder it is filed under: "
-             "a track in YouTube/Drum & Bass ends up tagged \"Drum & Bass\". It covers MP3, M4A and Opus/Ogg files, "
-             "and clears the tag on anything under the no-genre folder. Tracks whose tag is already right are left "
-             "alone, so re-running it costs nothing. Use it after moving tracks between genre folders, or to backfill "
-             "tracks downloaded before genres were written into files."),
+            ("Q: What does \"Repair Track Tags\" do?",
+             "A: It realigns the tags on every track in your library. The Genre tag is set to match the folder the "
+             "track is filed under — a track in YouTube/Drum & Bass ends up tagged \"Drum & Bass\", and anything "
+             "under the no-genre folder has its genre cleared. Title, Encoded-by and the source URL are filled in "
+             "only where a track is missing them, taken from the downloads database and falling back to the file's "
+             "own name. It covers MP3, M4A and Opus/Ogg files. Anything already correct — including a tag you edited "
+             "by hand — is left alone, so re-running it costs nothing. Use it after moving tracks between genre "
+             "folders, or to repair tracks downloaded before CrateBuilder wrote tags into files."),
+
+            ("Q: Some of my tracks show a blank Title in File Explorer. Why?",
+             "A: They were downloaded before CrateBuilder started writing ID3 tags, so the file never got a Title. "
+             "The filename is fine — it is only the tag inside the file that is empty. Confusingly they often still "
+             "show cover art and a genre: the artwork and genre tools each created a tag holding just their own "
+             "field. Run Settings ▸ Repair Track Tags to give them their titles back; it reads each track's real "
+             "title from the downloads database, so nothing has to be re-downloaded."),
 
             # ── The database ──────────────────────────────────────────────
             ("Q: What is the Database Viewer?",
@@ -13340,26 +13352,36 @@ class MP3DownloaderApp(tk.Tk):
         """The per-platform roots the library layout hangs off."""
         return [self._platform_dir(p) for p in PLATFORMS]
 
-    def _fix_id3_genre_fields(self):
-        """Entry point for the 'Fix ID3 Genre Fields' button.
+    def _repair_track_tags(self):
+        """Entry point for the 'Repair Track Tags' button.
 
-        Walks every track in the library and forces its genre tag to the genre
-        folder it lives under, since the folder is what CrateBuilder itself
-        treats as the track's genre. Files already carrying the right value are
-        not rewritten, so this is cheap to re-run and the reported count is
-        real work rather than files touched.
+        Walks every track in the library and realigns its tags with what
+        CrateBuilder knows about it. The genre is forced to the folder the
+        track is filed under, since that folder is what CrateBuilder treats as
+        its genre. Title, Encoded-by and the source URL are filled in only
+        where the file carries none, so a tag edited by hand survives and
+        re-running costs nothing.
+
+        The title is read from the track's downloads row, falling back to the
+        file's own name — which is that title as yt-dlp's sanitiser wrote it.
+        That fallback is what covers a file the user dropped in by hand.
+
+        This is what repairs tracks downloaded before tagging existed. They
+        carry no title at all: the genre and cover-art sweeps each created an
+        ID3 tag holding only their own field, so the file ends up with a genre
+        and a picture and no name.
 
         The walk runs on a worker thread behind a cancellable progress dialog;
         tags written before a cancel are kept, because each file is complete
         the moment it is saved."""
-        if getattr(self, "_genre_fix_active", False):
+        if getattr(self, "_tag_repair_active", False):
             messagebox.showinfo(
-                "Fix ID3 Genre Fields",
-                "A genre fix is already running.", parent=self)
+                "Repair Track Tags",
+                "A tag repair is already running.", parent=self)
             return
         if getattr(self, "_rebuild_in_progress", False):
             messagebox.showinfo(
-                "Fix ID3 Genre Fields",
+                "Repair Track Tags",
                 "A database rebuild is in progress. Try again once it "
                 "finishes.", parent=self)
             return
@@ -13368,25 +13390,31 @@ class MP3DownloaderApp(tk.Tk):
         total = cb_genrefix.count_library_tracks(platform_dirs)
         if not total:
             messagebox.showwarning(
-                "Fix ID3 Genre Fields",
+                "Repair Track Tags",
                 f"Found no audio files under {self._base_dir}.",
                 parent=self)
             return
         if not messagebox.askokcancel(
-                "Fix ID3 Genre Fields",
-                f"Set the Genre tag on {total} track"
-                f"{'s' if total != 1 else ''} to match the genre folder each "
-                f"one is filed under?\n\n"
-                f"Tracks under '{CrateLayout.NO_GENRE_DIR}' have their genre "
-                f"tag cleared. Any genre tag you set by hand that disagrees "
-                f"with the folder will be overwritten.\n\n"
+                "Repair Track Tags",
+                f"Repair the tags on {total} track"
+                f"{'s' if total != 1 else ''}?\n\n"
+                f"Genre is set to match the folder each track is filed under "
+                f"— a genre tag you set by hand that disagrees with the "
+                f"folder is overwritten, and tracks under "
+                f"'{CrateLayout.NO_GENRE_DIR}' have theirs cleared.\n\n"
+                f"Title, Encoded-by and the source URL are only filled in "
+                f"where a track is missing them, so anything you edited by "
+                f"hand is left alone.\n\n"
                 f"Audio is never re-encoded — only the tag is rewritten.",
                 parent=self):
             return
 
-        self._start_genre_fix(
+        # One read for the whole sweep: the row behind each file carries the
+        # real title, and the id the source URL is rebuilt from.
+        facts = cb_genrefix.index_by_path(self._db.get_track_facts_by_path())
+        self._start_tag_repair(
             lambda: cb_genrefix.iter_library_tracks(platform_dirs), total,
-            scope="library")
+            scope="library", facts=facts)
 
     def _watchlist_retag_genre(self, folder, genre, display_name):
         """Realign one channel folder's genre tags after its genre changed.
@@ -13397,12 +13425,16 @@ class MP3DownloaderApp(tk.Tk):
         this runs. Reports into the Watch List log rather than a dialog: the
         user just answered the move prompt and doesn't need a second one.
 
-        Silently does nothing when a genre fix is already running or the
-        folder has no tracks; neither is worth interrupting a save for."""
-        if getattr(self, "_genre_fix_active", False):
+        Genre only, deliberately: the user just moved a channel between
+        genres, and the job is to make the files agree with that. Filling in
+        missing titles is the library-wide repair's business.
+
+        Silently does nothing when a repair is already running or the folder
+        has no tracks; neither is worth interrupting a save for."""
+        if getattr(self, "_tag_repair_active", False):
             self._watchlist_log(
-                f"{display_name}: genre tags not updated — a genre fix is "
-                f"already running. Use Settings ▸ Fix ID3 Genre Fields later.",
+                f"{display_name}: genre tags not updated — a tag repair is "
+                f"already running. Use Settings ▸ Repair Track Tags later.",
                 "err")
             return
         total = cb_genrefix.count_channel_tracks(folder)
@@ -13412,7 +13444,7 @@ class MP3DownloaderApp(tk.Tk):
             f"{display_name}: updating genre tags on {total} track"
             f"{'s' if total != 1 else ''}…", "info")
 
-        def _done(fixed, skipped, errors, done, cancelled):
+        def _done(fixed, filled, untouched, errors, done, cancelled):
             note = (f"{display_name}: {fixed} genre tag"
                     f"{'s' if fixed != 1 else ''} updated")
             if errors:
@@ -13421,13 +13453,13 @@ class MP3DownloaderApp(tk.Tk):
                 note += f" (cancelled after {done} of {total})"
             self._watchlist_log(note, "err" if errors else "ok")
 
-        self._start_genre_fix(
+        self._start_tag_repair(
             lambda: cb_genrefix.iter_channel_tracks(folder, genre), total,
             scope=display_name, on_done=_done)
 
-    def _start_genre_fix(self, tracks_factory, total, *, scope,
-                         on_done=None):
-        """Run a genre-tag sweep on a worker thread behind a progress dialog.
+    def _start_tag_repair(self, tracks_factory, total, *, scope,
+                          on_done=None, facts=None):
+        """Run a tag sweep on a worker thread behind a progress dialog.
 
         *tracks_factory* is called on the worker to produce (path, genre)
         pairs — a factory rather than an iterator so the count and the sweep
@@ -13435,40 +13467,59 @@ class MP3DownloaderApp(tk.Tk):
         what the counting walk found; it only drives the progress bar, so a
         file appearing or vanishing in between cannot break the run.
 
+        *facts* is the {normcased path: (title, video_id, platform)} index
+        from the downloads table. Given, every missing Title / Encoded-by /
+        source URL is filled in alongside the genre; omitted, this is the
+        genre-only sweep a Watch List genre move wants.
+
         With *on_done* the caller reports the result itself; without it a
         completion dialog is shown. Tags written before a cancel are kept —
         each file is complete the moment it is saved."""
-        self._genre_fix_active = True
-        self._genre_fix_cancel = threading.Event()
+        self._tag_repair_active = True
+        self._tag_repair_cancel = threading.Event()
         try:
-            self._fix_genre_btn.config(state="disabled")
+            self._repair_tags_btn.config(state="disabled")
         except (AttributeError, tk.TclError):
             pass
-        dlg, bar, sub = self._genre_fix_progress(total)
+        dlg, bar, sub = self._tag_repair_progress(total)
+
+        def _repair(path, genre):
+            """One track. Returns (genre_changed, fields_filled)."""
+            if facts is None:
+                return set_track_genre(path, genre), False
+            title, video_id, platform = cb_genrefix.lookup_facts(facts, path)
+            return cb_genrefix.repair_track(
+                path, genre,
+                title=title or cb_genrefix.title_from_filename(path),
+                source_url=cb_genrefix.source_url_for(platform, video_id))
 
         def _work():
-            fixed = skipped = errors = 0
+            fixed = filled = untouched = errors = 0
             done = 0
             try:
                 for path, genre in tracks_factory():
-                    if self._genre_fix_cancel.is_set():
+                    if self._tag_repair_cancel.is_set():
                         break
                     try:
-                        if set_track_genre(path, genre):
+                        changed, was_filled = _repair(path, genre)
+                        if changed:
                             fixed += 1
-                        else:
-                            skipped += 1
-                    except Exception:  # pragma: no cover - set_track_genre eats it
+                        if was_filled:
+                            filled += 1
+                        if not changed and not was_filled:
+                            untouched += 1
+                    except Exception:  # pragma: no cover - the writers eat it
                         errors += 1
                     done += 1
                     if done % 25 == 0 or done == total:
-                        _post(lambda d=done, f=fixed: _tick(d, f))
+                        _post(lambda d=done, f=fixed, l=filled: _tick(d, f, l))
             finally:
                 # Whatever went wrong, the run has to be marked finished — a
-                # stuck _genre_fix_active would lock the button out for the
+                # stuck _tag_repair_active would lock the button out for the
                 # rest of the session.
-                if not _post(lambda: _finish(fixed, skipped, errors, done)):
-                    self._genre_fix_active = False
+                if not _post(lambda: _finish(fixed, filled, untouched,
+                                             errors, done)):
+                    self._tag_repair_active = False
 
         def _post(fn):
             """Hand *fn* to the Tk thread. False if Tk is already gone (the
@@ -13480,49 +13531,53 @@ class MP3DownloaderApp(tk.Tk):
             except (RuntimeError, tk.TclError):
                 return False
 
-        def _tick(done, fixed):
+        def _tick(done, fixed, filled):
             try:
                 bar.config(value=done)
-                sub.config(text=f"{done} of {total}  •  {fixed} fixed")
+                sub.config(text=f"{done} of {total}  •  {fixed} genres  •  "
+                                f"{filled} filled in")
             except tk.TclError:
                 pass
 
-        def _finish(fixed, skipped, errors, done):
-            self._genre_fix_active = False
-            cancelled = self._genre_fix_cancel.is_set()
+        def _finish(fixed, filled, untouched, errors, done):
+            self._tag_repair_active = False
+            cancelled = self._tag_repair_cancel.is_set()
             try:
                 dlg.destroy()
             except tk.TclError:
                 pass
             try:
-                self._fix_genre_btn.config(state="normal")
+                self._repair_tags_btn.config(state="normal")
             except (AttributeError, tk.TclError):
                 pass
             self._dbg.info(
-                f"GENRE FIX | scope={scope} scanned={done}/{total} "
-                f"fixed={fixed} already-correct={skipped} errors={errors} "
-                f"cancelled={cancelled}")
+                f"TAG REPAIR | scope={scope} scanned={done}/{total} "
+                f"genres={fixed} filled={filled} untouched={untouched} "
+                f"errors={errors} cancelled={cancelled}")
             if on_done is not None:
-                on_done(fixed, skipped, errors, done, cancelled)
+                on_done(fixed, filled, untouched, errors, done, cancelled)
                 return
-            summary = (f"{fixed} track{'s' if fixed != 1 else ''} updated.\n"
-                       f"{skipped} already had the right genre.")
+            summary = (f"{fixed} genre tag{'s' if fixed != 1 else ''} "
+                       f"corrected.\n"
+                       f"{filled} track{'s' if filled != 1 else ''} had "
+                       f"missing tags filled in.\n"
+                       f"{untouched} already correct.")
             if errors:
                 summary += f"\n{errors} could not be written."
             if cancelled:
                 summary = (f"Cancelled after {done} of {total}.\n\n" + summary)
-            messagebox.showinfo("Fix ID3 Genre Fields", summary, parent=self)
+            messagebox.showinfo("Repair Track Tags", summary, parent=self)
 
         self._run_bg(_work)
 
-    def _genre_fix_progress(self, total):
-        """Modal progress window for the genre fix. Returns (dialog, bar, sub)."""
+    def _tag_repair_progress(self, total):
+        """Modal progress window for the tag repair. Returns (dialog, bar, sub)."""
         dlg = tk.Toplevel(self)
-        dlg.title("Fix ID3 Genre Fields")
+        dlg.title("Repair Track Tags")
         dlg.configure(bg=BG)
         dlg.transient(self)
         dlg.resizable(False, False)
-        tk.Label(dlg, text="Fixing genre tags…",
+        tk.Label(dlg, text="Repairing track tags…",
                  font=("Segoe UI", 11, "bold"), bg=BG, fg=TEXT
                  ).pack(padx=24, pady=(18, 4))
         sub = tk.Label(dlg, text=f"0 of {total}", font=("Segoe UI", 9),
@@ -13535,14 +13590,14 @@ class MP3DownloaderApp(tk.Tk):
             dlg, text="Cancel", font=("Segoe UI", 9), relief="flat", bd=0,
             bg=SURFACE2, fg=TEXT, activebackground=BORDER,
             activeforeground=TEXT, padx=12, pady=4, cursor="hand2",
-            command=self._genre_fix_cancel.set)
+            command=self._tag_repair_cancel.set)
         cancel_btn.pack(pady=(0, 16))
         add_hover(cancel_btn)
         Tooltip(cancel_btn, "Stop after the current track. Tags already "
                             "written are kept.")
         # Closing the window is the same request as pressing Cancel — the
         # worker owns the dialog's lifetime and tears it down when it stops.
-        dlg.protocol("WM_DELETE_WINDOW", self._genre_fix_cancel.set)
+        dlg.protocol("WM_DELETE_WINDOW", self._tag_repair_cancel.set)
         dlg.update_idletasks()
         px = self.winfo_x() + (self.winfo_width() - dlg.winfo_width()) // 2
         py = self.winfo_y() + (self.winfo_height() - dlg.winfo_height()) // 2

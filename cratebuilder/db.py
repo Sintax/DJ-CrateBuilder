@@ -583,6 +583,34 @@ class DownloadsDatabase:
             self._log("error", f"get_artwork_by_path failed: {e}")
             return {}
 
+    def get_track_facts_by_path(self):
+        """Snapshot {file_path: (title, video_id, platform)} for every row
+        that names a file.
+
+        The bulk read behind the tag repair. The database is the only place a
+        track's real title survives when the file itself was never tagged —
+        the file name is the title after yt-dlp's sanitiser has been at it, so
+        it is a fallback rather than an equal. Read once per sweep: asking per
+        file would open a connection per track through the same lock the UI
+        thread takes to redraw.
+
+        Rows with no file_path are skipped, since the key would be
+        meaningless. Returns {} on failure, which costs the sweep only its
+        preferred title source, not the sweep."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute("""
+                    SELECT file_path, title, video_id, platform
+                    FROM downloads
+                    WHERE file_path IS NOT NULL AND file_path != ''
+                """).fetchall()
+            return {r["file_path"]: (r["title"] or "", r["video_id"] or "",
+                                     r["platform"] or "")
+                    for r in rows}
+        except Exception as e:
+            self._log("error", f"get_track_facts_by_path failed: {e}")
+            return {}
+
     def backfill_missing_download_timestamps(self, updates):
         """Persist download timestamps for rows that never had one (e.g. tracks
         imported before the database existed). `updates` is a list of
