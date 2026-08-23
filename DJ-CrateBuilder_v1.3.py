@@ -10299,6 +10299,20 @@ class MP3DownloaderApp(tk.Tk):
                         f"SIDECAR WRITE | {channel_sub!r}  "
                         f"channel_id={coll_channel_id}")
 
+            # ── Auto-add to the Watch List (collections only) ─────────────────
+            # The card goes up as the channel *starts*, not once it finishes: a
+            # full channel can run for an hour, and until this happened the
+            # Watch List had no idea the download existed — the channel only
+            # appeared after a restart. Raising it here also means a run the
+            # user cancels part-way still leaves the channel tracked, which is
+            # the right answer: they pointed the app at it deliberately.
+            # A Watch List "Download New" run passes channel_name_override and
+            # is tracked by definition, so it is left alone.
+            wl_row_id = None
+            if is_collection and not channel_name_override:
+                wl_row_id = self._watchlist_auto_add_if_enabled(
+                    url, collection_name, genre, channel_id=coll_channel_id)
+
             self.after(0, lambda sd=save_dir: self._set_status(
                 f"Saving to  {sd.replace(os.path.expanduser('~'), '~')}"))
 
@@ -10564,17 +10578,15 @@ class MP3DownloaderApp(tk.Tk):
                 parts.insert(0, "Skipped.")
             self.after(0, lambda s="  ".join(parts): self._set_status(s))
 
-            # ── Auto-add to Watch List (collections only) ─────────────
+            # ── Watch List card totals ────────────────────────────────
+            # The card was raised before a single track landed, so the total
+            # it was inserted with predates this run. Recount that one row and
+            # repaint just its card — the rest of the list is untouched.
             actual_downloaded = done - skipped - errors - unavail - deferred
-            if (is_collection and actual_downloaded > 0
-                    and not channel_name_override):
-                # Only auto-add when this is a normal user download, not
-                # a Watch List "Download New" run (which has override set)
-                self._watchlist_auto_add_if_enabled(
-                    url,
-                    channel_name_override or collection_name,
-                    genre,
-                    channel_id=coll_channel_id)
+            if wl_row_id is not None and actual_downloaded > 0:
+                self._db.refresh_watchlist_total(wl_row_id)
+                self.after(0, lambda i=wl_row_id:
+                           self._watchlist_update_card(i))
 
             # deferred counts toward the third slot purely so the caller does
             # NOT mark this URL clean: an unretired pending list is what makes
@@ -12865,7 +12877,7 @@ class MP3DownloaderApp(tk.Tk):
         pasted its URL into the Main tab and pressed "Start Downloads". Used when
         a scan finds nothing (bad yt-dlp scan data) but the user still
         wants to pull the channel down. Runs through the standard Main-tab path
-        (NOT a watchlist=True session) so the post-download auto-add/dedup in
+        (NOT a watchlist=True session) so the auto-add/dedup in
         _watchlist_auto_add_if_enabled attaches the run to this card."""
         if self._downloading:
             messagebox.showinfo(
@@ -13213,16 +13225,21 @@ class MP3DownloaderApp(tk.Tk):
         if removed:
             self._dbg.info(f"WL CLEANUP | removed {removed} blank card(s)")
 
-    # ── Auto-add after a normal channel download ──────────────────────────────
+    # ── Auto-add as a normal channel download starts ──────────────────────────
     def _watchlist_auto_add_if_enabled(self, url, display_name, genre,
                                         channel_id=None):
-        """Called from _process_one_url after a successful collection download.
+        """Called from _process_one_url as a collection download starts.
         If auto-add is enabled, adds the channel to the watchlist — or, if the
         channel is already tracked under ANY of its URL forms (@handle vs
         /channel/UC… vs …/videos), updates that existing row instead of
-        creating a duplicate blank card."""
+        creating a duplicate blank card.
+
+        Returns the watchlist row id this URL is now tracked under, so the
+        caller can refresh that one card when the download finishes, or None
+        when nothing is tracked — auto-add off, the channel could not be
+        named, or the insert lost a race."""
         if not self._auto_add_to_watchlist.get():
-            return
+            return None
 
         cid  = (channel_id or "").strip()
         name = (display_name or "").strip()
@@ -13244,16 +13261,19 @@ class MP3DownloaderApp(tk.Tk):
                 fields["display_name"] = name       # backfill blank name
             if fields:
                 self._db.update_watchlist_channel_fields(wl_id, **fields)
+                # A backfilled name is what the card renders, so repaint it —
+                # just that one card, not the whole list.
+                self.after(0, lambda i=wl_id: self._watchlist_update_card(i))
             self._dbg.info(
                 f"WL AUTO-UPDATE | {name or existing.get('display_name')!r}  "
                 f"fields={list(fields) or 'none'}")
-            return
+            return wl_id
 
         # ── No existing row. Never create a nameless card. ───────────────────
         if not name:
             self._dbg.info(
                 f"WL AUTO-ADD SKIP | blank name for {url!r} — not inserting")
-            return
+            return None
 
         result = self._db.add_watchlist_channel(
             url=url, display_name=name,
@@ -13261,7 +13281,7 @@ class MP3DownloaderApp(tk.Tk):
             auto_added=True,
             channel_id=cid or None)
         if result is None:
-            return
+            return None
         self._dbg.info(f"WL AUTO-ADD | {name!r}")
         # A brand-new channel was added on the background download worker.
         # Marshal a structural card rebuild to the main thread so the card
@@ -13269,6 +13289,7 @@ class MP3DownloaderApp(tk.Tk):
         # triggered here; scanning stays blocked during the download by the
         # self._downloading guard in _auto_download_tick.
         self.after(0, self._watchlist_refresh)
+        return result
 
     # ══════════════════════════════════════════════════════════════════════════
     # Maintenance — first-run folder import and DB rebuild from the activity log
