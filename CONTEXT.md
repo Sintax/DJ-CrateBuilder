@@ -23,6 +23,16 @@ design conversations use these words exactly.
 - **Intent** — one named question a `YdlSession` answers (`probe_metadata`,
   `probe_formats`, `list_channel`, `search_channels`), as opposed to a
   hand-built yt-dlp options dict.
+- **Scan worker** — a child process answering one `list_channel` intent for
+  the Watch List scan (`cratebuilder/scanproc.py`), because a flat-extraction
+  is pure-Python work that holds the GIL and would starve the UI thread run
+  anywhere in-process. The child builds a real `YdlSession` from the
+  request's `CookieConfig`, so the session stays the single yt-dlp boundary;
+  its typed errors cross the pipe as the same types, and the captive-portal
+  rule runs in the child, whose network view is the one the failure happened
+  in. Cancellation kills the child mid-listing. Reached via
+  `python -m cratebuilder.scanproc` from source and `--scan-worker` on the
+  frozen exe (intercepted before the single-instance guard).
 - **CrateLayout** — the single answer to "where does this track live?": the
   channel folder path and the track's file name. Pure naming — it never
   creates a folder (callers still do that), and its only disk access is

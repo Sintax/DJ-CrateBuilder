@@ -50,6 +50,7 @@ from cratebuilder import rebuild as cb_rebuild
 from cratebuilder import links as cb_links
 from cratebuilder import ydl as cb_ydl
 from cratebuilder import download as cb_download
+from cratebuilder import scanproc as cb_scanproc
 from cratebuilder.singleton import (
     acquire_single_instance, request_show, listen_for_show_requests,
     SINGLE_INSTANCE_PORT)
@@ -12517,6 +12518,32 @@ class MP3DownloaderApp(tk.Tk):
             self._watchlist_refresh()
 
     # ── Scan one channel ──────────────────────────────────────────────────────
+    def _scan_list_channel(self, url, cid):
+        """The scan's channel listing, answered by a subprocess.
+
+        A flat-extraction is pure-Python work that holds the GIL, so run on
+        a thread it makes the whole window stutter for as long as it takes.
+        The child process has its own interpreter — and its own YdlSession,
+        built from the same live cookie snapshot and raising the same typed
+        errors, so the except ladder below cannot tell the difference. The
+        cancel predicate kills the child mid-listing (raising ScanCancelled)
+        instead of letting a cancelled scan run to completion.
+
+        If the worker cannot even start — a blocked exe, a broken install —
+        the listing falls back in-process: one laggy scan beats a Watch List
+        that cannot scan at all."""
+        try:
+            return cb_scanproc.list_channel_isolated(
+                url,
+                cookies=self._cookie_config(),
+                should_cancel=lambda: (self._cancel_flag.is_set()
+                                       or cid in self._wl_cancel_cids),
+                debug=self._dbg.info)
+        except OSError as exc:
+            self._dbg.error(
+                f"SCAN WORKER SPAWN FAIL | {exc} — listing in-process")
+            return self._ydl_session().list_channel(url)
+
     def _watchlist_scan_channel(self, cid):
         """Threaded scan: flat-extract the channel listing and report anything
         not already in the database or on disk as a new upload."""
@@ -12579,7 +12606,17 @@ class MP3DownloaderApp(tk.Tk):
                 self._dbg.info(
                     f"WL SCAN | {ch['display_name']}  url={url}")
 
-                entries = self._ydl_session().list_channel(url)
+                try:
+                    entries = self._scan_list_channel(url, cid)
+                except cb_scanproc.ScanCancelled:
+                    # Same exit as the flag checks around this call — the
+                    # difference is the listing was stopped mid-flight
+                    # instead of running to completion first.
+                    self._wl_cancel_cids.discard(cid)
+                    self._db.update_watchlist_status(cid, "idle")
+                    self.after(0, lambda: self._watchlist_log(
+                        f"Scan cancelled: {ch['display_name']}", "info"))
+                    return
 
                 if self._cancel_flag.is_set() or cid in self._wl_cancel_cids:
                     self._wl_cancel_cids.discard(cid)
@@ -13971,6 +14008,13 @@ class MP3DownloaderApp(tk.Tk):
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    # Scan-worker mode: the frozen exe relaunched by scanproc to answer one
+    # channel listing. Handled before ANYTHING else — the single-instance
+    # guard below would otherwise make the worker poke the running window
+    # and exit with no answer, and a worker must never own a Tk root, the
+    # lock, or the update check.
+    if "--scan-worker" in sys.argv:
+        sys.exit(cb_scanproc.worker_main())
     # Single-instance guard: a second launch (manual, Windows --startup, or a
     # click on the Taskbar/Start Menu/Desktop icon) can't bind the loopback
     # port the running instance already holds. Instead of just exiting, it
