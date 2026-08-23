@@ -6,8 +6,8 @@
   "notes": "Maintenance build; internal docs fix, no app changes.",
   "base": 56,
   "ffmpeg": {
-    "version": "8.1-essentials_build-www.gyan.dev+1a65d5b0",
-    "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/ffmpeg-8.1-essentials_build-www.gyan.dev_1a65d5b0.zip",
-    "sha256": "b0879dad2e0c8392c595751d0140ab69a678c552f63a4606b632b2a09b221bfe"
+    "version": "9.0.1-essentials_build-www.gyan.dev+72a489ec",
+    "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/ffmpeg-9.0.1-essentials_build-www.gyan.dev_72a489ec.zip",
+    "sha256": "523fde94b906d1bd9efe7d3b79b4b81c7911625d3d2bcb4debbd2c9a36981ce9"
   }
 }
