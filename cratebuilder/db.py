@@ -615,6 +615,25 @@ class DownloadsDatabase:
             self._log("error", f"is_video_downloaded failed: {e}")
             return False
 
+    def get_downloaded_video_ids(self):
+        """Return the set of every video_id the downloads table holds.
+
+        The bulk form of is_video_downloaded: fetched once per scan and handed
+        to crate.ChannelCrate as its is_downloaded oracle (set.__contains__),
+        so classifying a channel costs one query rather than one per entry —
+        a connection each, all through the same lock the UI thread needs.
+
+        Not platform-scoped, exactly like the per-id check it stands in for.
+        Returns an empty set on failure, where every track then reads as new
+        — the same way is_video_downloaded fails."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute("SELECT video_id FROM downloads").fetchall()
+            return {r["video_id"] for r in rows if r["video_id"]}
+        except Exception as e:
+            self._log("error", f"get_downloaded_video_ids failed: {e}")
+            return set()
+
     def record_unavailable(self, *, platform, video_id, channel_url, title,
                            reason, now=None):
         """Remember that a track failed for a permanent reason.

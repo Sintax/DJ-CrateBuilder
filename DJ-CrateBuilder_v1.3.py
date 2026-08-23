@@ -402,7 +402,15 @@ THROTTLE_PRESETS = {
 # ── Maximum number of channel scans allowed to run concurrently during
 # ── "Scan All". Caps how hard we hit YouTube at once so large watch lists
 # ── don't pile up dozens of simultaneous yt-dlp requests and time out.
-WATCHLIST_MAX_CONCURRENT_SCANS = 3
+# ──
+# ── Deliberately 1. A scan is a yt-dlp flat-extraction — megabytes of JSON
+# ── and regex, which is pure-Python work holding the GIL, so concurrent scans
+# ── do not finish meaningfully sooner; they just starve the thread painting
+# ── the window. Measured as how late a 15 ms Tk callback actually fires, each
+# ── condition in a clean process: idle 0.6 ms (63 fps), one scan thread 47 ms
+# ── (17 fps), three scan threads 139–175 ms (6 fps). That last row is what
+# ── made dragging and scrolling lag while a Scan All ran.
+WATCHLIST_MAX_CONCURRENT_SCANS = 1
 
 # ── Cold-boot guard for the startup scan. When the app auto-launches at Windows
 # ── login the network is often a few seconds behind, and a scan run while
@@ -12607,13 +12615,18 @@ class MP3DownloaderApp(tk.Tk):
                 now_ts = int(time.time())
                 limit_on  = bool(self._limit_enabled.get())
                 limit_sec = self._limit_minutes.get() * 60 if limit_on else None
-                # One query per scan, not one per entry: every track this
-                # platform has already proven undownloadable (DRM, removed,
-                # geo-blocked) so it is not offered as "new" again.
+                # Both memories are read in one query each, not one per entry:
+                # every track already downloaded, and every track this platform
+                # has proven undownloadable (DRM, removed, geo-blocked) so it is
+                # not offered as "new" again. Asking per entry meant a fresh
+                # SQLite connection per video through the same lock the UI
+                # thread takes to redraw a card — seconds of it on a large
+                # channel, for an answer a set membership test gives instantly.
                 suppressed = self._db.get_suppressed_reasons(platform)
+                downloaded = self._db.get_downloaded_video_ids()
                 classified = ChannelCrate(
                     folder,
-                    is_downloaded=self._db.is_video_downloaded,
+                    is_downloaded=downloaded.__contains__,
                     platform=platform,
                     suppressed_reason=suppressed.get,
                     limit_sec=limit_sec,
