@@ -1150,6 +1150,31 @@ class DownloadsDatabase:
         except Exception as e:
             self._log("error", f"clear_pending_for_channel failed: {e}")
 
+    def refresh_watchlist_total(self, wl_id):
+        """Recount one watchlist row's downloaded total from its own URL.
+
+        The whole-table twin below is a maintenance sweep; this is what a
+        finished download calls, so a card raised before its first track
+        landed stops reporting the count it was inserted with. Returns the
+        new total, or None when the row is gone."""
+        try:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT url FROM watchlist WHERE id = ?", (wl_id,)
+                ).fetchone()
+                if row is None:
+                    return None
+                cnt = conn.execute(
+                    "SELECT COUNT(*) AS n FROM downloads WHERE channel_url = ?",
+                    (row["url"],)).fetchone()["n"]
+                conn.execute(
+                    "UPDATE watchlist SET total_downloaded = ? WHERE id = ?",
+                    (cnt, wl_id))
+                return cnt
+        except Exception as e:
+            self._log("error", f"refresh_watchlist_total failed: {e}")
+            return None
+
     def refresh_watchlist_totals(self):
         try:
             with self._conn() as conn:
