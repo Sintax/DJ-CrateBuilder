@@ -7729,7 +7729,7 @@ class MP3DownloaderApp(tk.Tk):
     # a loop left running fires into a half-destroyed interpreter.
     _RECURRING_TIMERS = ("_auto_dl_after_id", "_stall_after_id",
                          "_tray_title_after_id", "_update_check_after_id",
-                         "_placement_after_id")
+                         "_placement_after_id", "_ffmpeg_retry_after_id")
 
     # ══════════════════════════════════════════════════════════════════════════
     # Window placement — where and how big the window opens, carried between
@@ -7998,16 +7998,57 @@ class MP3DownloaderApp(tk.Tk):
         if action == "adopt":
             # No marker yet: trust the installer-shipped binary as current and
             # record it, so we don't force a large download on first sight.
+            self._cancel_ffmpeg_retry()
             try:
                 ucore.write_ffmpeg_version(install_dir, version)
             except OSError:
                 pass
             return
         if action != "update":
+            self._cancel_ffmpeg_retry()
             return
         if self._downloading or self._wl_download_active or self._wl_scan_active:
-            return   # busy — retry on the next scheduled check
+            # Busy — but don't sit on it until the next scheduled check (up
+            # to 12 hours away, and scan-on-startup keeps every launch check
+            # busy): say so in the log and retry once a minute until idle.
+            self._dbg.debug("FFMPEG UPDATE | deferred: busy — retrying when idle")
+            self._arm_ffmpeg_retry(manifest)
+            return
+        self._cancel_ffmpeg_retry()
         self._start_ffmpeg_update(install_dir, block, version)
+
+    # 60s: invisible while busy, yet the swap lands in the first idle minute
+    # instead of whenever the next scheduled manifest check happens to run.
+    _FFMPEG_RETRY_MS = 60_000
+
+    def _arm_ffmpeg_retry(self, manifest):
+        """Re-run the FFmpeg decision once a minute until the app goes idle.
+
+        The manifest is kept so a retry needs no network; the decision itself
+        is re-evaluated fresh each tick, so a swap that already happened (or a
+        manifest that stopped offering one) simply disarms the loop."""
+        self._ffmpeg_retry_manifest = manifest
+        if getattr(self, "_ffmpeg_retry_after_id", None) is None:
+            self._ffmpeg_retry_after_id = self.after(
+                self._FFMPEG_RETRY_MS, self._ffmpeg_retry_tick)
+
+    def _ffmpeg_retry_tick(self):
+        """One armed retry firing: hand the kept manifest back to the decision."""
+        self._ffmpeg_retry_after_id = None
+        manifest = getattr(self, "_ffmpeg_retry_manifest", None)
+        if manifest:
+            self._maybe_update_ffmpeg(manifest)
+
+    def _cancel_ffmpeg_retry(self):
+        """Disarm the retry loop and drop the kept manifest."""
+        self._ffmpeg_retry_manifest = None
+        after_id = getattr(self, "_ffmpeg_retry_after_id", None)
+        if after_id is not None:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
+            self._ffmpeg_retry_after_id = None
 
     def _start_ffmpeg_update(self, install_dir, block, version):
         """Download + verify + swap the FFmpeg binaries on a background thread.
@@ -8100,9 +8141,13 @@ class MP3DownloaderApp(tk.Tk):
             return
         # Automatic check: surface the update actively. Silent when running
         # from source (nothing to swap — prompting would only nag), while a
-        # download is already in flight, or while a prompt is still open.
+        # download is already in flight, while a prompt is still open, or
+        # while the app is busy (installing mid-scan is how updates fail —
+        # the next scheduled check will offer it again once things are quiet).
         if (not ucore.can_self_update() or self._update_in_progress
-                or self._update_prompt_open):
+                or self._update_prompt_open
+                or self._downloading or self._wl_download_active
+                or self._wl_scan_active):
             return
         if self.state() == "withdrawn":
             self._notify_tray(
@@ -8131,6 +8176,20 @@ class MP3DownloaderApp(tk.Tk):
                 "Update available",
                 f"Build {build} is available, but you're running from source.\n\n"
                 "Update with git (pull the latest) instead of the in-app updater.",
+                parent=self)
+            return
+
+        # Installing swaps every file under the app and needs a clean exit —
+        # a scan or download still running at handoff time is exactly what
+        # turned one update into a silent rollback to the old build.
+        if self._downloading or self._wl_download_active or self._wl_scan_active:
+            self._set_update_status(
+                f"Update available: build {build}.\nYou're on build {APP_BUILD}.")
+            messagebox.showinfo(
+                "Update available",
+                f"Build {build} is ready, but downloads or scans are still "
+                "running.\n\nCancel them (or let them finish), then press "
+                "Check for updates again.",
                 parent=self)
             return
 
@@ -8210,7 +8269,7 @@ class MP3DownloaderApp(tk.Tk):
                 ucore.extract_zip(zip_path, staged)
 
                 self.after(0, lambda: self._launch_updater_and_quit(
-                    dlg, staged, ws))
+                    dlg, staged, ws, set_status))
             except Exception as exc:   # noqa: BLE001 — report and recover
                 self.after(0, lambda: self._update_failed(dlg, exc))
 
@@ -8353,8 +8412,22 @@ class MP3DownloaderApp(tk.Tk):
             "Your current version is unchanged. You can try again later or "
             "download the latest build from GitHub.", parent=self)
 
-    def _launch_updater_and_quit(self, dlg, staged, ws):
-        """Hand off to the separate updater process, then fully exit."""
+    def _launch_updater_and_quit(self, dlg, staged, ws, set_status=None):
+        """Hand off to the separate updater process, then fully exit.
+
+        The handoff kills this process, and updater.exe only waits 30s before
+        swapping files regardless — so work still running here is how an
+        update turns into a mid-swap rollback. If anything is in flight, ask
+        it all to stop (the same flag the Cancel buttons set) and poll until
+        the app is genuinely idle before pulling the trigger."""
+        if self._downloading or self._wl_download_active or self._wl_scan_active:
+            self._cancel_flag.set()
+            if set_status:
+                set_status("Waiting for scans/downloads to stop…")
+            self.after(500, lambda: self._launch_updater_and_quit(
+                dlg, staged, ws, set_status))
+            return
+
         app_dir = ucore.install_dir()
         app_exe = sys.executable
         backup = os.path.join(ws, "backup")
@@ -10693,6 +10766,13 @@ class MP3DownloaderApp(tk.Tk):
             pass
         if self._wl_scan_active > 0:
             self._watchlist_log("Cancelling scans…", "info")
+        # The flag above only reaches threads that are still alive; a card
+        # stuck at "scanning" whose thread is already gone has nothing left
+        # to repaint it. Force those rows back to idle and repaint so Cancel
+        # visibly clears every card — a live scan that races this simply
+        # writes its own final status a moment later.
+        if self._db.reset_stale_watchlist_scans():
+            self._watchlist_refresh()
 
     def _wl_update_cancel_btn_state(self):
         """Enable the Watch List Cancel button only when Watch-List work is in
@@ -10873,6 +10953,15 @@ class MP3DownloaderApp(tk.Tk):
         paned.add(log_frame, stretch="never", minsize=90)
         # Place the divider so the log starts ~150px tall once we know height.
         self.after(120, self._wl_init_log_sash)
+
+        # A session that died mid-scan (a crash, an update swap) leaves its
+        # rows frozen at "scanning" — and no thread survives a restart, so the
+        # cards would boot with ghost cancel buttons nothing can ever clear.
+        stale = self._db.reset_stale_watchlist_scans()
+        if stale:
+            self._dbg.info(
+                f"WL SANITISE | reset {stale} stale scanning row(s) from a "
+                f"previous session")
 
         # Populate on first load
         self._watchlist_refresh()

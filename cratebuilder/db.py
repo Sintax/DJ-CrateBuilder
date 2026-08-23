@@ -981,6 +981,22 @@ class DownloadsDatabase:
         except Exception as e:
             self._log("error", f"update_watchlist_status failed: {e}")
 
+    def reset_stale_watchlist_scans(self):
+        """Reset every 'scanning' row to 'idle'; returns how many were reset.
+
+        'scanning' is only meaningful while a live thread owns the row, and no
+        thread survives a restart — a row still saying it after a crash or an
+        update swap renders a ghost cancel button nothing can ever clear."""
+        try:
+            with self._conn() as conn:
+                cur = conn.execute(
+                    "UPDATE watchlist SET status = 'idle' "
+                    "WHERE status = 'scanning'")
+                return cur.rowcount or 0
+        except Exception as e:
+            self._log("error", f"reset_stale_watchlist_scans failed: {e}")
+            return 0
+
     def update_watchlist_channel_fields(self, wl_id, **fields):
         """Update allowed watchlist columns for one row.
 
