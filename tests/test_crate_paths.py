@@ -660,21 +660,15 @@ def test_the_main_tab_now_matches_the_scan_exactly_too(cb_mod, app,
 # ══════════════════════════════════════════════════════════════════════════════
 # The Watch List scan, through the same ChannelCrate
 # ══════════════════════════════════════════════════════════════════════════════
-class _ListingSession:
-    """YdlSession stand-in answering the one intent a scan uses."""
-
-    def __init__(self, entries):
-        self._entries = entries
-
-    def list_channel(self, url):
-        return list(self._entries)
-
-
 def _scan_now(app, monkeypatch, cid, entries):
-    """Run one Watch List scan synchronously against a stubbed listing."""
+    """Run one Watch List scan synchronously against a stubbed listing.
+
+    Stubs _scan_list_channel — the scan's one listing seam, normally a
+    subprocess — so these tests drive everything from the listing's return
+    to the DB row without spawning anything."""
     monkeypatch.setattr(app, "_run_bg", lambda fn, *a: fn(*a))
-    monkeypatch.setattr(app, "_ydl_session",
-                        lambda **kw: _ListingSession(entries))
+    monkeypatch.setattr(app, "_scan_list_channel",
+                        lambda url, cid_: list(entries))
     app._watchlist_scan_channel(cid)
     return app._db.get_watchlist_channel(cid)
 
