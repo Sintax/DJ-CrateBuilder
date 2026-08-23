@@ -6195,6 +6195,8 @@ class MP3DownloaderApp(tk.Tk):
             return "break"
         _bind_wheel(self._qtxt, _on_queue_mousewheel)
 
+        self._wheel_proof_combos(self._MAIN_COMBOS, self._main_canvas)
+
         # Queue text tags for row states
         self._qtxt.tag_configure("q_pending",  foreground=TEXT_DIM)
         self._qtxt.tag_configure("q_active",   foreground=TEXT)
@@ -6999,7 +7001,7 @@ class MP3DownloaderApp(tk.Tk):
             short = self._db_path.replace(os.path.expanduser("~"), "~")
             self._db_path_lbl.config(text=short)
 
-        self._wheel_proof_settings_combos()
+        self._wheel_proof_combos(self._SETTINGS_COMBOS, self._settings_canvas)
         self._refresh_limit_label()
 
     # Every dropdown on the Settings tab. Changing one of these autosaves, so
@@ -7010,23 +7012,32 @@ class MP3DownloaderApp(tk.Tk):
         "_cookies_browser_combo", "_log_limit_combo",
     )
 
-    def _wheel_proof_settings_combos(self):
-        """Make the Settings dropdowns deaf to the scroll wheel.
+    # Every dropdown on the Main tab. The URL field is the sharp one: it is
+    # editable, so a wheel notch over it replaces whatever the user typed with
+    # an entry from the history.
+    _MAIN_COMBOS = ("_url_entry", "_genre_combo", "_skip_mode_combo")
+
+    def _wheel_proof_combos(self, names, canvas):
+        """Make the named dropdowns deaf to the scroll wheel.
 
         ttk's own TCombobox class binding steps the value on every wheel
-        notch, so wheeling down the page over a dropdown silently changes —
-        and autosaves — a setting. A widget-level binding runs before the
-        class binding, so returning "break" suppresses both that step and the
-        global page-scroll handler; the page scroll is then forwarded to the
-        Settings canvas by hand, leaving a dropdown no different from any
-        other widget to scroll past. Values change only by click or keyboard.
+        notch, so wheeling down a page over a dropdown silently changes it —
+        which on Settings also autosaves, and on the Main tab swaps out the
+        URL about to be queued. A widget-level binding runs before the class
+        binding, so returning "break" suppresses both that step and the global
+        page-scroll handler; the page scroll is then forwarded to *canvas* by
+        hand, leaving a dropdown no different from any other widget to scroll
+        past. Values change only by click or keyboard.
+
+        A name that isn't built yet is skipped rather than raising — the
+        caller runs at the end of a tab build, not after every widget exists.
         """
         def _swallow(event):
-            self._settings_canvas.yview_scroll(
+            canvas.yview_scroll(
                 int(-1 * (_wheel_delta(event) / 120)), "units")
             return "break"
 
-        for name in self._SETTINGS_COMBOS:
+        for name in names:
             combo = getattr(self, name, None)
             if combo is not None:
                 _bind_wheel(combo, _swallow)
