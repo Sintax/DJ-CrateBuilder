@@ -6,15 +6,15 @@ import threading
 import pytest
 
 from cratebuilder import service as service_module
-from cratebuilder.batchrun import (USER_AGENT_POOL, BatchRunner, TrackSpec,
-                                   duration_reason, entry_url, eta_text,
-                                   pick_session_ua, resolve_sleep_range,
-                                   skipped_line)
+from cratebuilder import activitylog, util
+from cratebuilder.batchrun import (BatchRunner, TrackSpec, entry_url, eta_text,
+                                   pick_session_ua, resolve_sleep_range)
 from cratebuilder.crate import SkipMode
 from cratebuilder.db import DownloadsDatabase
 from cratebuilder.download import Outcome
 from cratebuilder.service import CBError, CrateBuilderService
 from cratebuilder.settings import Settings
+from cratebuilder.sidecar import read_channel_sidecar, write_channel_sidecar
 from cratebuilder.ydl import YdlPermanent
 
 
@@ -89,6 +89,7 @@ class Harness:
     def __init__(self, tmp_path, probe, listing, error=None, settings=None):
         self.plans = []
         self.built = []
+        self.sidecars = []
         self.outcomes = {}
         self.on_start = None
         self.on_end = None
@@ -101,8 +102,14 @@ class Harness:
             self.settings, self.db, self.emit,
             session_factory=lambda cookies=None: self.session,
             downloader_factory=self._make_downloader,
+            write_sidecar=self._record_sidecar,
             log_line=self.log.append,
             counts=lambda: {"downloads": 7})
+
+    def _record_sidecar(self, folder, **kwargs):
+        """Records the stamp, then writes the real sidecar file."""
+        self.sidecars.append(dict(kwargs, folder=folder))
+        return write_channel_sidecar(folder, **kwargs)
 
     def _make_downloader(self, **kwargs):
         downloader = FakeDownloader(self, kwargs)
@@ -132,7 +139,8 @@ def _row(row_id=1, url="https://youtube.com/watch?v=aaa", genre="Techno",
 
 
 TRACK_PROBE = {"_type": "video", "id": "aaa", "title": "One Track"}
-LIST_PROBE = {"_type": "playlist", "title": "UKF", "channel_id": "UC123"}
+LIST_PROBE = {"_type": "playlist", "title": "UKF", "channel_id": "UC123",
+              "uploader_id": "@UKF"}
 
 
 def _entries(*titles):
@@ -163,11 +171,11 @@ def test_session_ua_is_one_agent_for_the_whole_batch(tmp_path):
     settings = _settings(tmp_path)
     assert pick_session_ua(settings.download_policy()) is None
     settings.set("rotate_ua", True)
-    assert pick_session_ua(settings.download_policy()) in USER_AGENT_POOL
+    assert pick_session_ua(settings.download_policy()) in util.USER_AGENT_POOL
 
 
-def test_duration_reason_matches_the_activity_log_wording():
-    assert duration_reason(671, 8) == "exceeds limit (11:11 > 8:00)"
+def test_over_limit_reason_matches_the_activity_log_wording():
+    assert activitylog.over_limit(671, 8) == "exceeds limit (11:11 > 8:00)"
 
 
 def test_eta_text_reads_as_time_left_and_says_nothing_when_it_cannot_tell():
@@ -301,6 +309,111 @@ def test_a_queue_row_marked_skipped_is_passed_over(tmp_path):
     assert (first["id"], first["state"]) == (1, "skipped")
     assert any("SKIPPED" in line and "skipped by user" in line
                for line in harness.log)
+
+
+# ── Channel identity: sidecar + Watch List ───────────────────────────────────
+def test_a_channel_row_stamps_the_folder_with_its_identity(tmp_path):
+    harness = Harness(tmp_path, LIST_PROBE, _entries("A"))
+    harness.runner.run([_row()])
+
+    stamped = read_channel_sidecar(
+        str(tmp_path / "crate" / "YouTube" / "Techno" / "UKF"))
+    assert stamped["channel_id"] == "UC123"
+    assert stamped["display_name"] == "UKF"
+    assert stamped["handle"] == "@UKF"
+    assert stamped["genre"] == "Techno"
+    assert harness.sidecars[0]["platform"] == "YouTube"
+
+
+def test_a_one_off_track_row_stamps_nothing(tmp_path):
+    harness = Harness(tmp_path, TRACK_PROBE, [])
+    harness.runner.run([_row()])
+    assert harness.sidecars == []
+    assert read_channel_sidecar(
+        str(tmp_path / "crate" / "YouTube" / "Techno")) is None
+
+
+def test_a_collection_without_a_canonical_id_stamps_nothing(tmp_path):
+    harness = Harness(tmp_path, {"_type": "playlist", "title": "Mixes"},
+                      _entries("A"))
+    harness.runner.run([_row()])
+    assert harness.sidecars == []
+
+
+def test_a_channel_row_is_auto_added_to_the_watch_list(tmp_path):
+    harness = Harness(tmp_path, LIST_PROBE, _entries("A"))
+    harness.runner.run([_row()])
+
+    tracked = harness.db.get_all_watchlist_channels()
+    assert len(tracked) == 1
+    assert tracked[0]["display_name"] == "UKF"
+    assert tracked[0]["channel_id"] == "UC123"
+    assert tracked[0]["genre"] == "Techno"
+    assert tracked[0]["auto_added"] == 1
+
+
+def test_auto_add_is_off_when_the_setting_is_off(tmp_path):
+    harness = Harness(tmp_path, LIST_PROBE, _entries("A"))
+    harness.settings.set("auto_add_to_watchlist", False)
+    harness.runner.run([_row()])
+    assert harness.db.get_all_watchlist_channels() == []
+
+
+def test_a_one_off_track_is_never_auto_added(tmp_path):
+    harness = Harness(tmp_path, TRACK_PROBE, [])
+    harness.runner.run([_row()])
+    assert harness.db.get_all_watchlist_channels() == []
+
+
+def test_an_already_tracked_channel_is_backfilled_not_duplicated(tmp_path):
+    harness = Harness(tmp_path, LIST_PROBE, _entries("A"))
+    harness.db.add_watchlist_channel(
+        url="https://youtube.com/watch?v=aaa", display_name="",
+        platform="YouTube", genre="Techno")
+
+    harness.runner.run([_row()])
+
+    tracked = harness.db.get_all_watchlist_channels()
+    assert len(tracked) == 1
+    assert tracked[0]["channel_id"] == "UC123"     # backfilled
+    assert tracked[0]["display_name"] == "UKF"     # backfilled
+
+
+def test_a_watch_list_run_is_not_auto_added_again(tmp_path):
+    harness = Harness(tmp_path, LIST_PROBE, _entries("A"))
+    harness.runner.run([_row(channel_name="UKF")])
+    assert harness.db.get_all_watchlist_channels() == []
+
+
+def test_a_nameless_collection_never_becomes_a_blank_card(tmp_path):
+    # Nothing to name it by — not even a channel id, which derive_collection_name
+    # would otherwise fall back to.
+    harness = Harness(tmp_path, {"_type": "playlist"}, _entries("A"))
+    harness.runner.run([_row()])
+    assert harness.db.get_all_watchlist_channels() == []
+
+
+def test_the_watch_list_total_is_recounted_after_the_row_downloads(tmp_path):
+    harness = Harness(tmp_path, LIST_PROBE, _entries("A"))
+    recounted = []
+    real = harness.db.refresh_watchlist_total
+    harness.db.refresh_watchlist_total = lambda wl_id: (recounted.append(wl_id),
+                                                        real(wl_id))[1]
+
+    harness.runner.run([_row()])
+
+    assert recounted == [harness.db.get_all_watchlist_channels()[0]["id"]]
+
+
+def test_nothing_is_recounted_when_the_row_downloaded_nothing(tmp_path):
+    harness = Harness(tmp_path, LIST_PROBE, _entries("A"))
+    harness.outcomes["A"] = Outcome(kind="failed", reason="rate-limited",
+                                    title="A")
+    recounted = []
+    harness.db.refresh_watchlist_total = recounted.append
+
+    harness.runner.run([_row()])
+    assert recounted == []
 
 
 # ── Failures ─────────────────────────────────────────────────────────────────
@@ -463,7 +576,7 @@ def test_the_downloader_logs_through_the_injected_log_line(tmp_path):
 
 
 def test_skipped_line_matches_the_monolith_column_widths():
-    assert skipped_line("T", "C:/x.mp3", "already on disk") == (
+    assert activitylog.skipped("T", "C:/x.mp3", "already on disk") == (
         "SKIPPED     | Reason: already on disk     | Title: T | "
         "File: C:/x.mp3")
 
