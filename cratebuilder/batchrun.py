@@ -1,87 +1,24 @@
 """Headless batch orchestration: queue rows in, download progress events out."""
-import os
 import random
 import threading
 import time
-from dataclasses import dataclass, field
 
+from cratebuilder import activitylog
 from cratebuilder import artwork as cb_artwork
 from cratebuilder import tagging, util
+# TrackSpec and entry_url are re-exported: they are this module's input shape,
+# and every later caller reaches them through cratebuilder.batchrun.
+from cratebuilder.batchresolve import (ResolvedRow, RowResolver,  # noqa: F401
+                                       TrackSpec, entry_url,
+                                       fetch_failure_reason)
 from cratebuilder.crate import (ChannelCrate, CrateLayout, SkipDecision,
                                 SkipMode, is_unreleased_entry, skip_decision)
 from cratebuilder.download import (SkipOrCancel, TrackDownloader, TrackPlan,
                                    download_with)
-from cratebuilder.sidecar import channel_url_from_id
-from cratebuilder.ydl import (YdlOffline, YdlPermanent, YdlSession,
-                              YdlUnclassified)
-
-# ── Platform facts ────────────────────────────────────────────────────────────
-# The three per-platform values the download path reads out of the monolith's
-# PLATFORMS table. Restated here rather than imported: PLATFORMS carries Tk
-# colours and widget copy, and this package may not import the monolith.
-PLATFORM_SUBDIR = {"YouTube": "YouTube", "SoundCloud": "SoundCloud"}
-ITEM_WORD = {"YouTube": "video", "SoundCloud": "track"}
-
-FETCH_FAILURE_KIND = {
-    YdlPermanent: "permanent",
-    YdlOffline: "offline",
-    YdlUnclassified: "unknown",
-}
-
-# One User-Agent is chosen per batch session, and the Auto throttle presets are
-# keyed by the exact label the Settings dropdown stores.
-USER_AGENT_POOL = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.4; rv:125.0) Gecko/20100101 Firefox/125.0",
-    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
-]
-
-THROTTLE_PRESETS = {
-    "Light  (1–5 s)":       (1, 5),
-    "Moderate  (3–8 s)":    (3, 8),
-    "Aggressive  (5–15 s)": (5, 15),
-}
-
-
-@dataclass(frozen=True)
-class TrackSpec:
-    """One resolved track: everything the per-track loop needs without asking
-    the network again.
-
-    *entry* is the raw yt-dlp flat entry the limiter, the premiere check and
-    ChannelCrate ownership all read, so a caller that already holds resolved
-    entries (the Watch List) can feed run_tracks directly."""
-    row_id: object
-    url: str
-    title: str
-    save_dir: str
-    genre: str
-    platform: str
-    entry: dict = field(default_factory=dict)
-    channel_name: str = ""
-    channel_url: str = ""
-    channel_id: str | None = None
-    suppress_channel_url: str = ""
+from cratebuilder.ydl import YdlSession
 
 
 # ── Pure helpers ──────────────────────────────────────────────────────────────
-def entry_url(entry, platform):
-    """The watch URL for one flat-playlist entry — the monolith's per-platform
-    url_builder, headless."""
-    url = entry.get("url") or entry.get("webpage_url") or ""
-    if url:
-        return url
-    video_id = entry.get("id") or ""
-    if platform == "SoundCloud":
-        return video_id
-    return f"https://www.youtube.com/watch?v={video_id}"
-
-
 def resolve_sleep_range(policy):
     """The (min, max) throttle seconds a DownloadPolicy asks for, or None when
     throttling is off. Auto reads the preset table; Manual reads the pair, with
@@ -89,7 +26,7 @@ def resolve_sleep_range(policy):
     if not policy.sleep_enabled:
         return None
     if policy.sleep_mode == "Auto":
-        return THROTTLE_PRESETS.get(policy.sleep_preset, (1, 5))
+        return util.THROTTLE_PRESETS.get(policy.sleep_preset, (1, 5))
     s_min, s_max = int(policy.sleep_min), int(policy.sleep_max)
     return (s_min, max(s_min, s_max))
 
@@ -98,14 +35,7 @@ def pick_session_ua(policy, rng=None):
     """One User-Agent for a whole batch session, or None when rotation is off."""
     if not policy.rotate_ua:
         return None
-    return (rng or random).choice(USER_AGENT_POOL)
-
-
-def duration_reason(duration_sec, limit_minutes):
-    """The activity-log reason for a track the Time Limiter turned away."""
-    total = int(duration_sec)
-    return (f"exceeds limit ({total // 60}:{total % 60:02d} > "
-            f"{limit_minutes}:00)")
+    return (rng or random).choice(util.USER_AGENT_POOL)
 
 
 def eta_text(durations, remaining):
@@ -117,37 +47,6 @@ def eta_text(durations, remaining):
     if seconds < 90:
         return f"~{max(1, int(round(seconds)))} sec left"
     return f"~{max(1, int(round(seconds / 60)))} min left"
-
-
-def downloaded_line(title, path, url, platform, genre, quality):
-    genre_str = genre if genre and genre != CrateLayout.NO_GENRE_VALUE else "—"
-    return (f"DOWNLOADED  | Platform: {platform:<11}| "
-            f"Genre: {genre_str:<18}| Title: {title} | File: {path} | "
-            f"URL: {url} | Quality: {quality}")
-
-
-def skipped_line(title, path, reason):
-    return f"SKIPPED     | Reason: {reason:<20}| Title: {title} | File: {path}"
-
-
-def error_line(title, url, error):
-    return f"ERROR       | Title: {title} | URL: {url} | Error: {error}"
-
-
-def separator_line(label=""):
-    if not label:
-        return "═" * 80
-    pad = max(0, 74 - len(label))
-    return f"{'═' * (pad // 2)}  {label}  {'═' * (pad - pad // 2)}"
-
-
-def _raw_thumbnail(audio_path):
-    """The image yt-dlp wrote beside *audio_path*, or None."""
-    stem = os.path.splitext(audio_path or "")[0]
-    for ext in (".webp", ".jpg", ".jpeg", ".png"):
-        if stem and os.path.isfile(stem + ext):
-            return stem + ext
-    return None
 
 
 # ── Sink ──────────────────────────────────────────────────────────────────────
@@ -203,11 +102,11 @@ class BatchRunner:
     then the download), the same counters, the same activity-log lines — with
     every UI effect replaced by an event.
 
-    Two entry points, deliberately. `run(rows)` probes each queue row, expands a
-    playlist or channel into entries and hands the resolved tracks to
-    `run_tracks`, which is the whole per-track loop and nothing else. A caller
-    that already holds resolved entries (the Watch List, which scanned them
-    minutes ago) calls `run_tracks` directly and never probes.
+    Two entry points, deliberately. `run(rows)` hands each queue row to a
+    RowResolver and passes the tracks that come back to `run_tracks`, which is
+    the whole per-track loop and nothing else. A caller that already holds
+    resolved entries (the Watch List, which scanned them minutes ago) calls
+    `run_tracks` directly and never probes.
 
     Controls are set from whatever thread the RPC arrives on while `run` is on
     the job thread: pause/cancel are Events and the per-row skip set is
@@ -222,11 +121,13 @@ class BatchRunner:
     def __init__(self, settings, db, emit, *, session_factory=YdlSession,
                  downloader_factory=TrackDownloader, ffmpeg_dir=None,
                  log_line=None, counts=None, flush=None, runner=None,
-                 now=time.monotonic):
+                 write_sidecar=None, now=time.monotonic):
         self._settings = settings
         self._db = db
         self._emit = emit
         self._session_factory = session_factory
+        self._resolver = RowResolver(settings, db, session_factory,
+                                     write_sidecar=write_sidecar)
         self._downloader_factory = downloader_factory
         self._ffmpeg_dir = ffmpeg_dir
         self._log_line = log_line or (lambda text: None)
@@ -299,7 +200,7 @@ class BatchRunner:
         self._session_ua = pick_session_ua(self._settings.download_policy())
         seen = len(rows)
         self._total = sum(1 for r in rows if r.get("state") != "skipped")
-        self._log_line(separator_line(
+        self._log_line(activitylog.separator(
             f"DOWNLOAD STARTED  —  {seen} URL{'s' if seen != 1 else ''}"))
         self._overall()
         index = 0
@@ -321,79 +222,41 @@ class BatchRunner:
         title = row.get("title") or url
         if row.get("state") == "skipped" or self._skip_requested(row_id):
             self._total -= 1
-            self._log_line(skipped_line(title, "", "skipped by user"))
+            self._log_line(activitylog.skipped(title, "", "skipped by user"))
             self._row(row, index, "skipped", "skipped")
             return
 
         self._row(row, index, "active", "fetching…")
         try:
-            specs = self._resolve(row, url)
+            resolved = self._resolver.resolve(row)
         except Exception as exc:
-            reason = util.describe_fetch_failure(
-                _fetch_failure_kind(exc), str(exc))
+            # A metadata failure is per-URL (bot check, age gate, removed,
+            # region block) — this row fails and the batch carries on.
+            reason = fetch_failure_reason(exc)
             self._errors += 1
             self._done += 1
-            self._log_line(error_line(title, url, reason))
+            self._log_line(activitylog.error(title, url, reason))
             self._overall()
             self._row(row, index, "error", reason)
             return
 
-        if not specs:
+        tracks = resolved.tracks
+        if not tracks:
             self._total -= 1
             self._row(row, index, "skipped", "nothing found")
             return
 
-        self._total += len(specs) - 1
-        tally = self.run_tracks(specs, row=row, index=index)
-        self._row(row, index, *_row_verdict(tally, len(specs),
+        self._total += len(tracks) - 1
+        tally = self.run_tracks(tracks, row=row, index=index)
+        if resolved.watchlist_id is not None and tally["downloaded"]:
+            # The card was raised before a single track landed, so the total it
+            # was inserted with predates this run.
+            try:
+                self._db.refresh_watchlist_total(resolved.watchlist_id)
+            except Exception:
+                pass
+        self._row(row, index, *_row_verdict(tally, len(tracks),
                                             self._cancel.is_set()))
-
-    def _resolve(self, row, url):
-        """Probe one row's URL and turn it into TrackSpecs. Raises the typed
-        YdlError a failed probe produced — the caller reports it."""
-        genre = row.get("genre") or CrateLayout.NO_GENRE_VALUE
-        platform = row.get("platform") or util.detect_platform(url)
-        session = self._session()
-        info = session.probe_metadata(url)
-        if not info:
-            raise YdlUnclassified("yt-dlp returned no metadata",
-                                  intent="probe_metadata", target=url)
-        is_collection = info.get("_type") in ("playlist", "channel")
-        channel_id = info.get("channel_id") or ""
-        channel_url = (channel_url_from_id(channel_id)
-                       or info.get("channel_url")
-                       or info.get("uploader_url") or "")
-        if is_collection:
-            entries = [e for e in session.list_channel(url)
-                       if isinstance(e, dict)]
-            collection_name = util.derive_collection_name(info)
-        else:
-            entries = [info]
-            collection_name = ""
-
-        channel_sub = row.get("channel_name") or (collection_name
-                                                  if is_collection else None)
-        save_dir = CrateLayout.channel_dir(
-            self._platform_dir(platform), genre, channel_sub)
-        os.makedirs(save_dir, exist_ok=True)
-
-        word = ITEM_WORD.get(platform, "item")
-        return [
-            TrackSpec(
-                row_id=row.get("id"),
-                url=entry_url(entry, platform),
-                title=entry.get("title") or f"{word.capitalize()} {i + 1}",
-                save_dir=save_dir, genre=genre, platform=platform, entry=entry,
-                channel_name=row.get("channel_name") or collection_name,
-                channel_url=url if is_collection else "",
-                channel_id=channel_id or None,
-                # The downloads row keys on the collection URL; the
-                # permanently-unavailable memory keys on the channel a one-off
-                # track came from. For a collection they agree.
-                suppress_channel_url=url if is_collection else channel_url,
-            )
-            for i, entry in enumerate(entries)
-        ]
 
     # ── The per-track loop ────────────────────────────────────────────────────
     def run_tracks(self, tracks, *, skip_mode=None, ignore_skip_existing=False,
@@ -454,7 +317,7 @@ class BatchRunner:
             limit_sec = int(policy.limit_minutes or 0) * 60
             if duration and limit_sec and duration > limit_sec:
                 return ("skipped",
-                        duration_reason(duration, policy.limit_minutes), "")
+                        activitylog.over_limit(duration, policy.limit_minutes), "")
         if is_unreleased_entry(entry):
             # A premiere or in-progress stream: not a failure and not a skip,
             # so the next run after it airs picks it up.
@@ -484,8 +347,6 @@ class BatchRunner:
         """Build the downloader and the plan for one track and run it. Both are
         built per TRACK, not per row, so a mid-batch setting change lands."""
         crate = self._crate(spec)
-        cover_mode = (policy.cover_art_mode if policy.cover_art_enabled
-                      else "off")
         downloader = self._downloader_factory(
             runner=self._runner,
             db=self._db,
@@ -515,7 +376,8 @@ class BatchRunner:
             expected_path=CrateLayout.track_path(spec.save_dir, spec.title),
             session_ua=self._session_ua,
             sleep_range=resolve_sleep_range(policy),
-            cover_art=(cover_mode != "off" and cb_artwork.artwork_available()),
+            cover_art=(self._cover_art_mode() != "off"
+                       and cb_artwork.artwork_available()),
             target_kbps=(str(policy.bitrate_quality).split() or ["192"])[0],
             suppress_channel_url=spec.suppress_channel_url)
         return downloader.run(plan, _EventSink(self._emit, spec.title))
@@ -533,7 +395,7 @@ class BatchRunner:
             tally["skipped"] += 1
             self._skipped += 1
             state, detail = "skipped", reason
-            self._log_line(skipped_line(title, path, reason))
+            self._log_line(activitylog.skipped(title, path, reason))
             # Backfill tags on the file we already own, so the source URL is
             # recoverable even for tracks grabbed before tagging existed.
             if path:
@@ -572,7 +434,7 @@ class BatchRunner:
         cancelled = self._cancel.is_set()
         counts = {"downloaded": self._downloaded, "skipped": self._skipped,
                   "errors": self._errors}
-        self._log_line(separator_line(
+        self._log_line(activitylog.separator(
             "CANCELLED BY USER" if cancelled else
             f"BATCH COMPLETE  —  {self._downloaded} downloaded, "
             f"{self._skipped} skipped, {self._errors} failed"))
@@ -591,10 +453,6 @@ class BatchRunner:
         right now — built per operation, like every other session in the app."""
         return self._session_factory(cookies=self._settings.cookie_config())
 
-    def _platform_dir(self, platform):
-        return os.path.join(self._settings.get("base_dir"),
-                            PLATFORM_SUBDIR.get(platform, platform))
-
     def _crate(self, spec):
         """The channel folder's crate, indexed once per folder per batch."""
         crate = self._crates.get(spec.save_dir)
@@ -606,56 +464,31 @@ class BatchRunner:
         return crate
 
     def _tag(self, path, title, url, genre=None):
-        """Stamp title / source URL / genre onto a track. Never raises: a tag
-        failure must not fail a download."""
-        no_genre = CrateLayout.NO_GENRE_VALUE
-        try:
-            tagging.write_track_tags_any(
-                path, title=title, source_url=url,
-                genre=None if (genre or no_genre) == no_genre else genre)
-        except Exception:
-            pass
+        return tagging.tag_track(path, title=title, source_url=url,
+                                 genre=genre)
 
     def _harvest_art(self, audio_path, video_id, title, source_url=None,
                      genre=None):
-        """Turn the thumbnail yt-dlp just wrote into cover art: the archival
-        `.artwork/` sidecar plus the embedded front-cover frame. Returns
-        (artwork_path, embedded, final_audio_path); never raises."""
+        """The TrackDownloader's cover-art hook, carrying the user's current
+        cover-art setting into artwork.harvest_cover_art."""
+        return cb_artwork.harvest_cover_art(
+            audio_path, video_id, mode=self._cover_art_mode(),
+            ffmpeg_dir=self._ffmpeg_dir,
+            retag=lambda p: self._tag(p, title, source_url, genre=genre))
+
+    def _cover_art_mode(self):
+        """The effective mode the download path acts on: "off" when the
+        cover-art checkbox is clear, otherwise the chosen formatting."""
         policy = self._settings.download_policy()
-        mode = policy.cover_art_mode if policy.cover_art_enabled else "off"
-        raw = _raw_thumbnail(audio_path)
-        if mode == "off" or not raw or not cb_artwork.artwork_available():
-            return None, False, audio_path
-        try:
-            art_dir = cb_artwork.thumbnail_dir(os.path.dirname(audio_path))
-            art_path = art_dir and cb_artwork.ingest_thumbnail(
-                raw, art_dir, video_id, mode)
-            if not art_path:
-                return None, False, audio_path
-            final_path, embedded = cb_artwork.embed_cover_any(
-                audio_path, art_path, self._ffmpeg_dir)
-            if final_path != audio_path:
-                # The Ogg container does not inherit the WebM's tags.
-                self._tag(final_path, title, source_url, genre=genre)
-            return art_path, embedded, final_path
-        except Exception:
-            return None, False, audio_path
+        return policy.cover_art_mode if policy.cover_art_enabled else "off"
 
     def _log_download(self, title, path, url, platform, genre,
                       quality="192 kbps MP3"):
-        self._log_line(downloaded_line(title, path, url, platform, genre,
+        self._log_line(activitylog.downloaded(title, path, url, platform, genre,
                                        quality))
 
     def _log_error(self, title, url, error):
-        self._log_line(error_line(title, url, error))
-
-
-def _fetch_failure_kind(exc):
-    """The FETCH_FAILURE_TEXT key for a typed read-only failure."""
-    for error_type, kind in FETCH_FAILURE_KIND.items():
-        if isinstance(exc, error_type):
-            return kind
-    return "unknown"
+        self._log_line(activitylog.error(title, url, error))
 
 
 def _row_verdict(tally, track_count, cancelled=False):
