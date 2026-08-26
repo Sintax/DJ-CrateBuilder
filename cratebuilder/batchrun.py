@@ -13,8 +13,8 @@ from cratebuilder.batchresolve import (ResolvedRow, RowResolver,  # noqa: F401
                                        fetch_failure_reason)
 from cratebuilder.crate import (ChannelCrate, CrateLayout, SkipDecision,
                                 SkipMode, is_unreleased_entry, skip_decision)
-from cratebuilder.download import (SkipOrCancel, TrackDownloader, TrackPlan,
-                                   download_with)
+from cratebuilder.download import (REASON_WIDTH, SkipOrCancel, TrackDownloader,
+                                   TrackPlan, download_with)
 from cratebuilder.ydl import YdlSession
 
 
@@ -140,14 +140,10 @@ class BatchRunner:
         self._lock = threading.Lock()
         self._skips = set()
         self._crates = {}
-        self._durations = []
+        self._counted = set()
         self._session_ua = None
-        self._total = 0
-        self._done = 0
-        self._downloaded = 0
-        self._skipped = 0
-        self._errors = 0
-        self._deferred = 0
+        self._batch_open = False
+        self._reset(0)
 
     # ── Controls ──────────────────────────────────────────────────────────────
     def pause(self):
@@ -196,24 +192,45 @@ class BatchRunner:
         *rows* may GROW while this runs — the service appends to the same list
         when a row is added mid-batch — so the length is read live rather than
         captured. It never shrinks: the service refuses remove/move/clear for
-        the duration."""
-        self._session_ua = pick_session_ua(self._settings.download_policy())
-        seen = len(rows)
-        self._total = sum(1 for r in rows if r.get("state") != "skipped")
+        the duration.
+
+        Always ends in a terminal event. The loop runs inside one guard because
+        a raise anywhere in it would otherwise leave the frontend showing a
+        batch that is running and a Cancel button that answers "no download is
+        running" — the tkinter worker wraps itself the same way."""
+        self._reset(0)
+        self._batch_open = True
+        try:
+            self._loop(rows)
+        except Exception as exc:
+            self._fatal(exc)
+        finally:
+            self._batch_open = False
+        return self._finish()
+
+    def _loop(self, rows):
+        seen = 0
         self._log_line(activitylog.separator(
-            f"DOWNLOAD STARTED  —  {seen} URL{'s' if seen != 1 else ''}"))
-        self._overall()
+            f"DOWNLOAD STARTED  —  {len(rows)} "
+            f"URL{'s' if len(rows) != 1 else ''}"))
         index = 0
         while not self._cancel.is_set():
-            if len(rows) > seen:
-                self._total += sum(1 for r in rows[seen:]
-                                   if r.get("state") != "skipped")
-                seen = len(rows)
+            while seen < len(rows):
+                self._admit(rows[seen])
+                seen += 1
+            if index == 0:
+                self._overall()
             if index >= len(rows):
                 break
             self._run_row(rows[index], index)
             index += 1
-        return self._finish()
+
+    def _fatal(self, exc):
+        """The batch driver's last guard: an unexpected raise is one error and
+        an activity-log line, never a batch that ends without saying so."""
+        reason = util.condense_error(str(exc), REASON_WIDTH)
+        self._errors += 1
+        self._log_line(activitylog.error("Batch", "", f"{reason}: {exc}"))
 
     def _run_row(self, row, index):
         """One queue row: probe it, expand it, download it."""
@@ -221,8 +238,11 @@ class BatchRunner:
         url = (row.get("url") or "").strip()
         title = row.get("title") or url
         if row.get("state") == "skipped" or self._skip_requested(row_id):
-            self._total -= 1
+            # Only a row that was counted gives a count back: one already marked
+            # skipped when the batch started never entered the total at all.
+            self._withdraw(row)
             self._log_line(activitylog.skipped(title, "", "skipped by user"))
+            self._overall()
             self._row(row, index, "skipped", "skipped")
             return
 
@@ -242,11 +262,13 @@ class BatchRunner:
 
         tracks = resolved.tracks
         if not tracks:
-            self._total -= 1
+            self._withdraw(row)
+            self._overall()
             self._row(row, index, "skipped", "nothing found")
             return
 
-        self._total += len(tracks) - 1
+        self._admit(row)                    # a no-op unless the row grew in
+        self._total += len(tracks) - 1      # after the batch started
         tally = self.run_tracks(tracks, row=row, index=index)
         if resolved.watchlist_id is not None and tally["downloaded"]:
             # The card was raised before a single track landed, so the total it
@@ -269,12 +291,17 @@ class BatchRunner:
         *row* is the queue row these tracks came from, present only so the
         row's own progress detail can be updated as they settle.
 
+        Called on its own — the Watch List's entry point — this IS the run, so
+        it seeds the overall total with its own tracks and zeroes the counters
+        first. Called from `run`, it is one row of a longer batch and leaves
+        both alone.
+
         The policy is re-read per track, exactly as the monolith re-read its Tk
         variables, so a setting changed mid-batch reaches the very next track.
         """
         tracks = list(tracks)
-        if self._session_ua is None:
-            self._session_ua = pick_session_ua(self._settings.download_policy())
+        if not self._batch_open:
+            self._reset(len(tracks))
         tally = {"downloaded": 0, "skipped": 0, "errors": 0, "deferred": 0,
                  "stopped": False, "state": None, "detail": ""}
         for done_in_row, spec in enumerate(tracks):
@@ -411,6 +438,36 @@ class BatchRunner:
             self._errors += 1
             state, detail = "error", reason
         tally["state"], tally["detail"] = state, detail
+
+    # ── Bookkeeping ───────────────────────────────────────────────────────────
+    def _reset(self, total):
+        """Zero the per-run counters and seed the total.
+
+        Every run starts from nothing, so a runner asked for a second run — or
+        a second `run_tracks`, which is how the Watch List downloads one channel
+        after another — never reports the previous run's tallies again."""
+        self._total = total
+        self._done = 0
+        self._downloaded = self._skipped = self._errors = self._deferred = 0
+        self._durations = []
+        self._counted = set()
+        self._session_ua = pick_session_ua(self._settings.download_policy())
+
+    def _admit(self, row):
+        """Count one queue row toward the batch total, once. A row already
+        marked skipped is never counted — there is no work in it to report."""
+        row_id = row.get("id")
+        if row.get("state") == "skipped" or row_id in self._counted:
+            return
+        self._counted.add(row_id)
+        self._total += 1
+
+    def _withdraw(self, row):
+        """Give back the count of a row that turned out to hold no work."""
+        row_id = row.get("id")
+        if row_id in self._counted:
+            self._counted.discard(row_id)
+            self._total -= 1
 
     # ── Events ────────────────────────────────────────────────────────────────
     def _row(self, row, index, state, detail):
