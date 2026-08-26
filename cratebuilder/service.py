@@ -5,8 +5,10 @@ import os
 import re
 import sys
 import threading
+import time
 
 from cratebuilder import ui_strings, util
+from cratebuilder.batchrun import BatchRunner
 from cratebuilder.crate import CrateLayout
 from cratebuilder.db import DownloadsDatabase
 from cratebuilder.events import Coalescer, EventBus
@@ -14,6 +16,7 @@ from cratebuilder.settings import Settings
 
 MAIN_SCRIPT = "DJ-CrateBuilder_v1.3.py"
 DB_NAME = "cratebuilder.db"
+ACTIVITY_LOG = "activity.log"
 
 LOCAL = "local"
 REMOTE = "remote"
@@ -73,18 +76,21 @@ class CrateBuilderService:
     see the same list.
     """
 
-    def __init__(self, transport=LOCAL, settings=None, db_path=None):
+    def __init__(self, transport=LOCAL, settings=None, db_path=None,
+                 log_path=None):
         if transport not in (LOCAL, REMOTE):
             raise ValueError(f"unknown transport: {transport}")
         self.transport = transport
         self._settings = settings or Settings()
         self._db_path = db_path or os.path.join(app_dir(), DB_NAME)
+        self._log_path = log_path or os.path.join(app_dir(), ACTIVITY_LOG)
         self._lock = threading.Lock()
         self._batch = []
         self._ids = itertools.count(1)
         self.events = EventBus()
         self._emit = Coalescer(self.events)
         self._jobs = {}
+        self._batch_runner = None
 
     # ── events / jobs ─────────────────────────────────────────────────────────
 
@@ -144,6 +150,10 @@ class CrateBuilderService:
                                                     p.get("delta", 0)),
             "batch.clear": lambda p: self.batch_clear(),
             "batch.skip": lambda p: self.batch_skip(p.get("id")),
+            "download.start": lambda p: self.download_start(),
+            "download.pause": lambda p: self.download_pause(),
+            "download.resume": lambda p: self.download_resume(),
+            "download.cancel": lambda p: self.download_cancel(),
             "watchlist.list": lambda p: self.watchlist_list(),
             "db.groups": lambda p: self.db_groups(),
             "fs.pick_folder": lambda p: self.pick_folder(),
@@ -161,12 +171,7 @@ class CrateBuilderService:
             "app": {"name": "DJ-CrateBuilder", **version_info()},
             "host": {"transport": self.transport, "online": True,
                      "app_dir": app_dir()},
-            "counts": {
-                "downloads": library["downloads"],
-                "watchlist": library["watchlist"],
-                "pending_new": library["pending_new"],
-                "genres": len(self.genres()),
-            },
+            "counts": self.counts(library),
             "library": library,
             "batch": self.batch_list(),
             "watchlist": self.watchlist_list(),
@@ -182,6 +187,14 @@ class CrateBuilderService:
                 "filesystem": self.transport == LOCAL,
             },
         }
+
+    def counts(self, library=None):
+        """The four headline numbers the shell's counters show."""
+        library = library if library is not None else self.library_stats()
+        return {"downloads": library["downloads"],
+                "watchlist": library["watchlist"],
+                "pending_new": library["pending_new"],
+                "genres": len(self.genres())}
 
     def ui_strings(self):
         """The shared tooltip registry, so no string is duplicated in JS."""
@@ -302,6 +315,7 @@ class CrateBuilderService:
         return dict(row)
 
     def batch_remove(self, row_id):
+        self._require_idle_queue()
         with self._lock:
             before = len(self._batch)
             self._batch = [r for r in self._batch if r["id"] != row_id]
@@ -311,6 +325,7 @@ class CrateBuilderService:
 
     def batch_move(self, row_id, delta):
         """Move one row up or down; a move past either end is a no-op."""
+        self._require_idle_queue()
         with self._lock:
             index = next((i for i, r in enumerate(self._batch)
                           if r["id"] == row_id), None)
@@ -322,19 +337,101 @@ class CrateBuilderService:
         return self.batch_list()
 
     def batch_clear(self):
+        self._require_idle_queue()
         with self._lock:
             self._batch = []
         return self.batch_list()
 
     def batch_skip(self, row_id):
-        """Mark a row skipped, or un-mark it — the Main tab's per-row toggle."""
+        """Mark a row skipped, or un-mark it — the Main tab's per-row toggle.
+
+        While a batch runs the toggle only goes one way, and it goes through to
+        the runner: a row that is downloading right now is interrupted on the
+        spot, matching the tkinter Skip button.
+        """
+        running = self._batch_runner if self._job_running("batch") else None
         with self._lock:
             for row in self._batch:
                 if row["id"] == row_id:
-                    row["state"] = ("queued" if row["state"] == "skipped"
+                    row["state"] = ("skipped" if running is not None else
+                                    "queued" if row["state"] == "skipped"
                                     else "skipped")
-                    return dict(row)
-        raise CBError("That queue row is no longer in the batch.")
+                    found = dict(row)
+                    break
+            else:
+                raise CBError("That queue row is no longer in the batch.")
+        if running is not None:
+            running.skip_row(row_id)
+        return found
+
+    def _require_idle_queue(self):
+        """The queue is locked while a batch runs — only skip and add work,
+        mirroring the tkinter Main tab."""
+        if self._job_running("batch"):
+            raise CBError("The queue is locked while a download is running. "
+                          "Cancel it first, or skip the row instead.")
+
+    # ── downloads ─────────────────────────────────────────────────────────────
+
+    def download_start(self):
+        """Run the current queue on the batch job thread.
+
+        The runner is handed the LIVE queue list, not a copy: a row added
+        mid-batch has to be picked up, which is what the tkinter Watch List's
+        append-to-running does. Nothing can shrink the list underneath it —
+        remove/move/clear are refused for the duration.
+        """
+        with self._lock:
+            rows = self._batch
+            if not any(r.get("state") != "skipped" for r in rows):
+                raise CBError("Add a link to the queue before starting a "
+                              "download.")
+        runner = BatchRunner(
+            self._settings, self._db_for_write(), self.emit,
+            log_line=self.log_line, counts=self.counts,
+            flush=self._emit.flush)
+        previous = self._batch_runner
+        self._batch_runner = runner
+        try:
+            job_id = self._start_job("batch", runner.run, rows)
+        except CBError:
+            self._batch_runner = previous
+            raise
+        return {"job_id": job_id}
+
+    def download_pause(self):
+        self._running_batch().pause()
+        return {"paused": True}
+
+    def download_resume(self):
+        self._running_batch().resume()
+        return {"paused": False}
+
+    def download_cancel(self):
+        self._running_batch().cancel()
+        return {"cancelled": True}
+
+    def _running_batch(self):
+        runner = self._batch_runner
+        if runner is None or not self._job_running("batch"):
+            raise CBError("No download is running.")
+        return runner
+
+    def _db_for_write(self):
+        """The database a download writes its rows into — created on demand,
+        unlike the read-only probes, which never bring one into existence."""
+        return DownloadsDatabase(self._db_path)
+
+    def log_line(self, text):
+        """Append one line to activity.log in the app dir, timestamped exactly
+        as the tkinter app's logger writes it. Never raises: a log failure must
+        not fail a download."""
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with open(self._log_path, "a", encoding="utf-8") as handle:
+                handle.write(f"{stamp} | {text}\n")
+        except OSError:
+            pass
 
     # ── crate ─────────────────────────────────────────────────────────────────
 
