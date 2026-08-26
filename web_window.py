@@ -5,6 +5,7 @@ Runs the same bundle a remote browser gets, bound to the local transport — so
 `python web_window.py`; the tkinter app is unaffected and can run beside it.
 """
 
+import json
 import os
 import sys
 
@@ -40,6 +41,24 @@ class JsApi:
             return {"ok": False, "error": f"Unexpected host error: {exc}"}
 
 
+def start_push_bridge(window, service):
+    """Subscribe the window to service.events; unsubscribe when it closes.
+
+    This is what replaces tkinter's after()-polling for the web frontend:
+    a worker thread emits, and the event reaches JS via evaluate_js.
+    """
+    def push(event_type, payload):
+        try:
+            window.evaluate_js(
+                f"window.cbApi && cbApi._push({json.dumps(event_type)}, "
+                f"{json.dumps(payload)})")
+        except Exception:
+            pass                   # window closed mid-push; keep the emitter alive
+
+    unsubscribe = service.events.subscribe(push)
+    window.events.closing += lambda: unsubscribe()
+
+
 def main():
     index = os.path.join(WEB_DIR, "index.html")
     if not os.path.isfile(index):
@@ -53,7 +72,7 @@ def main():
 
     service = CrateBuilderService(transport="local")
     webview.settings["ALLOW_DOWNLOADS"] = True       # Export CSV, log downloads
-    webview.create_window(
+    window = webview.create_window(
         WINDOW_TITLE,
         index + screen,
         js_api=JsApi(service),
@@ -63,7 +82,7 @@ def main():
     )
     # private_mode=False keeps localStorage across restarts, so the database
     # viewer's column widths and order can live client-side.
-    webview.start(private_mode=False)
+    webview.start(lambda: start_push_bridge(window, service), private_mode=False)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,10 @@ import threading
 from cratebuilder import ui_strings, util
 from cratebuilder.crate import CrateLayout
 from cratebuilder.db import DownloadsDatabase
+from cratebuilder.events import Coalescer, EventBus
 from cratebuilder.settings import Settings
+
+JOB_CATEGORIES = ("batch", "watchlist", "maintenance")
 
 MAIN_SCRIPT = "DJ-CrateBuilder_v1.3.py"
 DB_NAME = "cratebuilder.db"
@@ -81,6 +84,36 @@ class CrateBuilderService:
         self._lock = threading.Lock()
         self._batch = []
         self._ids = itertools.count(1)
+        self.events = EventBus()
+        self._emit = Coalescer(self.events)
+        self._jobs = {}
+
+    # ── events / jobs ─────────────────────────────────────────────────────────
+
+    def emit(self, type, payload):
+        self._emit.emit(type, payload)
+
+    def _job_running(self, category):
+        with self._lock:
+            return category in self._jobs
+
+    def _start_job(self, category, target, *args):
+        """Run `target` on a daemon thread; refuse a second job per category."""
+        with self._lock:
+            if category in self._jobs:
+                raise CBError(f"A {category} job is already running.")
+            job_id = next(self._ids)
+            self._jobs[category] = job_id
+
+        def run():
+            try:
+                target(*args)
+            finally:
+                with self._lock:
+                    self._jobs.pop(category, None)
+
+        threading.Thread(target=run, daemon=True).start()
+        return job_id
 
     # ── dispatch ──────────────────────────────────────────────────────────────
 
@@ -139,6 +172,7 @@ class CrateBuilderService:
             "library": library,
             "batch": self.batch_list(),
             "watchlist": self.watchlist_list(),
+            "running": {c: self._job_running(c) for c in JOB_CATEGORIES},
             "settings": self.settings_all(),
             "settings_path": self._settings.path,
             "platform": sys.platform,
