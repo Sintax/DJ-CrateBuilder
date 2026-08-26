@@ -86,7 +86,8 @@ class FakeDownloader:
 class Harness:
     """One runner plus the fakes it was built from."""
 
-    def __init__(self, tmp_path, probe, listing, error=None, settings=None):
+    def __init__(self, tmp_path, probe, listing, error=None, settings=None,
+                 downloader_factory=None):
         self.plans = []
         self.built = []
         self.sidecars = []
@@ -101,7 +102,7 @@ class Harness:
         self.runner = BatchRunner(
             self.settings, self.db, self.emit,
             session_factory=lambda cookies=None: self.session,
-            downloader_factory=self._make_downloader,
+            downloader_factory=downloader_factory or self._make_downloader,
             write_sidecar=self._record_sidecar,
             log_line=self.log.append,
             counts=lambda: {"downloads": 7})
@@ -309,6 +310,101 @@ def test_a_queue_row_marked_skipped_is_passed_over(tmp_path):
     assert (first["id"], first["state"]) == (1, "skipped")
     assert any("SKIPPED" in line and "skipped by user" in line
                for line in harness.log)
+
+
+# ── Overall progress ─────────────────────────────────────────────────────────
+def test_a_row_already_marked_skipped_never_enters_the_total(tmp_path):
+    harness = Harness(tmp_path, TRACK_PROBE, [])
+    harness.runner.run([_row(1, state="skipped"), _row(2), _row(3)])
+
+    frames = harness.emit.of("progress.overall")
+    assert {f["total"] for f in frames} == {2}
+    assert [(f["done"], f["percent"]) for f in frames] == [
+        (0, 0), (0, 0), (1, 50), (2, 100)]
+
+
+def test_a_row_skipped_mid_run_gives_its_count_back(tmp_path):
+    harness = Harness(tmp_path, TRACK_PROBE, [])
+    harness.on_end = lambda plan: harness.runner.skip_row(2)
+
+    harness.runner.run([_row(1), _row(2)])
+
+    last = harness.emit.of("progress.overall")[-1]
+    assert (last["done"], last["total"], last["percent"]) == (1, 1, 100)
+    assert len(harness.titles) == 1
+
+
+def test_a_row_holding_nothing_gives_its_count_back(tmp_path):
+    harness = Harness(tmp_path, LIST_PROBE, [])
+    harness.runner.run([_row(1), _row(2, url="https://youtube.com/watch?v=b")])
+
+    last = harness.emit.of("progress.overall")[-1]
+    assert (last["done"], last["total"]) == (0, 0)
+    assert harness.emit.of("batch.finished")[-1]["downloaded"] == 0
+
+
+# ── The terminal event is guaranteed ─────────────────────────────────────────
+def test_an_unexpected_raise_still_finishes_the_batch(tmp_path):
+    def explode(**kwargs):
+        raise RuntimeError("downloader blew up")
+
+    harness = Harness(tmp_path, TRACK_PROBE, [], downloader_factory=explode)
+    result = harness.runner.run([_row()])
+
+    finished = harness.emit.of("batch.finished")[-1]
+    assert finished == {"downloaded": 0, "skipped": 0, "errors": 1,
+                        "cancelled": False}
+    assert result["errors"] == 1
+    assert harness.emit.of("state.patch")          # counts still refreshed
+    assert any(line.startswith("ERROR") and "downloader blew up" in line
+               for line in harness.log)
+
+
+def test_a_raising_resolver_fails_only_its_own_row(tmp_path):
+    # The per-row guard is the narrower one: a probe failure is not fatal.
+    harness = Harness(tmp_path, TRACK_PROBE, [],
+                      error=YdlPermanent("Video unavailable"))
+    result = harness.runner.run([_row()])
+    assert result["errors"] == 1
+    assert harness.emit.of("batch.finished")[-1]["cancelled"] is False
+
+
+# ── run_tracks owns the run when it is the run ───────────────────────────────
+def _spec(tmp_path, title):
+    return TrackSpec(row_id=None, url=f"https://t/{title}", title=title,
+                     save_dir=str(tmp_path / "crate" / "YouTube" / "Techno"),
+                     genre="Techno", platform="YouTube",
+                     entry={"id": title, "title": title})
+
+
+def test_run_tracks_alone_seeds_the_total_with_its_own_tracks(tmp_path):
+    harness = Harness(tmp_path, {}, [])
+    harness.runner.run_tracks([_spec(tmp_path, t) for t in ("A", "B", "C")])
+
+    frames = harness.emit.of("progress.overall")
+    assert {f["total"] for f in frames} == {3}
+    assert [(f["done"], f["percent"]) for f in frames] == [
+        (1, 33), (2, 66), (3, 100)]
+
+
+def test_two_run_tracks_calls_do_not_accumulate(tmp_path):
+    harness = Harness(tmp_path, {}, [])
+    harness.runner.run_tracks([_spec(tmp_path, "A")])
+    tally = harness.runner.run_tracks([_spec(tmp_path, "B")])
+
+    last = harness.emit.of("progress.overall")[-1]
+    assert (last["done"], last["total"], last["downloaded"]) == (1, 1, 1)
+    assert tally["downloaded"] == 1
+
+
+def test_a_second_batch_on_the_same_runner_starts_from_zero(tmp_path):
+    harness = Harness(tmp_path, TRACK_PROBE, [])
+    harness.runner.run([_row()])
+    harness.runner.run([_row(2)])
+
+    assert harness.emit.of("batch.finished")[-1] == {
+        "downloaded": 1, "skipped": 0, "errors": 0, "cancelled": False}
+    assert harness.emit.of("progress.overall")[-1]["total"] == 1
 
 
 # ── Channel identity: sidecar + Watch List ───────────────────────────────────
