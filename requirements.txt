@@ -3,3 +3,6 @@ pystray>=0.19
 Pillow>=10.0
 send2trash
 mutagen>=1.45
+pywebview>=6.0
+fastapi>=0.110
+uvicorn[standard]>=0.27
