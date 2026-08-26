@@ -5,9 +5,8 @@ import os
 import re
 import sys
 import threading
-import time
 
-from cratebuilder import ui_strings, util
+from cratebuilder import activitylog, ui_strings, util
 from cratebuilder.batchrun import BatchRunner
 from cratebuilder.crate import CrateLayout
 from cratebuilder.db import DownloadsDatabase
@@ -424,14 +423,8 @@ class CrateBuilderService:
 
     def log_line(self, text):
         """Append one line to activity.log in the app dir, timestamped exactly
-        as the tkinter app's logger writes it. Never raises: a log failure must
-        not fail a download."""
-        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        try:
-            with open(self._log_path, "a", encoding="utf-8") as handle:
-                handle.write(f"{stamp} | {text}\n")
-        except OSError:
-            pass
+        as the tkinter app's logger writes it."""
+        return activitylog.append(self._log_path, text)
 
     # ── crate ─────────────────────────────────────────────────────────────────
 
