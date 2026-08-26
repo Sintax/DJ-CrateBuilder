@@ -12,8 +12,6 @@ from cratebuilder.db import DownloadsDatabase
 from cratebuilder.events import Coalescer, EventBus
 from cratebuilder.settings import Settings
 
-JOB_CATEGORIES = ("batch", "watchlist", "maintenance")
-
 MAIN_SCRIPT = "DJ-CrateBuilder_v1.3.py"
 DB_NAME = "cratebuilder.db"
 
@@ -172,7 +170,9 @@ class CrateBuilderService:
             "library": library,
             "batch": self.batch_list(),
             "watchlist": self.watchlist_list(),
-            "running": {c: self._job_running(c) for c in JOB_CATEGORIES},
+            "running": {"batch": self._job_running("batch"),
+                        "watchlist": self._job_running("watchlist"),
+                        "maintenance": self._job_running("maintenance")},
             "settings": self.settings_all(),
             "settings_path": self._settings.path,
             "platform": sys.platform,
