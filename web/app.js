@@ -1,0 +1,547 @@
+/* web/app.js — screens, wiring and the tooltip engine.
+   Every host call goes through cbApi; nothing here knows the transport. */
+
+(function () {
+  'use strict';
+
+  const $ = (sel, root) => (root || document).querySelector(sel);
+  const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+
+  let TOOLTIPS = {};
+  let SETTINGS_KEYS = [];
+  let state = null;
+
+  /* ── tooltips ───────────────────────────────────────────────────────────
+     theme.css styles a hover-only mockup; the contract requires focus,
+     Escape and aria-describedby, so the live behaviour is driven here. */
+  const tip = { el: null, timer: null, host: null };
+
+  function showTip(host, text) {
+    if (!text) return;
+    hideTip();
+    const el = document.createElement('div');
+    el.className = 'cb-tip';
+    el.setAttribute('role', 'tooltip');
+    el.id = 'cb-tip-live';
+    el.textContent = text;
+    document.body.appendChild(el);
+
+    const r = host.getBoundingClientRect();
+    const box = el.getBoundingClientRect();
+    let left = r.left;
+    let top = r.bottom + 7;
+    if (left + box.width > innerWidth - 10) left = innerWidth - box.width - 10;
+    if (top + box.height > innerHeight - 10) top = r.top - box.height - 7;
+    el.style.left = Math.max(10, left) + 'px';
+    el.style.top = Math.max(10, top) + 'px';
+
+    host.setAttribute('aria-describedby', el.id);
+    tip.el = el;
+    tip.host = host;
+  }
+
+  function hideTip() {
+    if (tip.el) tip.el.remove();
+    if (tip.host) tip.host.removeAttribute('aria-describedby');
+    tip.el = null;
+    tip.host = null;
+  }
+
+  function tipText(host) {
+    const key = host.getAttribute('data-tt');
+    return host.getAttribute('data-tt-text') || (key ? TOOLTIPS[key] : '') || '';
+  }
+
+  function bindTips(root) {
+    $$('[data-tt],[data-tt-text]', root).forEach((host) => {
+      if (host.__tipBound) return;
+      host.__tipBound = true;
+      host.addEventListener('mouseenter', () => {
+        clearTimeout(tip.timer);
+        tip.timer = setTimeout(() => showTip(host, tipText(host)), 350);
+      });
+      host.addEventListener('mouseleave', () => { clearTimeout(tip.timer); hideTip(); });
+      host.addEventListener('focus', () => showTip(host, tipText(host)));
+      host.addEventListener('blur', hideTip);
+    });
+  }
+
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideTip(); });
+  addEventListener('scroll', hideTip, true);
+
+  /* ── toast ─────────────────────────────────────────────────────────────── */
+  let toastTimer = null;
+  function toast(message, isError) {
+    const el = $('#toast');
+    el.textContent = message;
+    el.classList.toggle('is-err', !!isError);
+    el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.hidden = true; }, 4200);
+  }
+
+  async function call(method, params) {
+    try {
+      return await cbApi.call(method, params);
+    } catch (err) {
+      toast(err.userFacing ? err.message : 'The host could not complete that.', true);
+      throw err;
+    }
+  }
+
+  /* ── navigation ────────────────────────────────────────────────────────── */
+  const SCREENS = ['overview', 'downloads', 'watchlist', 'settings'];
+
+  function show(name) {
+    if (!SCREENS.includes(name)) name = 'overview';
+    $$('.cb-screen').forEach((s) => s.classList.toggle('is-on', s.id === 'screen-' + name));
+    $$('.cb-nav').forEach((a) => a.classList.toggle('is-on', a.dataset.screen === name));
+    $('.cb-main').scrollTop = 0;
+    if (location.hash.slice(1) !== name) location.hash = name;
+  }
+
+  /* The nav is real anchors, so routing is the hash — that keeps deep links
+     working and means the back gesture behaves in both mounts. */
+  addEventListener('hashchange', () => show(location.hash.slice(1)));
+
+  /* ── rendering ─────────────────────────────────────────────────────────── */
+  const num = (n) => Number(n || 0).toLocaleString();
+
+  /* Scan timestamps are epoch seconds on the host; show the same relative
+     phrasing the desktop cards use rather than a raw number. */
+  function fmtWhen(ts) {
+    const secs = Number(ts);
+    if (!secs) return 'never';
+    const ago = Math.floor(Date.now() / 1000 - secs);
+    if (ago < 60) return 'just now';
+    if (ago < 3600) return `${Math.floor(ago / 60)} min ago`;
+    if (ago < 86400) return `${Math.floor(ago / 3600)} h ago`;
+    return new Date(secs * 1000).toLocaleDateString();
+  }
+
+  function renderShell() {
+    const app = state.app;
+    const host = state.host;
+    $('#mount-tag').textContent = host.transport === 'local' ? 'Local' : 'Remote';
+    $('#host-dot').classList.toggle('is-on', !!host.online);
+    $('#host-label').textContent = host.online
+      ? (host.transport === 'local' ? 'host · this machine' : 'host · paired')
+      : 'host offline';
+    $('#host-version').textContent = app.version ? `v${app.version} · build ${app.build}` : '';
+
+    const pending = state.counts.pending_new || 0;
+    const badge = $('#nav-count');
+    badge.textContent = pending;
+    badge.hidden = pending === 0;
+  }
+
+  function renderOverview() {
+    const c = state.counts;
+    $('#ov-library').innerHTML =
+      `Library <span class="cb-mono">${num(c.downloads)}</span> tracks · ` +
+      `<span class="cb-mono">${num(c.genres)}</span> genres · ` +
+      `<span class="cb-mono">${num(c.watchlist)}</span> channels`;
+    $('#ov-new').textContent = num(c.pending_new);
+    $('#ov-new-sub').textContent =
+      `new tracks across ${num(c.watchlist)} channel${c.watchlist === 1 ? '' : 's'}`;
+    $('#ov-tracks').textContent = num(c.downloads);
+    $('#ov-dbpath').textContent = state.library.path || '';
+  }
+
+  function renderGenres() {
+    const sel = $('#dl-genre');
+    const current = sel.value;
+    sel.innerHTML = '';
+    const list = state.genres.length ? state.genres : ['(none)'];
+    list.forEach((g) => {
+      const opt = document.createElement('option');
+      opt.value = g;
+      opt.textContent = g;
+      sel.appendChild(opt);
+    });
+    if (current && list.includes(current)) sel.value = current;
+  }
+
+  function renderBatch() {
+    const rows = state.batch || [];
+    $('#dl-count').textContent = `${rows.length} URL${rows.length === 1 ? '' : 's'}`;
+    const host = $('#dl-rows');
+    host.innerHTML = '';
+
+    if (!rows.length) {
+      const empty = document.createElement('div');
+      empty.className = 'cb-mut cb-mono';
+      empty.style.cssText = 'font-size:12px;padding:8px 0';
+      empty.textContent = "No URLs in batch — paste a link above and press '+ Add to Batch'";
+      host.appendChild(empty);
+      $('#dl-start').disabled = true;
+      return;
+    }
+    $('#dl-start').disabled = false;
+
+    rows.forEach((row, i) => {
+      const el = document.createElement('div');
+      el.className = 'cb-qrow' + (row.state === 'skipped' ? ' is-skipped' : '');
+      el.innerHTML =
+        `<span class="cb-mut cb-mono cb-qrow__n">${i + 1}</span>` +
+        `<span class="cb-qrow__url"></span>` +
+        `<span class="cb-tag cb-tag--grey"></span>`;
+      $('.cb-qrow__url', el).textContent = row.url;
+      $('.cb-tag', el).textContent = row.genre;
+
+      [['⏭', 'main.row_skip', () => call('batch.skip', { id: row.id })],
+       ['▲', 'main.row_up', () => call('batch.move', { id: row.id, delta: -1 })],
+       ['▼', 'main.row_down', () => call('batch.move', { id: row.id, delta: 1 })],
+       ['✕', 'main.row_remove', () => call('batch.remove', { id: row.id })],
+      ].forEach(([label, ttKey, action]) => {
+        const b = document.createElement('button');
+        b.className = 'cb-btn cb-btn--quiet cb-btn--sm cb-icon';
+        b.textContent = label;
+        b.setAttribute('data-tt', ttKey);
+        b.addEventListener('click', async () => {
+          await action();
+          state.batch = await call('batch.list');
+          renderBatch();
+        });
+        el.appendChild(b);
+      });
+      host.appendChild(el);
+    });
+    bindTips(host);
+  }
+
+  function renderWatchlist() {
+    const rows = state.watchlist || [];
+    const pending = state.counts.pending_new || 0;
+    $('#wl-summary').innerHTML =
+      `<span class="cb-mono">${num(rows.length)}</span> channels · ` +
+      `<span class="cb-mono">${num(pending)}</span> new`;
+    $('#wl-dl-all').textContent = `⬇ Download All New (${num(pending)})`;
+
+    const host = $('#wl-cards');
+    host.innerHTML = '';
+    if (!rows.length) {
+      host.innerHTML =
+        '<div class="cb-card cb-pad"><span class="cb-mut">No channels tracked yet — ' +
+        'add one to have new uploads found automatically.</span></div>';
+      return;
+    }
+
+    rows.forEach((row) => {
+      const name = row.name;
+      const newCount = row.new_count;
+      const unresolved = row.unresolved;
+
+      const card = document.createElement('div');
+      card.className = 'cb-card';
+      card.style.cssText = 'padding:14px 16px;display:flex;flex-direction:column;gap:8px';
+
+      const head = document.createElement('div');
+      head.className = 'cb-row';
+      head.style.gap = '9px';
+      head.innerHTML =
+        `<span style="font-weight:600;font-size:14.5px;color:var(--cb-text)"></span>` +
+        `<span class="cb-tag cb-tag--grey"></span>` +
+        `<span class="cb-tag"></span>` +
+        (unresolved ? '<span class="cb-tag cb-tag--attn">Link unresolved</span>' : '') +
+        `<span class="cb-mono" style="margin-left:auto;color:var(--cb-line);font-size:12.5px;font-weight:500">${newCount} new</span>`;
+      head.children[0].textContent = name;
+      head.children[1].textContent = row.platform || '—';
+      head.children[2].textContent = row.genre || '(none)';
+      card.appendChild(head);
+
+      const meta = document.createElement('div');
+      meta.className = 'cb-mut cb-mono';
+      meta.style.fontSize = '11px';
+      const bits = [];
+      if (row.last_scan) bits.push(`last scan ${fmtWhen(row.last_scan)}`);
+      bits.push(`${num(row.downloaded)} downloaded`);
+      if (unresolved) bits.push('folder has no canonical channel id');
+      bits.push(row.status || 'idle');
+      meta.textContent = bits.join(' · ');
+      card.appendChild(meta);
+
+      const actions = document.createElement('div');
+      actions.className = 'cb-row';
+      actions.style.cssText = 'gap:5px;flex-wrap:wrap';
+      [['🔍 Scan', 'wl.card_scan', 'cb-btn--quiet'],
+       ['⚡ Force Download', 'wl.card_force', 'cb-btn--quiet'],
+       [`⬇ Download New (${newCount})`, 'wl.card_download_new', ''],
+       ['✏ Edit', 'wl.card_edit', 'cb-btn--quiet'],
+       ['✕ Remove', 'wl.card_remove', 'cb-btn--quiet'],
+      ].forEach(([label, ttKey, extra]) => {
+        const b = document.createElement('button');
+        b.className = `cb-btn cb-btn--sm ${extra}`.trim();
+        b.textContent = label;
+        b.setAttribute('data-tt', ttKey);
+        b.disabled = true;
+        b.setAttribute('data-tt-text',
+          (TOOLTIPS[ttKey] ? TOOLTIPS[ttKey] + '\n\n' : '') +
+          'Not wired up yet — the Watch List actions arrive with the service layer.');
+        actions.appendChild(b);
+      });
+      if (unresolved) {
+        const fix = document.createElement('button');
+        fix.className = 'cb-btn cb-btn--sm';
+        fix.style.cssText = 'background:#FF8C00;border-color:#FF8C00;color:#1a1a1a;font-weight:600';
+        fix.textContent = '🛠 Fix Link';
+        fix.setAttribute('data-tt', 'wl.card_fix_link');
+        fix.disabled = true;
+        actions.appendChild(fix);
+      }
+      card.appendChild(actions);
+      host.appendChild(card);
+    });
+    bindTips(host);
+  }
+
+  /* ── settings ──────────────────────────────────────────────────────────── */
+  function control(entry, value, available) {
+    const wrap = document.createElement('div');
+    const reason = 'This option is not wired into the web frontend yet — ' +
+                   'change it in the desktop app for now.';
+
+    function mark(el) {
+      if (!available) {
+        el.disabled = true;
+        el.setAttribute('data-tt-text',
+          (entry.tooltip && TOOLTIPS[entry.tooltip] ? TOOLTIPS[entry.tooltip] + '\n\n' : '') + reason);
+      } else if (entry.tooltip && TOOLTIPS[entry.tooltip]) {
+        el.setAttribute('data-tt', entry.tooltip);
+      }
+    }
+
+    if (entry.type === 'bool') {
+      const label = document.createElement('label');
+      label.className = 'cb-row';
+      label.style.cssText = 'gap:8px;cursor:pointer';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.className = 'cb-cbx';
+      box.checked = !!value;
+      mark(box);
+      box.addEventListener('change', () => save(entry.key, box.checked, box));
+      const text = document.createElement('span');
+      text.className = 'cb-lab';
+      text.textContent = entry.label;
+      label.append(box, text);
+      wrap.appendChild(label);
+      return wrap;
+    }
+
+    const row = document.createElement('div');
+    row.className = 'cb-set-row';
+    const lab = document.createElement('span');
+    lab.className = 'cb-lab';
+    lab.textContent = entry.label;
+    row.appendChild(lab);
+
+    let input;
+    if (entry.type === 'enum') {
+      input = document.createElement('select');
+      input.className = 'cb-sel';
+      const options = (entry.options || []).slice();
+      /* The contract's option strings do not always match what the host has
+         stored ("192" vs "192 kbps"). Show the real value rather than an empty
+         select — silently blanking it would misreport the host's state. */
+      const current = value === undefined || value === null ? '' : String(value);
+      if (current && !options.includes(current)) options.unshift(current);
+      options.forEach((o) => {
+        const opt = document.createElement('option');
+        opt.value = o;
+        opt.textContent = o;
+        input.appendChild(opt);
+      });
+      if (current) input.value = current;
+    } else if (entry.type === 'int') {
+      input = document.createElement('input');
+      input.className = 'cb-in cb-mono';
+      input.type = 'number';
+      input.style.width = '92px';
+      if (entry.min !== undefined) input.min = entry.min;
+      if (entry.max !== undefined) input.max = entry.max;
+      input.value = value !== undefined && value !== null ? value : (entry.default ?? 0);
+    } else {
+      input = document.createElement('input');
+      input.className = 'cb-in cb-mono';
+      input.style.fontSize = '12px';
+      input.value = value !== undefined && value !== null ? value : '';
+    }
+    mark(input);
+    input.addEventListener('change', () => {
+      const v = entry.type === 'int' ? Number(input.value) : input.value;
+      save(entry.key, v, input);
+    });
+    row.appendChild(input);
+
+    if (entry.unit) {
+      const u = document.createElement('span');
+      u.className = 'cb-mut cb-mono';
+      u.style.fontSize = '11.5px';
+      u.textContent = entry.unit;
+      row.appendChild(u);
+    }
+    if (entry.tooltip && TOOLTIPS[entry.tooltip]) {
+      const help = document.createElement('span');
+      help.className = 'cb-help cb-tt-host';
+      help.textContent = '?';
+      help.tabIndex = 0;
+      help.setAttribute('data-tt', entry.tooltip);
+      row.appendChild(help);
+    }
+    wrap.appendChild(row);
+    return wrap;
+  }
+
+  async function save(key, value, el) {
+    try {
+      const res = await cbApi.call('settings.set', { key, value });
+      state.settings[key] = res.value;
+      toast(`Saved ${key}`);
+    } catch (err) {
+      toast(err.userFacing ? err.message : `Could not save ${key}`, true);
+      if (el && el.type === 'checkbox') el.checked = !el.checked;
+    }
+  }
+
+  function renderSettings() {
+    const grid = $('#settings-grid');
+    grid.innerHTML = '';
+    $('#cfg-path').textContent = state.settings_path || '~/.dj_cratebuilder_config.json';
+
+    const sections = [];
+    SETTINGS_KEYS.forEach((entry) => {
+      if (entry.section === 'internal' || entry.type === 'dict' || entry.type === 'list') return;
+      if (entry.platform && entry.platform !== state.platform && entry.platform === 'win32'
+          && state.platform && state.platform !== 'win32') return;
+      let sec = sections.find((s) => s.name === entry.section);
+      if (!sec) { sec = { name: entry.section, items: [] }; sections.push(sec); }
+      sec.items.push(entry);
+    });
+
+    let missing = 0;
+    sections.forEach((sec) => {
+      const card = document.createElement('div');
+      card.className = 'cb-card cb-set-card';
+      if (sec.items.length > 6 || sec.name === 'Remote Access') card.classList.add('cb-span-2');
+
+      const head = document.createElement('div');
+      head.className = 'cb-row';
+      head.style.gap = '7px';
+      head.innerHTML = '<span class="cb-sect"></span>';
+      head.firstChild.textContent = sec.name;
+      card.appendChild(head);
+
+      sec.items.forEach((entry) => {
+        const available = Object.prototype.hasOwnProperty.call(state.settings, entry.key);
+        if (!available) missing += 1;
+        card.appendChild(control(entry, state.settings[entry.key], available));
+      });
+      grid.appendChild(card);
+    });
+
+    if (missing) {
+      const note = document.createElement('div');
+      note.className = 'cb-card cb-pad cb-span-2';
+      note.innerHTML =
+        `<span class="cb-mut" style="font-size:12px">${missing} option${missing === 1 ? '' : 's'} ` +
+        'in the design contract have no matching key in the host config yet, so they render ' +
+        'disabled with the reason in their tooltip rather than silently doing nothing.</span>';
+      grid.appendChild(note);
+    }
+    bindTips(grid);
+  }
+
+  /* ── wiring ────────────────────────────────────────────────────────────── */
+  async function addToBatch(inputEl) {
+    const url = inputEl.value.trim();
+    if (!url) { toast('Paste a YouTube or SoundCloud link first.', true); return; }
+    const platform = $('#dl-platform .is-on')?.dataset.platform || '';
+    await call('batch.add', { url, genre: $('#dl-genre').value, platform });
+    inputEl.value = '';
+    state.batch = await call('batch.list');
+    renderBatch();
+    toast('Added to batch');
+  }
+
+  function wire() {
+    $('#quick-add').addEventListener('click', () => addToBatch($('#quick-url')));
+    $('#quick-url').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') addToBatch($('#quick-url'));
+    });
+    $('#dl-add').addEventListener('click', () => addToBatch($('#dl-url')));
+    $('#dl-url').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') addToBatch($('#dl-url'));
+    });
+
+    $('#dl-clear').addEventListener('click', async () => {
+      await call('batch.clear');
+      state.batch = [];
+      renderBatch();
+    });
+
+    $$('#dl-platform > span').forEach((seg) => {
+      seg.addEventListener('click', () => {
+        $$('#dl-platform > span').forEach((s) => s.classList.remove('is-on'));
+        seg.classList.add('is-on');
+      });
+    });
+
+    $('#ov-refresh').addEventListener('click', refresh);
+    $('#ov-goto-wl').addEventListener('click', () => show('watchlist'));
+
+    // Actions the service does not implement yet stay visibly disabled, each
+    // carrying the reason — never a dead control with no explanation.
+    [['#dl-start', 'Starting a batch from the web frontend arrives with the download service.'],
+     ['#quick-scan', 'Scanning from the web frontend arrives with the download service.'],
+     ['#wl-scan', 'Scanning from the web frontend arrives with the download service.'],
+     ['#wl-add', 'Adding a channel arrives with the Watch List service.'],
+     ['#wl-links', 'Link checking arrives with the Watch List service.'],
+     ['#wl-dl-all', 'Downloading arrives with the download service.'],
+     ['#dl-openfolder', 'Folder actions arrive with the host filesystem bridge.'],
+     ['#dl-newgenre', 'Creating a genre folder arrives with the host filesystem bridge.'],
+    ].forEach(([sel, why]) => {
+      const el = $(sel);
+      if (!el) return;
+      el.disabled = true;
+      const existing = el.getAttribute('data-tt');
+      const base = existing && TOOLTIPS[existing] ? TOOLTIPS[existing] + '\n\n' : '';
+      el.setAttribute('data-tt-text', base + why);
+    });
+  }
+
+  async function refresh() {
+    state = await call('state.snapshot');
+    state.platform = state.platform || null;
+    renderShell();
+    renderOverview();
+    renderGenres();
+    renderBatch();
+    renderWatchlist();
+    renderSettings();
+    bindTips(document);
+  }
+
+  async function boot() {
+    await cbApi.connect();
+    const strings = await call('ui_strings');
+    TOOLTIPS = strings.tooltips || {};
+    SETTINGS_KEYS = strings.settings_keys || [];
+    await refresh();
+    wire();
+    bindTips(document);
+    show(location.hash.slice(1) || 'overview');
+
+    cbApi.on('host.status', (s) => {
+      if (!state) return;
+      state.host.online = !!s.online;
+      renderShell();
+      document.body.classList.toggle('cb-offline', !s.online);
+    });
+  }
+
+  boot().catch((err) => {
+    console.error(err);
+    toast('Could not reach the host process.', true);
+  });
+})();

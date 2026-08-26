@@ -1,0 +1,147 @@
+"""Shared UI strings: tooltips and settings metadata for both frontends.
+
+Generated from UI-design/ui-contract.json — the tooltip copy is lifted verbatim
+from the tkinter Tooltip()/_settings_help() calls, so tkinter and the web UI read
+one registry instead of drifting apart. Tk-free by design.
+"""
+
+TOOLTIPS = {
+    'about.check_updates': 'Checks GitHub for a newer nightly build and, if one exists, downloads and installs it (the app restarts to finish). Available only in the window running on the host machine itself — this is a remote session, so it is switched off.',
+    'about.faq_collapse': 'Collapse all answers',
+    'about.faq_expand': 'Expand all answers',
+    'about.github': 'Opens the DJ-CrateBuilder GitHub page in your browser. Check here for the latest releases and update notes.',
+    'about.issues': "Opens the GitHub 'Create new issue' form in your browser, where you can report a bug or suggest a feature.",
+    'about.mail': 'Write to the author in your mail client',
+    'about.update_interval': 'How often DJ-CrateBuilder quietly checks GitHub for a newer nightly build in the background.',
+    'db.cleanup_ineligible_downloading': "Can't be cleaned while this channel is downloading — its folder is being written to. Wait for the run to finish, then tick it.",
+    'db.cleanup_ineligible_unresolved': "Can't be cleaned until this channel's link is resolved — without a canonical channel id there is no live listing to compare the folder against. Use Fix Link on the Watch List first.",
+    'db.collapse_all': 'Collapse all groups',
+    'db.column_header': 'Click to sort. Drag onto another header to reorder columns — the order is remembered between sessions.',
+    'db.expand_all': 'Expand all groups',
+    'db.folders_cleanup': "Scans each ticked channel's live YouTube/SoundCloud listing, then flags downloaded tracks in that channel's folder that no longer appear on the channel. You review and confirm every deletion per channel before anything is removed (files go to the Recycle Bin).",
+    'db.help_artwork': "ARTWORK TAB\n• Every track and the cover art the database has on record for it.\n• Embedded — is the image actually written into the MP3's ID3 tag. This is the only thing Explorer and Android media players read.\n• Sidecar — the archival JPEG in the channel's hidden .artwork folder.\n• On Disk — whether that sidecar JPEG is still where the DB expects it.\n• Filter — narrow to tracks missing art, or to sidecars that have gone missing off disk.\n• Select a row to preview the image; right-click for Open Image, Open Containing Folder, Copy Image Path, or Copy Thumbnail URL.\n• 🖼 Fetch Missing Artwork — find and embed art for every track that has none.",
+    'db.help_downloads': "DOWNLOADS TAB\n• Group by — change how rows nest (e.g. Platform › Genre › Channel).\n• Platform / Genre filters — hide rows that don't match the selection.\n• Search — live-filter rows by any column text.\n• ⊞ / ⊟ — expand or collapse every group at once.\n• Click a column header to sort; drag a header to reorder columns.\n• Double-click a row to open the file.\n• Right-click a row for Open File / Open Containing Folder / Copy Path.\n• ⤓ Export CSV — write the current view to a .csv file.\n• ⟳ Refresh — reload from the database.\n\nColumn widths and order are remembered between sessions.",
+    'db.help_watchlist': "WATCH LIST TAB\n• Every tracked channel with its scan, pending-new, and download history.\n• URL Link column — the channel's source page (YouTube/SoundCloud).\n• Folder column — the local save folder for that channel.\n• Click a column header to sort; drag a header to reorder columns.\n• Right-click a row to open or copy the channel URL, or Open Folder to reveal the channel's folder in the system file manager.\n• ⟳ Refresh — reload from the database.",
+    'log.download': "Remote replacement for “System Viewer” — the host's text editor can't be opened from a browser, so the log is sent to you as a file instead.",
+    'log.filter_activity': 'Choose which log entries to show — all, downloaded, skipped, or errors.',
+    'log.filter_debug': 'Choose which debug log lines to show — all, or a single level (INFO, ERROR, DEBUG).',
+    'log.refresh_activity': 'Reload the log file from disk.',
+    'log.refresh_debug': 'Reload the debug log from disk.',
+    'log.search_clear': 'Clear the search and its highlights.',
+    'log.search_next': 'Jump to the next search match.',
+    'log.search_prev': 'Jump to the previous search match.',
+    'log.system_viewer': 'Open this log in your default text editor.',
+    'log.wrap': 'Toggle line wrapping for long entries.',
+    'main.batch_add': 'Queue the link in the URL field above, tagged with the genre you picked. Pressing Enter in the URL field does the same thing.',
+    'main.batch_help': "Paste a link, pick a genre, press Add to Batch.\nRepeat to stack as many links as you want — each can have its own genre.\nUse the ▲ ▼ buttons on a row to reorder it, or ✕ to remove it; 'Clear All' empties the whole queue.\nWhen you press 'Start Downloads', every link in the queue is processed top to bottom.",
+    'main.cancel_batch': 'Stop after the current track. Tags already written are kept.',
+    'main.row_down': 'Move this URL down in the queue',
+    'main.row_remove': 'Remove this URL from the queue',
+    'main.row_skip': "Skip this URL in the running batch, immediately: if it's the one downloading now, the download is interrupted on the spot and the batch moves straight on to the next URL.\n\nOnly available while a batch is running.",
+    'main.row_skip_marked': 'Skipped — this URL is being passed over by the running batch.',
+    'main.row_up': 'Move this URL up in the queue',
+    'main.skip_mode': "How an already-downloaded track is recognised:\n\n• In Database ~ In Folder — skip if it's in the downloads database OR already on disk (safest).\n• In Folder Only — skip only if the file exists in the destination folder.\n• In Database Only — skip only if the database says it was downloaded before, even if the file has since been moved or deleted.",
+    'remote.browse_folder': 'Opens a native folder picker on the host machine. Remote browsers get a path field instead — the host validates it before saving.',
+    'remote.enabled': 'Off restricts the interface to the local network. The host still serves the same pages — only the relay is disabled.',
+    'remote.host_status': 'The desktop app this browser is paired with. Offline means the host process is not running — controls are read-only until it returns.',
+    'remote.read_only': 'Remote browsers can watch progress and read logs but cannot start, cancel, or change settings. Useful when the pairing code has been shared.',
+    'remote.revoke_all': 'Drops every paired device and issues a fresh pairing code on the host.',
+    'settings.activity_log': "A color-coded record of every downloaded, skipped, and failed file. View it here in the built-in viewer, or open it in your system's default text editor.",
+    'settings.auto_dl_interval': "How often to automatically scan every watched channel for new uploads and download them. Each run scans all channels first, then downloads everything new. Default 1 day; 'Off' disables it.",
+    'settings.bitrate': '192 kbps = good quality  •  320 kbps = maximum MP3 quality',
+    'settings.bitrate_upgrade': "Probes each track's real formats before downloading and, when the source stream is higher-bitrate than your Output Quality (e.g. 256 kbps on a Premium-authenticated account), encodes the MP3 at that source bitrate instead of downgrading. Adds ~4 seconds per track and only ever helps with a YouTube Premium login — free-tier YouTube serves at most ~130-160 kbps, so this can be left off.",
+    'settings.cookie_file': 'Netscape/Mozilla cookie.txt format',
+    'settings.cover_art_enabled': 'Turn off to skip artwork entirely — no thumbnail download, no hidden .artwork folder and no embedded image.',
+    'settings.cover_art_mode': 'Embeds the YouTube/SoundCloud thumbnail into each MP3 so cover art shows in Windows Explorer, media players and on Android. A copy is also kept in a hidden .artwork folder beside the tracks. Cropping to square fills the art slot; keeping 16:9 letterboxes it.',
+    'settings.database': 'The SQLite database tracks every download for fast lookups and Watch List history. If it gets corrupted or deleted, rebuild it from the files on disk.',
+    'settings.debug_log': 'Detailed diagnostic log capturing cookie configuration, yt-dlp options, request/response data, and full error tracebacks. Useful for troubleshooting download failures.',
+    'settings.dedupe_db': 'Collapses repeated database rows that point at the same file — the history could show a track four or five times. Only the database is touched: no audio file, cover art or Watch List entry is removed, and everything the repeated rows knew is merged onto the single row that remains. It also switches on the protection that stops them coming back.',
+    'settings.download_behavior': 'Options that control how DJ-CrateBuilder connects and paces requests. These can help avoid throttling, geographic restrictions, or IP-banning from YouTube/SoundCloud when doing entire channel/batch downloads.',
+    'settings.dupe_check': 'Checks the database at launch and warns you if it is holding duplicate rows, since duplicate protection stays switched off until they are merged. The warning appears on every launch while any duplicates exist; untick this to silence it.',
+    'settings.fetch_artwork': 'Finds cover art for tracks you downloaded before the Cover Art feature existed, and embeds it into them. Re-uses artwork already on disk where possible, so re-running it is cheap.',
+    'settings.geo_bypass': 'Bypass geographic IP-based restrictions using a fake X-Forwarded-For header',
+    'settings.limiter': 'Skip any file whose duration exceeds the limit below. Uncheck to allow files of any length.',
+    'settings.log_limit': "Caps the size of the Activity Log and Debug Log (each file separately). When a log grows past this size, the oldest lines at the top are removed to make room for the newest — so the file keeps the most recent activity and never grows without bound. 'Unlimited' disables trimming.",
+    'settings.minimize_to_tray': 'Keeps Watch-List scheduler running in the background',
+    'settings.no_conversion': 'When enabled, files are saved in their original format and bitrate without conversion to MP3. YouTube typically serves .webm (Opus) or .m4a (AAC); SoundCloud serves .mp3 or .webm. Your folder will contain a mix of extensions.',
+    'settings.open_folder': 'Open this folder in your file explorer',
+    'settings.rebuild_db': 'Scans the audio files already in your library folders and rebuilds the database from them. This is safe to run at any time — it clears and rebuilds from scratch. Cover art already on disk is reused, never re-downloaded.',
+    'settings.repair_tags': 'Realigns the tags on every track in your library. The Genre tag is set to match the CrateBuilder folder the track is filed under — a track in YouTube/Drum & Bass gets the genre "Drum & Bass", and tracks under _No Genre have theirs cleared. Title, Encoded-by and the source URL are filled in only where a track is missing them, which is what gives a name back to tracks downloaded before CrateBuilder wrote tags. Anything you edited by hand is left alone, so re-running costs nothing. Covers MP3, M4A and Opus/Ogg files. Cancel any time — tracks already repaired keep their tags.',
+    'settings.rotate_ua': 'Send a randomized browser User-Agent string (consistent within each session)',
+    'settings.throttle': 'Pause between requests to avoid rate-limiting or IP bans during large channel / batch downloads. Auto picks delays from the selected preset; Manual lets you set exact min/max seconds.',
+    'settings.throttle_preset': 'Light = Downloading 50 files or less, per 24hrs.\nModerate = Downloading between 50-200 files, per 24hrs.\nAggressive = Downloading 200+ files, per 24hrs.',
+    'wl.cancel_all': 'Stop all in-progress Watch List scans and downloads.',
+    'wl.card_cancel': 'Stop the scan or download running on this channel.',
+    'wl.card_download_new': "Download this channel's new tracks — the ones counted since the last scan — into its folder.\n\nIf another Watch List download is already running, this channel is added to that run's queue instead: it appears in the Main tab's Batch Queue behind the channels already listed and downloads in turn. Pressing it again while queued does nothing — a channel is never queued twice.",
+    'wl.card_edit': "Change this channel's link or download settings.",
+    'wl.card_fix_link': 'Search YouTube for this channel by name and pick the right match, so scans can resolve it. Duplicate entries are detected before the link is saved.',
+    'wl.card_force': 'Re-download every track from this channel, including ones already in your library.',
+    'wl.card_remove': 'Removes this channel entry from the Watch List only — no downloaded files or folders are deleted.',
+    'wl.card_scan': 'Check this channel for new uploads without downloading anything.',
+    'wl.card_title': 'Open channel page:\n{url}',
+    'wl.check_links': 'Look up the real YouTube channel for any folder that still needs one, so it can be scanned. Shows the top matches to choose from.',
+    'wl.download_all_new': 'Download all pending new tracks across every channel.',
+    'wl.scan_all': 'Check every channel for new uploads since the last scan.',
+}
+
+
+SETTINGS_KEYS = [
+    {'key': 'run_at_startup', 'label': 'Run App on Startup', 'type': 'bool', 'default': False, 'platform': 'win32', 'section': 'Automation / Startup'},
+    {'key': 'start_minimized', 'label': 'Start App Minimized to System Tray', 'type': 'bool', 'default': False, 'platform': 'win32', 'section': 'Automation / Startup'},
+    {'key': 'minimize_to_tray', 'label': 'Minimize to System Tray', 'type': 'bool', 'default': False, 'platform': 'win32', 'section': 'Automation / Startup', 'tooltip': 'settings.minimize_to_tray'},
+    {'key': 'watchlist_scan_on_startup', 'label': 'Scan Watch List for new uploads when the app starts', 'type': 'bool', 'default': True, 'section': 'Automation / Startup'},
+    {'key': 'auto_add_to_watchlist', 'label': 'Auto-add channels to Watch List after downloading', 'type': 'bool', 'default': True, 'section': 'Automation / Startup'},
+    {'key': 'auto_dl_interval', 'label': 'Auto-download Watch-List channels every', 'type': 'enum', 'options': ['Off', '6 hours', '12 hours', '1 day', '2 days'], 'default': '1 day', 'section': 'Automation / Startup', 'tooltip': 'settings.auto_dl_interval'},
+    {'key': 'limit_enabled', 'label': 'Enable', 'type': 'bool', 'default': True, 'section': 'Time / Length Limiter', 'tooltip': 'settings.limiter'},
+    {'key': 'limit_minutes', 'label': 'Max Length', 'type': 'int', 'min': 1, 'max': 180, 'default': 8, 'unit': 'min', 'section': 'Time / Length Limiter'},
+    {'key': 'bitrate_quality', 'label': 'Output Quality', 'type': 'enum', 'options': ['128 kbps', '192 kbps', '224 kbps', '256 kbps', '320 kbps'], 'default': '192 kbps', 'section': 'File Output', 'tooltip': 'settings.bitrate'},
+    {'key': 'bitrate_auto_upgrade', 'label': 'Auto-upgrade bitrate when the source is higher (slower)', 'type': 'bool', 'default': False, 'section': 'File Output', 'tooltip': 'settings.bitrate_upgrade'},
+    {'key': 'no_conversion', 'label': 'Do not convert to MP3! (Keeps downloaded format)', 'type': 'bool', 'default': False, 'section': 'File Output', 'tooltip': 'settings.no_conversion'},
+    {'key': 'cover_art_enabled', 'label': 'Attach cover art to files', 'type': 'bool', 'default': True, 'section': 'File Output', 'tooltip': 'settings.cover_art_enabled'},
+    {'key': 'cover_art_mode', 'label': 'Formatting', 'type': 'enum', 'options': ['On ~ Crop to square', 'On ~ Keep original aspect', 'Off'], 'default': 'On ~ Crop to square', 'section': 'File Output', 'tooltip': 'settings.cover_art_mode'},
+    {'key': 'skip_existing', 'label': 'Skip files already downloaded', 'type': 'bool', 'default': True, 'section': 'Downloads', 'screen': '3b'},
+    {'key': 'skip_mode', 'label': 'Skip mode', 'type': 'enum', 'options': ['In Database ~ In Folder', 'In Folder Only', 'In Database Only'], 'default': 'In Database ~ In Folder', 'section': 'Downloads', 'screen': '3b', 'tooltip': 'main.skip_mode'},
+    {'key': 'geo_bypass', 'label': 'Enable geo-bypass', 'type': 'bool', 'default': False, 'section': 'Download Behavior', 'tooltip': 'settings.geo_bypass'},
+    {'key': 'rotate_ua', 'label': 'Rotate User-Agent', 'type': 'bool', 'default': True, 'section': 'Download Behavior', 'tooltip': 'settings.rotate_ua'},
+    {'key': 'sleep_enabled', 'label': 'Throttle Requests', 'type': 'bool', 'default': True, 'section': 'Download Behavior', 'tooltip': 'settings.throttle'},
+    {'key': 'sleep_mode', 'label': 'Mode', 'type': 'enum', 'options': ['Auto', 'Manual'], 'default': 'Auto', 'section': 'Download Behavior'},
+    {'key': 'sleep_preset', 'label': 'Preset', 'type': 'enum', 'options': ['Light', 'Moderate', 'Aggressive'], 'default': 'Light', 'section': 'Download Behavior', 'tooltip': 'settings.throttle_preset'},
+    {'key': 'sleep_min', 'label': 'Min (s)', 'type': 'int', 'default': 4, 'section': 'Download Behavior', 'enabled_when': 'sleep_mode == Manual'},
+    {'key': 'sleep_max', 'label': 'Max (s)', 'type': 'int', 'default': 11, 'section': 'Download Behavior', 'enabled_when': 'sleep_mode == Manual'},
+    {'key': 'use_cookies', 'label': 'Use Browser Cookies', 'type': 'bool', 'default': False, 'section': 'Browser Cookies'},
+    {'key': 'cookie_method', 'label': 'Method', 'type': 'enum', 'options': ['Browser Profile', 'Cookie File'], 'default': 'Browser Profile', 'section': 'Browser Cookies'},
+    {'key': 'cookies_browser', 'label': 'Browser', 'type': 'enum', 'options': ['Firefox', 'Chrome', 'Edge', 'Brave', 'Chromium', 'Opera', 'Vivaldi'], 'default': 'Firefox', 'section': 'Browser Cookies'},
+    {'key': 'cookies_profile', 'label': 'Profile', 'type': 'str', 'default': '', 'section': 'Browser Cookies'},
+    {'key': 'cookie_file', 'label': 'Cookie file', 'type': 'path', 'default': '', 'section': 'Browser Cookies', 'tooltip': 'settings.cookie_file'},
+    {'key': 'base_dir', 'label': 'Default Save Directory', 'type': 'path', 'default': '~/Music/DJ-CrateBuilder', 'section': 'Default Save Directory', 'notes': 'canonicalize and validate server-side; never accept a client path unchecked'},
+    {'key': 'log_limit', 'label': 'Log Size Limit', 'type': 'enum', 'options': ['1 MB', '5 MB', '10 MB', '50 MB', 'Unlimited'], 'default': '5 MB', 'section': 'Logs', 'tooltip': 'settings.log_limit'},
+    {'key': 'dupe_check_enabled', 'label': 'Warn about duplicates at startup', 'type': 'bool', 'default': True, 'section': 'Downloads Database', 'tooltip': 'settings.dupe_check'},
+    {'key': 'remote_enabled', 'label': 'Allow remote control over the internet', 'type': 'bool', 'default': False, 'section': 'Remote Access', 'source': 'new', 'tooltip': 'remote.enabled'},
+    {'key': 'remote_require_pairing', 'label': 'Require pairing code for new devices', 'type': 'bool', 'default': True, 'section': 'Remote Access', 'source': 'new'},
+    {'key': 'remote_read_only', 'label': 'Read-only mode for remote devices', 'type': 'bool', 'default': False, 'section': 'Remote Access', 'source': 'new', 'tooltip': 'remote.read_only'},
+    {'key': 'notify_scan_found', 'label': 'Notify remote devices when a scan finds new tracks', 'type': 'bool', 'default': True, 'section': 'Remote Access', 'source': 'new'},
+    {'key': 'notify_batch_done', 'label': 'Notify when a batch completes', 'type': 'bool', 'default': True, 'section': 'Remote Access', 'source': 'new'},
+    {'key': 'notify_errors', 'label': 'Notify on errors', 'type': 'bool', 'default': True, 'section': 'Remote Access', 'source': 'new'},
+    {'key': 'db_dl_col_widths', 'label': '(internal) Downloads column widths', 'type': 'dict', 'section': 'internal'},
+    {'key': 'db_dl_col_order', 'label': '(internal) Downloads column order', 'type': 'list', 'section': 'internal'},
+    {'key': 'db_wl_col_widths', 'label': '(internal) Watch List column widths', 'type': 'dict', 'section': 'internal'},
+    {'key': 'db_wl_col_order', 'label': '(internal) Watch List column order', 'type': 'list', 'section': 'internal'},
+    {'key': 'db_art_col_widths', 'label': '(internal) Artwork column widths', 'type': 'dict', 'section': 'internal'},
+    {'key': 'db_art_col_order', 'label': '(internal) Artwork column order', 'type': 'list', 'section': 'internal'},
+]
+
+
+NAV = ['Overview (3a)', 'Downloads (3b/3c)', 'Watch List (3d)', 'Settings (3j)']
+
+
+def tooltip(key, default=""):
+    """The help text for a control id, or *default* when it has none."""
+    return TOOLTIPS.get(key, default)
+
+
+def settings_key(name):
+    """The metadata dict for one settings key, or None."""
+    for entry in SETTINGS_KEYS:
+        if entry.get("key") == name:
+            return entry
+    return None

@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DJ-CrateBuilder</title>
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<div class="cb-shell">
+
+  <!-- ── Left panel: never changes width or order between screens ────────── -->
+  <aside class="cb-panel">
+    <div class="cb-row" style="gap:9px">
+      <img src="assets/logo.png" alt="" width="22" height="22"
+           style="border-radius:5px;display:block;flex:none">
+      <span class="cb-brand">CrateBuilder</span>
+      <span class="cb-tag" id="mount-tag">Local</span>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <div class="cb-kick">Quick actions</div>
+      <input class="cb-in" id="quick-url" placeholder="Paste a URL to download…"
+             data-tt="main.quick_url">
+      <button class="cb-btn cb-btn--fill" id="quick-add"
+              style="justify-content:center;width:100%"
+              data-tt="main.batch_add">Add to batch</button>
+      <button class="cb-btn" id="quick-scan"
+              style="justify-content:center;width:100%"
+              data-tt="wl.scan_all">Scan all channels</button>
+    </div>
+
+    <nav style="display:flex;flex-direction:column;gap:2px;margin-top:52px">
+      <div class="cb-kick" style="margin-bottom:5px">Navigate</div>
+      <a class="cb-nav is-on" href="#overview"  data-screen="overview">Overview</a>
+      <a class="cb-nav"       href="#downloads" data-screen="downloads">Downloads</a>
+      <a class="cb-nav"       href="#watchlist" data-screen="watchlist">Watch List<span
+           class="cb-nav__count" id="nav-count" hidden>0</span></a>
+      <a class="cb-nav"       href="#settings"  data-screen="settings">Settings</a>
+    </nav>
+
+    <div class="cb-panel__foot">
+      <div class="cb-row" style="gap:8px;font-size:12px;color:#6B7280">
+        <span class="cb-dot" id="host-dot"></span>
+        <span class="cb-mono" id="host-label" style="font-size:11px">connecting…</span>
+      </div>
+      <span class="cb-mono cb-mut" id="host-version" style="font-size:10.5px"></span>
+    </div>
+  </aside>
+
+  <!-- ── Content: one scroll region ──────────────────────────────────────── -->
+  <main class="cb-main">
+
+    <!-- 3a — Overview -->
+    <section class="cb-screen is-on" id="screen-overview">
+      <div class="cb-row">
+        <h4 class="cb-h">Overview</h4>
+        <span class="cb-mut" style="font-size:12.5px" id="ov-library"></span>
+        <div style="margin-left:auto" class="cb-row">
+          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="ov-refresh"
+                  data-tt="overview.refresh">⟳ Refresh</button>
+        </div>
+      </div>
+
+      <div class="cb-card cb-pad" id="ov-running" hidden>
+        <div class="cb-row">
+          <span class="cb-kick">Now running</span>
+          <span class="cb-tag cb-tag--fill">Batch</span>
+          <span class="cb-mut cb-mono" style="margin-left:auto;font-size:11.5px"
+                id="ov-run-meta"></span>
+        </div>
+      </div>
+
+      <div class="cb-grid-2">
+        <div class="cb-card cb-pad">
+          <span class="cb-kick">Watch List</span>
+          <div class="cb-row" style="align-items:flex-end;gap:8px">
+            <span class="cb-mono cb-big" id="ov-new">0</span>
+            <span class="cb-mut" style="font-size:12.5px;padding-bottom:4px"
+                  id="ov-new-sub">new tracks</span>
+          </div>
+          <button class="cb-btn cb-btn--sm" id="ov-goto-wl"
+                  style="align-self:flex-start">Open Watch List</button>
+        </div>
+
+        <div class="cb-card cb-pad">
+          <span class="cb-kick">Library</span>
+          <div class="cb-row" style="align-items:flex-end;gap:8px">
+            <span class="cb-mono cb-big" id="ov-tracks">0</span>
+            <span class="cb-mut" style="font-size:12.5px;padding-bottom:4px">tracks downloaded</span>
+          </div>
+          <div class="cb-mut cb-mono" style="font-size:11px" id="ov-dbpath"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3b / 3c — Downloads -->
+    <section class="cb-screen" id="screen-downloads">
+      <div class="cb-row">
+        <h4 class="cb-h">Downloads</h4>
+        <span class="cb-tag cb-tag--grey" id="dl-state">Idle</span>
+      </div>
+
+      <div class="cb-card cb-pad">
+        <div class="cb-row">
+          <span class="cb-kick">Add a link</span>
+          <div class="cb-seg" style="margin-left:auto" id="dl-platform">
+            <span class="is-on" data-platform="YouTube">YouTube</span>
+            <span data-platform="SoundCloud">SoundCloud</span>
+          </div>
+          <span class="cb-help cb-tt-host" data-tt="main.platform_help">?</span>
+        </div>
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+          <div style="flex:1;min-width:260px">
+            <div class="cb-kick" style="margin-bottom:5px">URL</div>
+            <input class="cb-in" id="dl-url" data-tt="main.url"
+                   placeholder="https://www.youtube.com/…   or   https://soundcloud.com/…">
+          </div>
+          <div style="width:190px">
+            <div class="cb-kick" style="margin-bottom:5px">Genre</div>
+            <select class="cb-sel" id="dl-genre" style="width:100%"></select>
+          </div>
+          <button class="cb-btn cb-btn--quiet" id="dl-newgenre">+ New genre</button>
+          <button class="cb-btn cb-btn--fill" id="dl-add"
+                  data-tt="main.batch_add">+ Add to Batch</button>
+        </div>
+      </div>
+
+      <div class="cb-card cb-pad">
+        <div class="cb-row">
+          <span class="cb-kick">Batch queue</span>
+          <span class="cb-mut cb-mono" style="font-size:11.5px" id="dl-count">0 URLs</span>
+          <span class="cb-help cb-tt-host" data-tt="main.batch_help">?</span>
+          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="dl-clear"
+                  style="margin-left:auto" data-tt="main.batch_clear">Clear All</button>
+        </div>
+        <div id="dl-rows"></div>
+      </div>
+
+      <div class="cb-row" style="gap:12px;flex-wrap:wrap">
+        <label class="cb-row" style="gap:8px;cursor:pointer">
+          <input type="checkbox" class="cb-cbx" id="dl-skip" data-key="skip_existing">
+          <span style="font-size:13px;color:#24262B">Skip files already downloaded</span>
+        </label>
+        <select class="cb-sel" id="dl-skipmode" data-key="skip_mode">
+          <option>In Database ~ In Folder</option>
+          <option>In Folder Only</option>
+          <option>In Database Only</option>
+        </select>
+        <span class="cb-help cb-tt-host" data-tt="main.skip_mode">?</span>
+        <button class="cb-btn cb-btn--quiet" id="dl-openfolder"
+                style="margin-left:auto" data-tt="settings.open_folder">📂 Open Main Folder</button>
+      </div>
+
+      <div class="cb-row" style="gap:10px">
+        <button class="cb-btn cb-btn--fill" id="dl-start"
+                style="flex:1;justify-content:center;font-size:14.5px;padding:11px">Start Downloads</button>
+        <button class="cb-btn cb-btn--quiet" id="dl-cancel" disabled
+                data-tt="main.cancel_batch">Cancel</button>
+        <button class="cb-btn cb-btn--quiet" id="dl-pause" disabled>⏸ Pause</button>
+      </div>
+
+      <div class="cb-card cb-pad" id="dl-progress" style="opacity:.6">
+        <div class="cb-row" style="gap:10px;align-items:baseline">
+          <span class="cb-kick">Current</span>
+          <span class="cb-mut" style="font-size:13.5px" id="dl-cur-label">—</span>
+        </div>
+        <div class="cb-bar"><div class="cb-bar__fill" id="dl-cur-bar" style="width:0"></div></div>
+        <div class="cb-row" style="gap:10px;align-items:baseline">
+          <span class="cb-kick">Overall</span>
+          <span class="cb-mut" style="font-size:12.5px" id="dl-all-label">—</span>
+        </div>
+        <div class="cb-bar"><div class="cb-bar__fill cb-bar__fill--overall" id="dl-all-bar" style="width:0"></div></div>
+      </div>
+
+      <div>
+        <div class="cb-row" style="gap:8px;margin-bottom:8px">
+          <span class="cb-kick">Queue</span>
+          <span class="cb-mut cb-mono" style="font-size:11.5px" id="dl-queue-meta">empty</span>
+        </div>
+        <div class="cb-card cb-log" id="dl-queue" style="min-height:74px">Queue is empty — add links above, then press Start Downloads.</div>
+      </div>
+    </section>
+
+    <!-- 3d — Watch List -->
+    <section class="cb-screen" id="screen-watchlist">
+      <div class="cb-row">
+        <h4 class="cb-h">Watch List</h4>
+        <span class="cb-mut" style="font-size:12.5px" id="wl-summary"></span>
+      </div>
+      <div class="cb-row" style="gap:8px;flex-wrap:wrap">
+        <button class="cb-btn cb-btn--fill" id="wl-add">+ Add Channel</button>
+        <button class="cb-btn" id="wl-links" style="border-color:#CC7A00;color:#A66300"
+                data-tt="wl.check_links">🛠 Check Links</button>
+        <button class="cb-btn" id="wl-dl-all" data-tt="wl.download_all_new">⬇ Download All New</button>
+        <button class="cb-btn" id="wl-scan" data-tt="wl.scan_all">🔍 Scan for new</button>
+        <button class="cb-btn cb-btn--quiet" id="wl-cancel" disabled
+                data-tt="wl.cancel_all">✕ Cancel</button>
+      </div>
+      <div id="wl-cards" class="cb-cards"></div>
+
+      <div class="cb-card" style="padding:0;overflow:hidden">
+        <div class="cb-row" style="padding:8px 14px;border-bottom:1px solid var(--cb-line-soft);gap:10px">
+          <span class="cb-kick">Scan log</span>
+          <span class="cb-mut cb-mono" style="font-size:11px">live · pinned</span>
+          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="wl-log-clear"
+                  style="margin-left:auto">Clear</button>
+        </div>
+        <div class="cb-log" id="wl-log" style="height:156px;overflow:auto"></div>
+      </div>
+    </section>
+
+    <!-- 3j — Settings -->
+    <section class="cb-screen" id="screen-settings">
+      <div class="cb-row" style="margin-bottom:4px">
+        <h4 class="cb-h">⚙ Settings</h4>
+        <span class="cb-mut" style="font-size:12.5px">Every option writes straight to
+          <span class="cb-mono" id="cfg-path">the host's config</span></span>
+        <span class="cb-mono" style="margin-left:auto;font-size:10.5px;color:var(--cb-ok)">All changes autosave</span>
+      </div>
+      <div class="cb-grid-2" id="settings-grid"></div>
+    </section>
+
+  </main>
+</div>
+
+<div class="cb-toast" id="toast" hidden></div>
+
+<script src="api.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

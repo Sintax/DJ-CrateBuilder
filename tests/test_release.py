@@ -117,6 +117,14 @@ def test_bundled_deps_covers_the_runtime_requirements(rel):
     assert wanted <= tracked, f"untracked runtime deps: {wanted - tracked}"
 
 
+def test_normalize_pkg_name_drops_extras(rel):
+    """Extras are a requirement specifier, not a name — pip freeze reports the
+    bare package, so uvicorn[standard] must match a plain uvicorn pin."""
+    assert rel.normalize_pkg_name("uvicorn[standard]") == "uvicorn"
+    assert rel.parse_installed_versions(
+        "uvicorn==0.44.0\n", ["uvicorn[standard]"]) == {"uvicorn[standard]": "0.44.0"}
+
+
 def test_bundled_deps_includes_certifi(rel):
     """certifi is a transitive dep (never in requirements.txt) but its CA
     bundle is frozen into the exe, so a stale one ships to every user."""
