@@ -1,18 +1,26 @@
 """Transport-agnostic action surface shared by the local window and remote clients."""
 
+import base64
+import csv
+import io
 import itertools
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import threading
+from datetime import datetime
 
 from cratebuilder import activitylog, startup, ui_strings, util
-from cratebuilder.artwork import DEFAULT_COVER_ART_MODE
+from cratebuilder.artwork import DEFAULT_COVER_ART_MODE, extract_cover
+from cratebuilder.batchresolve import platform_dir
 from cratebuilder.batchrun import BatchRunner
 from cratebuilder.crate import CrateLayout
 from cratebuilder.db import DownloadsDatabase
 from cratebuilder.events import Coalescer, EventBus
 from cratebuilder.settings import Settings
+from cratebuilder.sidecar import is_unresolved_channel
 
 MAIN_SCRIPT = "DJ-CrateBuilder_v1.3.py"
 DB_NAME = "cratebuilder.db"
@@ -35,6 +43,15 @@ LOCAL_ONLY = ("update.", "fs.")
 DEFAULT_LOG_WINDOW = 2000
 MAX_LOG_SEARCH_MATCHES = 500
 DEFAULT_LOG_WATCH_INTERVAL = 1.0
+
+# db.query page size — the Downloads/Artwork tabs' "load more" step. A 20k-row
+# library must never arrive in one payload; this is what keeps that true.
+DEFAULT_DB_PAGE_SIZE = 200
+# db.export_csv fetches the whole filtered set in one pass rather than paging
+# it — comfortably above any real library size while still bounding worst-case
+# memory, and avoids the LIMIT 0 footgun (SQLite reads that as "zero rows",
+# not "no limit").
+EXPORT_ROW_CAP = 1_000_000
 
 _VERSION_RE = re.compile(r'^APP_VERSION\s*=\s*"([^"]+)"', re.M)
 _BUILD_RE = re.compile(r"^APP_BUILD\s*=\s*(\d+)", re.M)
@@ -391,8 +408,18 @@ class CrateBuilderService:
             "download.resume": lambda p: self.download_resume(),
             "download.cancel": lambda p: self.download_cancel(),
             "watchlist.list": lambda p: self.watchlist_list(),
-            "db.groups": lambda p: self.db_groups(),
+            "db.groups": lambda p: self.db_groups(p.get("preset"),
+                                                   p.get("filters") or {}),
+            "db.query": lambda p: self.db_query(
+                p.get("table"), p.get("filters") or {}, p.get("sort") or {},
+                p.get("offset", 0), p.get("limit", DEFAULT_DB_PAGE_SIZE)),
+            "db.export_csv": lambda p: self.db_export_csv(
+                p.get("table"), p.get("filters") or {}, p.get("sort") or {}),
+            "db.artwork_preview": lambda p: self.db_artwork_preview(
+                p.get("path"), p.get("file_path")),
             "fs.pick_folder": lambda p: self.pick_folder(),
+            "fs.reveal": lambda p: self.fs_reveal(p.get("path"),
+                                                  p.get("mode", "folder")),
             "logs.tail": lambda p: self.logs_tail(
                 p.get("name"), p.get("offset"), p.get("limit", DEFAULT_LOG_WINDOW),
                 bool(p.get("before"))),
@@ -495,13 +522,321 @@ class CrateBuilderService:
             out.append(row)
         return out
 
-    def db_groups(self):
-        """Group skeleton for the database viewer — counts only, no rows."""
+    def db_groups(self, preset, filters):
+        """One level of the Downloads tab's group tree — counts only, no
+        rows. *filters* pins the levels already drilled into (see
+        DownloadsDatabase.group_downloads); the response's "levels" is the
+        preset's fixed hierarchy depth, so the caller can tell a returned
+        group is the deepest level (the next expand should fetch db.query
+        rows, not call db.groups again) without a wasted round trip that
+        would just come back empty."""
         db = self._db()
         if db is None:
-            return {"available": False, "groups": []}
-        return {"available": True, "total": db.get_download_count(),
-                "groups": []}
+            return {"available": False, "groups": [], "levels": 0}
+        preset = preset or next(iter(DownloadsDatabase.GROUP_PRESETS))
+        hierarchy = DownloadsDatabase.GROUP_PRESETS.get(preset)
+        if hierarchy is None:
+            raise CBError(f"Unknown group-by preset: {preset!r}")
+        try:
+            groups = db.group_downloads(preset, filters)
+        except ValueError as exc:
+            raise CBError(str(exc))
+        return {"available": True, "groups": groups, "levels": len(hierarchy)}
+
+    # ── database viewer: contract-id row mapping ────────────────────────────
+    # cratebuilder.db's helpers speak raw DB column names (channel_name,
+    # upload_date, download_timestamp, ...) by design (see task-6-report.md)
+    # — this is the one place that translates them to the contract's UI ids
+    # (channel, upload, downloaded, ...), including fields no db.py method
+    # can produce on its own: the Watch List folder path (needs Settings'
+    # base_dir + CrateLayout) and cleanup eligibility, and the Artwork tab's
+    # derived on_disk fact (needs a live filesystem check the raw row can't
+    # carry). db.py stays pure SQL; this stays the one seam that knows both
+    # vocabularies.
+
+    _DL_SORT_MAP = {
+        "title": "title", "channel": "channel_name", "genre": "genre",
+        "platform": "platform", "upload": "upload_date",
+        "downloaded": "download_timestamp", "bitrate": "bitrate",
+    }
+    _ART_SORT_MAP = {
+        "title": "title", "channel": "channel_name", "platform": "platform",
+        "embedded": "artwork_embedded", "sidecar": "artwork_path",
+        "thumb_url": "thumbnail_url",
+    }
+    _WL_SORT_KEYS = {
+        "channel": lambda r: (r.get("channel") or "").lower(),
+        "link": lambda r: (r.get("link") or "").lower(),
+        "folder": lambda r: (r.get("folder") or "").lower(),
+        "platform": lambda r: (r.get("platform") or "").lower(),
+        "genre": lambda r: (r.get("genre") or "").lower(),
+        "last_scan": lambda r: int(r.get("last_scan") or 0),
+        "pending": lambda r: int(r.get("pending") or 0),
+        "total": lambda r: int(r.get("total") or 0),
+        "status": lambda r: (r.get("status") or "").lower(),
+    }
+
+    _EXPORT_COLUMNS = {
+        "downloads": [("title", "Title"), ("channel", "Channel"),
+                      ("genre", "Genre"), ("platform", "Platform"),
+                      ("upload", "Upload date"), ("downloaded", "Downloaded"),
+                      ("bitrate", "Bitrate"), ("file_path", "File path")],
+        "watchlist": [("channel", "Channel"), ("link", "URL Link"),
+                      ("folder", "Folder"), ("platform", "Platform"),
+                      ("genre", "Genre"), ("pending", "Pending new"),
+                      ("total", "Total dl'd"), ("status", "Status")],
+        "artwork": [("title", "Track"), ("channel", "Channel"),
+                    ("platform", "Platform"), ("embedded", "Embedded"),
+                    ("sidecar", "Sidecar"), ("thumb_url", "Thumbnail URL"),
+                    ("file_path", "File path")],
+    }
+
+    @staticmethod
+    def _map_download_row(row):
+        ts = row.get("download_timestamp")
+        downloaded = ""
+        if ts:
+            try:
+                downloaded = datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M")
+            except (TypeError, ValueError, OSError):
+                downloaded = ""
+        return {
+            "id": row.get("id"),
+            "title": row.get("title") or "",
+            "channel": row.get("channel_name") or "",
+            "genre": (row.get("genre") or "").strip() or "(none)",
+            "platform": (row.get("platform") or "").strip() or "(unknown)",
+            "upload": row.get("upload_date") or "",
+            "downloaded": downloaded,
+            "downloaded_ts": ts,
+            "bitrate": row.get("bitrate") or "",
+            "file_path": row.get("file_path") or "",
+            "channel_url": row.get("channel_url") or "",
+        }
+
+    @staticmethod
+    def _map_artwork_row(row):
+        path = (row.get("artwork_path") or "").strip()
+        on_disk = os.path.isfile(path) if path else None
+        return {
+            "id": row.get("id"),
+            "title": row.get("title") or "(untitled)",
+            "channel": row.get("channel_name") or "",
+            "platform": row.get("platform") or "",
+            "embedded": bool(row.get("artwork_embedded")),
+            "sidecar": os.path.basename(path) if path else "",
+            "sidecar_path": path,
+            "on_disk": on_disk,
+            "thumb_url": row.get("thumbnail_url") or "",
+            "file_path": row.get("file_path") or "",
+        }
+
+    def _channel_folder(self, platform, genre, display_name):
+        """The channel's crate folder — pure naming via CrateLayout, same
+        path a download would write to, or "" for an unrecognised platform
+        or a base_dir CrateLayout can't build a path from."""
+        if platform not in ("YouTube", "SoundCloud"):
+            return ""
+        try:
+            base = self._settings.get("base_dir")
+            return CrateLayout.channel_dir(
+                platform_dir(base, platform), genre, display_name)
+        except Exception:
+            return ""
+
+    def _wl_cleanup_eligibility(self, row, folder):
+        """(eligible, reason) for one Watch List row's Folders Cleanup
+        checkbox — port of the monolith's _wl_cleanup_eligibility, plus a
+        web-only "downloading" case the design adds (a channel mid-download
+        can't safely be cleaned; the monolith's dialog never faces this
+        since its own scan runs sequentially). Reason text comes from the
+        ui_strings registry where a key exists, and verbatim from the
+        monolith's own strings where it doesn't — never paraphrased."""
+        if (row.get("status") or "").lower() == "downloading":
+            return False, ui_strings.tooltip("db.cleanup_ineligible_downloading")
+        if is_unresolved_channel(row) or row.get("status") in ("needs_resolve", "error"):
+            return False, ui_strings.tooltip("db.cleanup_ineligible_unresolved")
+        if not folder or not os.path.isdir(folder):
+            return False, "Folder missing — no downloads to clean."
+        try:
+            has_mp3 = any(f.lower().endswith(".mp3") for f in os.listdir(folder))
+        except OSError:
+            has_mp3 = False
+        if not has_mp3:
+            return False, "Folder empty — nothing to clean."
+        return True, ""
+
+    # The monolith's UNRESOLVED_URL_PREFIX (DJ-CrateBuilder_v1.3.py) and
+    # cratebuilder.db's private _UNRESOLVED_URL_PREFIX — a duplicate literal,
+    # not an import, same "monolith depends on cratebuilder, never the
+    # reverse" reasoning db.py already applies to its own copy. Needed here,
+    # not db.query_watchlist_rows(): that helper already blanks a sentinel
+    # url to "" before returning, which would hide the signal
+    # is_unresolved_channel needs from _wl_cleanup_eligibility — so this
+    # table reads db.get_all_watchlist_channels() (raw rows) and does its
+    # own blanking after eligibility has already been judged.
+    _UNRESOLVED_URL_PREFIX = "unresolved://"
+
+    def _map_watchlist_row(self, row):
+        platform = (row.get("platform") or "").strip()
+        folder = self._channel_folder(platform, row.get("genre"),
+                                      row.get("display_name"))
+        eligible, reason = self._wl_cleanup_eligibility(row, folder)
+        raw_url = row.get("url") or ""
+        unresolved_link = raw_url.startswith(self._UNRESOLVED_URL_PREFIX)
+        return {
+            "id": row.get("id"),
+            "channel": row.get("display_name") or raw_url or "Channel",
+            "link": "" if unresolved_link else raw_url,
+            "link_unresolved": unresolved_link,
+            "folder": folder,
+            "platform": platform,
+            "genre": row.get("genre") or "",
+            "last_scan": row.get("last_scanned_timestamp"),
+            "pending": int(row.get("pending_new_count") or 0),
+            "total": int(row.get("total_downloaded") or 0),
+            "status": row.get("status") or "idle",
+            "eligible": eligible,
+            "ineligible_reason": reason,
+        }
+
+    def _query_rows(self, table, filters, sort, offset, limit):
+        """(rows, total) for one Database-viewer table, rows mapped to the
+        contract's UI column ids. Shared by db_query (one page) and
+        db_export_csv (the whole filtered set, offset 0 / a very high
+        limit) so the two can never disagree about what a filter means."""
+        db = self._db()
+        if db is None:
+            return [], 0
+        filters = dict(filters or {})
+        sort = sort or {}
+        offset = max(0, int(offset or 0))
+        limit = max(0, int(limit or 0))
+
+        if table == "downloads":
+            col = self._DL_SORT_MAP.get(sort.get("col"), "download_timestamp")
+            descending = bool(sort.get("desc", True))
+            try:
+                total = db.count_downloads(filters)
+                rows = db.query_downloads(filters, order_by=col,
+                                          descending=descending,
+                                          limit=limit, offset=offset)
+            except ValueError as exc:
+                raise CBError(str(exc))
+            return [self._map_download_row(r) for r in rows], total
+
+        if table == "artwork":
+            filter_name = filters.get("filter_name") or DownloadsDatabase.ARTWORK_FILTERS[0]
+            search = filters.get("search")
+            col = self._ART_SORT_MAP.get(sort.get("col"), "title")
+            descending = bool(sort.get("desc", False))
+            try:
+                total = db.count_artwork_rows(filter_name, search=search)
+                rows = db.query_artwork_rows(filter_name, search=search,
+                                             order_by=col, descending=descending,
+                                             limit=limit, offset=offset)
+            except ValueError as exc:
+                raise CBError(str(exc))
+            return [self._map_artwork_row(r) for r in rows], total
+
+        if table == "watchlist":
+            rows = [self._map_watchlist_row(r)
+                   for r in db.get_all_watchlist_channels()]
+            search = (filters.get("search") or "").strip().lower()
+            if search:
+                rows = [r for r in rows if search in
+                        f"{r['channel']} {r['link']} {r['folder']}".lower()]
+            key = self._WL_SORT_KEYS.get(sort.get("col"))
+            if key:
+                rows.sort(key=key, reverse=bool(sort.get("desc", False)))
+            total = len(rows)
+            if limit:
+                rows = rows[offset:offset + limit]
+            elif offset:
+                rows = rows[offset:]
+            return rows, total
+
+        raise CBError(f"Unknown table: {table!r}")
+
+    def db_query(self, table, filters, sort, offset, limit):
+        """One page of {table}'s rows for the Database viewer — the 20k-row
+        Downloads library never arrives in a single call because *limit*
+        caps it (DEFAULT_DB_PAGE_SIZE unless the caller asks for fewer)."""
+        rows, total = self._query_rows(table, filters, sort, offset, limit)
+        return {"rows": rows, "total": total}
+
+    @staticmethod
+    def _csv_cell(key, value):
+        if key == "embedded":
+            return "Yes" if value else "No"
+        return value if value not in (None,) else ""
+
+    def db_export_csv(self, table, filters, sort):
+        """The whole current filtered set for *table* as CSV — fetched and
+        written to a temp file only after the DB connection _query_rows
+        opened has already closed, never while it's held (the pooled lock
+        is app-wide and shared with the tkinter app; see the module note on
+        LOCAL_ONLY). Returns the CSV text inline too, so the browser side
+        can build a download Blob without a second round trip, matching how
+        logs.download's local-transport path already works."""
+        columns = self._EXPORT_COLUMNS.get(table)
+        if columns is None:
+            raise CBError(f"Unknown export table: {table!r}")
+        rows, _total = self._query_rows(table, filters, sort, 0, EXPORT_ROW_CAP)
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow([label for _key, label in columns])
+        for row in rows:
+            writer.writerow([self._csv_cell(key, row.get(key))
+                             for key, _label in columns])
+        text = buf.getvalue()
+        handle = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", prefix=f"cratebuilder_{table}_",
+            delete=False, newline="", encoding="utf-8")
+        try:
+            handle.write(text)
+        finally:
+            handle.close()
+        return {"path": handle.name, "filename": f"cratebuilder_{table}.csv",
+                "rows": len(rows), "csv": text}
+
+    def db_artwork_preview(self, path, file_path=None):
+        """{data_url} (base64) for one selected row's artwork — never sent
+        as part of a row payload. Prefers the sidecar file at *path*; falls
+        back to the bytes embedded in the MP3 at *file_path* so a track
+        whose sidecar was deleted still previews, matching the monolith's
+        _art_show_preview. {data_url: None} when neither source has
+        anything to show — the caller renders the empty-state text."""
+        path = (path or "").strip()
+        file_path = (file_path or "").strip()
+        data = None
+        note = ""
+        if path and os.path.isfile(path):
+            try:
+                with open(path, "rb") as fh:
+                    data = fh.read()
+            except OSError:
+                data = None
+            if data:
+                note = os.path.basename(path)
+        if not data and file_path:
+            data = extract_cover(file_path)
+            if data:
+                note = ("embedded artwork (no sidecar on disk)" if path
+                        else "embedded artwork")
+        if not data:
+            return {"data_url": None}
+        mime = "image/png" if data[:8] == b"\x89PNG\r\n\x1a\n" else "image/jpeg"
+        width = height = None
+        try:
+            from PIL import Image
+            with Image.open(io.BytesIO(data)) as im:
+                width, height = im.width, im.height
+        except Exception:
+            pass
+        encoded = base64.b64encode(data).decode("ascii")
+        return {"data_url": f"data:{mime};base64,{encoded}", "note": note,
+                "width": width, "height": height, "size": len(data)}
 
     # ── settings ──────────────────────────────────────────────────────────────
 
@@ -897,3 +1232,49 @@ class CrateBuilderService:
             raise CBError("No window is open to attach the picker to.")
         picked = window.create_file_dialog(webview.FOLDER_DIALOG)
         return {"path": picked[0] if picked else None}
+
+    def fs_reveal(self, path, mode="folder"):
+        """Open *path* with its OS default app (mode="open") or select it
+        in its containing folder (mode="folder", the default) — the
+        Database viewer's Open File / Open Containing Folder context-menu
+        actions. Remote never reaches this: the LOCAL_ONLY prefix check in
+        call() already refuses every "fs." method server-side before
+        dispatch, and this repeats the check the way pick_folder does,
+        rather than trusting that alone."""
+        if self.transport != LOCAL:
+            raise CBError("Opening files only works in the app window on the "
+                          "host machine.")
+        path = (path or "").strip()
+        if not path:
+            raise CBError("No path is recorded for this row.")
+        try:
+            if mode == "open":
+                if not os.path.exists(path):
+                    raise CBError(f"This file is no longer on disk:\n{path}")
+                self._os_open(path)
+            else:
+                if sys.platform == "win32" and os.path.exists(path):
+                    subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+                else:
+                    folder = path if os.path.isdir(path) else os.path.dirname(path)
+                    while folder and not os.path.isdir(folder):
+                        parent = os.path.dirname(folder)
+                        if parent == folder:
+                            break
+                        folder = parent
+                    if not folder:
+                        raise CBError(f"Could not find a folder for:\n{path}")
+                    self._os_open(folder)
+        except OSError as exc:
+            raise CBError(f"Could not open that location: {exc}")
+        return {"opened": True}
+
+    @staticmethod
+    def _os_open(target):
+        """Open *target* (a file or folder) with the OS default handler."""
+        if sys.platform == "win32":
+            os.startfile(target)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", target])
+        else:
+            subprocess.Popen(["xdg-open", target])
