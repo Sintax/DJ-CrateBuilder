@@ -45,6 +45,7 @@ def test_tail_missing_file_returns_empty_result_never_raises(service):
     assert result["offset"] == 0
     assert result["start"] == 0
     assert result["size"] == 0
+    assert result["total_lines"] == 0
     assert result["path"].endswith("activity.log")
 
 
@@ -166,6 +167,96 @@ def test_tail_a_window_start_matches_the_offset_that_produced_it(service, tmp_pa
     first = service.logs_tail("activity", offset=None, limit=5)
     reloaded = service.logs_tail("activity", offset=first["start"], limit=5)
     assert reloaded["lines"] == first["lines"]
+
+
+# ── logs.tail: total_lines (whole-file, regardless of window) ───────────────
+
+def test_tail_reports_total_lines_for_the_whole_file_regardless_of_window(service, tmp_path):
+    lines = [f"line-{i}" for i in range(50)]
+    _write_lines(tmp_path / "activity.log", lines)
+    result = service.logs_tail("activity", offset=None, limit=5)
+    assert len(result["lines"]) == 5
+    assert result["total_lines"] == 50
+
+
+def test_tail_total_lines_is_the_same_across_every_window_of_the_same_file(service, tmp_path):
+    lines = [f"line-{i}" for i in range(50)]
+    _write_lines(tmp_path / "activity.log", lines)
+    a = service.logs_tail("activity", offset=0, limit=5)
+    b = service.logs_tail("activity", offset=None, limit=5)
+    assert a["total_lines"] == b["total_lines"] == 50
+
+
+# ── logs.tail: backward windowing (before=True) ──────────────────────────────
+
+def test_tail_backward_at_offset_zero_returns_nothing(service, tmp_path):
+    _write_lines(tmp_path / "activity.log", ["a", "b", "c"])
+    result = service.logs_tail("activity", offset=0, limit=10, before=True)
+    assert result["lines"] == []
+    assert result["start"] == 0
+    assert result["offset"] == 0
+
+
+def test_tail_backward_from_a_forward_windows_start_yields_the_preceding_lines(service, tmp_path):
+    lines = [f"line-{i}" for i in range(40)]
+    _write_lines(tmp_path / "activity.log", lines)
+    tail_window = service.logs_tail("activity", offset=None, limit=5)   # last 5 lines
+    assert tail_window["lines"] == lines[-5:]
+
+    before_window = service.logs_tail(
+        "activity", offset=tail_window["start"], limit=5, before=True)
+    assert before_window["lines"] == lines[-10:-5]
+    # The backward window's own end lines up exactly with the forward
+    # window's start — contiguous, no gap and no overlap.
+    assert before_window["offset"] == tail_window["start"]
+
+
+def test_tail_backward_pagination_reconstructs_the_whole_file(service, tmp_path):
+    lines = [f"row {i:03d} of the synthetic log" for i in range(137)]
+    _write_lines(tmp_path / "activity.log", lines)
+
+    collected = []
+    offset = service.logs_tail("activity")["size"]
+    for _ in range(200):
+        page = service.logs_tail("activity", offset=offset, limit=10, before=True)
+        if not page["lines"]:
+            break
+        collected = page["lines"] + collected
+        offset = page["start"]
+        if offset <= 0:
+            break
+    else:
+        pytest.fail("backward pagination never reached the start of file")
+
+    assert collected == lines
+    assert offset == 0
+
+
+def test_tail_backward_limit_larger_than_available_returns_everything_before(service, tmp_path):
+    lines = ["one", "two", "three"]
+    _write_lines(tmp_path / "activity.log", lines)
+    size = service.logs_tail("activity")["size"]
+    result = service.logs_tail("activity", offset=size, limit=100, before=True)
+    assert result["lines"] == lines
+    assert result["start"] == 0
+
+
+def test_tail_before_is_ignored_when_offset_is_none(service, tmp_path):
+    lines = [f"line-{i}" for i in range(10)]
+    _write_lines(tmp_path / "activity.log", lines)
+    forward = service.logs_tail("activity", offset=None, limit=3, before=False)
+    backward = service.logs_tail("activity", offset=None, limit=3, before=True)
+    assert forward["lines"] == backward["lines"] == lines[-3:]
+
+
+def test_tail_before_param_reachable_through_call(service, tmp_path):
+    _write_lines(tmp_path / "activity.log", ["a", "b", "c"])
+    whole = service.call("logs.tail", {"name": "activity"})
+    result = service.call(
+        "logs.tail",
+        {"name": "activity", "offset": whole["start"], "before": True, "limit": 10})
+    assert result["lines"] == []
+    assert result["start"] == 0
 
 
 # ── logs.search ───────────────────────────────────────────────────────────────
