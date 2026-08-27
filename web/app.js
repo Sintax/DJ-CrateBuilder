@@ -11,6 +11,23 @@
   let SETTINGS_KEYS = [];
   let state = null;
 
+  /* ── batch runtime state ───────────────────────────────────────────────────
+     Everything here is push-driven (events), never polled, and lives
+     separately from `state` (the last state.snapshot) because it changes many
+     times a second while `state` only changes on a snapshot/patch. */
+  const dl = {
+    running: false,
+    paused: false,
+    rows: {},        // queue row id -> {state, title, detail} from queue.row
+    current: null,    // last progress.current payload
+    overall: null,    // last progress.overall payload
+  };
+  let quickScanIdleReason = '';
+
+  const DL_MARK = { done: '✓', active: '▶', skipped: '⊘', error: '✗', queued: '·' };
+  const DL_LOG_CLASS = { done: 'downloaded', skipped: 'skipped', error: 'error', queued: 'default' };
+  const DL_MARK_COLOR = { done: 'var(--cb-ok)', skipped: 'var(--cb-warn)', error: 'var(--cb-err)', active: 'var(--cb-accent)' };
+
   /* ── tooltips ───────────────────────────────────────────────────────────
      theme.css styles a hover-only mockup; the contract requires focus,
      Escape and aria-describedby, so the live behaviour is driven here. */
@@ -146,6 +163,7 @@
       `new tracks across ${num(c.watchlist)} channel${c.watchlist === 1 ? '' : 's'}`;
     $('#ov-tracks').textContent = num(c.downloads);
     $('#ov-dbpath').textContent = state.library.path || '';
+    renderOverviewRunning();
   }
 
   function renderGenres() {
@@ -162,11 +180,141 @@
     if (current && list.includes(current)) sel.value = current;
   }
 
+  /* ── downloads: idle/running state ────────────────────────────────────────
+     One flag (dl.running) drives every treatment the design's 3b/3c artboards
+     split on: the header tag, where Pause/Cancel live, whether the queue rows
+     show reorder controls or run states, and the progress card's opacity. */
+
+  function setDisabled(el, disabled, opts) {
+    opts = opts || {};
+    el.disabled = !!disabled;
+    el.removeAttribute('data-tt');
+    el.removeAttribute('data-tt-text');
+    if (disabled) {
+      if (opts.reason) el.setAttribute('data-tt-text', opts.reason);
+    } else if (opts.ttKey) {
+      el.setAttribute('data-tt', opts.ttKey);
+    } else if (opts.ttText) {
+      el.setAttribute('data-tt-text', opts.ttText);
+    }
+  }
+
+  function placeBatchControls(running) {
+    const header = $('#dl-header-actions');
+    const bottomRow = $('#dl-actions-row');
+    const cancelBtn = $('#dl-cancel');
+    const pauseBtn = $('#dl-pause');
+    if (running) {
+      header.append(pauseBtn, cancelBtn);
+      header.hidden = false;
+      bottomRow.hidden = true;
+    } else {
+      bottomRow.append(cancelBtn, pauseBtn);
+      header.hidden = true;
+      bottomRow.hidden = false;
+    }
+  }
+
+  function updatePauseLabel() {
+    const b = $('#dl-pause');
+    b.textContent = dl.paused ? '▶ Resume' : '⏸ Pause';
+  }
+
+  function renderDownloadsHeader() {
+    const tag = $('#dl-state');
+    tag.textContent = dl.running ? 'Batch running' : 'Idle';
+    tag.className = 'cb-tag ' + (dl.running ? 'cb-tag--fill' : 'cb-tag--grey');
+    placeBatchControls(dl.running);
+    updatePauseLabel();
+    setDisabled($('#dl-cancel'), !dl.running,
+      { reason: 'No download is running.', ttKey: 'main.cancel_batch' });
+    setDisabled($('#dl-pause'), !dl.running, {
+      reason: 'No download is running.',
+      ttText: dl.paused ? 'Resume the batch from where it left off.'
+                        : 'Hold the batch after the current track finishes.',
+    });
+    $('#dl-progress').style.opacity = dl.running ? '1' : '.6';
+
+    const qs = $('#quick-scan');
+    if (qs) {
+      qs.setAttribute('data-tt-text', dl.running
+        ? 'Unavailable while a batch is running — a scan and a download ' +
+          "can't share the host's yt-dlp session."
+        : quickScanIdleReason);
+    }
+  }
+
+  function renderCurrent() {
+    const p = dl.current;
+    $('#dl-cur-label').textContent = p ? (p.title || '—') : '—';
+    $('#dl-cur-bar').style.width = (p && p.percent != null ? p.percent : 0) + '%';
+    $('#dl-cur-bitrate').textContent = (p && p.bitrate_text) || '';
+    const bits = [];
+    if (p && p.speed_text) bits.push(p.speed_text);
+    if (p && p.percent != null) bits.push(`${p.percent}%`);
+    $('#dl-cur-speed').textContent = bits.join(' · ');
+  }
+
+  function renderOverall() {
+    const p = dl.overall;
+    $('#dl-all-label').innerHTML = p
+      ? `<span class="cb-mono">${num(p.done)}</span> of <span class="cb-mono">${num(p.total)}</span> · ` +
+        `<span class="cb-mono">${num(p.downloaded)}</span> downloaded · ` +
+        `<span class="cb-mono">${num(p.skipped)}</span> skipped · ` +
+        `<span class="cb-mono">${num(p.errors)}</span> error`
+      : '—';
+    $('#dl-all-bar').style.width = (p ? p.percent || 0 : 0) + '%';
+    $('#dl-all-eta').textContent = p
+      ? (p.eta_text ? p.eta_text + ' · ' : '') + `${p.percent || 0}%`
+      : '';
+  }
+
+  function renderPanelBatchMini() {
+    const mini = $('#panel-batch-mini');
+    mini.hidden = !dl.running;
+    if (!dl.running) return;
+    const p = dl.overall;
+    const pct = p ? p.percent || 0 : 0;
+    $('#panel-batch-fill').style.width = pct + '%';
+    $('#panel-batch-label').textContent = p ? `Batch ${num(p.done)} / ${num(p.total)}` : 'Batch 0 / 0';
+  }
+
+  function renderOverviewRunning() {
+    const el = $('#ov-running');
+    if (!el) return;
+    el.hidden = !dl.running;
+    if (!dl.running) return;
+    const p = dl.overall;
+    $('#ov-run-meta').textContent = p
+      ? `${num(p.done)} / ${num(p.total)} · ${p.percent || 0}%` : 'starting…';
+  }
+
+  function skipBtn(row, warn) {
+    const b = document.createElement('button');
+    b.className = 'cb-btn cb-btn--sm cb-icon ' + (warn ? 'cb-btn--warn' : 'cb-btn--quiet');
+    b.textContent = warn ? '⏭ Skip' : '⏭';
+    b.setAttribute('data-tt', row.state === 'skipped' ? 'main.row_skip_marked' : 'main.row_skip');
+    b.addEventListener('click', async () => {
+      await call('batch.skip', { id: row.id });
+      state.batch = await call('batch.list');
+      renderBatch();
+    });
+    return b;
+  }
+
   function renderBatch() {
     const rows = state.batch || [];
-    $('#dl-count').textContent = `${rows.length} URL${rows.length === 1 ? '' : 's'}`;
+    const running = dl.running;
     const host = $('#dl-rows');
     host.innerHTML = '';
+
+    let runningIdx = null;
+    rows.forEach((r, i) => {
+      const rt = dl.rows[r.id];
+      if (rt && rt.state === 'active') runningIdx = i + 1;
+    });
+    $('#dl-count').textContent = `${rows.length} URL${rows.length === 1 ? '' : 's'}` +
+      (running && runningIdx ? ` · running #${runningIdx}` : '');
 
     if (!rows.length) {
       const empty = document.createElement('div');
@@ -174,40 +322,144 @@
       empty.style.cssText = 'font-size:12px;padding:8px 0';
       empty.textContent = "No URLs in batch — paste a link above and press '+ Add to Batch'";
       host.appendChild(empty);
-      $('#dl-start').disabled = true;
+      setStartDisabled(true, 'Add a link to the queue before starting a download.');
+      setDisabled($('#dl-clear'), running,
+        { reason: 'The queue is locked while a download is running. Cancel it first, or skip the row instead.',
+          ttKey: 'main.batch_clear' });
+      renderQueueLog();
       return;
     }
-    $('#dl-start').disabled = false;
+    setStartDisabled(running, running ? 'A batch is already running.' : '');
+    setDisabled($('#dl-clear'), running,
+      { reason: 'The queue is locked while a download is running. Cancel it first, or skip the row instead.',
+        ttKey: 'main.batch_clear' });
 
     rows.forEach((row, i) => {
+      const rt = dl.rows[row.id];
+      const st = running ? (rt ? rt.state : (row.state === 'skipped' ? 'skipped' : 'queued'))
+                         : (row.state === 'skipped' ? 'skipped' : null);
       const el = document.createElement('div');
-      el.className = 'cb-qrow' + (row.state === 'skipped' ? ' is-skipped' : '');
-      el.innerHTML =
-        `<span class="cb-mut cb-mono cb-qrow__n">${i + 1}</span>` +
-        `<span class="cb-qrow__url"></span>` +
-        `<span class="cb-tag cb-tag--grey"></span>`;
-      $('.cb-qrow__url', el).textContent = row.url;
-      $('.cb-tag', el).textContent = row.genre;
+      el.className = 'cb-qrow' +
+        (row.state === 'skipped' ? ' is-skipped' : '') +
+        (running && (st === 'done' || st === 'error') ? ' is-past' : '') +
+        (running && st === 'active' ? ' is-active' : '');
 
-      [['⏭', 'main.row_skip', () => call('batch.skip', { id: row.id })],
-       ['▲', 'main.row_up', () => call('batch.move', { id: row.id, delta: -1 })],
-       ['▼', 'main.row_down', () => call('batch.move', { id: row.id, delta: 1 })],
-       ['✕', 'main.row_remove', () => call('batch.remove', { id: row.id })],
-      ].forEach(([label, ttKey, action]) => {
-        const b = document.createElement('button');
-        b.className = 'cb-btn cb-btn--quiet cb-btn--sm cb-icon';
-        b.textContent = label;
-        b.setAttribute('data-tt', ttKey);
-        b.addEventListener('click', async () => {
-          await action();
-          state.batch = await call('batch.list');
-          renderBatch();
+      const mark = document.createElement('span');
+      mark.className = 'cb-mono cb-qrow__mark';
+      if (running) {
+        mark.textContent = DL_MARK[st] || '·';
+        mark.style.color = DL_MARK_COLOR[st] || 'var(--cb-muted)';
+      } else {
+        mark.classList.add('cb-mut');
+        mark.textContent = String(i + 1);
+      }
+      el.appendChild(mark);
+
+      const url = document.createElement('span');
+      url.className = 'cb-qrow__url';
+      url.textContent = (rt && rt.title) || row.url;
+      el.appendChild(url);
+
+      const tag = document.createElement('span');
+      if (running) {
+        tag.className = 'cb-tag' + (st === 'done' || st === 'error' || st === 'skipped' ? ' cb-tag--grey'
+                                    : st === 'active' ? ' cb-tag--fill' : '');
+        tag.textContent = st === 'done' ? 'Done' : st === 'error' ? 'Error' :
+                          st === 'skipped' ? 'Skipped' : st === 'active' ? 'Running' : 'Pending';
+      } else {
+        tag.className = 'cb-tag cb-tag--grey';
+        tag.textContent = row.genre;
+      }
+      el.appendChild(tag);
+
+      if (!running) {
+        el.appendChild(skipBtn(row, false));
+        [['▲', 'main.row_up', () => call('batch.move', { id: row.id, delta: -1 })],
+         ['▼', 'main.row_down', () => call('batch.move', { id: row.id, delta: 1 })],
+         ['✕', 'main.row_remove', () => call('batch.remove', { id: row.id })],
+        ].forEach(([label, ttKey, action]) => {
+          const b = document.createElement('button');
+          b.className = 'cb-btn cb-btn--quiet cb-btn--sm cb-icon';
+          b.textContent = label;
+          b.setAttribute('data-tt', ttKey);
+          b.addEventListener('click', async () => {
+            await action();
+            state.batch = await call('batch.list');
+            renderBatch();
+          });
+          el.appendChild(b);
         });
-        el.appendChild(b);
-      });
+      } else if (st === 'active') {
+        el.appendChild(skipBtn(row, true));
+      } else if (st === 'queued') {
+        el.appendChild(skipBtn(row, false));
+      }
       host.appendChild(el);
     });
     bindTips(host);
+    renderQueueLog();
+  }
+
+  function renderQueueLog() {
+    const rows = state.batch || [];
+    const log = $('#dl-queue');
+    const meta = $('#dl-queue-meta');
+    log.innerHTML = '';
+
+    if (!dl.running) {
+      if (!rows.length) {
+        log.textContent = 'Queue is empty — add links above, then press Start Downloads.';
+        meta.textContent = 'empty';
+      } else {
+        log.textContent = 'Press Start Downloads to begin.';
+        meta.textContent = `${rows.length} URL${rows.length === 1 ? '' : 's'} queued`;
+      }
+      return;
+    }
+
+    let processed = 0;
+    rows.forEach((row) => {
+      const rt = dl.rows[row.id];
+      const st = rt ? rt.state : (row.state === 'skipped' ? 'skipped' : 'queued');
+      if (st === 'done' || st === 'error' || st === 'skipped') processed += 1;
+
+      const line = document.createElement('div');
+      if (st === 'active') line.className = 'cb-log__now';
+
+      const mark = document.createElement('span');
+      mark.className = DL_LOG_CLASS[st] || '';
+      mark.textContent = (DL_MARK[st] || '·') + '  ';
+      line.appendChild(mark);
+
+      const title = document.createElement('span');
+      title.className = st === 'active' ? 'cb-log__title' : '';
+      title.textContent = (rt && rt.title) || row.url;
+      line.appendChild(title);
+
+      const detail = document.createElement('span');
+      detail.className = 'cb-mut';
+      detail.style.marginLeft = '10px';
+      detail.textContent = st === 'active'
+        ? ((dl.current && (dl.current.speed_text || (dl.current.percent != null ? `${dl.current.percent}%` : ''))) || 'fetching…')
+        : (rt && rt.detail) || (st === 'queued' ? 'queued' : '');
+      line.appendChild(detail);
+
+      log.appendChild(line);
+    });
+    meta.textContent = `${rows.length} track${rows.length === 1 ? '' : 's'} · ${processed} processed`;
+  }
+
+  function setStartDisabled(disabled, reason) {
+    setDisabled($('#dl-start'), disabled,
+      { reason, ttText: 'Process every link in the queue, top to bottom.' });
+  }
+
+  function renderDownloads() {
+    renderDownloadsHeader();
+    renderCurrent();
+    renderOverall();
+    renderPanelBatchMini();
+    renderBatch();
   }
 
   function renderWatchlist() {
@@ -490,10 +742,29 @@
     $('#ov-refresh').addEventListener('click', refresh);
     $('#ov-goto-wl').addEventListener('click', () => show('watchlist'));
 
+    $('#dl-start').addEventListener('click', async () => {
+      try {
+        await call('download.start');
+        dl.running = true;
+        dl.paused = false;
+        dl.rows = {};
+        dl.current = null;
+        dl.overall = null;
+        renderDownloads();
+      } catch (_) { /* call() already toasted the reason */ }
+    });
+    $('#dl-cancel').addEventListener('click', () => { call('download.cancel').catch(() => {}); });
+    $('#dl-pause').addEventListener('click', async () => {
+      try {
+        if (dl.paused) { await call('download.resume'); dl.paused = false; }
+        else { await call('download.pause'); dl.paused = true; }
+        renderDownloadsHeader();
+      } catch (_) { /* call() already toasted the reason */ }
+    });
+
     // Actions the service does not implement yet stay visibly disabled, each
     // carrying the reason — never a dead control with no explanation.
-    [['#dl-start', 'Starting a batch from the web frontend arrives with the download service.'],
-     ['#quick-scan', 'Scanning from the web frontend arrives with the download service.'],
+    [['#quick-scan', 'Scanning from the web frontend arrives with the download service.'],
      ['#wl-scan', 'Scanning from the web frontend arrives with the download service.'],
      ['#wl-add', 'Adding a channel arrives with the Watch List service.'],
      ['#wl-links', 'Link checking arrives with the Watch List service.'],
@@ -507,19 +778,63 @@
       const existing = el.getAttribute('data-tt');
       const base = existing && TOOLTIPS[existing] ? TOOLTIPS[existing] + '\n\n' : '';
       el.setAttribute('data-tt-text', base + why);
+      if (sel === '#quick-scan') quickScanIdleReason = base + why;
     });
   }
 
   async function refresh() {
     state = await call('state.snapshot');
     state.platform = state.platform || null;
+    // Host truth on every snapshot: a page load (or a manual refresh) while a
+    // batch is running must show the running state, not wait for the next
+    // progress event to reveal it.
+    dl.running = !!(state.running && state.running.batch);
     renderShell();
     renderOverview();
     renderGenres();
-    renderBatch();
+    renderDownloads();
     renderWatchlist();
     renderSettings();
     bindTips(document);
+  }
+
+  function subscribeDownloadEvents() {
+    cbApi.on('progress.current', (p) => {
+      if (!dl.running) return;
+      dl.current = p;
+      renderCurrent();
+      renderQueueLog();
+    });
+    cbApi.on('progress.overall', (p) => {
+      if (!dl.running) return;
+      dl.overall = p;
+      renderOverall();
+      renderPanelBatchMini();
+      renderOverviewRunning();
+    });
+    cbApi.on('queue.row', (r) => {
+      if (!dl.running) return;
+      dl.rows[r.id] = { state: r.state, title: r.title, detail: r.detail };
+      renderBatch();
+    });
+    cbApi.on('batch.finished', async (r) => {
+      dl.running = false;
+      dl.paused = false;
+      dl.rows = {};
+      dl.current = null;
+      dl.overall = null;
+      const parts = `${num(r.downloaded)} downloaded, ${num(r.skipped)} skipped, ` +
+        `${num(r.errors)} error${r.errors === 1 ? '' : 's'}`;
+      toast((r.cancelled ? 'Batch cancelled — ' : 'Batch finished — ') + parts,
+        !r.cancelled && r.errors > 0);
+      await refresh();
+    });
+    cbApi.on('state.patch', (p) => {
+      if (!state || !p || !p.counts) return;
+      state.counts = Object.assign({}, state.counts, p.counts);
+      renderShell();
+      renderOverview();
+    });
   }
 
   async function boot() {
@@ -527,8 +842,9 @@
     const strings = await call('ui_strings');
     TOOLTIPS = strings.tooltips || {};
     SETTINGS_KEYS = strings.settings_keys || [];
-    await refresh();
     wire();
+    subscribeDownloadEvents();
+    await refresh();
     bindTips(document);
     show(location.hash.slice(1) || 'overview');
 
