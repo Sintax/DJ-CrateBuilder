@@ -394,7 +394,8 @@ class CrateBuilderService:
             "db.groups": lambda p: self.db_groups(),
             "fs.pick_folder": lambda p: self.pick_folder(),
             "logs.tail": lambda p: self.logs_tail(
-                p.get("name"), p.get("offset"), p.get("limit", DEFAULT_LOG_WINDOW)),
+                p.get("name"), p.get("offset"), p.get("limit", DEFAULT_LOG_WINDOW),
+                bool(p.get("before"))),
             "logs.search": lambda p: self.logs_search(
                 p.get("name"), p.get("query"), bool(p.get("regex"))),
             "logs.download": lambda p: self.logs_download(p.get("name")),
@@ -735,27 +736,40 @@ class CrateBuilderService:
             return self._debug_log_path
         raise CBError(f"Unknown log: {name!r}")
 
-    def logs_tail(self, name, offset=None, limit=DEFAULT_LOG_WINDOW):
+    def logs_tail(self, name, offset=None, limit=DEFAULT_LOG_WINDOW, before=False):
         """A window of decoded lines from the log, anchored by byte offset.
 
         offset=None means "the last `limit` lines" (tail-anchored); otherwise
-        the window starts at that byte and reads forward. A falsy `limit`
-        means no cap — used by the download path to pull the whole file in
-        one call. `offset` in the response is the byte position right after
-        the last line returned, so passing it back continues forward from
-        there; `start` is the window's own first byte, for a caller (jumping
-        to a search hit, say) that needs to tell whether a given offset
-        already falls inside what's loaded. Never raises for a missing file —
-        that's simply an empty log."""
+        the window starts at that byte and reads forward — unless `before` is
+        set, in which case it reads backward: the last `limit` lines that end
+        at or before that byte. That's how the viewer lazy-loads earlier
+        content after a search jump has landed the window mid-file (`before`
+        is ignored when `offset` is None, since tail-anchored already reads
+        from the end backward). A falsy `limit` means no cap — used by the
+        download path to pull the whole file in one call. `offset` in the
+        response is the byte position right after the last line returned, so
+        passing it back continues forward from there (or, with `before=True`,
+        continues further backward from `start`); `start` is the window's own
+        first byte, for a caller (jumping to a search hit, say) that needs to
+        tell whether a given offset already falls inside what's loaded.
+        `total_lines` is the whole file's line count — free to report, since
+        every call already walks the whole file to keep byte offsets exact.
+        Never raises for a missing file — that's simply an empty log."""
         path = self._log_path_for(name)
         limit = int(limit) if limit else None
         data = _read_log_bytes(path)
         if data is None:
-            return {"lines": [], "offset": 0, "start": 0, "size": 0, "path": path}
+            return {"lines": [], "offset": 0, "start": 0, "size": 0,
+                    "total_lines": 0, "path": path}
         size = len(data)
         all_lines = list(_iter_log_lines(data))
         if offset is None:
             chosen = all_lines[-limit:] if limit else all_lines
+        elif before:
+            end_byte = max(0, min(int(offset), size))
+            chosen = [line for line in all_lines if line[0] + line[2] <= end_byte]
+            if limit:
+                chosen = chosen[-limit:]
         else:
             start_byte = max(0, min(int(offset), size))
             chosen = [line for line in all_lines if line[0] >= start_byte]
@@ -767,7 +781,8 @@ class CrateBuilderService:
             end = chosen[-1][0] + chosen[-1][2]
         else:
             start = end = size if offset is None else max(0, min(int(offset), size))
-        return {"lines": lines, "offset": end, "start": start, "size": size, "path": path}
+        return {"lines": lines, "offset": end, "start": start, "size": size,
+                "total_lines": len(all_lines), "path": path}
 
     def logs_search(self, name, query, regex=False):
         """Every matching line in the whole file, server-side — not just the

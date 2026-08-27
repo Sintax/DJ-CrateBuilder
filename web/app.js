@@ -582,18 +582,18 @@
         return true;
       },
       lineClass(line) {
-        if (line.includes('════')) return line.includes('CANCELLED') ? 'error' : 'default';
+        if (line.includes('════')) return line.includes('CANCELLED') ? 'error' : 'warning';
         if (line.includes('DOWNLOADED')) return 'downloaded';
         if (line.includes('SKIPPED')) return 'skipped';
         if (line.includes('ERROR')) return 'error';
         return 'default';
       },
-      stats(lines) {
+      stats(lines, totalLines) {
         const dl = lines.filter((l) => l.includes('DOWNLOADED')).length;
         const sk = lines.filter((l) => l.includes('SKIPPED')).length;
         const er = lines.filter((l) => l.includes('ERROR')).length;
         return [
-          { text: `${num(lines.length)} lines shown` },
+          { text: `${num(lines.length)} lines shown (total ${num(totalLines)})` },
           { text: `✓ ${num(dl)} downloaded`, color: 'var(--cb-ok)' },
           { text: `⊘ ${num(sk)} skipped`, color: 'var(--cb-warn)' },
           { text: `✗ ${num(er)} error${er === 1 ? '' : 's'}`, color: 'var(--cb-err)' },
@@ -613,13 +613,13 @@
         if (line.includes('| DEBUG')) return 'debug';
         return 'default';
       },
-      stats(lines) {
+      stats(lines, totalLines) {
         const info = lines.filter((l) => l.includes('| INFO')).length;
         const dbg = lines.filter((l) => l.includes('| DEBUG')).length;
         const warn = lines.filter((l) => l.includes('| WARNING') || l.includes('| WARN')).length;
         const er = lines.filter((l) => l.includes('| ERROR')).length;
         return [
-          { text: `${num(lines.length)} lines shown` },
+          { text: `${num(lines.length)} lines shown (total ${num(totalLines)})` },
           { text: `ℹ ${num(info)} info` },
           { text: `· ${num(dbg)} debug`, color: 'var(--cb-muted)' },
           { text: `⚠ ${num(warn)} warning${warn === 1 ? '' : 's'}`, color: 'var(--cb-warn)' },
@@ -630,11 +630,13 @@
   };
 
   const logState = {
-    activity: { rawLines: [], windowStart: 0, windowEnd: 0, size: 0, path: '',
+    activity: { rawLines: [], windowStart: 0, windowEnd: 0, size: 0, totalLines: 0, path: '',
                filter: 'All', wrap: true, search: '', matches: [], matchPos: -1,
+               currentMatchRawIndex: -1, searchTimer: null, loadingBefore: false,
                watching: false, open: false },
-    debug: { rawLines: [], windowStart: 0, windowEnd: 0, size: 0, path: '',
+    debug: { rawLines: [], windowStart: 0, windowEnd: 0, size: 0, totalLines: 0, path: '',
             filter: 'All', wrap: true, search: '', matches: [], matchPos: -1,
+            currentMatchRawIndex: -1, searchTimer: null, loadingBefore: false,
             watching: false, open: false },
   };
 
@@ -700,19 +702,28 @@
     const cfg = LOG_KINDS[kind];
     const body = logEl(kind, 'body');
     body.innerHTML = '';
-    const filtered = st.filter === 'All' ? st.rawLines
-      : st.rawLines.filter((l) => cfg.filterMatches(l, st.filter));
+    /* Keep each rendered line's index into the raw (unfiltered) window
+       alongside it, rather than its position in the filtered list — the
+       "current match" is tracked by that raw index (see logGotoMatch), so a
+       Filter change that reorders/removes lines around it never moves the
+       highlight onto an unrelated line that merely landed at position 0. */
+    const filtered = [];
+    st.rawLines.forEach((line, rawIdx) => {
+      if (st.filter === 'All' || cfg.filterMatches(line, st.filter)) {
+        filtered.push({ line, rawIdx });
+      }
+    });
     if (!filtered.length) {
       const empty = document.createElement('div');
       empty.className = 'cb-mut';
       empty.textContent = st.size ? 'No lines match the current filter.' : '(log is empty)';
       body.appendChild(empty);
     } else {
-      filtered.forEach((line, i) => {
-        body.appendChild(logRenderLine(kind, line, i === 0 && st.matchIsHead));
+      filtered.forEach(({ line, rawIdx }) => {
+        body.appendChild(logRenderLine(kind, line, rawIdx === st.currentMatchRawIndex));
       });
     }
-    logUpdateStatbar(kind, filtered);
+    logUpdateStatbar(kind, filtered.map((f) => f.line));
     logUpdatePathbar(kind);
   }
 
@@ -734,7 +745,7 @@
     const st = logState[kind];
     const bar = logEl(kind, 'statbar');
     bar.innerHTML = '';
-    cfg.stats(filtered).forEach((part) => {
+    cfg.stats(filtered, st.totalLines).forEach((part) => {
       const span = document.createElement('span');
       span.textContent = part.text;
       if (part.color) span.style.color = part.color;
@@ -759,16 +770,40 @@
     else if (where === 'bottom') body.scrollTop = body.scrollHeight;
   }
 
-  async function logLoadWindow(kind, offset) {
+  async function logLoadWindow(kind, offset, before) {
     const st = logState[kind];
-    const res = await call('logs.tail', { name: kind, offset, limit: LOG_WINDOW_LIMIT });
+    const res = await call('logs.tail',
+      { name: kind, offset, limit: LOG_WINDOW_LIMIT, before: !!before });
     st.rawLines = res.lines;
     st.windowStart = res.start;
     st.windowEnd = res.offset;
     st.size = res.size;
+    st.totalLines = res.total_lines;
     st.path = res.path;
     st.atBottom = res.offset >= res.size;
-    st.matchIsHead = false;
+    st.currentMatchRawIndex = -1;
+  }
+
+  /* The near-bottom scroll listener loads the next window forward by fully
+     replacing it (see wireLogScreen) — that's the brief's "adjacent window"
+     behaviour and keeps the DOM at ~2000 lines. This is the same operation
+     in the other direction: after a search jump lands the window mid-file,
+     scrolling up needs the window immediately *before* windowStart. Landing
+     the scroll position at the bottom of the newly-loaded window keeps the
+     seam continuous (that window's own `offset` lines up exactly with this
+     window's old `windowStart`) instead of dumping the reader back at the
+     very top of what they just loaded. */
+  async function logLoadWindowBefore(kind) {
+    const st = logState[kind];
+    if (st.windowStart <= 0 || st.loadingBefore) return;
+    st.loadingBefore = true;
+    try {
+      await logLoadWindow(kind, st.windowStart, true);
+      logRenderWindow(kind);
+      logScrollTo(kind, 'bottom');
+    } finally {
+      st.loadingBefore = false;
+    }
   }
 
   async function logOpen(kind) {
@@ -776,8 +811,10 @@
     st.open = true;
     try {
       await call('logs.watch', { name: kind, on: true });
+      if (!st.open) return;   // navigated away while the call was in flight
       st.watching = true;
       await logLoadWindow(kind, null);
+      if (!st.open) return;   // same race, on the tail-window fetch
       logRenderWindow(kind);
       logScrollTo(kind, 'bottom');
     } catch (_) { /* call() already toasted the reason */ }
@@ -819,7 +856,7 @@
        an already-loaded window instead would mean tracking which rendered
        line the match landed on, for a save of one cheap local file read. */
     await logLoadWindow(kind, target.offset);
-    st.matchIsHead = true;
+    st.currentMatchRawIndex = 0;
     logRenderWindow(kind);
     const body = logEl(kind, 'body');
     const marked = body.querySelector('mark.is-current');
@@ -827,18 +864,17 @@
     logUpdateCounter(kind);
   }
 
-  let logSearchTimer = null;
   function logOnSearchInput(kind) {
     const st = logState[kind];
     st.search = logEl(kind, 'search').value.trim();
-    clearTimeout(logSearchTimer);
+    clearTimeout(st.searchTimer);
     if (!st.search) {
       st.matches = []; st.matchPos = -1;
       logRenderWindow(kind);
       logUpdateCounter(kind);
       return;
     }
-    logSearchTimer = setTimeout(async () => {
+    st.searchTimer = setTimeout(async () => {
       try {
         const res = await call('logs.search', { name: kind, query: st.search, regex: false });
         st.matches = res.matches;
@@ -903,9 +939,16 @@
   function logHandleAppend(kind, payload) {
     const st = logState[kind];
     if (!st.open || !st.watching || !st.atBottom) return;
-    st.rawLines = st.rawLines.concat(payload.lines).slice(-LOG_WINDOW_LIMIT);
+    const combined = st.rawLines.concat(payload.lines);
+    const dropped = Math.max(0, combined.length - LOG_WINDOW_LIMIT);
+    st.rawLines = combined.slice(dropped);
+    if (st.currentMatchRawIndex >= 0) {
+      st.currentMatchRawIndex -= dropped;
+      if (st.currentMatchRawIndex < 0) st.currentMatchRawIndex = -1;
+    }
     st.windowEnd = payload.offset;
     st.size = payload.offset;
+    st.totalLines += payload.lines.length;
     logRenderWindow(kind);
     logScrollTo(kind, 'bottom');
   }
@@ -930,6 +973,7 @@
     logEl(kind, 'body').addEventListener('scroll', () => {
       const st = logState[kind];
       const body = logEl(kind, 'body');
+      if (st.windowStart > 0 && body.scrollTop < 60) { logLoadWindowBefore(kind); return; }
       if (st.atBottom) return;
       const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 60;
       if (nearBottom) logLoadWindow(kind, st.windowEnd).then(() => logRenderWindow(kind));
