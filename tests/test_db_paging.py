@@ -1,5 +1,8 @@
+import os
+
 import pytest
 
+import cratebuilder.db as db_module
 from cratebuilder.db import DownloadsDatabase
 
 
@@ -334,3 +337,187 @@ def test_query_artwork_rows_unknown_filter_raises(tmp_path):
         db.query_artwork_rows("Not A Real Filter")
     with pytest.raises(ValueError):
         db.count_artwork_rows("Not A Real Filter")
+
+
+# ── Fix round 1: findings from task-6-review.md ─────────────────────────────
+
+# Finding 1 [HIGH]: the "Sidecar missing on disk" filesystem scan must never
+# run while the pooled DB lock is held, and must not re-stat the whole
+# candidate set on every page.
+
+def test_artwork_broken_scan_never_runs_with_the_db_lock_held(tmp_path, monkeypatch):
+    db = _new_db(tmp_path)
+    for i in range(6):
+        _add(db, title=f"T{i}", channel_name="Chan",
+             artwork_path=str(tmp_path / f"missing{i}.jpg"))
+
+    lock_states = []
+    real_isfile = os.path.isfile
+
+    def spy_isfile(path):
+        lock_states.append(db._lock.locked())
+        return real_isfile(path)
+
+    monkeypatch.setattr(db_module.os.path, "isfile", spy_isfile)
+
+    rows = db.query_artwork_rows("Sidecar missing on disk", limit=3, offset=0)
+    assert len(rows) == 3
+    assert lock_states  # the spy actually ran
+    assert all(locked is False for locked in lock_states), (
+        "os.path.isfile ran while the pooled DB lock was held")
+
+    lock_states.clear()
+    n = db.count_artwork_rows("Sidecar missing on disk")
+    assert n == 6
+    assert lock_states
+    assert all(locked is False for locked in lock_states), (
+        "os.path.isfile ran while the pooled DB lock was held")
+
+
+def test_query_artwork_rows_broken_filter_stats_only_the_needed_page(
+        tmp_path, monkeypatch):
+    db = _new_db(tmp_path)
+    for i in range(10):
+        _add(db, title=f"T{i:02d}", channel_name="Chan",
+             artwork_path=str(tmp_path / f"missing{i:02d}.jpg"))
+
+    stat_calls = []
+    real_isfile = os.path.isfile
+
+    def spy_isfile(path):
+        stat_calls.append(path)
+        return real_isfile(path)
+
+    monkeypatch.setattr(db_module.os.path, "isfile", spy_isfile)
+
+    page = db.query_artwork_rows("Sidecar missing on disk", limit=3, offset=0)
+    assert len(page) == 3
+    # Every one of the 10 candidates is broken, so filling a 3-row page from
+    # the front needs exactly 3 stat() calls, not all 10 — proves paging
+    # stops early instead of rescanning the whole candidate set.
+    assert len(stat_calls) == 3
+
+    stat_calls.clear()
+    n = db.count_artwork_rows("Sidecar missing on disk")
+    assert n == 10
+    # A count can't skip anything and still be accurate — this one really is
+    # a full scan, which the brief accepted as long as it's off the lock
+    # (proven by the test above).
+    assert len(stat_calls) == 10
+
+
+# Finding 2 [MEDIUM]: query_watchlist_rows blanks the unresolved:// sentinel.
+
+def test_query_watchlist_rows_blanks_unresolved_sentinel_url(tmp_path):
+    db = _new_db(tmp_path)
+    db.add_watchlist_channel(
+        url="unresolved://needs-a-real-link", display_name="Needs Link",
+        platform="YouTube", genre="House")
+    db.add_watchlist_channel(
+        url="https://yt/real", display_name="Real Channel",
+        platform="YouTube", genre="House")
+
+    rows = {r["display_name"]: r for r in db.query_watchlist_rows()}
+    assert rows["Needs Link"]["url"] == ""
+    assert rows["Real Channel"]["url"] == "https://yt/real"
+
+
+# Finding 3 [MEDIUM]: bitrate sorts numerically, matching the real write path
+# ("<N> kbps MP3" / "<src> kbps src -> <N> kbps MP3", never "Xk -> Yk").
+
+def test_bitrate_sort_key_reads_the_trailing_mp3_number_not_the_literal_3():
+    # Regression guard for the bug this fix round actually hit while
+    # verifying: a naive "last digit run in the string" reads the digit '3'
+    # inside the literal suffix "MP3" itself, so a plain "320 kbps MP3"
+    # extracted as bitrate 3, not 320.
+    assert DownloadsDatabase._bitrate_sort_key("320 kbps MP3") == 320
+    assert DownloadsDatabase._bitrate_sort_key(
+        "70 kbps src → 192 kbps MP3") == 192
+    assert DownloadsDatabase._bitrate_sort_key("") is None
+    assert DownloadsDatabase._bitrate_sort_key(None) is None
+    assert DownloadsDatabase._bitrate_sort_key("n/a") is None
+
+
+def test_query_downloads_bitrate_sort_is_numeric_not_lexical(tmp_path):
+    db = _new_db(tmp_path)
+    # Lexically "320 kbps MP3" < "48 kbps src..." < "70 kbps src..." (string
+    # compare on the first character), but numerically — by the MP3's own
+    # encoded rate, the LAST number in each string, per the real write path
+    # in cratebuilder/download.py — the right order is 128 < 192 < 320.
+    _add(db, title="Low", channel_name="Chan",
+         bitrate="48 kbps src → 128 kbps MP3")
+    _add(db, title="Mid", channel_name="Chan",
+         bitrate="70 kbps src → 192 kbps MP3")
+    _add(db, title="High", channel_name="Chan", bitrate="320 kbps MP3")
+
+    asc = db.query_downloads(order_by="bitrate", descending=False)
+    assert [r["title"] for r in asc] == ["Low", "Mid", "High"]
+
+    desc = db.query_downloads(order_by="bitrate", descending=True)
+    assert [r["title"] for r in desc] == ["High", "Mid", "Low"]
+
+
+def test_query_downloads_bitrate_sort_blank_values_are_deterministic(tmp_path):
+    db = _new_db(tmp_path)
+    _add(db, title="Known", channel_name="Chan", bitrate="192 kbps MP3")
+    _add(db, title="Blank", channel_name="Chan", bitrate="")
+
+    # Stated, deterministic policy: unparseable/blank bitrate sorts as
+    # SQLite's own NULL — first under ASC, last under DESC.
+    asc = db.query_downloads(order_by="bitrate", descending=False)
+    assert [r["title"] for r in asc] == ["Blank", "Known"]
+
+    desc = db.query_downloads(order_by="bitrate", descending=True)
+    assert [r["title"] for r in desc] == ["Known", "Blank"]
+
+
+# Finding 4 [LOW]: group_downloads only pins a hierarchy level when BOTH
+# group_key and group_value are supplied.
+
+def test_group_downloads_group_key_without_value_does_not_pin(tmp_path):
+    db = _new_db(tmp_path)
+    _add(db, title="A", channel_name="C1")
+    _add(db, title="B", channel_name="C2")
+
+    # group_key alone (no group_value) must not be treated as "this level is
+    # already handled" — the "Channel" preset's only level should still
+    # break out normally.
+    groups = db.group_downloads("Channel", {"group_key": "channel_name"})
+    assert {g["key"]: g["count"] for g in groups} == {"C1": 1, "C2": 1}
+
+
+# Finding 5 [LOW]: group_key duplicating a dedicated platform/genre filter is
+# rejected outright rather than silently ANDing to zero rows.
+
+def test_downloads_filter_group_key_conflicts_with_dedicated_filter_raises(
+        tmp_path):
+    db = _new_db(tmp_path)
+    _add(db, title="A", channel_name="C1", platform="YouTube", genre="House")
+
+    with pytest.raises(ValueError):
+        db.count_downloads({"platform": "YouTube", "group_key": "platform",
+                             "group_value": "SoundCloud"})
+    with pytest.raises(ValueError):
+        db.query_downloads({"genre": "House", "group_key": "genre",
+                             "group_value": "House"})
+    with pytest.raises(ValueError):
+        db.group_downloads("Platform › Channel",
+                           {"platform": "YouTube", "group_key": "platform",
+                            "group_value": "YouTube"})
+    # channel_name has no dedicated filter key, so it can't conflict with
+    # itself this way — this must keep working.
+    db.count_downloads({"group_key": "channel_name", "group_value": "C1"})
+
+
+# Finding 6 [INFO]: the artwork WHERE-clause helper validates filter_name
+# itself rather than trusting a caller to have checked already.
+
+def test_artwork_where_sql_validates_filter_name_defensively(tmp_path):
+    db = _new_db(tmp_path)
+    with pytest.raises(ValueError):
+        db._artwork_where_sql("Not A Real Filter")
+    # This helper only handles column predicates — "Sidecar missing on
+    # disk" needs a filesystem check (_artwork_broken_candidates) and must
+    # not silently fall through to some other filter's WHERE clause.
+    with pytest.raises(ValueError):
+        db._artwork_where_sql("Sidecar missing on disk")
