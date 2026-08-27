@@ -544,16 +544,20 @@
   }
 
   /* ── settings ──────────────────────────────────────────────────────────── */
+  const NOT_AVAILABLE_REASON = 'This option is not wired into the web frontend yet — ' +
+                               'change it in the desktop app for now.';
+
   function control(entry, value, available) {
     const wrap = document.createElement('div');
-    const reason = 'This option is not wired into the web frontend yet — ' +
-                   'change it in the desktop app for now.';
 
     function mark(el) {
+      el.dataset.key = entry.key;
+      el.dataset.origTt = entry.tooltip || '';
       if (!available) {
         el.disabled = true;
         el.setAttribute('data-tt-text',
-          (entry.tooltip && TOOLTIPS[entry.tooltip] ? TOOLTIPS[entry.tooltip] + '\n\n' : '') + reason);
+          (entry.tooltip && TOOLTIPS[entry.tooltip] ? TOOLTIPS[entry.tooltip] + '\n\n' : '') +
+          NOT_AVAILABLE_REASON);
       } else if (entry.tooltip && TOOLTIPS[entry.tooltip]) {
         el.setAttribute('data-tt', entry.tooltip);
       }
@@ -574,6 +578,11 @@
       text.textContent = entry.label;
       label.append(box, text);
       wrap.appendChild(label);
+      return wrap;
+    }
+
+    if (entry.key === 'limit_minutes') {
+      wrap.appendChild(limiterRow(entry, value, available, mark));
       return wrap;
     }
 
@@ -641,16 +650,226 @@
     return wrap;
   }
 
+  /* Design 3j draws the Max Length control as a slider with −/+ steppers and
+     a mono readout rather than a bare number field. */
+  function limiterRow(entry, value, available, mark) {
+    const row = document.createElement('div');
+    row.className = 'cb-row';
+    row.style.gap = '9px';
+
+    const lab = document.createElement('span');
+    lab.className = 'cb-lab';
+    lab.style.fontWeight = '500';
+    lab.textContent = entry.label + ':';
+
+    const minus = document.createElement('button');
+    minus.className = 'cb-btn cb-btn--quiet cb-btn--sm';
+    minus.style.padding = '2px 8px';
+    minus.textContent = '−';
+    minus.dataset.key = 'limit_minutes__minus';
+
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.className = 'cb-slider';
+    slider.style.flex = '1';
+    if (entry.min !== undefined) slider.min = entry.min;
+    if (entry.max !== undefined) slider.max = entry.max;
+    mark(slider);
+
+    const plus = document.createElement('button');
+    plus.className = 'cb-btn cb-btn--quiet cb-btn--sm';
+    plus.style.padding = '2px 8px';
+    plus.textContent = '+';
+    plus.dataset.key = 'limit_minutes__plus';
+
+    const readout = document.createElement('span');
+    readout.className = 'cb-mono';
+    readout.style.cssText = 'font-size:14px;font-weight:500;color:var(--cb-text);width:64px';
+
+    const current = value !== undefined && value !== null ? Number(value) : Number(entry.default ?? 0);
+    slider.value = current;
+    readout.textContent = `${current} ${entry.unit || 'min'}`;
+
+    function setReadout(v) { readout.textContent = `${v} ${entry.unit || 'min'}`; }
+    function commit(v) {
+      const min = entry.min !== undefined ? entry.min : v;
+      const max = entry.max !== undefined ? entry.max : v;
+      v = Math.max(min, Math.min(max, v));
+      slider.value = v;
+      setReadout(v);
+      save(entry.key, v, slider);
+    }
+    slider.addEventListener('input', () => setReadout(Number(slider.value)));
+    slider.addEventListener('change', () => commit(Number(slider.value)));
+
+    if (available) {
+      minus.addEventListener('click', () => commit(Number(slider.value) - 1));
+      plus.addEventListener('click', () => commit(Number(slider.value) + 1));
+    } else {
+      setDisabled(minus, true, { reason: NOT_AVAILABLE_REASON });
+      setDisabled(plus, true, { reason: NOT_AVAILABLE_REASON });
+    }
+
+    row.append(lab, minus, slider, plus, readout);
+    return row;
+  }
+
+  /* ── settings: cross-field dependencies (tkinter's _on_sleep_toggle /
+     _on_cookies_toggle, and limit_enabled greying the limiter row) ──────────
+     Re-run after every successful save() so a dependency reacts the moment
+     the host confirms the value that drives it — never optimistically. */
+  function applySettingsDependencies() {
+    const grid = $('#settings-grid');
+    if (!grid || !state) return;
+    const val = (key) => state.settings[key];
+    const el = (key) => grid.querySelector(`[data-key="${key}"]`);
+    const set = (key, disabled, reason) => {
+      const e = el(key);
+      if (!e) return;
+      if (disabled) setDisabled(e, true, { reason });
+      else setDisabled(e, false, e.dataset.origTt ? { ttKey: e.dataset.origTt } : {});
+    };
+
+    // Time / Length Limiter
+    const limiterOn = !!val('limit_enabled');
+    const limiterReason = 'Enable the limiter first.';
+    set('limit_minutes', !limiterOn, limiterReason);
+    [el('limit_minutes__minus'), el('limit_minutes__plus')].forEach((b) => {
+      if (b) setDisabled(b, !limiterOn, { reason: limiterReason });
+    });
+
+    // Download Behavior: Throttle Requests
+    const throttleOn = !!val('sleep_enabled');
+    const throttleReason = 'Turn on Throttle Requests first.';
+    set('sleep_mode', !throttleOn, throttleReason);
+    set('sleep_preset', !throttleOn, throttleReason);
+    const manual = val('sleep_mode') === 'Manual';
+    const manualReason = throttleOn ? 'Enabled with Manual mode.' : throttleReason;
+    set('sleep_min', !throttleOn || !manual, manualReason);
+    set('sleep_max', !throttleOn || !manual, manualReason);
+
+    // Browser Cookies
+    const cookiesOn = !!val('use_cookies');
+    const cookiesReason = 'Turn on Use Browser Cookies first.';
+    set('cookie_method', !cookiesOn, cookiesReason);
+    const isFileMethod = val('cookie_method') === 'Cookie File';
+    set('cookies_browser', !cookiesOn || isFileMethod,
+      cookiesOn ? 'Switch Method to Browser Profile first.' : cookiesReason);
+    set('cookies_profile', !cookiesOn || isFileMethod,
+      cookiesOn ? 'Switch Method to Browser Profile first.' : cookiesReason);
+    set('cookie_file', !cookiesOn || !isFileMethod,
+      cookiesOn ? 'Switch Method to Cookie File first.' : cookiesReason);
+
+    // Run App on Startup writes the host's own registry — local window only.
+    set('run_at_startup', state.host.transport !== 'local',
+      'Run App on Startup can only be changed from the app window on the host machine.');
+
+    bindTips(grid);
+  }
+
   async function save(key, value, el) {
     try {
       const res = await cbApi.call('settings.set', { key, value });
       state.settings[key] = res.value;
       toast(`Saved ${key}`);
+      applySettingsDependencies();
     } catch (err) {
       toast(err.userFacing ? err.message : `Could not save ${key}`, true);
       if (el && el.type === 'checkbox') el.checked = !el.checked;
     }
   }
+
+  /* Controls the design draws on screen 3j that have no schema key at all —
+     they navigate to, or drive, a screen a later task builds. Rendered
+     visibly (the layout stays complete) but disabled with the reason, per
+     the same rule that governs every other not-yet-wired control. */
+  function stubButton(label, cls, ttKey, reason) {
+    const b = document.createElement('button');
+    b.className = `cb-btn cb-btn--sm ${cls || ''}`.trim();
+    b.textContent = label;
+    setDisabled(b, true,
+      { reason: (ttKey && TOOLTIPS[ttKey] ? TOOLTIPS[ttKey] + '\n\n' : '') + reason });
+    return b;
+  }
+
+  const SECTION_EXTRAS = {
+    'Default Save Directory': (card) => {
+      const row = card.querySelector('[data-key="base_dir"]')?.closest('.cb-set-row');
+      if (row) {
+        const browse = document.createElement('button');
+        browse.className = 'cb-btn cb-btn--quiet cb-btn--sm';
+        browse.textContent = 'Browse…';
+        if (state.host.transport === 'local') {
+          browse.setAttribute('data-tt', 'remote.browse_folder');
+          browse.addEventListener('click', async () => {
+            try {
+              const res = await call('fs.pick_folder', {});
+              if (res && res.path) {
+                const input = card.querySelector('[data-key="base_dir"]');
+                input.value = res.path;
+                await save('base_dir', res.path, input);
+              }
+            } catch (_) { /* call() already toasted the reason */ }
+          });
+        } else {
+          setDisabled(browse, true,
+            { reason: 'Folder browsing only works in the app window on the host ' +
+                      'machine — type or paste the path instead.' });
+        }
+        row.appendChild(browse);
+      }
+      const hint = document.createElement('div');
+      hint.className = 'cb-mut cb-mono';
+      hint.style.fontSize = '11px';
+      hint.textContent = 'YouTube/‹Genre›/‹Channel› -(Complete Catalog)-/Track.mp3';
+      card.appendChild(hint);
+    },
+
+    'Logs': (card) => {
+      const reason = "Not wired up yet — the log viewers arrive with the web " +
+                     "frontend's log screens.";
+      const row = document.createElement('div');
+      row.className = 'cb-row';
+      row.style.cssText = 'gap:8px;flex-wrap:wrap';
+      row.append(
+        stubButton('📋 Activity Log', 'cb-btn--quiet', 'settings.activity_log', reason),
+        stubButton('🔍 Debug Log', 'cb-btn--quiet', 'settings.debug_log', reason),
+        stubButton('⤓ Download both', 'cb-btn--quiet', 'settings.download_both_logs',
+          "Not wired up yet — downloading log files arrives with the web " +
+          "frontend's log screens."));
+      card.appendChild(row);
+    },
+
+    'Downloads Database': (card) => {
+      const row = document.createElement('div');
+      row.className = 'cb-row';
+      row.style.cssText = 'gap:8px;flex-wrap:wrap';
+      row.appendChild(stubButton('🗂 Open Database', '', null,
+        "Not wired up yet — the database viewer arrives with the web " +
+        "frontend's database screen."));
+      const maintReason = "Not wired up yet — maintenance jobs arrive with the " +
+                          "web frontend's job runner.";
+      row.append(
+        stubButton('🔄 Rebuild Database from Files', 'cb-btn--warn', 'settings.rebuild_db', maintReason),
+        stubButton('🧹 Remove Duplicates', 'cb-btn--warn', 'settings.dedupe_db', maintReason),
+        stubButton('🖼 Fetch Missing Artwork', 'cb-btn--warn', 'settings.fetch_artwork', maintReason),
+        stubButton('🏷 Repair Track Tags', 'cb-btn--warn', 'settings.repair_tags', maintReason));
+      card.appendChild(row);
+    },
+
+    'Browser Cookies': (card) => {
+      const row = document.createElement('div');
+      row.className = 'cb-row';
+      row.style.cssText = 'gap:8px;flex-wrap:wrap';
+      row.append(
+        stubButton('Test authentication', 'cb-btn--quiet', null,
+          'Not wired up yet — cookie testing arrives with the web frontend\'s download service.'),
+        stubButton('How-To: dedicated Firefox profile ↗', 'cb-btn--quiet',
+          'settings.firefox_profile_howto',
+          'Not wired up yet — this walkthrough arrives with the web frontend\'s help screens.'));
+      card.appendChild(row);
+    },
+  };
 
   function renderSettings() {
     const grid = $('#settings-grid');
@@ -685,6 +904,7 @@
         if (!available) missing += 1;
         card.appendChild(control(entry, state.settings[entry.key], available));
       });
+      if (SECTION_EXTRAS[sec.name]) SECTION_EXTRAS[sec.name](card);
       grid.appendChild(card);
     });
 
@@ -697,6 +917,7 @@
         'disabled with the reason in their tooltip rather than silently doing nothing.</span>';
       grid.appendChild(note);
     }
+    applySettingsDependencies();
     bindTips(grid);
   }
 
