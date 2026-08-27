@@ -489,7 +489,7 @@ def test_group_downloads_group_key_without_value_does_not_pin(tmp_path):
 # Finding 5 [LOW]: group_key duplicating a dedicated platform/genre filter is
 # rejected outright rather than silently ANDing to zero rows.
 
-def test_downloads_filter_group_key_conflicts_with_dedicated_filter_raises(
+def test_downloads_filter_group_key_contradicting_dedicated_filter_raises(
         tmp_path):
     db = _new_db(tmp_path)
     _add(db, title="A", channel_name="C1", platform="YouTube", genre="House")
@@ -499,14 +499,57 @@ def test_downloads_filter_group_key_conflicts_with_dedicated_filter_raises(
                              "group_value": "SoundCloud"})
     with pytest.raises(ValueError):
         db.query_downloads({"genre": "House", "group_key": "genre",
-                             "group_value": "House"})
+                             "group_value": "DnB"})
     with pytest.raises(ValueError):
         db.group_downloads("Platform › Channel",
                            {"platform": "YouTube", "group_key": "platform",
-                            "group_value": "YouTube"})
-    # channel_name has no dedicated filter key, so it can't conflict with
+                            "group_value": "SoundCloud"})
+    # channel_name has no dedicated filter key, so it can never contradict
     # itself this way — this must keep working.
     db.count_downloads({"group_key": "channel_name", "group_value": "C1"})
+
+
+def test_downloads_filter_group_key_agreeing_with_dedicated_filter_composes(
+        tmp_path):
+    # Fix round 2: a group_key that names the SAME dimension and value as
+    # the dedicated platform/genre filter is a legitimate interaction (a
+    # global filter and a drill-down state that happen to agree), not an
+    # error — it must compose to the correct, non-empty result rather than
+    # raising.
+    db = _new_db(tmp_path)
+    _add(db, title="A", channel_name="C1", platform="YouTube", genre="House")
+    _add(db, title="B", channel_name="C2", platform="SoundCloud", genre="DnB")
+
+    n = db.count_downloads({"platform": "YouTube", "group_key": "platform",
+                             "group_value": "YouTube"})
+    assert n == 1
+
+    rows = db.query_downloads({"genre": "House", "group_key": "genre",
+                                "group_value": "House"})
+    assert [r["title"] for r in rows] == ["A"]
+
+    groups = db.group_downloads(
+        "Platform › Channel",
+        {"platform": "YouTube", "group_key": "platform",
+         "group_value": "YouTube"})
+    assert {g["key"]: g["count"] for g in groups} == {"C1": 1}
+
+
+def test_downloads_filter_group_key_case_difference_is_a_contradiction(
+        tmp_path):
+    # The generated WHERE clause is case-sensitive (no COLLATE NOCASE on
+    # this equality, unlike the ORDER BY clauses elsewhere in this file)
+    # and never trims the bound parameter the way _DL_BUCKET_SQL trims the
+    # column side — so "youtube" and "YouTube" really are different values
+    # to the query. The agreement check must not treat them as the same
+    # via a fuzzier comparison than the SQL itself uses, or it would let a
+    # combination through that still silently ANDs to zero rows.
+    db = _new_db(tmp_path)
+    _add(db, title="A", channel_name="C1", platform="YouTube", genre="House")
+
+    with pytest.raises(ValueError):
+        db.count_downloads({"platform": "YouTube", "group_key": "platform",
+                             "group_value": "youtube"})
 
 
 # Finding 6 [INFO]: the artwork WHERE-clause helper validates filter_name

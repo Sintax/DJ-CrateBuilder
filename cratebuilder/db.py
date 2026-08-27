@@ -1282,12 +1282,23 @@ class DownloadsDatabase:
         Every value is bound as a parameter; group_key only ever selects a
         SQL fragment out of the hard-coded _DL_BUCKET_SQL map, so caller
         input never reaches the query string directly. An unrecognised
-        group_key raises ValueError rather than being silently ignored —
-        and so does a group_key of "platform"/"genre" used alongside that
-        same dimension's own dedicated filter key: two equality clauses on
-        the same bucketed column would otherwise silently AND together
-        (agreeing harmlessly, or contradicting and ANDing to zero rows with
-        no indication why). One or the other, never both."""
+        group_key raises ValueError rather than being silently ignored.
+
+        A group_key of "platform"/"genre" may legitimately coincide with
+        that same dimension's own dedicated filter key — Task 7's UI can
+        plausibly hold a platform dropdown and a drill-down state that both
+        say "YouTube" at once, and that's an ordinary interaction, not an
+        error. Only when the two values actually disagree would the two
+        equality clauses on the same bucketed column silently AND to zero
+        rows with no indication why; that combination raises instead.
+        Agreement is exact string equality (no case-folding, no whitespace
+        trimming) — the same comparison the generated SQL itself performs
+        on these bound parameters (no COLLATE NOCASE is used on this
+        equality, unlike the ORDER BY clauses elsewhere in this file, and
+        the parameter side is never trimmed the way _DL_BUCKET_SQL trims
+        the column side), so this check can't be fooled into calling two
+        values "the same" when the query would in fact treat them as
+        different."""
         filters = filters or {}
         clauses, params = [], []
 
@@ -1313,11 +1324,13 @@ class DownloadsDatabase:
         if group_key:
             if group_key not in self._DL_BUCKET_SQL:
                 raise ValueError(f"unknown group_key: {group_key!r}")
-            if group_key in ("platform", "genre") and filters.get(group_key):
-                raise ValueError(
-                    f"group_key={group_key!r} duplicates the dedicated "
-                    f"{group_key!r} filter — pass the value in one place, "
-                    "not both")
+            if group_key in ("platform", "genre") and group_value is not None:
+                dedicated_value = filters.get(group_key)
+                if dedicated_value and dedicated_value != group_value:
+                    raise ValueError(
+                        f"group_key={group_key!r} contradicts the "
+                        f"dedicated {group_key!r} filter: "
+                        f"{dedicated_value!r} != {group_value!r}")
             if group_value is not None:
                 clauses.append(f"{self._DL_BUCKET_SQL[group_key]} = ?")
                 params.append(group_value)
