@@ -228,11 +228,8 @@
     updatePauseLabel();
     setDisabled($('#dl-cancel'), !dl.running,
       { reason: 'No download is running.', ttKey: 'main.cancel_batch' });
-    setDisabled($('#dl-pause'), !dl.running, {
-      reason: 'No download is running.',
-      ttText: dl.paused ? 'Resume the batch from where it left off.'
-                        : 'Hold the batch after the current track finishes.',
-    });
+    setDisabled($('#dl-pause'), !dl.running,
+      { reason: 'No download is running.', ttKey: 'main.pause_batch' });
     $('#dl-progress').style.opacity = dl.running ? '1' : '.6';
 
     const qs = $('#quick-scan');
@@ -450,8 +447,7 @@
   }
 
   function setStartDisabled(disabled, reason) {
-    setDisabled($('#dl-start'), disabled,
-      { reason, ttText: 'Process every link in the queue, top to bottom.' });
+    setDisabled($('#dl-start'), disabled, { reason, ttKey: 'main.start_downloads' });
   }
 
   function renderDownloads() {
