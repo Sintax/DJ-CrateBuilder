@@ -57,7 +57,7 @@ TOOLTIPS = {
     'main.new_genre': 'Create a genre folder under the platform tree. Tracks with no genre are filed under _No Genre.',
     'main.notifications': 'Scan results, finished batches and errors pushed from the host.',
     'main.open_folder': "Reveal the save directory in the host machine's file manager. Local host only.",
-    'main.pause_batch': 'Hold the batch after the current track finishes.',
+    'main.pause_batch': 'Hold the batch after the current track finishes. Resume picks up at the next URL.',
     'main.platform_help': 'Platform is detected from the URL you paste; this only sets which folder tree the download is filed under when a link is ambiguous.',
     'main.quick_url': 'Paste a YouTube or SoundCloud link — single track, playlist or whole channel. Enter queues it with the genre picked on Downloads.',
     'main.refresh': 'Reload every panel from the host.',
