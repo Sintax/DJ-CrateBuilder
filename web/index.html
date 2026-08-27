@@ -231,6 +231,72 @@
       <div class="cb-grid-2" id="settings-grid"></div>
     </section>
 
+    <!-- 3e — Activity Log (opened from Settings) -->
+    <section class="cb-screen cb-screen--log" id="screen-activity-log">
+      <div class="cb-crumb">
+        <a class="cb-back" href="#settings" data-tt="log.back_to_settings">‹ Settings</a>
+        <span class="cb-mut" style="font-size:12.5px">Activity Log</span>
+      </div>
+      <div class="cb-toolbar">
+        <span class="cb-lab">Filter:</span>
+        <select class="cb-sel" id="log-activity-filter" style="width:130px" data-tt="log.filter_activity">
+          <option>All</option><option>Downloaded</option><option>Skipped</option><option>Errors</option>
+        </select>
+        <span class="cb-vsep"></span>
+        <button class="cb-btn cb-btn--sm" id="log-activity-wrap" data-tt="log.wrap">Wrap: On</button>
+        <span class="cb-vsep"></span>
+        <span class="cb-lab">Search:</span>
+        <input class="cb-in" id="log-activity-search" style="width:190px" placeholder="Search…">
+        <button class="cb-btn cb-btn--quiet cb-btn--sm cb-icon" id="log-activity-prev" data-tt="log.search_prev">▲</button>
+        <button class="cb-btn cb-btn--quiet cb-btn--sm cb-icon" id="log-activity-next" data-tt="log.search_next">▼</button>
+        <button class="cb-btn cb-btn--quiet cb-btn--sm cb-icon" id="log-activity-clear" data-tt="log.search_clear">✕</button>
+        <span class="cb-mono cb-mut cb-log__count" id="log-activity-count"></span>
+        <div class="cb-row" style="margin-left:auto;gap:8px">
+          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="log-activity-top" data-tt="log.jump_top">⤒</button>
+          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="log-activity-bottom" data-tt="log.jump_newest">⤓</button>
+          <span class="cb-vsep"></span>
+          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="log-activity-refresh" data-tt="log.refresh_activity">⟳ Refresh</button>
+          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="log-activity-download" data-tt="log.download">⤓ Download</button>
+        </div>
+      </div>
+      <div class="cb-log cb-log--viewer" id="log-activity-body"></div>
+      <div class="cb-pathbar" id="log-activity-pathbar"></div>
+      <div class="cb-statbar" id="log-activity-statbar"></div>
+    </section>
+
+    <!-- 3f — Debug Log (opened from Settings) -->
+    <section class="cb-screen cb-screen--log" id="screen-debug-log">
+      <div class="cb-crumb">
+        <a class="cb-back" href="#settings" data-tt="log.back_to_settings">‹ Settings</a>
+        <span class="cb-mut" style="font-size:12.5px">Debug Log</span>
+      </div>
+      <div class="cb-toolbar">
+        <span class="cb-lab">Filter:</span>
+        <select class="cb-sel" id="log-debug-filter" style="width:110px" data-tt="log.filter_debug">
+          <option>All</option><option>INFO</option><option>ERROR</option><option>DEBUG</option>
+        </select>
+        <span class="cb-vsep"></span>
+        <button class="cb-btn cb-btn--sm" id="log-debug-wrap" data-tt="log.wrap">Wrap: On</button>
+        <span class="cb-vsep"></span>
+        <span class="cb-lab">Search:</span>
+        <input class="cb-in" id="log-debug-search" style="width:190px" placeholder="Search…">
+        <button class="cb-btn cb-btn--quiet cb-btn--sm cb-icon" id="log-debug-prev" data-tt="log.search_prev">▲</button>
+        <button class="cb-btn cb-btn--quiet cb-btn--sm cb-icon" id="log-debug-next" data-tt="log.search_next">▼</button>
+        <button class="cb-btn cb-btn--quiet cb-btn--sm cb-icon" id="log-debug-clear" data-tt="log.search_clear">✕</button>
+        <span class="cb-mono cb-mut cb-log__count" id="log-debug-count"></span>
+        <div class="cb-row" style="margin-left:auto;gap:8px">
+          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="log-debug-top" data-tt="log.jump_top">⤒</button>
+          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="log-debug-bottom" data-tt="log.jump_newest">⤓</button>
+          <span class="cb-vsep"></span>
+          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="log-debug-refresh" data-tt="log.refresh_debug">⟳ Refresh</button>
+          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="log-debug-download" data-tt="log.download_debug">⤓ Download</button>
+        </div>
+      </div>
+      <div class="cb-log cb-log--viewer" id="log-debug-body"></div>
+      <div class="cb-pathbar" id="log-debug-pathbar"></div>
+      <div class="cb-statbar" id="log-debug-statbar"></div>
+    </section>
+
   </main>
 </div>
 

@@ -17,6 +17,7 @@ from cratebuilder.settings import Settings
 MAIN_SCRIPT = "DJ-CrateBuilder_v1.3.py"
 DB_NAME = "cratebuilder.db"
 ACTIVITY_LOG = "activity.log"
+DEBUG_LOG = "debug.log"
 
 LOCAL = "local"
 REMOTE = "remote"
@@ -26,6 +27,14 @@ REMOTE = "remote"
 # to, and that only the host may see the host's filesystem — so this is checked
 # here, not left to a client to respect.
 LOCAL_ONLY = ("update.", "fs.")
+
+# logs.download only ever hands back a path (see CrateBuilderService.logs_download)
+# — never touches the host filesystem itself — so it's safe on the remote
+# transport too; Task 11's /logs/<name> route is what makes that path useful
+# to a browser that isn't the host.
+DEFAULT_LOG_WINDOW = 2000
+MAX_LOG_SEARCH_MATCHES = 500
+DEFAULT_LOG_WATCH_INTERVAL = 1.0
 
 _VERSION_RE = re.compile(r'^APP_VERSION\s*=\s*"([^"]+)"', re.M)
 _BUILD_RE = re.compile(r"^APP_BUILD\s*=\s*(\d+)", re.M)
@@ -220,6 +229,44 @@ def _validate_base_dir(path):
     return canonical
 
 
+# ── log files ────────────────────────────────────────────────────────────────
+# Split on raw bytes, not decoded text: errors="replace" can change how many
+# characters a line decodes to, but never how many bytes it occupies, and byte
+# offsets are the currency logs.tail/logs.search/log.append all speak in.
+
+def _iter_log_lines(data):
+    """Yield (start_offset, raw_line_bytes, bytes_consumed) for each line in
+    *data* — bytes_consumed includes the trailing newline where one exists.
+    A trailing \\r is stripped from the returned line (activitylog.append and
+    the monolith's file handlers both open in text mode, which writes CRLF on
+    Windows) but still counts toward bytes_consumed, so offsets stay exact
+    either way."""
+    start = 0
+    total = len(data)
+    while start < total:
+        nl = data.find(b"\n", start)
+        if nl == -1:
+            end = total
+            consumed = end - start
+        else:
+            end = nl
+            consumed = (end - start) + 1
+        raw = data[start:end]
+        if raw.endswith(b"\r"):
+            raw = raw[:-1]
+        yield start, raw, consumed
+        start += consumed
+
+
+def _read_log_bytes(path):
+    """Whole-file bytes, or None if the log doesn't exist yet or can't be read."""
+    try:
+        with open(path, "rb") as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
 def repo_root():
     """The directory holding the v1.3 script — the app's runtime data dir.
 
@@ -262,13 +309,15 @@ class CrateBuilderService:
     """
 
     def __init__(self, transport=LOCAL, settings=None, db_path=None,
-                 log_path=None):
+                 log_path=None, debug_log_path=None,
+                 log_watch_interval=DEFAULT_LOG_WATCH_INTERVAL):
         if transport not in (LOCAL, REMOTE):
             raise ValueError(f"unknown transport: {transport}")
         self.transport = transport
         self._settings = settings or Settings()
         self._db_path = db_path or os.path.join(app_dir(), DB_NAME)
         self._log_path = log_path or os.path.join(app_dir(), ACTIVITY_LOG)
+        self._debug_log_path = debug_log_path or os.path.join(app_dir(), DEBUG_LOG)
         self._lock = threading.Lock()
         self._batch = []
         self._ids = itertools.count(1)
@@ -276,6 +325,8 @@ class CrateBuilderService:
         self._emit = Coalescer(self.events)
         self._jobs = {}
         self._batch_runner = None
+        self._log_watch_interval = log_watch_interval
+        self._log_watchers = {}
 
     # ── events / jobs ─────────────────────────────────────────────────────────
 
@@ -342,6 +393,12 @@ class CrateBuilderService:
             "watchlist.list": lambda p: self.watchlist_list(),
             "db.groups": lambda p: self.db_groups(),
             "fs.pick_folder": lambda p: self.pick_folder(),
+            "logs.tail": lambda p: self.logs_tail(
+                p.get("name"), p.get("offset"), p.get("limit", DEFAULT_LOG_WINDOW)),
+            "logs.search": lambda p: self.logs_search(
+                p.get("name"), p.get("query"), bool(p.get("regex"))),
+            "logs.download": lambda p: self.logs_download(p.get("name")),
+            "logs.watch": lambda p: self.logs_watch(p.get("name"), p.get("on")),
         }
 
     def _unavailable(self, what):
@@ -665,6 +722,149 @@ class CrateBuilderService:
             except OSError:
                 continue
         return sorted(found)
+
+    # ── logs ──────────────────────────────────────────────────────────────────
+    # Both viewers (Activity/Debug) share this surface, keyed by the short name
+    # the frontend uses ("activity"/"debug") rather than the filename, so a
+    # renamed log file is one edit here instead of a hunt through web/app.js.
+
+    def _log_path_for(self, name):
+        if name == "activity":
+            return self._log_path
+        if name == "debug":
+            return self._debug_log_path
+        raise CBError(f"Unknown log: {name!r}")
+
+    def logs_tail(self, name, offset=None, limit=DEFAULT_LOG_WINDOW):
+        """A window of decoded lines from the log, anchored by byte offset.
+
+        offset=None means "the last `limit` lines" (tail-anchored); otherwise
+        the window starts at that byte and reads forward. A falsy `limit`
+        means no cap — used by the download path to pull the whole file in
+        one call. `offset` in the response is the byte position right after
+        the last line returned, so passing it back continues forward from
+        there; `start` is the window's own first byte, for a caller (jumping
+        to a search hit, say) that needs to tell whether a given offset
+        already falls inside what's loaded. Never raises for a missing file —
+        that's simply an empty log."""
+        path = self._log_path_for(name)
+        limit = int(limit) if limit else None
+        data = _read_log_bytes(path)
+        if data is None:
+            return {"lines": [], "offset": 0, "start": 0, "size": 0, "path": path}
+        size = len(data)
+        all_lines = list(_iter_log_lines(data))
+        if offset is None:
+            chosen = all_lines[-limit:] if limit else all_lines
+        else:
+            start_byte = max(0, min(int(offset), size))
+            chosen = [line for line in all_lines if line[0] >= start_byte]
+            if limit:
+                chosen = chosen[:limit]
+        lines = [raw.decode("utf-8", errors="replace") for (_s, raw, _n) in chosen]
+        if chosen:
+            start = chosen[0][0]
+            end = chosen[-1][0] + chosen[-1][2]
+        else:
+            start = end = size if offset is None else max(0, min(int(offset), size))
+        return {"lines": lines, "offset": end, "start": start, "size": size, "path": path}
+
+    def logs_search(self, name, query, regex=False):
+        """Every matching line in the whole file, server-side — not just the
+        window a client currently has loaded. `matches` is capped for payload
+        size; `total` is always the true count."""
+        path = self._log_path_for(name)
+        query = (query or "")
+        if not query:
+            return {"matches": [], "total": 0}
+        data = _read_log_bytes(path)
+        if data is None:
+            return {"matches": [], "total": 0}
+        if regex:
+            try:
+                pattern = re.compile(query, re.IGNORECASE)
+            except re.error as exc:
+                raise CBError(f"Not a valid search pattern: {exc}")
+            test = pattern.search
+        else:
+            needle = query.lower()
+            test = lambda text: needle in text.lower()  # noqa: E731
+        matches = []
+        total = 0
+        for line_no, (start, raw, _n) in enumerate(_iter_log_lines(data), start=1):
+            text = raw.decode("utf-8", errors="replace")
+            if test(text):
+                total += 1
+                if len(matches) < MAX_LOG_SEARCH_MATCHES:
+                    matches.append({"offset": start, "line_no": line_no})
+        return {"matches": matches, "total": total}
+
+    def logs_download(self, name):
+        """The log's absolute path. Read-only and side-effect free, so it's
+        fine on the remote transport too — Task 11's /logs/<name> route is
+        what turns this into an actual download for a browser that isn't the
+        host; for now the caller gets the path back either way."""
+        return {"path": self._log_path_for(name)}
+
+    def logs_watch(self, name, on):
+        """Start or stop the background tail for one log, ref-counted so a
+        second client opening the same viewer doesn't stop the first one's
+        watch when it later closes. The poll loop is a plain daemon thread,
+        not a job-registry job — nothing about it competes with a batch or
+        maintenance run, and it must be able to stop the moment nobody is
+        watching, not wait for a whole run to finish."""
+        path = self._log_path_for(name)
+        on = bool(on)
+        with self._lock:
+            watcher = self._log_watchers.get(name)
+            if on:
+                if watcher is None:
+                    watcher = {"count": 0, "stop": threading.Event(), "thread": None}
+                    self._log_watchers[name] = watcher
+                watcher["count"] += 1
+                if watcher["thread"] is None or not watcher["thread"].is_alive():
+                    watcher["stop"].clear()
+                    thread = threading.Thread(
+                        target=self._watch_log, args=(name, path, watcher["stop"]),
+                        daemon=True)
+                    watcher["thread"] = thread
+                    thread.start()
+            elif watcher is not None:
+                watcher["count"] = max(0, watcher["count"] - 1)
+                if watcher["count"] == 0:
+                    watcher["stop"].set()
+        return {"watching": on}
+
+    def _watch_log(self, name, path, stop_event):
+        """Poll *path*'s size on a daemon thread; emit log.append for what
+        grew since the last poll. A shrink (the log's own size-cap trimming,
+        or the file being deleted and recreated) just resyncs the baseline —
+        better to miss one delta across a trim than to emit bytes that no
+        longer mean what they used to."""
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        while not stop_event.wait(self._log_watch_interval):
+            try:
+                new_size = os.path.getsize(path)
+            except OSError:
+                continue
+            if new_size > size:
+                try:
+                    with open(path, "rb") as handle:
+                        handle.seek(size)
+                        chunk = handle.read(new_size - size)
+                except OSError:
+                    continue
+                lines = [raw.decode("utf-8", errors="replace")
+                         for (_s, raw, _n) in _iter_log_lines(chunk)]
+                if lines:
+                    self.emit("log.append", {"name": name, "lines": lines,
+                                             "offset": new_size})
+                size = new_size
+            elif new_size < size:
+                size = new_size
 
     # ── host-only ─────────────────────────────────────────────────────────────
 

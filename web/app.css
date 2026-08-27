@@ -112,6 +112,36 @@ body { overflow: hidden; }
 .cb-set-row > .cb-lab { flex: 1; min-width: 0; }
 .cb-set-card { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
 
+/* Log viewers (3e/3f) — breadcrumb + full-bleed toolbar/log/stat/path bars.
+   .cb-crumb/.cb-back aren't in theme.css (the mockup only defines them inline
+   in its own <style>), so they live here instead of being redefined there. */
+.cb-crumb {
+  display: flex; align-items: center; gap: 11px;
+  padding: 9px 14px; border-bottom: 1px solid var(--cb-line); background: var(--cb-bg);
+}
+.cb-back {
+  display: inline-flex; align-items: center; gap: 7px;
+  font: 500 12.5px var(--cb-font); color: var(--cb-line); text-decoration: none;
+  padding: 6px 11px; border: 1px solid var(--cb-line); border-radius: var(--cb-radius);
+  background: var(--cb-surface);
+}
+.cb-back:hover { background: var(--cb-accent-wash); }
+
+/* No horizontal padding: the toolbar/log/stat/path bars carry their own, and
+   run edge-to-edge like the mockup's card, rather than floating inset like
+   the other screens' .cb-card panels. Fills .cb-main's full height so the
+   stat/path bars stay pinned at the bottom of the viewport instead of
+   trailing off after however many lines happen to be loaded — only the log
+   surface itself scrolls. */
+.cb-screen--log { max-width: none; gap: 0; padding: 0; height: 100%; box-sizing: border-box; }
+.cb-screen--log .cb-toolbar { flex-wrap: nowrap; overflow-x: auto; flex: none; }
+.cb-log--viewer { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.cb-log--viewer.is-nowrap > div { white-space: pre; }
+.cb-log__count { width: 66px; flex: none; }
+.cb-screen--log .cb-pathbar, .cb-screen--log .cb-statbar { flex: none; }
+.cb-screen--log .cb-statbar { flex-wrap: wrap; row-gap: 2px; }
+.cb-log__tail { margin-left: auto; }
+
 /* The design targets desktop at >=1100px and states the layouts are not
    designed to reflow below it. Collapse to one column rather than clip a card
    off the edge — degrading is not the same as supporting a mobile breakpoint. */
