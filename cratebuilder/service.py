@@ -7,6 +7,7 @@ import sys
 import threading
 
 from cratebuilder import activitylog, startup, ui_strings, util
+from cratebuilder.artwork import DEFAULT_COVER_ART_MODE
 from cratebuilder.batchrun import BatchRunner
 from cratebuilder.crate import CrateLayout
 from cratebuilder.db import DownloadsDatabase
@@ -39,11 +40,31 @@ class CBError(Exception):
 # (cratebuilder.settings.Settings) were named independently, so a handful of
 # keys don't line up: a different schema key name, or the same key holding a
 # display string on one side and a bare stored value on the other. Each entry
-# below is (schema_key, to_display, from_display); every schema key the
-# contract doesn't list here is read/written as-is (see _identity).
+# below is a (get, set) pair — get(settings) -> display value, set(settings,
+# display) -> persists it — built around the whole Settings object rather
+# than a bare value so a binding CAN be cross-key (see cover_art_mode).
+# Every key the contract doesn't list here is read/written as-is via
+# _simple_binding's identity defaults.
 
 def _identity(value):
     return value
+
+
+def _simple_binding(schema_key, to_display=_identity, from_display=_identity):
+    """A binding whose display value is a pure function of one schema key.
+
+    Covers every case except a translation that has to look at, or change, a
+    second key. Add a cross-key binding as its own hand-written (get, set)
+    pair — see _cover_art_mode_get/_cover_art_mode_set — never by stretching
+    this helper or special-casing it in settings_get/settings_set.
+    """
+    def get(settings):
+        return to_display(settings.get(schema_key))
+
+    def set_(settings, display):
+        settings.set(schema_key, from_display(display))
+
+    return get, set_
 
 
 def _bitrate_to_display(value):
@@ -93,28 +114,53 @@ def _sleep_preset_from_display(value):
         raise ValueError(f"Unknown throttle preset: {value!r}")
 
 
-# cover_art_mode stores one of cratebuilder.artwork.COVER_ART_MODES ('crop',
-# 'original', 'off'); the design's Formatting dropdown spells all three out,
-# independently of the separate cover_art_enabled checkbox (screen 3j has
-# both controls — see UI-design/CrateBuilder Remote v3.dc.html #3j).
+# cover_art_mode is cross-key, not a simple translation. The design's
+# Formatting dropdown spells out three options — "On ~ Crop to square",
+# "On ~ Keep original aspect", "Off" — but the app's real data model only
+# ever lets cover_art_mode itself hold 'crop'/'original'; "no cover art" is
+# carried entirely by the separate cover_art_enabled flag. That split is
+# deliberate and load-bearing: cratebuilder.settings._migrate() runs on
+# EVERY Settings() construction (not just a legacy-named file) and
+# unconditionally rewrites a stored cover_art_mode == "off" back to
+# DEFAULT_COVER_ART_MODE, on the theory that "off" is a pre-checkbox legacy
+# value, not a live user choice — see _migrate's docstring and
+# DJ-CrateBuilder_v1.3.py's own _COVER_ART_FORMAT_MODES, which excludes
+# "off" from its dropdown for the same reason. Writing the literal "off"
+# here would look fine in-session and silently revert on the next load, so
+# this binding writes cover_art_enabled instead and never writes "off".
 _COVER_ART_MODE_TO_DISPLAY = {
     "crop": "On ~ Crop to square",
     "original": "On ~ Keep original aspect",
-    "off": "Off",
 }
 _COVER_ART_MODE_FROM_DISPLAY = {display: stored
                                 for stored, display in _COVER_ART_MODE_TO_DISPLAY.items()}
 
 
-def _cover_art_mode_to_display(value):
-    return _COVER_ART_MODE_TO_DISPLAY.get(value, value)
+def _cover_art_mode_get(settings):
+    """"Off" whenever cover art is disabled, regardless of what the
+    formatting key happens to hold — cover_art_enabled is the single source
+    of truth for "off", matching DJ-CrateBuilder_v1.3.py's
+    _cover_art_mode_value()."""
+    if not settings.get("cover_art_enabled"):
+        return "Off"
+    mode = settings.get("cover_art_mode")
+    return _COVER_ART_MODE_TO_DISPLAY.get(
+        mode, _COVER_ART_MODE_TO_DISPLAY[DEFAULT_COVER_ART_MODE])
 
 
-def _cover_art_mode_from_display(value):
+def _cover_art_mode_set(settings, display):
+    """"Off" clears cover_art_enabled and leaves cover_art_mode alone — never
+    writes "off" there. Any other choice turns cover art back on and writes
+    the formatting key. Both keys are written in one update() so a crash
+    between the two writes can't leave them disagreeing."""
+    if display == "Off":
+        settings.set("cover_art_enabled", False)
+        return
     try:
-        return _COVER_ART_MODE_FROM_DISPLAY[value]
+        mode = _COVER_ART_MODE_FROM_DISPLAY[display]
     except KeyError:
-        raise ValueError(f"Unknown cover art formatting: {value!r}")
+        raise ValueError(f"Unknown cover art formatting: {display!r}")
+    settings.update({"cover_art_enabled": True, "cover_art_mode": mode})
 
 
 # cookie_method stores "Browser" (see DJ-CrateBuilder_v1.3.py's
@@ -136,19 +182,21 @@ def _cookie_method_from_display(value):
 
 
 SETTINGS_BINDINGS = {
-    "bitrate_quality": ("bitrate_quality", _bitrate_to_display, _bitrate_from_display),
-    "auto_dl_interval": ("auto_download_interval", _identity, _identity),
-    "log_limit": ("log_max_mb", _log_limit_to_display, _log_limit_from_display),
-    "sleep_preset": ("sleep_preset", _sleep_preset_to_display, _sleep_preset_from_display),
-    "cover_art_mode": ("cover_art_mode", _cover_art_mode_to_display, _cover_art_mode_from_display),
-    "cookie_method": ("cookie_method", _cookie_method_to_display, _cookie_method_from_display),
+    "bitrate_quality": _simple_binding("bitrate_quality", _bitrate_to_display, _bitrate_from_display),
+    "auto_dl_interval": _simple_binding("auto_download_interval"),
+    "log_limit": _simple_binding("log_max_mb", _log_limit_to_display, _log_limit_from_display),
+    "sleep_preset": _simple_binding("sleep_preset", _sleep_preset_to_display, _sleep_preset_from_display),
+    "cover_art_mode": (_cover_art_mode_get, _cover_art_mode_set),
+    "cookie_method": _simple_binding("cookie_method", _cookie_method_to_display, _cookie_method_from_display),
 }
 
 
 def _binding(key):
-    """(schema_key, to_display, from_display) for a contract key — identity
-    for every key SETTINGS_BINDINGS doesn't call out."""
-    return SETTINGS_BINDINGS.get(key, (key, _identity, _identity))
+    """(get, set) for a contract key — get(settings) -> display value,
+    set(settings, display) -> persists it. Identity (the schema key of the
+    same name, untranslated) for every key SETTINGS_BINDINGS doesn't call
+    out."""
+    return SETTINGS_BINDINGS.get(key, _simple_binding(key))
 
 
 def _validate_base_dir(path):
@@ -405,9 +453,9 @@ class CrateBuilderService:
         out = {}
         for entry in ui_strings.SETTINGS_KEYS:
             key = entry.get("key")
-            schema_key, to_display, _ = _binding(key)
+            get, _ = _binding(key)
             try:
-                out[key] = to_display(self._settings.get(schema_key))
+                out[key] = get(self._settings)
             except KeyError:
                 continue        # contract lists remote-only keys the app lacks
         return out
@@ -415,44 +463,43 @@ class CrateBuilderService:
     def settings_get(self, key):
         if not key:
             raise CBError("No setting was named.")
-        schema_key, to_display, _ = _binding(key)
+        get, _ = _binding(key)
         try:
-            return {"key": key, "value": to_display(self._settings.get(schema_key))}
+            return {"key": key, "value": get(self._settings)}
         except KeyError:
             raise CBError(f"Unknown setting: {key}")
 
     def settings_set(self, key, value):
         """Set one key and echo the stored value back, mirroring autosave.
 
-        *value* arrives in the contract's display form; SETTINGS_BINDINGS
+        *value* arrives in the contract's display form; the binding's set()
         translates it to what Settings actually stores before writing.
         """
         if not key:
             raise CBError("No setting was named.")
-        schema_key, to_display, from_display = _binding(key)
-        if schema_key == "run_at_startup":
-            return self._set_run_at_startup(value, to_display)
+        get, set_ = _binding(key)
+        if key == "run_at_startup":
+            return self._set_run_at_startup(value, get)
+        if key == "base_dir":
+            value = _validate_base_dir(value)
         try:
-            stored = from_display(value)
-        except (TypeError, ValueError) as exc:
-            raise CBError(str(exc))
-        if schema_key == "base_dir":
-            stored = _validate_base_dir(stored)
-        try:
-            self._settings.set(schema_key, stored)
+            set_(self._settings, value)
         except KeyError:
             raise CBError(f"Unknown setting: {key}")
-        except TypeError as exc:
+        except (TypeError, ValueError) as exc:
             raise CBError(str(exc))
-        return {"key": key, "value": to_display(self._settings.get(schema_key))}
+        return {"key": key, "value": get(self._settings)}
 
-    def _set_run_at_startup(self, value, to_display):
+    def _set_run_at_startup(self, value, get):
         """Toggle the Windows Run-at-login registry entry, then persist.
 
         Local transport only — it edits the host's own registry, which a
-        remote browser has no business reaching. Mirrors
-        _on_run_at_startup_toggle in DJ-CrateBuilder_v1.3.py: the registry
-        write is the source of truth, and a failed write is never persisted.
+        remote browser has no business reaching. Stricter than
+        _on_run_at_startup_toggle in DJ-CrateBuilder_v1.3.py, which only
+        refuses to persist a failed *enable* (a failed disable is still
+        saved as False there regardless of the registry's actual state):
+        here, any set_startup() failure — enable or disable — is refused
+        and nothing is persisted.
         """
         if self.transport != LOCAL:
             raise CBError("Run App on Startup can only be changed from the "
@@ -464,8 +511,7 @@ class CrateBuilderService:
             self._settings.set("run_at_startup", enabled)
         except KeyError:
             raise CBError("Unknown setting: run_at_startup")
-        return {"key": "run_at_startup",
-                "value": to_display(self._settings.get("run_at_startup"))}
+        return {"key": "run_at_startup", "value": get(self._settings)}
 
     # ── batch queue ───────────────────────────────────────────────────────────
 

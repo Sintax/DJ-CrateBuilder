@@ -29,16 +29,39 @@ class _BrokenReg(_FakeReg):
 
 
 @pytest.fixture
-def settings(tmp_path):
-    s = Settings(path=str(tmp_path / "config.json"))
+def cfg_path(tmp_path):
+    return str(tmp_path / "config.json")
+
+
+@pytest.fixture
+def db_path(tmp_path):
+    return str(tmp_path / "cratebuilder.db")
+
+
+def _fresh(cfg_path, db_path):
+    """A brand-new Settings + CrateBuilderService pair loaded from *cfg_path*
+    on disk — a real reconstruction, not the instance a previous call used.
+
+    This is the only way to exercise Settings._load()/_migrate(), which runs
+    on every fresh construction. A test that calls settings_set and then
+    settings_get on the SAME service instance never touches that code path
+    and can't catch a value that looks fine in-session but doesn't survive a
+    reload — exactly how the cover_art_mode "off" bug (Finding 1) slipped
+    through the first round of tests.
+    """
+    return CrateBuilderService(settings=Settings(path=cfg_path), db_path=db_path)
+
+
+@pytest.fixture
+def settings(cfg_path, tmp_path):
+    s = Settings(path=cfg_path)
     s.set("base_dir", str(tmp_path / "crate"))
     return s
 
 
 @pytest.fixture
-def service(settings, tmp_path):
-    return CrateBuilderService(settings=settings,
-                               db_path=str(tmp_path / "cratebuilder.db"))
+def service(settings, db_path):
+    return CrateBuilderService(settings=settings, db_path=db_path)
 
 
 # ── bitrate_quality: "192" <-> "192 kbps" ───────────────────────────────────
@@ -53,6 +76,11 @@ def test_bitrate_quality_writes_stored_form(service, settings):
     assert settings.get("bitrate_quality") == "320"
 
 
+def test_bitrate_quality_survives_a_reload(cfg_path, db_path):
+    _fresh(cfg_path, db_path).settings_set("bitrate_quality", "320 kbps")
+    assert _fresh(cfg_path, db_path).settings_get("bitrate_quality")["value"] == "320 kbps"
+
+
 # ── auto_dl_interval -> auto_download_interval (renamed key, same values) ──
 
 def test_auto_dl_interval_reads_the_renamed_schema_key(service, settings):
@@ -63,6 +91,20 @@ def test_auto_dl_interval_reads_the_renamed_schema_key(service, settings):
 def test_auto_dl_interval_writes_the_renamed_schema_key(service, settings):
     service.settings_set("auto_dl_interval", "2 days")
     assert settings.get("auto_download_interval") == "2 days"
+
+
+def test_auto_dl_interval_survives_a_reload(cfg_path, db_path):
+    _fresh(cfg_path, db_path).settings_set("auto_dl_interval", "2 days")
+    assert _fresh(cfg_path, db_path).settings_get("auto_dl_interval")["value"] == "2 days"
+
+
+def test_auto_dl_interval_out_of_contract_value_survives_a_reload(cfg_path, db_path):
+    # DJ-CrateBuilder_v1.3.py's AUTO_DOWNLOAD_OPTIONS has "3 days" and "1 week",
+    # which SETTINGS_KEYS' options list (Finding 2) doesn't. The binding is
+    # identity, so nothing here should touch or reject the value — it must
+    # come back byte-for-byte after a reload, same as any contract-listed one.
+    _fresh(cfg_path, db_path).settings_set("auto_dl_interval", "3 days")
+    assert _fresh(cfg_path, db_path).settings_get("auto_dl_interval")["value"] == "3 days"
 
 
 # ── log_limit -> log_max_mb (int MB, 0 = unlimited) ─────────────────────────
@@ -96,6 +138,11 @@ def test_log_limit_rejects_garbage(service):
         service.settings_set("log_limit", "not a size")
 
 
+def test_log_limit_survives_a_reload(cfg_path, db_path):
+    _fresh(cfg_path, db_path).settings_set("log_limit", "Unlimited")
+    assert _fresh(cfg_path, db_path).settings_get("log_limit")["value"] == "Unlimited"
+
+
 # ── sleep_preset: contract name <-> the full stored label ──────────────────
 
 def test_sleep_preset_reads_the_short_name(service, settings):
@@ -113,23 +160,78 @@ def test_sleep_preset_rejects_unknown_name(service):
         service.settings_set("sleep_preset", "Extreme")
 
 
-# ── cover_art_mode: 'crop'/'original'/'off' <-> the design's three options ─
+def test_sleep_preset_survives_a_reload(cfg_path, db_path):
+    _fresh(cfg_path, db_path).settings_set("sleep_preset", "Aggressive")
+    assert _fresh(cfg_path, db_path).settings_get("sleep_preset")["value"] == "Aggressive"
+
+
+# ── cover_art_mode: cross-key binding — "Off" lives in cover_art_enabled ───
 
 @pytest.mark.parametrize("stored,display", [
     ("crop", "On ~ Crop to square"),
     ("original", "On ~ Keep original aspect"),
-    ("off", "Off"),
 ])
-def test_cover_art_mode_round_trips(service, settings, stored, display):
-    settings.set("cover_art_mode", stored)
+def test_cover_art_mode_on_states_round_trip(service, settings, stored, display):
+    settings.update({"cover_art_enabled": True, "cover_art_mode": stored})
     assert service.settings_get("cover_art_mode")["value"] == display
     service.settings_set("cover_art_mode", display)
     assert settings.get("cover_art_mode") == stored
+    assert settings.get("cover_art_enabled") is True
+
+
+def test_cover_art_mode_off_sets_the_enabled_flag_not_the_mode_string(service, settings):
+    # The critical fix (Finding 1): "Off" must never write cover_art_mode ==
+    # "off" — cratebuilder.settings._migrate() unconditionally rewrites that
+    # back to the default on every load. "Off" is carried by
+    # cover_art_enabled instead.
+    settings.update({"cover_art_enabled": True, "cover_art_mode": "crop"})
+    service.settings_set("cover_art_mode", "Off")
+    assert settings.get("cover_art_enabled") is False
+    assert settings.get("cover_art_mode") != "off"
+    assert service.settings_get("cover_art_mode")["value"] == "Off"
+
+
+def test_cover_art_mode_reads_off_whenever_enabled_is_false(service, settings):
+    # Reading back must key off cover_art_enabled, not the mode string —
+    # regardless of what (valid, non-off) value cover_art_mode still holds.
+    settings.update({"cover_art_enabled": False, "cover_art_mode": "original"})
+    assert service.settings_get("cover_art_mode")["value"] == "Off"
 
 
 def test_cover_art_mode_rejects_unknown_display(service):
     with pytest.raises(CBError):
         service.settings_set("cover_art_mode", "Sideways")
+
+
+def test_cover_art_mode_off_survives_a_reload_REGRESSION(cfg_path, db_path):
+    """The exact scenario the review reproduced against the pre-fix code:
+
+    session 1 (web): cover_art_enabled already True on disk (the realistic
+    case), user sets Formatting -> "Off"; looks saved.
+    --- app restart: a fresh Settings()/CrateBuilderService from the same
+    file, exactly what happens on every real launch of either frontend ---
+    session 2: Formatting must still read "Off", and cover art must still be
+    off — not silently reverted to "On ~ Crop to square" with
+    cover_art_enabled left True, which is what the pre-fix binding did by
+    writing the literal string "off" into cover_art_mode.
+    """
+    seed = Settings(path=cfg_path)
+    seed.update({"cover_art_enabled": True, "cover_art_mode": "crop"})
+    session1 = CrateBuilderService(settings=seed, db_path=db_path)
+    result = session1.settings_set("cover_art_mode", "Off")
+    assert result["value"] == "Off"                     # looked fine in-session
+
+    session2 = _fresh(cfg_path, db_path)                # a real reload
+    assert session2.settings_get("cover_art_mode")["value"] == "Off"
+    assert session2.settings_get("cover_art_enabled")["value"] is False
+
+
+def test_cover_art_mode_on_survives_a_reload(cfg_path, db_path):
+    session1 = _fresh(cfg_path, db_path)
+    session1.settings_set("cover_art_mode", "On ~ Keep original aspect")
+    session2 = _fresh(cfg_path, db_path)
+    assert session2.settings_get("cover_art_mode")["value"] == "On ~ Keep original aspect"
+    assert session2.settings_get("cover_art_enabled")["value"] is True
 
 
 # ── cookie_method: stored "Browser" <-> contract "Browser Profile" ─────────
@@ -150,6 +252,23 @@ def test_cookie_method_cookie_file_is_unchanged(service, settings):
     assert service.settings_get("cookie_method")["value"] == "Cookie File"
 
 
+def test_cookie_method_survives_a_reload(cfg_path, db_path):
+    _fresh(cfg_path, db_path).settings_set("cookie_method", "Browser Profile")
+    assert _fresh(cfg_path, db_path).settings_get("cookie_method")["value"] == "Browser Profile"
+
+
+# ── cookies_browser: identity, but the contract's option list doesn't match
+#    either the app's real combo (missing Vivaldi) or the design mockup ────
+
+def test_cookies_browser_out_of_contract_value_survives_a_reload(cfg_path, db_path):
+    # Finding 3: the app never actually offers "Vivaldi" (its own combo is
+    # Firefox/Chrome/Edge/Brave/Opera/Chromium) but the contract lists it
+    # anyway, and conversely a hand-edited config could hold anything.
+    # Identity binding: nothing server-side should touch, reject, or lose it.
+    _fresh(cfg_path, db_path).settings_set("cookies_browser", "Vivaldi")
+    assert _fresh(cfg_path, db_path).settings_get("cookies_browser")["value"] == "Vivaldi"
+
+
 # ── identity keys still pass straight through ───────────────────────────────
 
 def test_skip_mode_is_an_identity_binding(service, settings):
@@ -165,6 +284,7 @@ def test_settings_all_returns_display_values(service, settings):
         "bitrate_quality": "256",
         "log_max_mb": 5,
         "sleep_preset": "Light  (1\u20135 s)",
+        "cover_art_enabled": True,
         "cover_art_mode": "original",
         "cookie_method": "Browser",
     })
