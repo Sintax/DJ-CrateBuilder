@@ -118,7 +118,8 @@ def test_settings_reject_unknown_key(service):
 def test_settings_all_skips_keys_the_schema_lacks(service):
     values = service.settings_all()
     assert "skip_existing" in values
-    assert "log_limit" not in values      # contract-only name, not in the schema
+    assert "log_limit" in values          # bound to log_max_mb, which exists
+    assert "remote_enabled" not in values  # contract-only, no schema key at all
 
 
 # ── library ──────────────────────────────────────────────────────────────────

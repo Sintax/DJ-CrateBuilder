@@ -6,7 +6,7 @@ import re
 import sys
 import threading
 
-from cratebuilder import activitylog, ui_strings, util
+from cratebuilder import activitylog, startup, ui_strings, util
 from cratebuilder.batchrun import BatchRunner
 from cratebuilder.crate import CrateLayout
 from cratebuilder.db import DownloadsDatabase
@@ -32,6 +32,144 @@ _BUILD_RE = re.compile(r"^APP_BUILD\s*=\s*(\d+)", re.M)
 
 class CBError(Exception):
     """A failure with a message meant to be shown to the user as-is."""
+
+
+# ── settings bindings ───────────────────────────────────────────────────────
+# The contract (cratebuilder.ui_strings.SETTINGS_KEYS) and the config schema
+# (cratebuilder.settings.Settings) were named independently, so a handful of
+# keys don't line up: a different schema key name, or the same key holding a
+# display string on one side and a bare stored value on the other. Each entry
+# below is (schema_key, to_display, from_display); every schema key the
+# contract doesn't list here is read/written as-is (see _identity).
+
+def _identity(value):
+    return value
+
+
+def _bitrate_to_display(value):
+    text = str(value)
+    return text if text.endswith("kbps") else f"{text} kbps"
+
+
+def _bitrate_from_display(value):
+    return str(value).split()[0]
+
+
+def _log_limit_to_display(value):
+    try:
+        mb = int(value)
+    except (TypeError, ValueError):
+        mb = 0
+    return "Unlimited" if not mb else f"{mb} MB"
+
+
+def _log_limit_from_display(value):
+    text = str(value).strip()
+    if text.lower() == "unlimited":
+        return 0
+    try:
+        return int(text.split()[0])
+    except (ValueError, IndexError):
+        raise ValueError(f"Not a valid log size limit: {value!r}")
+
+
+# Keyed by the exact label cratebuilder.util.THROTTLE_PRESETS stores in the
+# config file; the contract only shows the preset name, not the (min, max)
+# seconds range baked into the stored label.
+_SLEEP_PRESET_TO_DISPLAY = {stored: stored.split()[0]
+                            for stored in util.THROTTLE_PRESETS}
+_SLEEP_PRESET_FROM_DISPLAY = {display: stored
+                              for stored, display in _SLEEP_PRESET_TO_DISPLAY.items()}
+
+
+def _sleep_preset_to_display(value):
+    return _SLEEP_PRESET_TO_DISPLAY.get(value, value)
+
+
+def _sleep_preset_from_display(value):
+    try:
+        return _SLEEP_PRESET_FROM_DISPLAY[value]
+    except KeyError:
+        raise ValueError(f"Unknown throttle preset: {value!r}")
+
+
+# cover_art_mode stores one of cratebuilder.artwork.COVER_ART_MODES ('crop',
+# 'original', 'off'); the design's Formatting dropdown spells all three out,
+# independently of the separate cover_art_enabled checkbox (screen 3j has
+# both controls — see UI-design/CrateBuilder Remote v3.dc.html #3j).
+_COVER_ART_MODE_TO_DISPLAY = {
+    "crop": "On ~ Crop to square",
+    "original": "On ~ Keep original aspect",
+    "off": "Off",
+}
+_COVER_ART_MODE_FROM_DISPLAY = {display: stored
+                                for stored, display in _COVER_ART_MODE_TO_DISPLAY.items()}
+
+
+def _cover_art_mode_to_display(value):
+    return _COVER_ART_MODE_TO_DISPLAY.get(value, value)
+
+
+def _cover_art_mode_from_display(value):
+    try:
+        return _COVER_ART_MODE_FROM_DISPLAY[value]
+    except KeyError:
+        raise ValueError(f"Unknown cover art formatting: {value!r}")
+
+
+# cookie_method stores "Browser" (see DJ-CrateBuilder_v1.3.py's
+# _cookie_method_combo), but the contract's option reads "Browser Profile".
+_COOKIE_METHOD_TO_DISPLAY = {"Browser": "Browser Profile", "Cookie File": "Cookie File"}
+_COOKIE_METHOD_FROM_DISPLAY = {display: stored
+                               for stored, display in _COOKIE_METHOD_TO_DISPLAY.items()}
+
+
+def _cookie_method_to_display(value):
+    return _COOKIE_METHOD_TO_DISPLAY.get(value, value)
+
+
+def _cookie_method_from_display(value):
+    try:
+        return _COOKIE_METHOD_FROM_DISPLAY[value]
+    except KeyError:
+        raise ValueError(f"Unknown cookie method: {value!r}")
+
+
+SETTINGS_BINDINGS = {
+    "bitrate_quality": ("bitrate_quality", _bitrate_to_display, _bitrate_from_display),
+    "auto_dl_interval": ("auto_download_interval", _identity, _identity),
+    "log_limit": ("log_max_mb", _log_limit_to_display, _log_limit_from_display),
+    "sleep_preset": ("sleep_preset", _sleep_preset_to_display, _sleep_preset_from_display),
+    "cover_art_mode": ("cover_art_mode", _cover_art_mode_to_display, _cover_art_mode_from_display),
+    "cookie_method": ("cookie_method", _cookie_method_to_display, _cookie_method_from_display),
+}
+
+
+def _binding(key):
+    """(schema_key, to_display, from_display) for a contract key — identity
+    for every key SETTINGS_BINDINGS doesn't call out."""
+    return SETTINGS_BINDINGS.get(key, (key, _identity, _identity))
+
+
+def _validate_base_dir(path):
+    """Canonicalize a save-directory path, creating it if needed.
+
+    Rejects a blank path, a path that already exists as a file, and a path
+    that cannot be created (e.g. a drive that doesn't exist) — the same
+    guarantees DJ-CrateBuilder_v1.3.py's _save_settings gets from
+    filedialog.askdirectory plus os.makedirs, which a typed path bypasses.
+    """
+    raw = (path or "").strip()
+    if not raw:
+        raise CBError("Enter a save directory.")
+    canonical = os.path.abspath(os.path.expanduser(raw))
+    if os.path.isfile(canonical):
+        raise CBError(f"{canonical} is a file, not a folder.")
+    try:
+        os.makedirs(canonical, exist_ok=True)
+    except OSError as exc:
+        raise CBError(f"That folder could not be used: {exc.strerror or exc}")
+    return canonical
 
 
 def repo_root():
@@ -262,12 +400,14 @@ class CrateBuilderService:
     # ── settings ──────────────────────────────────────────────────────────────
 
     def settings_all(self):
-        """Every schema key the design's Settings screen renders."""
+        """Every schema key the design's Settings screen renders, translated
+        to the display form SETTINGS_BINDINGS says the contract expects."""
         out = {}
         for entry in ui_strings.SETTINGS_KEYS:
             key = entry.get("key")
+            schema_key, to_display, _ = _binding(key)
             try:
-                out[key] = self._settings.get(key)
+                out[key] = to_display(self._settings.get(schema_key))
             except KeyError:
                 continue        # contract lists remote-only keys the app lacks
         return out
@@ -275,22 +415,57 @@ class CrateBuilderService:
     def settings_get(self, key):
         if not key:
             raise CBError("No setting was named.")
+        schema_key, to_display, _ = _binding(key)
         try:
-            return {"key": key, "value": self._settings.get(key)}
+            return {"key": key, "value": to_display(self._settings.get(schema_key))}
         except KeyError:
             raise CBError(f"Unknown setting: {key}")
 
     def settings_set(self, key, value):
-        """Set one key and echo the stored value back, mirroring autosave."""
+        """Set one key and echo the stored value back, mirroring autosave.
+
+        *value* arrives in the contract's display form; SETTINGS_BINDINGS
+        translates it to what Settings actually stores before writing.
+        """
         if not key:
             raise CBError("No setting was named.")
+        schema_key, to_display, from_display = _binding(key)
+        if schema_key == "run_at_startup":
+            return self._set_run_at_startup(value, to_display)
         try:
-            self._settings.set(key, value)
+            stored = from_display(value)
+        except (TypeError, ValueError) as exc:
+            raise CBError(str(exc))
+        if schema_key == "base_dir":
+            stored = _validate_base_dir(stored)
+        try:
+            self._settings.set(schema_key, stored)
         except KeyError:
             raise CBError(f"Unknown setting: {key}")
         except TypeError as exc:
             raise CBError(str(exc))
-        return {"key": key, "value": self._settings.get(key)}
+        return {"key": key, "value": to_display(self._settings.get(schema_key))}
+
+    def _set_run_at_startup(self, value, to_display):
+        """Toggle the Windows Run-at-login registry entry, then persist.
+
+        Local transport only — it edits the host's own registry, which a
+        remote browser has no business reaching. Mirrors
+        _on_run_at_startup_toggle in DJ-CrateBuilder_v1.3.py: the registry
+        write is the source of truth, and a failed write is never persisted.
+        """
+        if self.transport != LOCAL:
+            raise CBError("Run App on Startup can only be changed from the "
+                          "app window on the host machine.")
+        enabled = bool(value)
+        if sys.platform == "win32" and not startup.set_startup(enabled):
+            raise CBError("Could not update the Windows startup entry.")
+        try:
+            self._settings.set("run_at_startup", enabled)
+        except KeyError:
+            raise CBError("Unknown setting: run_at_startup")
+        return {"key": "run_at_startup",
+                "value": to_display(self._settings.get("run_at_startup"))}
 
     # ── batch queue ───────────────────────────────────────────────────────────
 
