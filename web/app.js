@@ -107,14 +107,29 @@
   }
 
   /* ── navigation ────────────────────────────────────────────────────────── */
-  const SCREENS = ['overview', 'downloads', 'watchlist', 'settings'];
+  const SCREENS = ['overview', 'downloads', 'watchlist', 'settings',
+                    'activity-log', 'debug-log'];
+  /* The log screens aren't nav items (they open from Settings, per the
+     contract's shell.not_in_nav) — while either is open, Settings stays the
+     highlighted nav entry, per shell.active_item_rule. */
+  const NAV_ALIAS = { 'activity-log': 'settings', 'debug-log': 'settings' };
+  const LOG_KIND_BY_SCREEN = { 'activity-log': 'activity', 'debug-log': 'debug' };
+  let currentScreen = null;
 
   function show(name) {
     if (!SCREENS.includes(name)) name = 'overview';
+    const previous = currentScreen;
+    currentScreen = name;
     $$('.cb-screen').forEach((s) => s.classList.toggle('is-on', s.id === 'screen-' + name));
-    $$('.cb-nav').forEach((a) => a.classList.toggle('is-on', a.dataset.screen === name));
+    const navName = NAV_ALIAS[name] || name;
+    $$('.cb-nav').forEach((a) => a.classList.toggle('is-on', a.dataset.screen === navName));
     $('.cb-main').scrollTop = 0;
     if (location.hash.slice(1) !== name) location.hash = name;
+
+    const leavingKind = LOG_KIND_BY_SCREEN[previous];
+    if (leavingKind && leavingKind !== LOG_KIND_BY_SCREEN[name]) logClose(leavingKind);
+    const enteringKind = LOG_KIND_BY_SCREEN[name];
+    if (enteringKind) logOpen(enteringKind);
   }
 
   /* The nav is real anchors, so routing is the hash — that keeps deep links
@@ -543,6 +558,384 @@
     bindTips(host);
   }
 
+  /* ── log viewers (3e Activity / 3f Debug) ─────────────────────────────────
+     One component, two instances, told apart by `kind` ('activity'/'debug')
+     — the id prefix in the DOM (#log-activity-… vs #log-debug-…) is the only
+     thing that differs structurally. Windowed: the service never hands back
+     more than LOG_WINDOW_LIMIT lines, so the DOM never holds more either.
+     Filter and the live incremental highlight-as-you-type search work on
+     whatever window is currently loaded; stepping through a search match
+     (▲/▼) always re-asks the host for the window starting at that match's
+     byte offset, so it's correct across the whole file, not just what's on
+     screen — logs.tail's `start` lines up exactly with logs.search's
+     `offset` because both walk the same byte-exact line splitter. */
+  const LOG_WINDOW_LIMIT = 2000;
+  const LOG_SEARCH_DEBOUNCE = 200;
+
+  const LOG_KINDS = {
+    activity: {
+      filterMatches(line, filter) {
+        if (filter === 'All' || !filter) return true;
+        if (filter === 'Downloaded') return line.includes('DOWNLOADED');
+        if (filter === 'Skipped') return line.includes('SKIPPED');
+        if (filter === 'Errors') return line.includes('ERROR');
+        return true;
+      },
+      lineClass(line) {
+        if (line.includes('════')) return line.includes('CANCELLED') ? 'error' : 'default';
+        if (line.includes('DOWNLOADED')) return 'downloaded';
+        if (line.includes('SKIPPED')) return 'skipped';
+        if (line.includes('ERROR')) return 'error';
+        return 'default';
+      },
+      stats(lines) {
+        const dl = lines.filter((l) => l.includes('DOWNLOADED')).length;
+        const sk = lines.filter((l) => l.includes('SKIPPED')).length;
+        const er = lines.filter((l) => l.includes('ERROR')).length;
+        return [
+          { text: `${num(lines.length)} lines shown` },
+          { text: `✓ ${num(dl)} downloaded`, color: 'var(--cb-ok)' },
+          { text: `⊘ ${num(sk)} skipped`, color: 'var(--cb-warn)' },
+          { text: `✗ ${num(er)} error${er === 1 ? '' : 's'}`, color: 'var(--cb-err)' },
+        ];
+      },
+    },
+    debug: {
+      filterMatches(line, filter) {
+        if (filter === 'All' || !filter) return true;
+        if (line.includes('═')) return true;
+        return line.includes(`| ${filter}`);
+      },
+      lineClass(line) {
+        if (line.includes('═')) return 'default';
+        if (line.includes('| ERROR')) return 'error';
+        if (line.includes('| WARNING') || line.includes('| WARN')) return 'warning';
+        if (line.includes('| DEBUG')) return 'debug';
+        return 'default';
+      },
+      stats(lines) {
+        const info = lines.filter((l) => l.includes('| INFO')).length;
+        const dbg = lines.filter((l) => l.includes('| DEBUG')).length;
+        const warn = lines.filter((l) => l.includes('| WARNING') || l.includes('| WARN')).length;
+        const er = lines.filter((l) => l.includes('| ERROR')).length;
+        return [
+          { text: `${num(lines.length)} lines shown` },
+          { text: `ℹ ${num(info)} info` },
+          { text: `· ${num(dbg)} debug`, color: 'var(--cb-muted)' },
+          { text: `⚠ ${num(warn)} warning${warn === 1 ? '' : 's'}`, color: 'var(--cb-warn)' },
+          { text: `✗ ${num(er)} error${er === 1 ? '' : 's'}`, color: 'var(--cb-err)' },
+        ];
+      },
+    },
+  };
+
+  const logState = {
+    activity: { rawLines: [], windowStart: 0, windowEnd: 0, size: 0, path: '',
+               filter: 'All', wrap: true, search: '', matches: [], matchPos: -1,
+               watching: false, open: false },
+    debug: { rawLines: [], windowStart: 0, windowEnd: 0, size: 0, path: '',
+            filter: 'All', wrap: true, search: '', matches: [], matchPos: -1,
+            watching: false, open: false },
+  };
+
+  function logEl(kind, suffix) { return $(`#log-${kind}-${suffix}`); }
+
+  function logSplitTsAndRest(line) {
+    const pipe = line.indexOf('|');
+    if (pipe === -1) return [null, line];
+    return [line.slice(0, pipe + 1), line.slice(pipe + 1)];
+  }
+
+  /* Wraps every case-insensitive occurrence of `query` inside `span` in a
+     <mark>, building text/mark nodes by hand rather than an innerHTML replace
+     — the log line is host-supplied text and the query is user-typed, and
+     neither should ever be interpreted as markup. */
+  function logMarkMatches(span, query) {
+    if (!query) return;
+    const text = span.textContent;
+    const lower = text.toLowerCase();
+    const needle = query.toLowerCase();
+    let idx = lower.indexOf(needle);
+    if (idx === -1) return;
+    span.textContent = '';
+    let cursor = 0;
+    while (idx !== -1) {
+      if (idx > cursor) span.appendChild(document.createTextNode(text.slice(cursor, idx)));
+      const mark = document.createElement('mark');
+      mark.textContent = text.slice(idx, idx + needle.length);
+      span.appendChild(mark);
+      cursor = idx + needle.length;
+      idx = lower.indexOf(needle, cursor);
+    }
+    if (cursor < text.length) span.appendChild(document.createTextNode(text.slice(cursor)));
+  }
+
+  function logRenderLine(kind, line, isCurrentMatch) {
+    const cfg = LOG_KINDS[kind];
+    const div = document.createElement('div');
+    const cls = cfg.lineClass(line);
+    const [ts, rest] = logSplitTsAndRest(line);
+    if (ts) {
+      const tsSpan = document.createElement('span');
+      tsSpan.className = 'ts';
+      tsSpan.textContent = ts;
+      div.appendChild(tsSpan);
+    }
+    const restSpan = document.createElement('span');
+    restSpan.className = cls;
+    restSpan.textContent = rest;
+    div.appendChild(restSpan);
+    if (logState[kind].search) {
+      logMarkMatches(restSpan, logState[kind].search);
+      if (isCurrentMatch) {
+        const first = restSpan.querySelector('mark');
+        if (first) first.classList.add('is-current');
+      }
+    }
+    return div;
+  }
+
+  function logRenderWindow(kind) {
+    const st = logState[kind];
+    const cfg = LOG_KINDS[kind];
+    const body = logEl(kind, 'body');
+    body.innerHTML = '';
+    const filtered = st.filter === 'All' ? st.rawLines
+      : st.rawLines.filter((l) => cfg.filterMatches(l, st.filter));
+    if (!filtered.length) {
+      const empty = document.createElement('div');
+      empty.className = 'cb-mut';
+      empty.textContent = st.size ? 'No lines match the current filter.' : '(log is empty)';
+      body.appendChild(empty);
+    } else {
+      filtered.forEach((line, i) => {
+        body.appendChild(logRenderLine(kind, line, i === 0 && st.matchIsHead));
+      });
+    }
+    logUpdateStatbar(kind, filtered);
+    logUpdatePathbar(kind);
+  }
+
+  function humanSize(bytes) {
+    if (!bytes) return '0 KB';
+    if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function logUpdatePathbar(kind) {
+    const st = logState[kind];
+    const cap = (state && state.settings && state.settings.log_limit) || 'Unlimited';
+    logEl(kind, 'pathbar').textContent =
+      `${st.path || ''} · ${humanSize(st.size)} of ${cap} limit`;
+  }
+
+  function logUpdateStatbar(kind, filtered) {
+    const cfg = LOG_KINDS[kind];
+    const st = logState[kind];
+    const bar = logEl(kind, 'statbar');
+    bar.innerHTML = '';
+    cfg.stats(filtered).forEach((part) => {
+      const span = document.createElement('span');
+      span.textContent = part.text;
+      if (part.color) span.style.color = part.color;
+      bar.appendChild(span);
+    });
+    const tail = document.createElement('span');
+    tail.className = 'cb-log__tail';
+    tail.textContent = st.watching && st.atBottom ? 'streaming · tail follows' : '';
+    bar.appendChild(tail);
+  }
+
+  function logUpdateCounter(kind) {
+    const st = logState[kind];
+    const el = logEl(kind, 'count');
+    if (!st.search) { el.textContent = ''; return; }
+    el.textContent = st.matches.length ? `${st.matchPos + 1} of ${st.matches.length}` : 'no match';
+  }
+
+  function logScrollTo(kind, where) {
+    const body = logEl(kind, 'body');
+    if (where === 'top') body.scrollTop = 0;
+    else if (where === 'bottom') body.scrollTop = body.scrollHeight;
+  }
+
+  async function logLoadWindow(kind, offset) {
+    const st = logState[kind];
+    const res = await call('logs.tail', { name: kind, offset, limit: LOG_WINDOW_LIMIT });
+    st.rawLines = res.lines;
+    st.windowStart = res.start;
+    st.windowEnd = res.offset;
+    st.size = res.size;
+    st.path = res.path;
+    st.atBottom = res.offset >= res.size;
+    st.matchIsHead = false;
+  }
+
+  async function logOpen(kind) {
+    const st = logState[kind];
+    st.open = true;
+    try {
+      await call('logs.watch', { name: kind, on: true });
+      st.watching = true;
+      await logLoadWindow(kind, null);
+      logRenderWindow(kind);
+      logScrollTo(kind, 'bottom');
+    } catch (_) { /* call() already toasted the reason */ }
+  }
+
+  function logClose(kind) {
+    const st = logState[kind];
+    if (!st.open) return;
+    st.open = false;
+    st.watching = false;
+    call('logs.watch', { name: kind, on: false }).catch(() => {});
+  }
+
+  async function logJumpTop(kind) {
+    await logLoadWindow(kind, 0);
+    logRenderWindow(kind);
+    logScrollTo(kind, 'top');
+  }
+
+  async function logJumpBottom(kind) {
+    await logLoadWindow(kind, null);
+    logRenderWindow(kind);
+    logScrollTo(kind, 'bottom');
+  }
+
+  async function logRefresh(kind) {
+    const st = logState[kind];
+    await logLoadWindow(kind, st.atBottom ? null : st.windowStart);
+    logRenderWindow(kind);
+  }
+
+  async function logGotoMatch(kind, idx) {
+    const st = logState[kind];
+    if (idx < 0 || idx >= st.matches.length) { logRenderWindow(kind); return; }
+    const target = st.matches[idx];
+    /* Always reload starting exactly at the match's own offset — logs.tail
+       and logs.search walk the same byte-exact line splitter (see the module
+       comment above), so res.lines[0] is guaranteed to be that match. Reusing
+       an already-loaded window instead would mean tracking which rendered
+       line the match landed on, for a save of one cheap local file read. */
+    await logLoadWindow(kind, target.offset);
+    st.matchIsHead = true;
+    logRenderWindow(kind);
+    const body = logEl(kind, 'body');
+    const marked = body.querySelector('mark.is-current');
+    if (marked) marked.scrollIntoView({ block: 'center' });
+    logUpdateCounter(kind);
+  }
+
+  let logSearchTimer = null;
+  function logOnSearchInput(kind) {
+    const st = logState[kind];
+    st.search = logEl(kind, 'search').value.trim();
+    clearTimeout(logSearchTimer);
+    if (!st.search) {
+      st.matches = []; st.matchPos = -1;
+      logRenderWindow(kind);
+      logUpdateCounter(kind);
+      return;
+    }
+    logSearchTimer = setTimeout(async () => {
+      try {
+        const res = await call('logs.search', { name: kind, query: st.search, regex: false });
+        st.matches = res.matches;
+        st.matchPos = st.matches.length ? 0 : -1;
+      } catch (_) { st.matches = []; st.matchPos = -1; }
+      await logGotoMatch(kind, st.matchPos);
+    }, LOG_SEARCH_DEBOUNCE);
+  }
+
+  async function logSearchStep(kind, delta) {
+    const st = logState[kind];
+    if (!st.matches.length) return;
+    st.matchPos = (st.matchPos + delta + st.matches.length) % st.matches.length;
+    await logGotoMatch(kind, st.matchPos);
+  }
+
+  function logClearSearch(kind) {
+    const st = logState[kind];
+    st.search = ''; st.matches = []; st.matchPos = -1;
+    logEl(kind, 'search').value = '';
+    logRenderWindow(kind);
+    logUpdateCounter(kind);
+  }
+
+  function logToggleWrap(kind) {
+    const st = logState[kind];
+    st.wrap = !st.wrap;
+    const body = logEl(kind, 'body');
+    body.classList.toggle('is-nowrap', !st.wrap);
+    const btn = logEl(kind, 'wrap');
+    btn.textContent = st.wrap ? 'Wrap: On' : 'Wrap: Off';
+    btn.style.borderColor = st.wrap ? 'var(--cb-ok)' : '';
+    btn.style.color = st.wrap ? 'var(--cb-ok)' : '';
+    btn.style.background = st.wrap ? 'rgba(18,122,62,.06)' : '';
+  }
+
+  async function logDownload(kind) {
+    try {
+      const res = await call('logs.download', { name: kind });
+      if (!state || state.host.transport !== 'local') {
+        toast(`The ${kind} log lives at ${res.path} on the host — browser ` +
+              'download arrives with a later update.');
+        return res;
+      }
+      const full = await call('logs.tail', { name: kind, offset: 0, limit: 0 });
+      const text = full.lines.join('\n') + (full.lines.length ? '\n' : '');
+      const blob = new Blob([text], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const filename = kind === 'activity' ? 'activity.log' : 'debug.log';
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      toast(`Downloaded ${filename}`);
+      return res;
+    } catch (_) { /* call() already toasted the reason */ return null; }
+  }
+
+  function logHandleAppend(kind, payload) {
+    const st = logState[kind];
+    if (!st.open || !st.watching || !st.atBottom) return;
+    st.rawLines = st.rawLines.concat(payload.lines).slice(-LOG_WINDOW_LIMIT);
+    st.windowEnd = payload.offset;
+    st.size = payload.offset;
+    logRenderWindow(kind);
+    logScrollTo(kind, 'bottom');
+  }
+
+  function wireLogScreen(kind) {
+    logEl(kind, 'filter').addEventListener('change', (e) => {
+      logState[kind].filter = e.target.value;
+      logRenderWindow(kind);
+    });
+    logEl(kind, 'wrap').addEventListener('click', () => logToggleWrap(kind));
+    logEl(kind, 'search').addEventListener('input', () => logOnSearchInput(kind));
+    logEl(kind, 'search').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') logSearchStep(kind, 1);
+    });
+    logEl(kind, 'prev').addEventListener('click', () => logSearchStep(kind, -1));
+    logEl(kind, 'next').addEventListener('click', () => logSearchStep(kind, 1));
+    logEl(kind, 'clear').addEventListener('click', () => logClearSearch(kind));
+    logEl(kind, 'top').addEventListener('click', () => logJumpTop(kind));
+    logEl(kind, 'bottom').addEventListener('click', () => logJumpBottom(kind));
+    logEl(kind, 'refresh').addEventListener('click', () => logRefresh(kind));
+    logEl(kind, 'download').addEventListener('click', () => logDownload(kind));
+    logEl(kind, 'body').addEventListener('scroll', () => {
+      const st = logState[kind];
+      const body = logEl(kind, 'body');
+      if (st.atBottom) return;
+      const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 60;
+      if (nearBottom) logLoadWindow(kind, st.windowEnd).then(() => logRenderWindow(kind));
+    });
+  }
+
   /* ── settings ──────────────────────────────────────────────────────────── */
   const NOT_AVAILABLE_REASON = 'This option is not wired into the web frontend yet — ' +
                                'change it in the desktop app for now.';
@@ -826,17 +1219,32 @@
     },
 
     'Logs': (card) => {
-      const reason = "Not wired up yet — the log viewers arrive with the web " +
-                     "frontend's log screens.";
       const row = document.createElement('div');
       row.className = 'cb-row';
       row.style.cssText = 'gap:8px;flex-wrap:wrap';
-      row.append(
-        stubButton('📋 Activity Log', 'cb-btn--quiet', 'settings.activity_log', reason),
-        stubButton('🔍 Debug Log', 'cb-btn--quiet', 'settings.debug_log', reason),
-        stubButton('⤓ Download both', 'cb-btn--quiet', 'settings.download_both_logs',
-          "Not wired up yet — downloading log files arrives with the web " +
-          "frontend's log screens."));
+
+      const activityBtn = document.createElement('button');
+      activityBtn.className = 'cb-btn cb-btn--quiet cb-btn--sm';
+      activityBtn.textContent = '📋 Activity Log';
+      activityBtn.setAttribute('data-tt', 'settings.activity_log');
+      activityBtn.addEventListener('click', () => show('activity-log'));
+
+      const debugBtn = document.createElement('button');
+      debugBtn.className = 'cb-btn cb-btn--quiet cb-btn--sm';
+      debugBtn.textContent = '🔍 Debug Log';
+      debugBtn.setAttribute('data-tt', 'settings.debug_log');
+      debugBtn.addEventListener('click', () => show('debug-log'));
+
+      const bothBtn = document.createElement('button');
+      bothBtn.className = 'cb-btn cb-btn--quiet cb-btn--sm';
+      bothBtn.textContent = '⤓ Download both';
+      bothBtn.setAttribute('data-tt', 'settings.download_both_logs');
+      bothBtn.addEventListener('click', async () => {
+        await logDownload('activity');
+        await logDownload('debug');
+      });
+
+      row.append(activityBtn, debugBtn, bothBtn);
       card.appendChild(row);
     },
 
@@ -934,6 +1342,9 @@
   }
 
   function wire() {
+    wireLogScreen('activity');
+    wireLogScreen('debug');
+
     $('#quick-add').addEventListener('click', () => addToBatch($('#quick-url')));
     $('#quick-url').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') addToBatch($('#quick-url'));
@@ -1051,6 +1462,9 @@
       state.counts = Object.assign({}, state.counts, p.counts);
       renderShell();
       renderOverview();
+    });
+    cbApi.on('log.append', (p) => {
+      if (p && (p.name === 'activity' || p.name === 'debug')) logHandleAppend(p.name, p);
     });
   }
 
