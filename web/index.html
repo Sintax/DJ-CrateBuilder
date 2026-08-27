@@ -297,6 +297,98 @@
       <div class="cb-statbar" id="log-debug-statbar"></div>
     </section>
 
+    <!-- 3g/3h/3i — Database viewer (opened from Settings) -->
+    <section class="cb-screen cb-screen--db" id="screen-database">
+      <div class="cb-crumb">
+        <a class="cb-back" href="#settings" data-tt="log.back_to_settings">‹ Settings</a>
+        <span class="cb-mut" style="font-size:12.5px">Database</span>
+      </div>
+      <div class="cb-row" style="padding:10px 14px 0;gap:6px">
+        <button class="cb-btn cb-btn--sm" id="db-tab-btn-downloads">⬇ Downloads</button>
+        <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-tab-btn-watchlist">👁 Watch List</button>
+        <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-tab-btn-artwork">🖼 Artwork</button>
+        <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-help"
+                style="margin-left:auto" data-tt="db.help_downloads">❔ Help</button>
+      </div>
+
+      <div class="db-tab is-on" id="db-tab-downloads">
+        <div class="cb-toolbar">
+          <span class="cb-lab">Group by:</span>
+          <select class="cb-sel" id="db-dl-group" style="width:200px"></select>
+          <span class="cb-vsep"></span>
+          <span class="cb-lab">Platform:</span>
+          <select class="cb-sel" id="db-dl-platform" style="width:130px"></select>
+          <span class="cb-lab">Genre:</span>
+          <select class="cb-sel" id="db-dl-genre" style="width:140px"></select>
+          <span class="cb-lab">Search:</span>
+          <input class="cb-in" id="db-dl-search" style="width:160px" placeholder="any column…">
+          <div class="cb-row" style="margin-left:auto;gap:8px">
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-dl-expand" data-tt="db.expand_all">⊞</button>
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-dl-collapse" data-tt="db.collapse_all">⊟</button>
+            <span class="cb-vsep"></span>
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-dl-refresh" data-tt="db.refresh">⟳ Refresh</button>
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-dl-export" data-tt="db.export_csv">⤓ Export CSV</button>
+          </div>
+        </div>
+        <div class="cb-tblwrap">
+          <table class="cb-table">
+            <thead><tr id="db-dl-thead"></tr></thead>
+            <tbody id="db-dl-tbody"></tbody>
+          </table>
+        </div>
+        <div class="cb-statbar" id="db-dl-statbar"></div>
+      </div>
+
+      <div class="db-tab" id="db-tab-watchlist">
+        <div class="cb-toolbar">
+          <span class="cb-lab">Watched channels — click a column to sort</span>
+          <div class="cb-row" style="margin-left:auto;gap:8px">
+            <button class="cb-btn cb-btn--warn cb-btn--sm" id="db-wl-cleanup">🧹 Folders Cleanup ‹Smart›</button>
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-wl-refresh" data-tt="db.refresh">⟳ Refresh</button>
+          </div>
+        </div>
+        <div class="cb-tblwrap">
+          <table class="cb-table">
+            <thead><tr id="db-wl-thead"></tr></thead>
+            <tbody id="db-wl-tbody"></tbody>
+          </table>
+        </div>
+        <div class="cb-statbar" id="db-wl-statbar"></div>
+      </div>
+
+      <div class="db-tab" id="db-tab-artwork">
+        <div class="cb-toolbar">
+          <span class="cb-lab">Filter:</span>
+          <select class="cb-sel" id="db-art-filter" style="width:200px"></select>
+          <span class="cb-lab">Search:</span>
+          <input class="cb-in" id="db-art-search" style="width:170px" placeholder="track or channel…">
+          <div class="cb-row" style="margin-left:auto;gap:8px">
+            <button class="cb-btn cb-btn--sm" id="db-art-fetch">🖼 Fetch Missing Artwork</button>
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-art-refresh" data-tt="db.refresh">⟳ Refresh</button>
+          </div>
+        </div>
+        <div class="cb-art-split">
+          <div class="cb-tblwrap" style="flex:1;border-right:1px solid var(--cb-line-soft)">
+            <table class="cb-table">
+              <thead><tr id="db-art-thead"></tr></thead>
+              <tbody id="db-art-tbody"></tbody>
+            </table>
+          </div>
+          <div class="cb-art-preview">
+            <span class="cb-kick">Preview</span>
+            <div id="db-art-preview-box" class="cb-art-preview__box">Select a track</div>
+            <div id="db-art-preview-meta" style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:#4B4F59"></div>
+            <div class="cb-div"></div>
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-art-copy-thumb"
+                    style="width:100%;justify-content:center" data-tt="db.copy_thumbnail_url">Copy Thumbnail URL</button>
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-art-reembed"
+                    style="width:100%;justify-content:center" data-tt="db.reembed_artwork">Re-embed on host</button>
+          </div>
+        </div>
+        <div class="cb-statbar" id="db-art-statbar"></div>
+      </div>
+    </section>
+
   </main>
 </div>
 

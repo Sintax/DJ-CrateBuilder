@@ -132,6 +132,15 @@ class DownloadsDatabase:
         "(artwork_path IS NOT NULL AND TRIM(artwork_path) != ''))"
     )
 
+    # order_by whitelist for query_artwork_rows, same reasoning as
+    # _DL_SORT_COLUMNS: raw columns only, checked before reaching a query
+    # string. artwork_embedded is a plain 0/1 int column, so it sorts
+    # correctly without a bitrate-style custom key function.
+    _ART_SORT_COLUMNS = {
+        "title", "channel_name", "platform", "artwork_embedded",
+        "artwork_path", "thumbnail_url",
+    }
+
     # The monolith's UNRESOLVED_URL_PREFIX (DJ-CrateBuilder_v1.3.py) — a
     # duplicate literal, not an import, since the monolith depends on
     # cratebuilder and not the other way around. query_watchlist_rows blanks
@@ -1550,13 +1559,14 @@ class DownloadsDatabase:
 
     @staticmethod
     def _broken_page(candidates, offset, limit):
-        """Walk already-fetched, lock-released *candidates* in title/id
-        order, calling os.path.isfile() only until *limit* broken rows past
-        *offset* have been found — not the whole candidate set regardless of
-        page size. Paging the front of a large "Sidecar missing on disk"
-        result therefore stats a handful of rows, not every candidate in the
-        library; only an exact count (count_artwork_rows) has to look at all
-        of them, since a count can't skip anything and still be right."""
+        """Walk already-fetched, lock-released *candidates* (in whatever
+        order the caller already sorted them), calling os.path.isfile()
+        only until *limit* broken rows past *offset* have been found — not
+        the whole candidate set regardless of page size. Paging the front of
+        a large "Sidecar missing on disk" result therefore stats a handful
+        of rows, not every candidate in the library; only an exact count
+        (count_artwork_rows) has to look at all of them, since a count can't
+        skip anything and still be right."""
         if limit <= 0:
             return []
         page, skipped = [], 0
@@ -1571,39 +1581,77 @@ class DownloadsDatabase:
                 break
         return page
 
-    def query_artwork_rows(self, filter_name, *, limit=100, offset=0):
+    @staticmethod
+    def _art_row_matches_search(row, needle):
+        hay = f"{row.get('title', '')} {row.get('channel_name', '')}".lower()
+        return needle in hay
+
+    @staticmethod
+    def _art_sort_key(order_by):
+        """A Python sort key function for one whitelisted order_by column,
+        used only by the "Sidecar missing on disk" branch (its candidates
+        are a Python list, not a SQL result) — every other filter sorts in
+        SQL instead. artwork_embedded is a real 0/1 int already; everything
+        else is compared as lowercased text, matching COLLATE NOCASE."""
+        if order_by == "artwork_embedded":
+            return lambda r: int(bool(r.get("artwork_embedded")))
+        return lambda r: (r.get(order_by) or "").lower()
+
+    def query_artwork_rows(self, filter_name, *, search=None, order_by="title",
+                           descending=False, limit=100, offset=0):
         """One page of downloads rows under *filter_name* (ARTWORK_FILTERS),
-        as plain dicts ordered by title. An unrecognised filter_name raises
+        as plain dicts. An unrecognised filter_name or order_by raises
         ValueError; a DB failure logs and returns [].
+
+        *search* is an optional LIKE over title/channel_name, same escaping
+        as _downloads_filter_sql's search filter (literal %/_ escaped so
+        they can't be mistaken for SQL wildcards).
 
         "Sidecar missing on disk" fetches its (SQL-narrowed) candidates
         under the pooled lock via _artwork_broken_candidates, then — lock
-        already released — stats only as many of them as it takes to fill
-        this page (_broken_page), rather than scanning the whole candidate
-        set on every page turn."""
+        already released — filters by search, sorts by order_by, and stats
+        only as many candidates as it takes to fill this page
+        (_broken_page), rather than scanning the whole candidate set on
+        every page turn."""
         if filter_name not in self.ARTWORK_FILTERS:
             raise ValueError(f"unknown artwork filter: {filter_name!r}")
+        if order_by not in self._ART_SORT_COLUMNS:
+            raise ValueError(f"unknown order_by column: {order_by!r}")
         limit = max(0, int(limit))
         offset = max(0, int(offset))
+        search = (search or "").strip()
         if filter_name == "Sidecar missing on disk":
             candidates = self._artwork_broken_candidates()
+            if search:
+                needle = search.lower()
+                candidates = [r for r in candidates
+                             if self._art_row_matches_search(r, needle)]
+            candidates.sort(key=self._art_sort_key(order_by), reverse=descending)
             return [dict(r) for r in
                     self._broken_page(candidates, offset, limit)]
+        where_sql = self._artwork_where_sql(filter_name)
+        params = []
+        if search:
+            needle = f"%{self._escape_like(search)}%"
+            clause = "(title LIKE ? ESCAPE '\\' OR channel_name LIKE ? ESCAPE '\\')"
+            where_sql = f"{where_sql} AND {clause}" if where_sql else f" WHERE {clause}"
+            params.extend([needle, needle])
+        direction = "DESC" if descending else "ASC"
         try:
             with self._conn() as conn:
-                where_sql = self._artwork_where_sql(filter_name)
                 rows = conn.execute(
                     f"SELECT * FROM downloads{where_sql} "
-                    f"ORDER BY title COLLATE NOCASE ASC, id ASC "
-                    f"LIMIT ? OFFSET ?", [limit, offset]).fetchall()
+                    f"ORDER BY {order_by} COLLATE NOCASE {direction}, id {direction} "
+                    f"LIMIT ? OFFSET ?", [*params, limit, offset]).fetchall()
                 return [dict(r) for r in rows]
         except Exception as e:
             self._log("error", f"query_artwork_rows failed: {e}")
             return []
 
-    def count_artwork_rows(self, filter_name):
-        """Count of downloads rows under *filter_name* (ARTWORK_FILTERS).
-        An unrecognised filter_name raises ValueError; a DB failure logs and
+    def count_artwork_rows(self, filter_name, *, search=None):
+        """Count of downloads rows under *filter_name* (ARTWORK_FILTERS),
+        with the same optional *search* query_artwork_rows takes. An
+        unrecognised filter_name raises ValueError; a DB failure logs and
         returns 0.
 
         "Sidecar missing on disk" is inherently a full scan of its
@@ -1613,16 +1661,27 @@ class DownloadsDatabase:
         runs after that lock has already been released."""
         if filter_name not in self.ARTWORK_FILTERS:
             raise ValueError(f"unknown artwork filter: {filter_name!r}")
+        search = (search or "").strip()
         if filter_name == "Sidecar missing on disk":
             candidates = self._artwork_broken_candidates()
+            if search:
+                needle = search.lower()
+                candidates = [r for r in candidates
+                             if self._art_row_matches_search(r, needle)]
             return sum(1 for r in candidates
                       if not os.path.isfile(r["artwork_path"]))
+        where_sql = self._artwork_where_sql(filter_name)
+        params = []
+        if search:
+            needle = f"%{self._escape_like(search)}%"
+            clause = "(title LIKE ? ESCAPE '\\' OR channel_name LIKE ? ESCAPE '\\')"
+            where_sql = f"{where_sql} AND {clause}" if where_sql else f" WHERE {clause}"
+            params.extend([needle, needle])
         try:
             with self._conn() as conn:
-                where_sql = self._artwork_where_sql(filter_name)
                 row = conn.execute(
-                    f"SELECT COUNT(*) AS n FROM downloads{where_sql}"
-                ).fetchone()
+                    f"SELECT COUNT(*) AS n FROM downloads{where_sql}",
+                    params).fetchone()
                 return int(row["n"]) if row else 0
         except Exception as e:
             self._log("error", f"count_artwork_rows failed: {e}")

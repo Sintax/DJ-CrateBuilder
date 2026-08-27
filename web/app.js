@@ -108,11 +108,13 @@
 
   /* ── navigation ────────────────────────────────────────────────────────── */
   const SCREENS = ['overview', 'downloads', 'watchlist', 'settings',
-                    'activity-log', 'debug-log'];
-  /* The log screens aren't nav items (they open from Settings, per the
-     contract's shell.not_in_nav) — while either is open, Settings stays the
-     highlighted nav entry, per shell.active_item_rule. */
-  const NAV_ALIAS = { 'activity-log': 'settings', 'debug-log': 'settings' };
+                    'activity-log', 'debug-log', 'database'];
+  /* The log screens and the database viewer aren't nav items (they open
+     from Settings, per the contract's shell.not_in_nav) — while any of them
+     is open, Settings stays the highlighted nav entry, per
+     shell.active_item_rule. */
+  const NAV_ALIAS = { 'activity-log': 'settings', 'debug-log': 'settings',
+                      'database': 'settings' };
   const LOG_KIND_BY_SCREEN = { 'activity-log': 'activity', 'debug-log': 'debug' };
   let currentScreen = null;
 
@@ -130,6 +132,7 @@
     if (leavingKind && leavingKind !== LOG_KIND_BY_SCREEN[name]) logClose(leavingKind);
     const enteringKind = LOG_KIND_BY_SCREEN[name];
     if (enteringKind) logOpen(enteringKind);
+    if (name === 'database' && previous !== 'database') dbOpen();
   }
 
   /* The nav is real anchors, so routing is the hash — that keeps deep links
@@ -980,6 +983,909 @@
     });
   }
 
+  /* ── database viewer (3g/3h/3i) ────────────────────────────────────────────
+     One route, three tabs. Downloads is a lazy-loaded group tree (db.groups
+     returns one level of {key,label,count}, drilling in one round trip per
+     expand — see task-6-report.md); Watch List and Artwork are flat db.query
+     tables. Column widths/order live in localStorage per HANDOFF §2, never
+     the config file. Context menus: local transport gets the filesystem
+     actions (fs.reveal) plus Copy *; remote keeps only the Copy * actions. */
+
+  const DB_PAGE_SIZE = 200;
+  const DB_GROUP_PRESETS = ['Platform › Genre › Channel', 'Genre › Channel',
+                             'Channel', 'Platform › Channel'];
+  /* Mirrors DownloadsDatabase.GROUP_PRESETS (cratebuilder/db.py) — a
+     duplicate literal, not shared code, same reasoning db.py itself uses for
+     its own copy of the monolith's GROUP_PRESETS: each layer that needs the
+     hierarchy keeps its own copy rather than reaching across a language
+     boundary. */
+  const GROUP_HIERARCHY = {
+    'Platform › Genre › Channel': ['platform', 'genre', 'channel_name'],
+    'Genre › Channel': ['genre', 'channel_name'],
+    'Channel': ['channel_name'],
+    'Platform › Channel': ['platform', 'channel_name'],
+  };
+  const DB_ARTWORK_FILTERS = ['All tracks', 'Has artwork', 'Missing artwork',
+                              'Embedded only', 'Sidecar missing on disk'];
+
+  /* columns.downloads/watchlist/artwork straight from ui-contract.json —
+     ids, headings and widths verbatim. */
+  const DL_COLUMNS = [
+    { id: 'title', head: 'Title / Group', w: 340, align: 'w', pinned: true },
+    { id: 'channel', head: 'Channel', w: 160, align: 'w' },
+    { id: 'genre', head: 'Genre', w: 110, align: 'w' },
+    { id: 'platform', head: 'Platform', w: 80, align: 'w' },
+    { id: 'upload', head: 'Upload', w: 110, align: 'w' },
+    { id: 'downloaded', head: 'Downloaded', w: 140, align: 'w' },
+    { id: 'bitrate', head: 'Bitrate', w: 70, align: 'e' },
+  ];
+  const WL_COLUMNS = [
+    { id: 'sel', head: '', w: 34, align: 'center', pinned: true },
+    { id: 'channel', head: 'Channel', w: 180, align: 'w' },
+    { id: 'link', head: 'URL Link', w: 220, align: 'w' },
+    { id: 'folder', head: 'Folder', w: 260, align: 'w' },
+    { id: 'platform', head: 'Platform', w: 80, align: 'w' },
+    { id: 'genre', head: 'Genre', w: 110, align: 'w' },
+    { id: 'last_scan', head: 'Last scan', w: 120, align: 'w' },
+    { id: 'pending', head: 'Pending new', w: 90, align: 'e' },
+    { id: 'total', head: "Total dl'd", w: 80, align: 'e' },
+    { id: 'status', head: 'Status', w: 90, align: 'w' },
+  ];
+  const ART_COLUMNS = [
+    { id: 'title', head: 'Track', w: 260, align: 'w' },
+    { id: 'channel', head: 'Channel', w: 150, align: 'w' },
+    { id: 'platform', head: 'Platform', w: 80, align: 'w' },
+    { id: 'embedded', head: 'Embedded', w: 80, align: 'center' },
+    { id: 'sidecar', head: 'Sidecar', w: 170, align: 'w' },
+    { id: 'on_disk', head: 'On Disk', w: 70, align: 'center' },
+    { id: 'thumb_url', head: 'Thumbnail URL', w: 240, align: 'w' },
+  ];
+
+  const dbState = {
+    activeTab: 'downloads',
+    downloads: { groupPreset: DB_GROUP_PRESETS[0], platform: 'All platforms',
+                genre: 'All genres', search: '', sortCol: 'downloaded',
+                sortDesc: true, root: null, cols: null },
+    watchlist: { search: '', sortCol: 'channel', sortDesc: false, rows: [],
+                total: 0, checked: {}, loaded: false, cols: null },
+    artwork: { filter: DB_ARTWORK_FILTERS[0], search: '', sortCol: 'title',
+              sortDesc: false, rows: [], total: 0, offset: 0, selected: null,
+              loaded: false, cols: null },
+  };
+
+  /* ── column widths/order: localStorage, never the config file ────────────── */
+  function dbColStorageGet(key) {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : null;
+    } catch (_) { return null; }
+  }
+  function dbColStorageSet(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) { /* private mode etc */ }
+  }
+  function makeColumnSet(defs, widthKey, orderKey) {
+    const ids = defs.map((d) => d.id);
+    const savedOrder = dbColStorageGet(orderKey);
+    const order = (Array.isArray(savedOrder) && savedOrder.length === ids.length &&
+                   ids.every((id) => savedOrder.includes(id)))
+      ? savedOrder.slice() : ids.slice();
+    const savedWidths = dbColStorageGet(widthKey) || {};
+    const widths = {};
+    defs.forEach((d) => { widths[d.id] = Number(savedWidths[d.id]) || d.w; });
+    const byId = {};
+    defs.forEach((d) => { byId[d.id] = d; });
+    return {
+      byId, order, widths, widthKey, orderKey,
+      persistWidths() { dbColStorageSet(this.widthKey, this.widths); },
+      persistOrder() { dbColStorageSet(this.orderKey, this.order); },
+    };
+  }
+  /* Port of DatabaseViewerWindow._reorder_columns (DJ-CrateBuilder_v1.3.py):
+     the target index is read from the ORIGINAL order before src is removed —
+     reading it after the removal shifts a rightward drag one column short. */
+  function dbReorderColumns(order, srcId, tgtId) {
+    order = order.slice();
+    if (order.indexOf(srcId) === -1) return order;
+    const insertAt = (tgtId && order.includes(tgtId)) ? order.indexOf(tgtId) : 0;
+    order.splice(order.indexOf(srcId), 1);
+    order.splice(insertAt, 0, srcId);
+    return order;
+  }
+  function dbWireHeaders(theadRow, colset, opts) {
+    let dragSrc = null;
+    theadRow.innerHTML = '';
+    colset.order.forEach((id) => {
+      const def = colset.byId[id];
+      if (!def) return;
+      const th = document.createElement('th');
+      th.style.position = 'relative';
+      th.style.width = colset.widths[id] + 'px';
+      th.style.textAlign = def.align === 'e' ? 'right' : def.align === 'center' ? 'center' : 'left';
+      const label = document.createElement('span');
+      label.style.cursor = def.sortable === false ? 'default' : 'pointer';
+      label.textContent = def.head + (opts.sortCol === id ? (opts.sortDesc ? ' ▾' : ' ▴') : '');
+      label.setAttribute('data-tt', 'db.column_header');
+      th.appendChild(label);
+      if (def.sortable !== false) {
+        label.addEventListener('click', () => opts.onSort(id));
+      }
+      if (!def.pinned) {
+        th.addEventListener('mousedown', (e) => {
+          if (e.target.classList.contains('cb-col-resize')) return;
+          dragSrc = id;
+        });
+        th.addEventListener('mouseup', (e) => {
+          const src = dragSrc; dragSrc = null;
+          if (!src || src === id || e.target.classList.contains('cb-col-resize')) return;
+          colset.order = dbReorderColumns(colset.order, src, id);
+          colset.persistOrder();
+          opts.onRender();
+        });
+      }
+      const resize = document.createElement('span');
+      resize.className = 'cb-col-resize';
+      resize.addEventListener('mousedown', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const startX = e.clientX;
+        const startW = colset.widths[id];
+        function onMove(ev) {
+          colset.widths[id] = Math.max(40, startW + (ev.clientX - startX));
+          th.style.width = colset.widths[id] + 'px';
+        }
+        function onUp() {
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+          colset.persistWidths();
+        }
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      });
+      th.appendChild(resize);
+      theadRow.appendChild(th);
+    });
+    bindTips(theadRow);
+  }
+
+  /* ── context menu ─────────────────────────────────────────────────────────
+     Local transport gets Open File/Image + Open Containing Folder (fs.reveal
+     — local-only per LOCAL_ONLY) alongside Copy *; remote hides those two and
+     keeps only Copy * (HANDOFF §6). */
+  let dbMenuEl = null;
+  function dbMenuEscape(e) { if (e.key === 'Escape') dbHideMenu(); }
+  function dbHideMenu() {
+    if (dbMenuEl) { dbMenuEl.remove(); dbMenuEl = null; }
+    document.removeEventListener('click', dbHideMenu, true);
+    document.removeEventListener('keydown', dbMenuEscape, true);
+  }
+  function dbShowMenu(x, y, items) {
+    dbHideMenu();
+    const menu = document.createElement('div');
+    menu.className = 'cb-menu';
+    menu.style.position = 'fixed';
+    items.forEach((item) => {
+      if (item === '-') {
+        const sep = document.createElement('div');
+        sep.style.cssText = 'height:1px;background:var(--cb-line-soft);margin:3px 4px;padding:0';
+        menu.appendChild(sep);
+        return;
+      }
+      const el = document.createElement('div');
+      el.textContent = item.label;
+      if (item.disabled) {
+        el.style.opacity = '.45';
+        el.style.cursor = 'not-allowed';
+        if (item.reason) el.setAttribute('data-tt-text', item.reason);
+      } else {
+        el.addEventListener('click', () => { dbHideMenu(); item.onClick(); });
+      }
+      menu.appendChild(el);
+    });
+    document.body.appendChild(menu);
+    const bw = menu.offsetWidth, bh = menu.offsetHeight;
+    let left = x, top = y;
+    if (left + bw > innerWidth - 10) left = innerWidth - bw - 10;
+    if (top + bh > innerHeight - 10) top = innerHeight - bh - 10;
+    menu.style.left = Math.max(10, left) + 'px';
+    menu.style.top = Math.max(10, top) + 'px';
+    dbMenuEl = menu;
+    bindTips(menu);
+    setTimeout(() => {
+      document.addEventListener('click', dbHideMenu, true);
+      document.addEventListener('keydown', dbMenuEscape, true);
+    }, 0);
+  }
+
+  async function dbCopyText(text, label) {
+    if (!text) { toast('Nothing to copy.', true); return; }
+    try {
+      await navigator.clipboard.writeText(text);
+      toast(`Copied ${label || 'to clipboard'}`);
+    } catch (_) { toast('Could not copy to clipboard.', true); }
+  }
+  async function dbReveal(path, mode) {
+    if (!path) { toast('No path is recorded for this row.', true); return; }
+    try { await call('fs.reveal', { path, mode }); }
+    catch (_) { /* call() already toasted the reason */ }
+  }
+
+  async function dbExportCsv(table, filters, sort) {
+    try {
+      const res = await call('db.export_csv', { table, filters, sort });
+      if (!state || state.host.transport !== 'local') {
+        toast(`The ${table} export lives at ${res.path} on the host — browser ` +
+              'download arrives with a later update.');
+        return;
+      }
+      const blob = new Blob([res.csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = res.filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      toast(`Exported ${res.rows} row${res.rows === 1 ? '' : 's'} to ${res.filename}`);
+    } catch (_) { /* call() already toasted the reason */ }
+  }
+
+  /* ── Downloads tab: lazy group tree ───────────────────────────────────────
+     A node is {key,label,count,path,depth,expanded,children,rows,rowsOffset,
+     rowsTotal,loading}. path is the ordered list of {key,value} pins an
+     ancestor drilled into; children is an array of subgroup nodes once
+     fetched (null = not fetched), or stays null forever once a node turns
+     out to be leaf-level, at which point rows/rowsOffset/rowsTotal are used
+     instead. The synthetic root has depth -1 and is never itself rendered. */
+
+  function dbTreeRootFilters() {
+    const st = dbState.downloads;
+    const f = {};
+    if (st.platform && st.platform !== 'All platforms') f.platform = st.platform;
+    if (st.genre && st.genre !== 'All genres') f.genre = st.genre;
+    if (st.search) f.search = st.search;
+    return f;
+  }
+  function dbPinnedKeys(path) {
+    const pinned = new Set();
+    const root = dbTreeRootFilters();
+    if (root.platform) pinned.add('platform');
+    if (root.genre) pinned.add('genre');
+    path.forEach((p) => pinned.add(p.key));
+    return pinned;
+  }
+  function dbNextHierarchyKey(preset, path) {
+    const pinned = dbPinnedKeys(path);
+    const hierarchy = GROUP_HIERARCHY[preset] || [];
+    return hierarchy.find((k) => !pinned.has(k)) || null;
+  }
+  function dbPathFilters(path) {
+    const f = dbTreeRootFilters();
+    path.forEach((p) => {
+      if (p.key === 'platform' || p.key === 'genre') f[p.key] = p.value;
+      else { f.group_key = p.key; f.group_value = p.value; }
+    });
+    return f;
+  }
+  async function dbLoadRows(node) {
+    const st = dbState.downloads;
+    const res = await call('db.query', {
+      table: 'downloads', filters: dbPathFilters(node.path),
+      sort: { col: st.sortCol, desc: st.sortDesc }, offset: 0, limit: DB_PAGE_SIZE,
+    });
+    node.children = null;
+    node.rows = res.rows; node.rowsTotal = res.total; node.rowsOffset = res.rows.length;
+  }
+  async function dbLoadMoreRows(node) {
+    const st = dbState.downloads;
+    const res = await call('db.query', {
+      table: 'downloads', filters: dbPathFilters(node.path),
+      sort: { col: st.sortCol, desc: st.sortDesc }, offset: node.rowsOffset, limit: DB_PAGE_SIZE,
+    });
+    node.rows = node.rows.concat(res.rows);
+    node.rowsOffset += res.rows.length; node.rowsTotal = res.total;
+  }
+  async function dbLoadGroups(node) {
+    const st = dbState.downloads;
+    const res = await call('db.groups', { preset: st.groupPreset, filters: dbPathFilters(node.path) });
+    const groups = res.groups || [];
+    if (!groups.length) { await dbLoadRows(node); return; }
+    const nextKey = dbNextHierarchyKey(st.groupPreset, node.path);
+    node.children = groups.map((g) => ({
+      key: g.key, label: g.label, count: g.count,
+      path: node.path.concat([{ key: nextKey, value: g.key }]),
+      depth: node.depth + 1, expanded: false, children: null,
+      rows: null, rowsOffset: 0, rowsTotal: 0, loading: false,
+    }));
+  }
+  async function dbToggleGroup(node) {
+    node.expanded = !node.expanded;
+    if (node.expanded && node.children === null && node.rows === null) {
+      node.loading = true;
+      dbRenderDownloadsTree();
+      try {
+        const nextKey = dbNextHierarchyKey(dbState.downloads.groupPreset, node.path);
+        if (nextKey === null) await dbLoadRows(node); else await dbLoadGroups(node);
+      } finally { node.loading = false; }
+    }
+    dbRenderDownloadsTree();
+  }
+  async function dbDownloadsReload() {
+    const st = dbState.downloads;
+    const root = { path: [], depth: -1, expanded: true, children: null,
+                   rows: null, rowsOffset: 0, rowsTotal: 0, loading: true };
+    st.root = root;
+    dbRenderDownloadsTree();
+    try {
+      const nextKey = dbNextHierarchyKey(st.groupPreset, []);
+      if (nextKey === null) await dbLoadRows(root); else await dbLoadGroups(root);
+    } finally { root.loading = false; }
+    dbRenderDownloadsTree();
+  }
+  async function dbExpandRecursive(node) {
+    if (node.depth >= 0) node.expanded = true;
+    if (node.children === null && node.rows === null) {
+      const nextKey = dbNextHierarchyKey(dbState.downloads.groupPreset, node.path);
+      if (nextKey === null) await dbLoadRows(node); else await dbLoadGroups(node);
+    }
+    if (node.children) {
+      for (const child of node.children) await dbExpandRecursive(child);
+    }
+  }
+  async function dbExpandAllDownloads() {
+    if (!dbState.downloads.root) return;
+    await dbExpandRecursive(dbState.downloads.root);
+    dbRenderDownloadsTree();
+  }
+  function dbCollapseAllDownloads() {
+    function walk(node) { if (node.children) node.children.forEach((c) => { c.expanded = false; walk(c); }); }
+    if (dbState.downloads.root) walk(dbState.downloads.root);
+    dbRenderDownloadsTree();
+  }
+
+  function dbDownloadsMenuItems(row) {
+    const local = state && state.host.transport === 'local';
+    const items = [];
+    if (local) {
+      items.push({ label: 'Open File', disabled: !row.file_path,
+        onClick: () => dbReveal(row.file_path, 'open') });
+      items.push({ label: 'Open Containing Folder', disabled: !row.file_path,
+        onClick: () => dbReveal(row.file_path, 'folder') });
+    }
+    items.push({ label: 'Copy Path', disabled: !row.file_path,
+      onClick: () => dbCopyText(row.file_path, 'file path') });
+    items.push('-');
+    items.push({ label: 'Copy Source URL', disabled: !row.channel_url,
+      onClick: () => dbCopyText(row.channel_url, 'source URL') });
+    return items;
+  }
+
+  function dbUpdateDownloadsStatbar() {
+    const st = dbState.downloads;
+    const bar = $('#db-dl-statbar');
+    bar.innerHTML = '';
+    if (!st.root) return;
+    let totalRows = 0;
+    if (st.root.children) totalRows = st.root.children.reduce((a, g) => a + g.count, 0);
+    else if (st.root.rows) totalRows = st.root.rowsTotal;
+    const def = st.cols.byId[st.sortCol];
+    const left = document.createElement('span');
+    left.textContent = `${num(totalRows)} row${totalRows === 1 ? '' : 's'}`;
+    const right = document.createElement('span');
+    right.style.marginLeft = 'auto';
+    right.textContent = `sorted by ${def ? def.head : st.sortCol} ${st.sortDesc ? '▾' : '▴'}`;
+    bar.append(left, right);
+  }
+
+  function dbRenderDownloadsTree() {
+    const st = dbState.downloads;
+    const tbody = $('#db-dl-tbody');
+    tbody.innerHTML = '';
+    if (!st.root) return;
+    const colset = st.cols;
+
+    function renderGroupRow(node) {
+      const tr = document.createElement('tr');
+      tr.className = 'is-group';
+      colset.order.forEach((id, idx) => {
+        const td = document.createElement('td');
+        if (idx === 0) {
+          td.style.paddingLeft = (14 + node.depth * 18) + 'px';
+          td.style.cursor = 'pointer';
+          const arrow = document.createElement('span');
+          arrow.textContent = node.expanded ? '▾ ' : '▸ ';
+          const label = document.createElement('span');
+          label.textContent = node.label;
+          const count = document.createElement('span');
+          count.className = 'cb-mut cb-mono';
+          count.style.cssText = 'font-weight:400;font-size:11.5px;margin-left:6px';
+          count.textContent = String(node.count);
+          td.append(arrow, label, count);
+          td.addEventListener('click', () => dbToggleGroup(node));
+        }
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    }
+    function renderLeafRow(row, depth) {
+      const tr = document.createElement('tr');
+      tr.dataset.id = String(row.id);
+      colset.order.forEach((id) => {
+        const def = colset.byId[id];
+        const td = document.createElement('td');
+        td.style.textAlign = def.align === 'e' ? 'right' : def.align === 'center' ? 'center' : 'left';
+        if (id === 'title') td.style.paddingLeft = (14 + depth * 18) + 'px';
+        else td.className = 'cb-mut';
+        if (id === 'upload' || id === 'downloaded') { td.classList.add('cb-mono'); td.style.fontSize = '12px'; }
+        if (id === 'bitrate') td.classList.add('cb-mono');
+        td.textContent = row[id] != null && row[id] !== '' ? row[id] : (id === 'title' ? row.title : '');
+        tr.appendChild(td);
+      });
+      tr.addEventListener('click', () => {
+        $$('#db-dl-tbody tr.is-selected').forEach((r) => r.classList.remove('is-selected'));
+        tr.classList.add('is-selected');
+      });
+      tr.addEventListener('dblclick', () => {
+        if (state && state.host.transport === 'local') dbReveal(row.file_path, 'open');
+      });
+      tr.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        dbShowMenu(e.clientX, e.clientY, dbDownloadsMenuItems(row));
+      });
+      tbody.appendChild(tr);
+    }
+    function renderLoadMoreRow(node) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = colset.order.length;
+      const remaining = node.rowsTotal - node.rowsOffset;
+      td.style.cssText = `padding-left:${14 + (node.depth + 1) * 18}px;cursor:pointer;` +
+                         'color:var(--cb-line);font-size:12px';
+      td.textContent = `Load ${Math.min(DB_PAGE_SIZE, remaining)} more of ${remaining} remaining…`;
+      td.addEventListener('click', async () => { await dbLoadMoreRows(node); dbRenderDownloadsTree(); });
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    }
+    function renderLoadingRow(depth) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = colset.order.length;
+      td.style.cssText = `padding-left:${14 + depth * 18}px;color:var(--cb-muted);font-size:12px`;
+      td.textContent = 'Loading…';
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    }
+    function walk(node) {
+      if (node.depth >= 0) renderGroupRow(node);
+      if (!node.expanded) return;
+      if (node.loading) { renderLoadingRow(node.depth + 1); return; }
+      if (node.children) node.children.forEach(walk);
+      else if (node.rows) {
+        node.rows.forEach((row) => renderLeafRow(row, node.depth + 1));
+        if (node.rowsOffset < node.rowsTotal) renderLoadMoreRow(node);
+      }
+    }
+    walk(st.root);
+    dbUpdateDownloadsStatbar();
+  }
+
+  function dbRenderDownloadsHeaders() {
+    dbWireHeaders($('#db-dl-thead'), dbState.downloads.cols, {
+      sortCol: dbState.downloads.sortCol, sortDesc: dbState.downloads.sortDesc,
+      onSort: (id) => {
+        const st = dbState.downloads;
+        if (st.sortCol === id) st.sortDesc = !st.sortDesc;
+        else { st.sortCol = id; st.sortDesc = (id === 'downloaded' || id === 'upload' || id === 'bitrate'); }
+        dbDownloadsReload();
+      },
+      onRender: () => { dbRenderDownloadsHeaders(); dbRenderDownloadsTree(); },
+    });
+  }
+
+  function dbWireDownloadsToolbar() {
+    const groupSel = $('#db-dl-group');
+    DB_GROUP_PRESETS.forEach((p) => {
+      const o = document.createElement('option'); o.textContent = p; groupSel.appendChild(o);
+    });
+    groupSel.value = dbState.downloads.groupPreset;
+    groupSel.setAttribute('data-tt', 'db.change_grouping');
+    groupSel.addEventListener('change', () => {
+      dbState.downloads.groupPreset = groupSel.value; dbDownloadsReload();
+    });
+
+    const platSel = $('#db-dl-platform');
+    ['All platforms', 'YouTube', 'SoundCloud'].forEach((p) => {
+      const o = document.createElement('option'); o.textContent = p; platSel.appendChild(o);
+    });
+    platSel.addEventListener('change', () => {
+      dbState.downloads.platform = platSel.value; dbDownloadsReload();
+    });
+
+    const genreSel = $('#db-dl-genre');
+    function refreshGenreOptions() {
+      const current = genreSel.value;
+      genreSel.innerHTML = '';
+      ['All genres'].concat(state.genres || []).forEach((g) => {
+        const o = document.createElement('option'); o.textContent = g; genreSel.appendChild(o);
+      });
+      if (current) genreSel.value = current;
+    }
+    refreshGenreOptions();
+    genreSel.addEventListener('change', () => {
+      dbState.downloads.genre = genreSel.value; dbDownloadsReload();
+    });
+
+    const searchEl = $('#db-dl-search');
+    let searchTimer = null;
+    searchEl.addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        dbState.downloads.search = searchEl.value.trim(); dbDownloadsReload();
+      }, 250);
+    });
+
+    $('#db-dl-expand').addEventListener('click', dbExpandAllDownloads);
+    $('#db-dl-collapse').addEventListener('click', dbCollapseAllDownloads);
+    $('#db-dl-refresh').addEventListener('click', dbDownloadsReload);
+    $('#db-dl-export').addEventListener('click', () => dbExportCsv(
+      'downloads', dbTreeRootFilters(),
+      { col: dbState.downloads.sortCol, desc: dbState.downloads.sortDesc }));
+  }
+
+  /* ── Watch List tab: flat table, small enough to load in one call ───────── */
+
+  async function dbWatchlistReload() {
+    const st = dbState.watchlist;
+    try {
+      const res = await call('db.query', {
+        table: 'watchlist', filters: { search: st.search },
+        sort: { col: st.sortCol, desc: st.sortDesc }, offset: 0, limit: 100000,
+      });
+      st.rows = res.rows; st.total = res.total; st.loaded = true;
+    } catch (_) { st.rows = []; st.total = 0; }
+    dbRenderWatchlist();
+  }
+  function dbRenderWatchlistHeaders() {
+    dbWireHeaders($('#db-wl-thead'), dbState.watchlist.cols, {
+      sortCol: dbState.watchlist.sortCol, sortDesc: dbState.watchlist.sortDesc,
+      onSort: (id) => {
+        if (id === 'sel') return;
+        const st = dbState.watchlist;
+        if (st.sortCol === id) st.sortDesc = !st.sortDesc; else { st.sortCol = id; st.sortDesc = false; }
+        dbWatchlistReload();
+      },
+      onRender: () => { dbRenderWatchlistHeaders(); dbRenderWatchlist(); },
+    });
+  }
+  function dbWatchlistMenuItems(row) {
+    const local = state && state.host.transport === 'local';
+    const items = [];
+    if (row.link) {
+      items.push({ label: 'Open link in browser',
+        onClick: () => window.open(row.link, '_blank', 'noopener') });
+      items.push({ label: 'Copy link', onClick: () => dbCopyText(row.link, 'link') });
+      items.push('-');
+    }
+    if (local) {
+      items.push({ label: 'Open Folder', disabled: !row.folder,
+        onClick: () => dbReveal(row.folder, 'folder') });
+    }
+    items.push({ label: 'Copy Folder Path', disabled: !row.folder,
+      onClick: () => dbCopyText(row.folder, 'folder path') });
+    return items;
+  }
+  function dbRenderWatchlist() {
+    const st = dbState.watchlist;
+    const tbody = $('#db-wl-tbody');
+    tbody.innerHTML = '';
+    const colset = st.cols;
+    st.rows.forEach((row) => {
+      const tr = document.createElement('tr');
+      colset.order.forEach((id) => {
+        const def = colset.byId[id];
+        const td = document.createElement('td');
+        td.style.textAlign = def.align === 'e' ? 'right' : def.align === 'center' ? 'center' : 'left';
+        if (id === 'sel') {
+          const box = document.createElement('input');
+          box.type = 'checkbox'; box.className = 'cb-cbx';
+          box.checked = !!st.checked[row.id];
+          if (!row.eligible) setDisabled(box, true, { reason: row.ineligible_reason });
+          else box.addEventListener('change', () => { st.checked[row.id] = box.checked; });
+          td.appendChild(box);
+        } else if (id === 'channel') {
+          td.style.fontWeight = '500'; td.textContent = row.channel;
+        } else if (id === 'link') {
+          if (row.link) {
+            const a = document.createElement('a');
+            a.href = row.link; a.target = '_blank'; a.rel = 'noopener';
+            a.className = 'cb-mono'; a.style.fontSize = '11.5px'; a.textContent = row.link;
+            td.appendChild(a);
+          } else if (row.link_unresolved) {
+            const span = document.createElement('span');
+            span.className = 'cb-mono';
+            span.style.cssText = 'font-size:11.5px;color:var(--cb-warn)';
+            span.textContent = 'unresolved — folder name only';
+            td.appendChild(span);
+          }
+        } else if (id === 'folder') {
+          td.className = 'cb-mut cb-mono'; td.style.fontSize = '11.5px';
+          td.textContent = row.folder || '—';
+        } else if (id === 'platform' || id === 'genre') {
+          td.className = 'cb-mut'; td.textContent = row[id] || '';
+        } else if (id === 'last_scan') {
+          td.className = 'cb-mut cb-mono'; td.style.fontSize = '11.5px';
+          td.textContent = fmtWhen(row.last_scan);
+        } else if (id === 'pending') {
+          td.className = row.pending ? 'cb-mono' : 'cb-mono cb-mut';
+          if (row.pending) { td.style.color = 'var(--cb-line)'; td.style.fontWeight = '500'; }
+          td.textContent = String(row.pending);
+        } else if (id === 'total') {
+          td.className = 'cb-mono cb-mut'; td.textContent = String(row.total);
+        } else if (id === 'status') {
+          if (row.status === 'downloading') {
+            const tag = document.createElement('span');
+            tag.className = 'cb-tag cb-tag--fill'; tag.textContent = 'downloading';
+            td.appendChild(tag);
+          } else if (row.link_unresolved) {
+            const tag = document.createElement('span');
+            tag.className = 'cb-tag cb-tag--attn'; tag.textContent = 'needs link';
+            td.appendChild(tag);
+          } else {
+            td.className = 'cb-mut'; td.textContent = row.status;
+          }
+        }
+        tr.appendChild(td);
+      });
+      tr.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        dbShowMenu(e.clientX, e.clientY, dbWatchlistMenuItems(row));
+      });
+      tbody.appendChild(tr);
+    });
+    const bar = $('#db-wl-statbar');
+    bar.innerHTML = '';
+    const pending = st.rows.reduce((a, r) => a + (r.pending || 0), 0);
+    const ticked = Object.values(st.checked).filter(Boolean).length;
+    [`${num(st.rows.length)} channel${st.rows.length === 1 ? '' : 's'}`,
+     `${num(pending)} pending new`, `${ticked} ticked for cleanup`].forEach((t) => {
+      const span = document.createElement('span'); span.textContent = t; bar.appendChild(span);
+    });
+    bindTips(tbody);
+  }
+  function dbWireWatchlistToolbar() {
+    // 3h's toolbar has no search box (channel count is small enough that the
+    // sortable columns are the whole navigation story) — matching the design
+    // exactly rather than adding a control it doesn't have.
+    const cleanup = $('#db-wl-cleanup');
+    setDisabled(cleanup, true, {
+      reason: (TOOLTIPS['db.folders_cleanup'] ? TOOLTIPS['db.folders_cleanup'] + '\n\n' : '') +
+        'Not wired up yet — destructive actions need their own sign-off, out of scope for this task.',
+    });
+    $('#db-wl-refresh').addEventListener('click', dbWatchlistReload);
+  }
+
+  /* ── Artwork tab: paged table + preview pane ─────────────────────────────── */
+
+  async function dbArtworkReload() {
+    const st = dbState.artwork;
+    try {
+      const res = await call('db.query', {
+        table: 'artwork', filters: { filter_name: st.filter, search: st.search },
+        sort: { col: st.sortCol, desc: st.sortDesc }, offset: 0, limit: DB_PAGE_SIZE,
+      });
+      st.rows = res.rows; st.total = res.total; st.offset = res.rows.length; st.loaded = true;
+    } catch (_) { st.rows = []; st.total = 0; st.offset = 0; }
+    st.selected = null;
+    dbArtworkClearPreview();
+    dbRenderArtwork();
+  }
+  async function dbArtworkLoadMore() {
+    const st = dbState.artwork;
+    const res = await call('db.query', {
+      table: 'artwork', filters: { filter_name: st.filter, search: st.search },
+      sort: { col: st.sortCol, desc: st.sortDesc }, offset: st.offset, limit: DB_PAGE_SIZE,
+    });
+    st.rows = st.rows.concat(res.rows); st.offset += res.rows.length; st.total = res.total;
+    dbRenderArtwork();
+  }
+  function dbRenderArtworkHeaders() {
+    dbWireHeaders($('#db-art-thead'), dbState.artwork.cols, {
+      sortCol: dbState.artwork.sortCol, sortDesc: dbState.artwork.sortDesc,
+      onSort: (id) => {
+        const st = dbState.artwork;
+        if (st.sortCol === id) st.sortDesc = !st.sortDesc; else { st.sortCol = id; st.sortDesc = false; }
+        dbArtworkReload();
+      },
+      onRender: () => { dbRenderArtworkHeaders(); dbRenderArtwork(); },
+    });
+  }
+  function dbArtworkMenuItems(row) {
+    const local = state && state.host.transport === 'local';
+    const items = [];
+    if (local) {
+      items.push({ label: 'Open Image', disabled: !row.sidecar_path,
+        onClick: () => dbReveal(row.sidecar_path, 'open') });
+      items.push({ label: 'Open Containing Folder', disabled: !(row.sidecar_path || row.file_path),
+        onClick: () => dbReveal(row.sidecar_path || row.file_path, 'folder') });
+    }
+    items.push({ label: 'Copy Image Path', disabled: !row.sidecar_path,
+      onClick: () => dbCopyText(row.sidecar_path, 'image path') });
+    items.push({ label: 'Copy Thumbnail URL', disabled: !row.thumb_url,
+      onClick: () => dbCopyText(row.thumb_url, 'thumbnail URL') });
+    return items;
+  }
+  function dbArtworkClearPreview(message) {
+    const box = $('#db-art-preview-box');
+    box.innerHTML = '';
+    box.textContent = message || 'Select a track';
+    $('#db-art-preview-meta').innerHTML = '';
+  }
+  function dbMetaRow(label, value, color) {
+    const row = document.createElement('div');
+    row.className = 'cb-row'; row.style.gap = '8px';
+    const l = document.createElement('span'); l.className = 'cb-mut'; l.textContent = label;
+    const v = document.createElement('span'); v.className = 'cb-mono';
+    v.style.cssText = 'margin-left:auto;font-size:11px' + (color ? `;color:${color}` : '');
+    v.textContent = value;
+    row.append(l, v);
+    return row;
+  }
+  async function dbArtworkSelectRow(row) {
+    dbState.artwork.selected = row;
+    $$('#db-art-tbody tr').forEach((tr) => tr.classList.toggle('is-selected', tr.dataset.id === String(row.id)));
+    const box = $('#db-art-preview-box');
+    box.textContent = 'Loading…';
+    try {
+      const res = await call('db.artwork_preview', { path: row.sidecar_path, file_path: row.file_path });
+      box.innerHTML = '';
+      if (res.data_url) {
+        const img = document.createElement('img');
+        img.src = res.data_url;
+        img.style.cssText = 'max-width:100%;max-height:100%;border-radius:6px;display:block;margin:auto';
+        box.appendChild(img);
+      } else {
+        box.textContent = row.sidecar_path ? 'Sidecar file is gone' : 'No artwork';
+      }
+      const meta = $('#db-art-preview-meta');
+      meta.innerHTML = '';
+      const dims = res.width && res.height ? `${res.width} × ${res.height}` : '';
+      const kb = res.size ? `${Math.max(1, Math.round(res.size / 1024))} KB` : '';
+      if (dims || kb) {
+        const cap = document.createElement('div');
+        cap.className = 'cb-mut cb-mono'; cap.style.fontSize = '10.5px';
+        cap.textContent = [dims, kb].filter(Boolean).join(' · ');
+        meta.appendChild(cap);
+      }
+      meta.appendChild(dbMetaRow('Embedded', row.embedded ? 'APIC present' : 'not embedded',
+        row.embedded ? 'var(--cb-ok)' : ''));
+      meta.appendChild(dbMetaRow('Sidecar', row.sidecar || '—'));
+      meta.appendChild(dbMetaRow('Source', row.thumb_url || '—'));
+    } catch (_) {
+      box.innerHTML = ''; box.textContent = 'Could not load preview.';
+    }
+  }
+  function dbRenderArtwork() {
+    const st = dbState.artwork;
+    const tbody = $('#db-art-tbody');
+    tbody.innerHTML = '';
+    const colset = st.cols;
+    st.rows.forEach((row) => {
+      const tr = document.createElement('tr');
+      tr.dataset.id = String(row.id);
+      colset.order.forEach((id) => {
+        const def = colset.byId[id];
+        const td = document.createElement('td');
+        td.style.textAlign = def.align === 'e' ? 'right' : def.align === 'center' ? 'center' : 'left';
+        if (id === 'title') { td.style.fontWeight = '500'; td.textContent = row.title; }
+        else if (id === 'channel' || id === 'platform') { td.className = 'cb-mut'; td.textContent = row[id] || ''; }
+        else if (id === 'embedded') {
+          td.style.color = row.embedded ? 'var(--cb-ok)' : 'var(--cb-err)';
+          td.textContent = row.embedded ? '✓' : '✗';
+        } else if (id === 'sidecar') {
+          td.className = 'cb-mut cb-mono'; td.style.fontSize = '11px'; td.textContent = row.sidecar || '—';
+        } else if (id === 'on_disk') {
+          if (row.on_disk === true) { td.style.color = 'var(--cb-ok)'; td.textContent = '✓'; }
+          else if (row.on_disk === false) { td.style.color = 'var(--cb-warn)'; td.textContent = 'missing'; }
+          else { td.className = 'cb-mut'; td.textContent = '—'; }
+        } else if (id === 'thumb_url') {
+          td.className = 'cb-mut cb-mono'; td.style.fontSize = '11px'; td.textContent = row.thumb_url || '—';
+        }
+        tr.appendChild(td);
+      });
+      tr.addEventListener('click', () => dbArtworkSelectRow(row));
+      tr.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        dbShowMenu(e.clientX, e.clientY, dbArtworkMenuItems(row));
+      });
+      tbody.appendChild(tr);
+    });
+    if (st.offset < st.total) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = colset.order.length;
+      const remaining = st.total - st.offset;
+      td.style.cssText = 'padding-left:14px;cursor:pointer;color:var(--cb-line);font-size:12px';
+      td.textContent = `Load ${Math.min(DB_PAGE_SIZE, remaining)} more of ${remaining} remaining…`;
+      td.addEventListener('click', dbArtworkLoadMore);
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    }
+    const bar = $('#db-art-statbar');
+    bar.innerHTML = '';
+    const span = document.createElement('span');
+    span.textContent = `${num(st.total)} track${st.total === 1 ? '' : 's'} matching filter ` +
+                       `(${num(st.rows.length)} loaded)`;
+    bar.appendChild(span);
+  }
+  function dbWireArtworkToolbar() {
+    const filterSel = $('#db-art-filter');
+    DB_ARTWORK_FILTERS.forEach((f) => {
+      const o = document.createElement('option'); o.textContent = f; filterSel.appendChild(o);
+    });
+    filterSel.value = dbState.artwork.filter;
+    filterSel.addEventListener('change', () => {
+      dbState.artwork.filter = filterSel.value; dbArtworkReload();
+    });
+    const searchEl = $('#db-art-search');
+    let t = null;
+    searchEl.addEventListener('input', () => {
+      clearTimeout(t);
+      t = setTimeout(() => { dbState.artwork.search = searchEl.value.trim(); dbArtworkReload(); }, 250);
+    });
+    $('#db-art-refresh').addEventListener('click', dbArtworkReload);
+    // 3i's toolbar has no Export CSV button (matching the design) — the
+    // service's db.export_csv still accepts table:"artwork" for a future
+    // screen that wants it.
+    setDisabled($('#db-art-fetch'), true, {
+      reason: (TOOLTIPS['settings.fetch_artwork'] ? TOOLTIPS['settings.fetch_artwork'] + '\n\n' : '') +
+        "Not wired up yet — maintenance jobs arrive with the web frontend's job runner.",
+    });
+    setDisabled($('#db-art-reembed'), true, {
+      reason: (TOOLTIPS['db.reembed_artwork'] ? TOOLTIPS['db.reembed_artwork'] + '\n\n' : '') +
+        "Not wired up yet — maintenance jobs arrive with the web frontend's job runner.",
+    });
+    $('#db-art-copy-thumb').addEventListener('click', () => {
+      const row = dbState.artwork.selected;
+      if (!row) { toast('Select a track first.', true); return; }
+      dbCopyText(row.thumb_url, 'thumbnail URL');
+    });
+  }
+
+  /* ── tabs + open/close ─────────────────────────────────────────────────── */
+  const DB_TABS = ['downloads', 'watchlist', 'artwork'];
+  const DB_HELP_KEY = { downloads: 'db.help_downloads', watchlist: 'db.help_watchlist',
+                        artwork: 'db.help_artwork' };
+  function dbSwitchTab(tab) {
+    dbState.activeTab = tab;
+    DB_TABS.forEach((t) => {
+      $('#db-tab-' + t).classList.toggle('is-on', t === tab);
+      $('#db-tab-btn-' + t).classList.toggle('cb-btn--quiet', t !== tab);
+    });
+    $('#db-help').setAttribute('data-tt', DB_HELP_KEY[tab]);
+    if (tab === 'downloads' && !dbState.downloads.root) dbDownloadsReload();
+    else if (tab === 'watchlist' && !dbState.watchlist.loaded) dbWatchlistReload();
+    else if (tab === 'artwork' && !dbState.artwork.loaded) dbArtworkReload();
+  }
+  let dbWired = false;
+  function dbInitOnce() {
+    if (dbWired) return;
+    dbWired = true;
+    dbState.downloads.cols = makeColumnSet(DL_COLUMNS, 'db_dl_col_widths', 'db_dl_col_order');
+    dbState.watchlist.cols = makeColumnSet(WL_COLUMNS, 'db_wl_col_widths', 'db_wl_col_order');
+    dbState.artwork.cols = makeColumnSet(ART_COLUMNS, 'db_art_col_widths', 'db_art_col_order');
+    dbRenderDownloadsHeaders();
+    dbRenderWatchlistHeaders();
+    dbRenderArtworkHeaders();
+    dbWireDownloadsToolbar();
+    dbWireWatchlistToolbar();
+    dbWireArtworkToolbar();
+    DB_TABS.forEach((t) => {
+      $('#db-tab-btn-' + t).addEventListener('click', () => dbSwitchTab(t));
+    });
+    bindTips($('#screen-database'));
+  }
+  function dbOpen() {
+    dbInitOnce();
+    dbSwitchTab(dbState.activeTab);
+  }
+
   /* ── settings ──────────────────────────────────────────────────────────── */
   const NOT_AVAILABLE_REASON = 'This option is not wired into the web frontend yet — ' +
                                'change it in the desktop app for now.';
@@ -1296,9 +2202,11 @@
       const row = document.createElement('div');
       row.className = 'cb-row';
       row.style.cssText = 'gap:8px;flex-wrap:wrap';
-      row.appendChild(stubButton('🗂 Open Database', '', null,
-        "Not wired up yet — the database viewer arrives with the web " +
-        "frontend's database screen."));
+      const openDb = document.createElement('button');
+      openDb.className = 'cb-btn cb-btn--sm';
+      openDb.textContent = '🗂 Open Database';
+      openDb.addEventListener('click', () => show('database'));
+      row.appendChild(openDb);
       const maintReason = "Not wired up yet — maintenance jobs arrive with the " +
                           "web frontend's job runner.";
       row.append(

@@ -564,3 +564,108 @@ def test_artwork_where_sql_validates_filter_name_defensively(tmp_path):
     # not silently fall through to some other filter's WHERE clause.
     with pytest.raises(ValueError):
         db._artwork_where_sql("Sidecar missing on disk")
+
+
+# ── Task 7: search + order_by added to query_artwork_rows/count_artwork_rows ─
+
+def test_query_artwork_rows_search_matches_title_or_channel(tmp_path):
+    db = _new_db(tmp_path)
+    _add(db, title="Sundown Terrace", channel_name="Deep House Daily")
+    _add(db, title="Bassline Study", channel_name="Garage Archive")
+
+    titles = {r["title"] for r in
+              db.query_artwork_rows("All tracks", search="sundown")}
+    assert titles == {"Sundown Terrace"}
+
+    titles = {r["title"] for r in
+              db.query_artwork_rows("All tracks", search="garage")}
+    assert titles == {"Bassline Study"}
+
+    assert db.count_artwork_rows("All tracks", search="sundown") == 1
+
+
+def test_query_artwork_rows_search_escapes_like_wildcards(tmp_path):
+    db = _new_db(tmp_path)
+    _add(db, title="100% Real", channel_name="Chan")
+    _add(db, title="Not A Match", channel_name="Chan")
+
+    titles = {r["title"] for r in
+              db.query_artwork_rows("All tracks", search="100%")}
+    assert titles == {"100% Real"}
+
+
+def test_query_artwork_rows_search_applies_to_broken_filter(tmp_path):
+    db = _new_db(tmp_path)
+    _add(db, title="Terrace Dub", channel_name="Deep House Daily",
+         artwork_path=str(tmp_path / "gone1.jpg"))
+    _add(db, title="Fracture Point", channel_name="Neon Bass Radio",
+         artwork_path=str(tmp_path / "gone2.jpg"))
+
+    titles = {r["title"] for r in
+              db.query_artwork_rows("Sidecar missing on disk", search="terrace")}
+    assert titles == {"Terrace Dub"}
+    assert db.count_artwork_rows("Sidecar missing on disk", search="terrace") == 1
+
+
+def test_query_artwork_rows_order_by_is_whitelisted(tmp_path):
+    db = _new_db(tmp_path)
+    _add(db, title="A", channel_name="C1")
+    with pytest.raises(ValueError):
+        db.query_artwork_rows("All tracks", order_by="id; DROP TABLE downloads;--")
+
+
+def test_query_artwork_rows_order_by_channel_sorts_and_reverses(tmp_path):
+    db = _new_db(tmp_path)
+    _add(db, title="A", channel_name="Zebra Channel")
+    _add(db, title="B", channel_name="Amber Channel")
+
+    asc = [r["channel_name"] for r in
+           db.query_artwork_rows("All tracks", order_by="channel_name")]
+    assert asc == ["Amber Channel", "Zebra Channel"]
+
+    desc = [r["channel_name"] for r in
+            db.query_artwork_rows("All tracks", order_by="channel_name",
+                                  descending=True)]
+    assert desc == ["Zebra Channel", "Amber Channel"]
+
+
+def test_query_artwork_rows_order_by_applies_to_broken_filter_too(tmp_path):
+    db = _new_db(tmp_path)
+    _add(db, title="A", channel_name="Zebra Channel",
+         artwork_path=str(tmp_path / "gone1.jpg"))
+    _add(db, title="B", channel_name="Amber Channel",
+         artwork_path=str(tmp_path / "gone2.jpg"))
+
+    asc = [r["channel_name"] for r in
+           db.query_artwork_rows("Sidecar missing on disk",
+                                 order_by="channel_name")]
+    assert asc == ["Amber Channel", "Zebra Channel"]
+
+
+def test_query_artwork_rows_order_by_embedded_sorts_numerically(tmp_path):
+    db = _new_db(tmp_path)
+    _add(db, title="Not Embedded", channel_name="C", artwork_embedded=0)
+    _add(db, title="Embedded", channel_name="C", artwork_embedded=1)
+
+    desc = [r["title"] for r in
+            db.query_artwork_rows("All tracks", order_by="artwork_embedded",
+                                  descending=True)]
+    assert desc[0] == "Embedded"
+
+
+def test_query_artwork_rows_paging_stable_with_search_and_order_by(tmp_path):
+    db = _new_db(tmp_path)
+    for i in range(12):
+        _add(db, title=f"Match {i:02d}", channel_name="Chan")
+    _add(db, title="Excluded", channel_name="Other")
+
+    page1 = db.query_artwork_rows("All tracks", search="match",
+                                  order_by="title", limit=5, offset=0)
+    page2 = db.query_artwork_rows("All tracks", search="match",
+                                  order_by="title", limit=5, offset=5)
+    page3 = db.query_artwork_rows("All tracks", search="match",
+                                  order_by="title", limit=5, offset=10)
+    titles = [r["title"] for r in page1 + page2 + page3]
+    assert len(titles) == 12
+    assert len(set(titles)) == 12
+    assert "Excluded" not in titles
