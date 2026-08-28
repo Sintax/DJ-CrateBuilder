@@ -218,8 +218,9 @@ pip install -r requirements.txt     # adds pywebview, fastapi, uvicorn
 python web_window.py                # a native window over the same interface
 ```
 
-`python web_window.py --screen watchlist` opens straight to a screen
-(`overview`, `downloads`, `watchlist`, `settings`, `about`).
+`python web_window.py --screen watchlist` opens straight to a screen —
+`overview`, `downloads`, `watchlist`, `settings`, `about`, `database`,
+`activity-log` or `debug-log`.
 
 ### Reach it from another device
 
@@ -257,6 +258,11 @@ accept it.
 The updater controls, the Folders Cleanup review dialog, and creating genre
 folders are not wired up in the web UI yet. They render disabled with the reason
 in their tooltip; use the desktop app for those.
+
+Notifications (the bell on Overview, and the Recent activity card beside it) are
+kept **per browser**, not on the host — there is no server-side inbox. A device
+you have just paired starts with an empty list even if the host has been running
+all day, and clearing the browser's site data clears it.
 
 ---
 

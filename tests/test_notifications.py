@@ -6,8 +6,9 @@ to a client that is not watching the screen it ran on.
 """
 import time
 
+import pytest
+
 from cratebuilder.batchrun import BatchRunner
-from cratebuilder.download import Outcome
 from cratebuilder.settings import Settings
 
 from tests.test_watchrun import FakeSession, Harness
@@ -71,6 +72,30 @@ def test_a_watch_list_download_announces_its_tally(tmp_path):
     assert "1 track downloaded" in found[0]["body"]
 
 
+def test_a_watch_list_download_that_lost_channels_asks_to_be_looked_at(tmp_path):
+    """`BatchRunner._finish` escalates a batch with failures to `warn`; a Watch
+    List run that lost whole channels is the same kind of outcome and must not
+    report as routine."""
+    session = FakeSession(listing=[
+        {"id": "b1", "title": "Track One", "url": "https://y/1",
+         "upload_date": "20260101"},
+    ])
+    h = Harness(tmp_path, session=session)
+    cid = h.add_channel()
+    h.ops.run_scan([cid])
+    h.emit.events.clear()
+
+    def boom(*_a, **_k):
+        raise RuntimeError("channel folder is gone")
+
+    h.ops._download_channel = boom
+    h.ops.run_download([cid])
+    found = notes(h.emit)
+    assert len(found) == 1
+    assert found[0]["level"] == "warn"
+    assert "1 channel failed" in found[0]["body"]
+
+
 def test_the_announcement_lands_after_the_run_s_closing_log_line(tmp_path):
     """The pinned scan log's DONE line and the announcement say the same
     thing; the log line is the live one, so it must not arrive second."""
@@ -78,6 +103,45 @@ def test_the_announcement_lands_after_the_run_s_closing_log_line(tmp_path):
     h.ops.run_scan([h.add_channel()])
     kinds = [t for t, _ in h.emit.events if t in ("scan.line", "notification")]
     assert kinds[-2:] == ["scan.line", "notification"]
+
+
+# ── a crashed run must not announce a routine completion (M5) ───────────────
+
+def _explode(_self, *_a, **_k):
+    raise RuntimeError("the run itself came apart")
+
+
+def test_a_scan_that_crashes_outright_announces_nothing(tmp_path):
+    """`_start_job` publishes the failure at `error` level. A completion
+    announcement from the same run would arrive first and read as success —
+    "0 new across 0 channels" is indistinguishable from a quiet morning."""
+    h = Harness(tmp_path, session=FakeSession(listing=[]))
+    cid = h.add_channel()
+    h.ops._end = lambda: _explode(h.ops)
+    with pytest.raises(RuntimeError):
+        h.ops.run_scan([cid])
+    assert notes(h.emit) == []
+
+
+def test_a_download_run_that_crashes_outright_announces_nothing(tmp_path):
+    h = Harness(tmp_path, session=FakeSession(listing=[]))
+    cid = h.add_channel()
+    h.ops._end = lambda: _explode(h.ops)
+    with pytest.raises(RuntimeError):
+        h.ops.run_download([cid])
+    assert notes(h.emit) == []
+
+
+def test_a_cancelled_run_is_not_a_crashed_one_and_still_announces(tmp_path):
+    """Cancel returns through the normal path, so what the run managed before
+    it stopped is still worth reporting."""
+    h = Harness(tmp_path, session=FakeSession(listing=[]))
+    cid = h.add_channel()
+    h.ops.cancel_all()
+    h.ops.run_scan([cid])
+    found = notes(h.emit)
+    assert len(found) == 1
+    assert found[0]["title"] == "Watch List scan"
 
 
 # ── Main-tab batch ───────────────────────────────────────────────────────────

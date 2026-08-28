@@ -369,9 +369,15 @@ class WatchlistOps:
             self._flush()
             self._line(LINE_DONE, f"DONE Scan complete — {total_new} new across "
                                   f"{_plural(scanned, 'channel')}")
-            self._notify("Watch List scan",
-                         f"{total_new} new across {_plural(scanned, 'channel')}")
             self._patch_counts()
+        # Deliberately AFTER the try/finally, not inside it: a run that raised
+        # past the per-channel guard has no completion to report, and
+        # _start_job already publishes that failure at error level — announcing
+        # "0 new across 0 channels" first would read as a routine success. A
+        # CANCELLED run is not a crashed one; it returns through here and still
+        # announces what it managed.
+        self._notify("Watch List scan",
+                     f"{total_new} new across {_plural(scanned, 'channel')}")
         return {"new": total_new, "channels": scanned}
 
     def _scan_channel(self, cid):
@@ -566,6 +572,7 @@ class WatchlistOps:
         self._begin("download", [(cid, bool(force)) for cid in cids])
         index = 0
         downloaded = 0
+        failed = 0
         try:
             while True:
                 with self._lock:
@@ -576,6 +583,7 @@ class WatchlistOps:
                 try:
                     downloaded += self._download_channel(cid, force=entry_force)
                 except Exception as exc:
+                    failed += 1
                     self._line(LINE_ERROR,
                                f"ERROR {self._name(cid)} — {str(exc)[:120]}")
         finally:
@@ -583,9 +591,15 @@ class WatchlistOps:
             self._flush()
             self._line(LINE_DONE, f"DONE Download complete — "
                                   f"{_plural(downloaded, 'track')} downloaded")
-            self._notify("Watch List download",
-                         f"{_plural(downloaded, 'track')} downloaded")
             self._patch_counts()
+        # After the try/finally for the same reason run_scan's is — see there.
+        # A run that lost channels is not routine, so it takes the level that
+        # gets the attention treatment, exactly as BatchRunner._finish does.
+        body = f"{_plural(downloaded, 'track')} downloaded"
+        if failed:
+            body += f", {_plural(failed, 'channel')} failed"
+        self._notify("Watch List download", body,
+                     level="warn" if failed else "info")
         return {"downloaded": downloaded}
 
     def _download_channel(self, cid, force=False):

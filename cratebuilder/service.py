@@ -466,7 +466,7 @@ def about_info(script_path=None):
         signature = None
     cached = _ABOUT_CACHE.get(path)
     if signature is not None and cached and cached[0] == signature:
-        return dict(cached[1])
+        return _about_copy(cached[1])
 
     info = {name: "" for name in ABOUT_CONSTANTS}
     info["faq"] = []
@@ -487,8 +487,17 @@ def about_info(script_path=None):
                 info[field] = node.value.value
     info["faq"] = _about_faq(tree)
     if signature is not None:
-        _ABOUT_CACHE[path] = (signature, dict(info))
+        _ABOUT_CACHE[path] = (signature, _about_copy(info))
     return info
+
+
+def _about_copy(info):
+    """A caller-owned copy. `dict()` alone would share the `faq` LIST with the
+    module-level cache, so one caller appending to it would hand every later
+    session an extra question."""
+    out = dict(info)
+    out["faq"] = [dict(row) for row in info.get("faq") or ()]
+    return out
 
 
 def _about_faq(tree):
@@ -2146,7 +2155,9 @@ class CrateBuilderService:
         if self.transport != LOCAL:
             raise CBError("Links open in the app window on the host machine. "
                           "Copy the address instead.")
-        url = (url or "").strip()
+        # Anything that is not a string is not a link; refusing it as a CBError
+        # keeps every rejection on this method the same shape.
+        url = url.strip() if isinstance(url, str) else ""
         scheme = url.split(":", 1)[0].lower() if ":" in url else ""
         if scheme not in OPENABLE_URL_SCHEMES:
             raise CBError("Only web and mail links can be opened from here.")

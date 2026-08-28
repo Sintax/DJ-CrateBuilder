@@ -191,7 +191,7 @@ def test_a_notification_s_level_and_jump_are_derived_not_guessed(app_js, tmp_pat
 _TIP_HARNESS = """
 const TOOLTIPS = { 'main.cancel_batch': 'REGISTRY-TEXT' };
 let shown = null;
-const tip = { el: null, timer: null, host: null };
+const tip = { el: null, timer: null, host: null, described: null };
 /* The stubs keep the real ones' one shared piece of state: showTip records
    which control the live bubble belongs to, and hideTip clears it. */
 function showTip(host, text) { shown = { id: host.id, text: text }; tip.host = host; }
@@ -207,22 +207,60 @@ const plainDiv = { id: 'card', getAttribute: () => null,
   closest: function () { return null; } };
 let under = disabledBtn;
 let tipUnder = null;
-global.document = { elementFromPoint: () => under };
+let tipAt = null;
+let hits = 0;
+global.document = { elementFromPoint: () => { hits += 1; return under; } };
 %(track)s
 %(text)s
 const out = {};
 const timers = [];
 global.setTimeout = (fn) => { timers.push(fn); return timers.length; };
 global.clearTimeout = () => {};
+function settle() { timers.splice(0).forEach((fn) => fn()); }
+
 tipTrack(10, 10);
-timers.splice(0).forEach((fn) => fn());
+settle();
 out.disabledControl = shown;
+out.hitsAfterFirstMove = hits;
+
+// (M2) A pointer resting on a control: every move lands within the slop, so
+// nothing is hit-tested again.
+hits = 0;
+for (let i = 0; i < 100; i += 1) tipTrack(10, 10);
+out.hitTestsFor100StationaryMoves = hits;
+// A jitter of a pixel or two is still the same rest position.
+for (let i = 0; i < 100; i += 1) tipTrack(11, 12);
+out.hitTestsAfterJitter = hits;
+// A real move re-tests.
+tipTrack(60, 60);
+out.hitsAfterRealMove = hits;
+
+// (M1) A scroll moves the page under a still pointer. tipForget is what the
+// scroll handler calls; without it the control the cursor rests on is mute.
+tipTrack(10, 10);
+settle();
+shown = null;
+out.reshowsWithoutForget = (tipTrack(10, 10), settle(), shown);
+tipForget();
+hideTip();
+out.reshowsAfterScroll = (tipTrack(10, 10), settle(), shown && shown.id);
+
+// Moving onto something with no tooltip hides the bubble.
 under = plainDiv;
-tipTrack(20, 20);
-timers.splice(0).forEach((fn) => fn());
+tipTrack(200, 200);
+settle();
 out.nothingUnderCursor = shown;
 console.log(JSON.stringify(out));
 """
+
+
+def _tip_source(app_js):
+    return _TIP_HARNESS % {
+        "track": _slice(app_js, "  const TIP_SLOP = 4;",
+                        "  /* Coalesced to one hit test per frame"),
+        "text": _slice(app_js, "  function tipText(host)",
+                       "  /* The hover half of the engine"),
+    }
 
 
 def test_a_disabled_control_is_found_by_hit_testing_not_by_a_mouse_event(
@@ -231,16 +269,40 @@ def test_a_disabled_control_is_found_by_hit_testing_not_by_a_mouse_event(
     to itself and not to an ancestor — so a per-element listener could never
     fire and NO disabled-reason tooltip in the bundle rendered. Hit-testing is
     not suppressed by `disabled`, so the tracker finds it."""
-    r = _run_node(tmp_path, "ovtip.mjs", _TIP_HARNESS % {
-        "track": _slice(app_js, "  function tipHostAt(x, y)",
-                        "  document.addEventListener('pointermove'"),
-        "text": _slice(app_js, "  function tipText(host)",
-                       "  /* The hover half of the engine"),
-    })
+    r = _run_node(tmp_path, "ovtip.mjs", _tip_source(app_js))
     assert r["disabledControl"]["id"] == "dl-cancel"
     assert r["disabledControl"]["text"].startswith("REGISTRY-TEXT")
     assert "No download is running." in r["disabledControl"]["text"]
     assert r["nothingUnderCursor"] is None
+
+
+def test_a_resting_pointer_costs_no_hit_tests(app_js, tmp_path):
+    """elementFromPoint forces a style/layout flush, and this runs at
+    pointer-event rate while progress bars are being written — a pointer that
+    has not meaningfully moved must not pay for it."""
+    r = _run_node(tmp_path, "ovtip.mjs", _tip_source(app_js))
+    assert r["hitsAfterFirstMove"] == 1
+    assert r["hitTestsFor100StationaryMoves"] == 0
+    assert r["hitTestsAfterJitter"] == 0
+    assert r["hitsAfterRealMove"] == 1
+
+
+def test_a_scroll_lets_the_control_under_the_cursor_speak_again(app_js, tmp_path):
+    """A scroll moves the page under a still pointer. Hiding the bubble without
+    clearing the tracker leaves that control mute until the pointer leaves it
+    and comes back — ordinary wheel-scrolling on Settings or the log viewers."""
+    r = _run_node(tmp_path, "ovtip.mjs", _tip_source(app_js))
+    # Same coordinates, same element, tracker still armed: nothing re-shows.
+    assert r["reshowsWithoutForget"] is None
+    # After the scroll handler's tipForget, the same position re-arms.
+    assert r["reshowsAfterScroll"] == "dl-cancel"
+
+
+def test_the_scroll_handler_invalidates_the_tracker(app_js):
+    """Structural: the executed test above proves tipForget does the job, this
+    proves the scroll listener is the thing that calls it."""
+    line = _slice(app_js, "  addEventListener('scroll'", "\n")
+    assert "tipForget()" in line and "hideTip()" in line
 
 
 def test_bindtips_no_longer_binds_the_hover_pair(app_js):
@@ -256,6 +318,112 @@ def test_bindtips_no_longer_binds_the_hover_pair(app_js):
 
 def test_the_hover_tracker_is_bound_once_at_the_document(app_js):
     assert "document.addEventListener('pointermove'" in app_js
+
+
+_ARIA_HARNESS = """
+const TOOLTIPS = {};
+let shown = null;
+const tip = { el: null, timer: null, host: null, described: null };
+function refreshTip() {}
+let nextNode = null;
+function makeEl(id) {
+  const el = { id: id, disabled: false, attrs: {}, after: null,
+    setAttribute(k, v) { this.attrs[k] = v; },
+    removeAttribute(k) { delete this.attrs[k]; },
+    getAttribute(k) { return this.attrs[k] === undefined ? null : this.attrs[k]; },
+    insertAdjacentElement(where, node) {
+      if (node.parent && node.parent !== this) node.parent.after = null;
+      node.parent = this; this.after = node; return node; },
+  };
+  return el;
+}
+global.document = { createElement: () => {
+  const node = { className: '', id: '', textContent: '', parent: null,
+    remove() { if (this.parent) this.parent.after = null; this.parent = null; } };
+  nextNode = node;
+  return node;
+} };
+%(setDisabled)s
+const out = {};
+const btn = makeEl('dl-cancel');
+setDisabled(btn, true, { reason: 'No download is running.' });
+out.describedBy = btn.attrs['aria-describedby'] || null;
+out.nodeId = btn.after ? btn.after.id : null;
+out.nodeText = btn.after ? btn.after.textContent : null;
+out.nodeClass = btn.after ? btn.after.className : null;
+out.idsMatch = !!(btn.after && btn.attrs['aria-describedby'] === btn.after.id);
+out.stillNativelyDisabled = btn.disabled === true;
+out.noAriaDisabled = btn.attrs['aria-disabled'] === undefined;
+out.noTabindex = btn.attrs['tabindex'] === undefined;
+
+// The reason changes: the same node is reused, not a second one stacked up.
+setDisabled(btn, true, { reason: 'A batch is already running.' });
+out.reusedNode = btn.after && btn.after.id === out.nodeId;
+out.updatedText = btn.after ? btn.after.textContent : null;
+
+// Re-enabled: the node and the wiring both go.
+setDisabled(btn, false, { ttKey: 'main.cancel_batch' });
+out.afterEnable = btn.after;
+out.describedAfterEnable = btn.attrs['aria-describedby'] === undefined;
+
+// Disabled with no reason at all leaves nothing dangling either.
+setDisabled(btn, true, {});
+out.noReasonNoNode = btn.after === null
+  && btn.attrs['aria-describedby'] === undefined;
+
+// A second control gets its own id.
+const other = makeEl('wl-cancel');
+setDisabled(other, true, { reason: 'Nothing is running.' });
+out.distinctIds = other.after.id !== out.nodeId;
+console.log(JSON.stringify(out));
+"""
+
+
+def test_a_disabled_control_s_reason_is_wired_with_aria_describedby(
+        app_js, tmp_path):
+    """The pointer tracker is the only way to READ the reason — a disabled
+    control cannot be focused — but a screen reader announces a described-by
+    node regardless of focusability. Native `disabled` stays: the desktop app
+    disables the same controls, and aria-disabled + tabindex would add dead
+    stops to the tab order that the tkinter UI does not have."""
+    r = _run_node(tmp_path, "ovaria.mjs", _ARIA_HARNESS % {
+        "setDisabled": _slice(app_js, "  let reasonSeq = 0;",
+                              "  function placeBatchControls("),
+    })
+    assert r["idsMatch"] is True
+    assert r["nodeId"].startswith("cb-why-")
+    assert r["nodeText"] == "No download is running."
+    assert r["nodeClass"] == "cb-sr"
+    assert r["stillNativelyDisabled"] is True
+    assert r["noAriaDisabled"] is True
+    assert r["noTabindex"] is True
+    assert r["reusedNode"] is True
+    assert r["updatedText"] == "A batch is already running."
+    assert r["afterEnable"] is None
+    assert r["describedAfterEnable"] is True
+    assert r["noReasonNoNode"] is True
+    assert r["distinctIds"] is True
+
+
+def test_the_reason_node_is_taken_out_of_flow():
+    """`.cb-sr` sits next to its control so it dies with it on a re-render.
+    position:absolute is what stops it being a flex item and adding a `gap` to
+    the row — visually-hidden alone would shift every toolbar it appears in."""
+    with open(os.path.join(ROOT, "web", "app.css"), encoding="utf-8") as fh:
+        css = fh.read()
+    rule = css[css.index(".cb-sr {"):]
+    rule = rule[:rule.index("}")]
+    assert "position: absolute" in rule
+    assert "clip-path" in rule or "clip:" in rule
+
+
+def test_the_live_bubble_hands_the_describedby_back(app_js):
+    """showTip borrows aria-describedby for the bubble; a disabled control
+    already points it at its own reason node, so hideTip has to restore it
+    rather than leave the control undescribed."""
+    body = _slice(app_js, "  function hideTip()", "  /* The bubble is a snapshot")
+    assert "tip.described" in body
+    assert "setAttribute('aria-describedby', tip.described)" in body
 
 
 def test_disabled_controls_stay_in_hit_testing():

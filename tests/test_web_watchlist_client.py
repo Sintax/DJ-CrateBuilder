@@ -165,11 +165,21 @@ function $(sel) {
   const id = sel.slice(1);
   if (!els[id]) els[id] = {
     id, disabled: false, attrs: {}, className: '', textContent: '', innerHTML: '',
+    after: null,
     setAttribute(k, v) { this.attrs[k] = v; },
     removeAttribute(k) { delete this.attrs[k]; },
+    getAttribute(k) { return this.attrs[k] === undefined ? null : this.attrs[k]; },
+    // setDisabled also parks the reason on a described-by node beside the
+    // control; tests/test_web_overview_client.py owns that behaviour, this
+    // only has to let it happen.
+    insertAdjacentElement(where, node) { this.after = node; return node; },
   };
   return els[id];
 }
+function refreshTip() {}
+const tip = { el: null, host: null };
+global.document = { createElement: () => ({
+  className: '', id: '', textContent: '', remove() {} }) };
 %(setDisabled)s
 %(consts)s
 const wl = { running: false, cards: [], current: null, overall: null };
@@ -216,7 +226,7 @@ console.log(JSON.stringify({ idle, batching, scanning, nothingPending, readOnly,
 
 def _toolbar_source(app_js):
     return _TOOLBAR_HARNESS % {
-        "setDisabled": _slice(app_js, "  function setDisabled(el, disabled, opts)",
+        "setDisabled": _slice(app_js, "  let reasonSeq = 0;",
                               "  function placeBatchControls("),
         "consts": _slice(app_js, "  const WL_LOG_LIMIT = 500;", "  const wl = {"),
         "helpers": _slice(app_js, "  function wlPending()", "  function wlUrl(row)"),
