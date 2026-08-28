@@ -58,12 +58,9 @@ def _harness(app_js, body):
     return "\n".join([
         "const num = (n) => Number(n || 0).toLocaleString();",
         _slice(app_js, "  const WL_LOG_LIMIT = 500;", "  const wl = {"),
-        "const wl = { running: false, cards: [], current: null, "
-        "overall: null, doneSeq: 0 };",
+        "const wl = { running: false, cards: [], current: null, overall: null };",
         _slice(app_js, "  function wlPending()", "  function wlBusyReason("),
         _slice(app_js, "  function wlCurrentLine(row)", "  function wlPaintProgress()"),
-        _slice(app_js, "  function wlIsRunDone(entry)",
-               "  /* ── Add Channel (plain dialog)"),
         _slice(app_js, "  function wlCandidateMeta(candidate)",
                "  function openFixLink(row, opts)"),
         body,
@@ -84,27 +81,6 @@ console.log(JSON.stringify([
 ].map(wlUrl)));
 """))
     assert result == ["", "https://www.youtube.com/@DeepHouseDaily", "", ""]
-
-
-# ── the terminal DONE line is the only thing that ends a run ─────────────────
-
-def test_only_a_terminal_done_line_ends_a_watch_list_run(app_js, tmp_path):
-    """There is no watchlist.finished event, so the run-over signal is read out
-    of the scan log. add/remove/resolve emit DONE lines too — mistaking one of
-    those for the end of a run would re-arm every control mid-scan."""
-    result = _run_node(tmp_path, "wldone.mjs", _harness(app_js, """
-console.log(JSON.stringify([
-  { text: 'DONE Scan complete — 63 new across 5 channels' },
-  { text: 'DONE Download complete — 12 tracks downloaded' },
-  { text: 'DONE Added Deep House Daily' },
-  { text: 'DONE Removed Garage Archive' },
-  { text: 'DONE Channel set: Garage Archive' },
-  { text: 'DONE Garage Archive — 14 genre tags updated' },
-  { text: 'SCAN Deep House Daily — enumerating uploads…' },
-  {},
-].map(wlIsRunDone)));
-"""))
-    assert result == [True, True, False, False, False, False, False, False]
 
 
 # ── counts come off the cards, live ──────────────────────────────────────────
@@ -176,9 +152,9 @@ console.log(JSON.stringify([
 _TOOLBAR_HARNESS = """
 const num = (n) => Number(n || 0).toLocaleString();
 const TOOLTIPS = { 'main.scan_batch_conflict': 'BATCH-CONFLICT',
-                   'wl.scan_all': 'tt', 'wl.add_channel': 'tt',
-                   'wl.check_links': 'tt', 'wl.download_all_new': 'tt',
-                   'wl.cancel_all': 'tt' };
+                   'wl.scan_all': 'TT-SCAN', 'wl.add_channel': 'TT-ADD',
+                   'wl.check_links': 'TT-LINKS', 'wl.download_all_new': 'TT-DLALL',
+                   'wl.cancel_all': 'TT-CANCEL' };
 const dl = { running: false };
 const els = {};
 function $(sel) {
@@ -192,8 +168,9 @@ function $(sel) {
 }
 %(setDisabled)s
 %(consts)s
-const wl = { running: false, cards: [], current: null, overall: null, doneSeq: 0 };
+const wl = { running: false, cards: [], current: null, overall: null };
 %(helpers)s
+%(gate)s
 %(toolbar)s
 function snap() {
   return ['wl-add', 'wl-links', 'wl-dl-all', 'wl-scan', 'wl-cancel', 'quick-scan']
@@ -230,6 +207,8 @@ def _toolbar_source(app_js):
                               "  function placeBatchControls("),
         "consts": _slice(app_js, "  const WL_LOG_LIMIT = 500;", "  const wl = {"),
         "helpers": _slice(app_js, "  function wlPending()", "  function wlUrl(row)"),
+        "gate": _slice(app_js, "  function tipPlus(ttKey, reason)",
+                       "  function wlActionButton("),
         "toolbar": _slice(app_js, "  function renderWatchlistToolbar()",
                           "  function renderWatchlist()"),
     }
@@ -244,7 +223,8 @@ def test_a_running_batch_closes_the_scan_controls_with_the_3c_reason(app_js, tmp
     assert r["idle"]["quick-scan"]["off"] is False
     for key in ("wl-scan", "quick-scan"):
         assert r["batching"][key]["off"] is True
-        assert r["batching"][key]["why"] == "BATCH-CONFLICT"
+        # A closed control still says what it does before saying why it is off.
+        assert r["batching"][key]["why"] == "TT-SCAN\n\nBATCH-CONFLICT"
     # Downloading is a separate job category from a batch and keeps running.
     assert r["batching"]["wl-dl-all"]["off"] is False
 
@@ -256,7 +236,17 @@ def test_a_running_watch_list_job_arms_cancel_and_closes_the_starts(app_js, tmp_
         assert r["scanning"][key]["why"], key
     assert r["scanning"]["wl-cancel"]["off"] is False
     assert r["idle"]["wl-cancel"]["off"] is True
-    assert r["idle"]["wl-cancel"]["why"] == "No Watch List scan or download is running."
+    assert r["idle"]["wl-cancel"]["why"] == (
+        "TT-CANCEL\n\nNo Watch List scan or download is running.")
+
+
+def test_a_disabled_toolbar_control_keeps_its_registry_description(app_js, tmp_path):
+    """Losing the registry half while a control is closed is exactly when the
+    user is most likely to be asking what it was for."""
+    r = _run_node(tmp_path, "wltoolbar.mjs", _toolbar_source(app_js))
+    for key, tip in (("wl-add", "TT-ADD"), ("wl-links", "TT-LINKS"),
+                     ("wl-dl-all", "TT-DLALL"), ("wl-scan", "TT-SCAN")):
+        assert r["scanning"][key]["why"].startswith(tip + "\n\n"), key
 
 
 def test_download_all_new_carries_the_live_count_and_closes_at_zero(app_js, tmp_path):
@@ -270,15 +260,97 @@ def test_download_all_new_carries_the_live_count_and_closes_at_zero(app_js, tmp_
     assert r["label"] == "⬇ Download All New (0)"
 
 
-# ── the end-of-run resync must not re-arm the run it just ended ─────────────
+# ── job.finished is the only resync trigger ─────────────────────────────────
+# The host releases a job's slot before emitting job.finished, so the snapshot
+# a handler asks for can be believed outright. The runs' own terminal events
+# (batch.finished, the closing DONE scan line) are emitted while the slot is
+# still held — they are display only, and must not refresh.
+
+_EVENTS_HARNESS = """
+const dl = { running: false, paused: false, rows: {}, current: null, overall: null };
+const wl = { running: false, cards: [], current: null, overall: null };
+let state = { counts: {} };
+const calls = [];
+const handlers = {};
+const cbApi = { on(event, fn) { handlers[event] = fn; } };
+const num = (n) => String(n);
+function refresh() { calls.push('refresh'); return Promise.resolve(); }
+function toast() {}
+function isBatchProgress(p) { return !p || !p.job || p.job === 'batch'; }
+function wlPaintProgress() {}
+function wlApplyCard() {}
+function wlLogAppend(e) { calls.push('log:' + (e.text || '')); }
+function renderCurrent() {}
+function renderQueueLog() {}
+function renderOverall() {}
+function renderPanelBatchMini() {}
+function renderOverviewRunning() {}
+function renderBatch() {}
+function renderDownloads() {}
+function renderShell() {}
+function renderOverview() {}
+function logHandleAppend() {}
+%(subscribe)s
+
+subscribeDownloadEvents();
+const out = {};
+
+// A run's own terminal events never resync.
+dl.running = true;
+handlers['batch.finished']({ downloaded: 3, skipped: 0, errors: 0, cancelled: false });
+out.batchFinishedRefreshed = calls.includes('refresh');
+out.batchFinishedClearedLocally = dl.running;
+
+wl.running = true;
+handlers['scan.line']({ ts: '14:22:41', level: 'downloaded',
+                        text: 'DONE Scan complete — 63 new across 5 channels' });
+out.doneLineRefreshed = calls.includes('refresh');
+out.doneLineStillRunning = wl.running;
+out.doneLineLogged = calls.filter((c) => c.startsWith('log:')).length;
+
+// job.finished is what clears and resyncs, per category.
+handlers['job.finished']({ job: 'watchlist' });
+out.watchlistCleared = !wl.running;
+out.refreshesAfterWatchlist = calls.filter((c) => c === 'refresh').length;
+
+dl.running = true;
+handlers['job.finished']({ job: 'batch' });
+out.batchCleared = !dl.running;
+out.refreshesAfterBatch = calls.filter((c) => c === 'refresh').length;
+
+// A category this screen knows nothing about must not trigger a resync.
+handlers['job.finished']({ job: 'maintenance' });
+handlers['job.finished']({});
+out.refreshesAfterUnknown = calls.filter((c) => c === 'refresh').length;
+console.log(JSON.stringify(out));
+"""
+
+
+def test_only_job_finished_resyncs_state(app_js, tmp_path):
+    source = _EVENTS_HARNESS % {
+        "subscribe": _slice(app_js, "  function subscribeDownloadEvents()",
+                            "  async function boot()"),
+    }
+    r = _run_node(tmp_path, "wlevents.mjs", source)
+    # batch.finished / the DONE scan line: local display only, no refresh.
+    assert r["batchFinishedRefreshed"] is False
+    assert r["batchFinishedClearedLocally"] is False
+    assert r["doneLineRefreshed"] is False
+    assert r["doneLineStillRunning"] is True
+    assert r["doneLineLogged"] == 1
+    # job.finished clears its own category and resyncs, once each.
+    assert r["watchlistCleared"] is True
+    assert r["refreshesAfterWatchlist"] == 1
+    assert r["batchCleared"] is True
+    assert r["refreshesAfterBatch"] == 2
+    assert r["refreshesAfterUnknown"] == 2
+
 
 _REFRESH_HARNESS = """
 const dl = { running: false };
-const wl = { running: false, cards: [], current: null, overall: null, doneSeq: 0 };
+const wl = { running: false, cards: [], current: null, overall: null };
 let state = null;
-// The host emits its terminal DONE line from inside the run's own `finally`,
-// so a snapshot taken right afterwards still reports the job as running.
-let snapshot = { running: { batch: false, watchlist: true }, watchlist: [],
+let snapshot = { running: { batch: true, watchlist: true }, watchlist: [{ id: 1 }],
                  counts: {}, genres: [], settings: {}, host: {}, library: {} };
 async function call() { return JSON.parse(JSON.stringify(snapshot)); }
 function renderShell() {}
@@ -292,36 +364,27 @@ const document = {};
 %(refresh)s
 
 const out = {};
-wl.running = true;
 await refresh();
-out.plainRefreshTrustsTheSnapshot = wl.running;
-// what the scan.line handler does when it sees "DONE Scan complete"
-wl.running = false;
-wl.doneSeq += 1;
-await refresh({ watchlistEnded: true });
-out.afterDoneStaysCleared = wl.running;
-// a fresh page load while a run really is going must still arm
-wl.running = false;
+out.armedFromSnapshot = [dl.running, wl.running];
+out.cardsFromSnapshot = wl.cards.length;
+snapshot.running = { batch: false, watchlist: false };
 await refresh();
-out.bootArmsFromTheSnapshot = wl.running;
+out.clearedFromSnapshot = [dl.running, wl.running];
 console.log(JSON.stringify(out));
 """
 
 
-def test_the_end_of_run_resync_does_not_re_arm_the_finished_run(app_js, tmp_path):
-    """The DONE line is emitted before the host releases the job slot, so the
-    snapshot that follows still says "running". Believing it would leave every
-    control locked behind a job that has already ended."""
+def test_refresh_takes_the_snapshot_at_face_value(app_js, tmp_path):
+    """No guard, no sequence number: job.finished is emitted after the slot is
+    released, so nothing that triggers a refresh can be answered with a stale
+    `running` any more."""
     source = _REFRESH_HARNESS % {
-        "refresh": _slice(app_js, "  async function refresh(opts)",
+        "refresh": _slice(app_js, "  async function refresh()",
                           "  // A Main-tab batch and a Watch List download"),
     }
-    result = _run_node(tmp_path, "wlrefresh.mjs", source)
-    assert result == {
-        "plainRefreshTrustsTheSnapshot": True,
-        "afterDoneStaysCleared": False,
-        "bootArmsFromTheSnapshot": True,
-    }
+    r = _run_node(tmp_path, "wlrefresh.mjs", source)
+    assert r == {"armedFromSnapshot": [True, True], "cardsFromSnapshot": 1,
+                 "clearedFromSnapshot": [False, False]}
 
 
 # ── Smart-Edit hands over, it does not stack ─────────────────────────────────
@@ -356,14 +419,21 @@ _TT_PATTERNS = (
 )
 
 
-def test_every_tooltip_key_the_bundle_names_exists_in_the_registry(app_js, index_html):
-    """Descriptive tooltip copy lives in cratebuilder/ui_strings.py and nowhere
-    else. A key the bundle names but the registry has lost would render as a
-    silently empty tooltip, which is how the two copies start to drift."""
+def _tooltip_keys_used(app_js, index_html):
+    """Every registry key the bundle names in a tooltip position — never one
+    that merely appears in prose or a comment."""
     used = set()
     for source in (app_js, index_html):
         for pattern in _TT_PATTERNS:
             used |= set(re.findall(pattern, source))
+    return used
+
+
+def test_every_tooltip_key_the_bundle_names_exists_in_the_registry(app_js, index_html):
+    """Descriptive tooltip copy lives in cratebuilder/ui_strings.py and nowhere
+    else. A key the bundle names but the registry has lost would render as a
+    silently empty tooltip, which is how the two copies start to drift."""
+    used = _tooltip_keys_used(app_js, index_html)
     assert used, "no tooltip keys found — the patterns stopped matching"
     missing = sorted(k for k in used if k not in ui_strings.TOOLTIPS)
     assert missing == []
@@ -372,14 +442,20 @@ def test_every_tooltip_key_the_bundle_names_exists_in_the_registry(app_js, index
 def test_the_watch_list_controls_carry_their_registry_keys(app_js, index_html):
     """The 3d/3m controls this screen wires, each named by the key the registry
     already holds for it — so a control losing its tooltip fails here rather
-    than shipping bare."""
-    both = app_js + index_html
-    for key in ("wl.add_channel", "wl.check_links", "wl.download_all_new",
+    than shipping bare.
+
+    A key must appear as a quoted string, not merely somewhere in the file:
+    the ones passed to wlActionButton/modalButton are arguments rather than
+    `data-tt` literals, but a key surviving only in a comment still fails."""
+    quoted = set(re.findall(r"""["']([a-z_]+\.[a-z_]+)["']""",
+                            app_js + index_html))
+    used = _tooltip_keys_used(app_js, index_html) | quoted
+    expected = {"wl.add_channel", "wl.check_links", "wl.download_all_new",
                 "wl.scan_all", "wl.cancel_all", "wl.card_scan", "wl.card_force",
                 "wl.card_download_new", "wl.card_edit", "wl.card_remove",
                 "wl.card_cancel", "wl.card_fix_link", "wl.card_title",
                 "wl.card_open_folder", "wl.card_smart_edit",
                 "wl.card_forget_unavailable", "wl.clear_scan_log",
                 "wl.open_activity_log", "main.scan_batch_conflict",
-                "main.new_genre", "db.genre_remove"):
-        assert key in both, key
+                "main.new_genre", "db.genre_remove"}
+    assert sorted(expected - used) == []

@@ -715,6 +715,28 @@ class WatchlistOps:
         self._patch_counts()
         return {"ok": True}
 
+    def details(self, cid):
+        """The three facts the Edit dialog needs that a card cannot carry.
+
+        Read-only, answered on the calling thread when the dialog opens, and
+        deliberately NOT folded into watchlist_card: a card is re-emitted
+        several times a second for every channel in a download run, and each of
+        these answers costs a COUNT query or a listdir over a channel folder
+        holding thousands of files. The Edit dialog opens once.
+
+        - folder:      where this channel's tracks live (pure CrateLayout
+                       naming, never created here).
+        - tracks:      how many audio files a genre change would move — the
+                       count the design's move confirmation names.
+        - unavailable: how many permanently-failed tracks Forget would drop.
+        """
+        row = self._row(cid)
+        folder = self._folder(row)
+        url = canonical_channel_url(row.get("url") or "")
+        return {"folder": folder,
+                "tracks": count_audio_files(folder),
+                "unavailable": self._db().count_unavailable_for_channel(url)}
+
     def forget_unavailable(self, cid):
         """Forget this channel's permanently-unavailable tracks, so the next
         scan offers them again and the next download re-attempts them."""
