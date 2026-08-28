@@ -55,6 +55,16 @@ DEFAULTS = {
 EXTRA_HOSTS_KEY = "extra_hosts"
 MAX_EXTRA_HOSTS = 32
 
+# Why a live event socket is being closed from under its client. Passed to the
+# callback `register_connection` holds, because the two answers need DIFFERENT
+# WebSocket close codes and only the caller that closed knows which: a revoked
+# device's token is gone and it must be dropped, while a device cut by the
+# master switch still holds a good token and must keep it and keep retrying.
+# The codes themselves live in server.py, which is the layer that owns the
+# socket — this module names the reason, not the number.
+CLOSE_REVOKED = "revoked"
+CLOSE_DISABLED = "disabled"
+
 
 def normalise_host(name):
     """One host name, lowercased and stripped of scheme, port and path.
@@ -295,12 +305,38 @@ class RemoteState:
             return bool(self._data.get(key))
 
     def set_flag(self, key, value):
+        """Persist one flag. Switching "enabled" OFF also cuts live sockets.
+
+        The per-request gates refuse NEW work the moment the flag goes down,
+        but a socket opened before it was flipped would keep streaming every
+        track title, channel name, folder path and log line the host emits for
+        as long as the browser stayed open. `revoke` already closes the
+        connections it invalidates for exactly that reason; the master switch
+        is the stronger promise of the two and must not be the weaker one.
+
+        Every device goes, so the control lock goes with them — nobody is left
+        holding it, and the next device in after the switch comes back up
+        claims it fresh. The callbacks hop to an event loop, so they are called
+        OUTSIDE the state lock, like `revoke`'s.
+        """
         if key not in FLAG_KEYS:
             raise KeyError(key)
+        closers = []
         with self._lock:
             self._data[key] = bool(value)
+            if key == "enabled" and not self._data[key]:
+                for conns in self._connections.values():
+                    closers.extend(cb for cb in conns.values() if cb)
+                self._connections = {}
+                self._control = None
             self._save()
-            return bool(self._data[key])
+            result = bool(self._data[key])
+        for close in closers:
+            try:
+                close(CLOSE_DISABLED)
+            except Exception:
+                pass            # a socket already gone is not a failed switch
+        return result
 
     # ── extra host names ─────────────────────────────────────────────────────
 
@@ -432,7 +468,7 @@ class RemoteState:
             self._save()
         for close in closers:
             try:
-                close()
+                close(CLOSE_REVOKED)
             except Exception:
                 pass            # a socket already gone is not a failed revoke
         return len(dropped)
@@ -444,16 +480,17 @@ class RemoteState:
     # claims control — so the holder's liveness was never recorded, and the
     # 120-second idle window displaced a device that was sitting there watching.
 
-    def register_connection(self, device_id, on_revoke=None):
+    def register_connection(self, device_id, on_close=None):
         """Record one open event socket. Returns the key to unregister with.
 
-        *on_revoke* is called (from `revoke`, on whatever thread revoked) when
-        this device's access is withdrawn and the socket must be closed.
+        *on_close* is called with one of CLOSE_REVOKED / CLOSE_DISABLED (from
+        `revoke` or `set_flag`, on whatever thread withdrew the access) when
+        this socket must be closed.
         """
         with self._lock:
             self._conn_seq += 1
             key = self._conn_seq
-            self._connections.setdefault(device_id, {})[key] = on_revoke
+            self._connections.setdefault(device_id, {})[key] = on_close
             if self._control is not None and self._control["device_id"] == device_id:
                 self._control["seen"] = self._now()
             return key

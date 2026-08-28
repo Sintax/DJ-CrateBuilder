@@ -713,6 +713,144 @@ def test_a_disabled_host_closes_the_socket_without_dropping_the_token(client, st
     assert state.device_count() == 1
 
 
+# ── F5: the master switch cuts sockets that are ALREADY open ────────────────
+# The per-request gates refuse new work the moment the flag goes down, but a
+# socket opened before the flip kept streaming every track title, channel name,
+# folder path and log line for as long as the browser stayed open. Revoke has
+# always cut its connections; the master switch is the stronger promise of the
+# two and must not be the weaker one.
+
+def test_turning_remote_access_off_cuts_a_live_event_socket(client, state,
+                                                            service):
+    """The executed reproduction, as a test: the frame carrying a track title
+    used to arrive AFTER the user switched remote access off."""
+    token = pair(client, state, "Booth phone")
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(f"/ws?token={token}") as ws:
+            assert ws.receive_json()["type"] == "host.status"
+            state.set_flag("enabled", False)
+            service.emit("progress.current", {"title": "SECRET TRACK TITLE",
+                                              "percent": 50, "job": "batch"})
+            service._emit.flush()
+            frame = ws.receive_json()
+            assert False, f"nothing may arrive after the switch: {frame}"
+    # 4403, not 4401: the token is still good. The client keeps it and keeps
+    # retrying rather than throwing it away and demanding a pairing code.
+    assert exc.value.code == 4403
+    assert state.device_count() == 1, "disabling is not revoking"
+
+
+def test_revoke_still_closes_with_4401_after_the_disable_path_was_added(
+        client, state):
+    """The two kill switches say different things about the client's token,
+    so they must keep closing with different codes."""
+    token = pair(client, state, "Stolen phone")
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(f"/ws?token={token}") as ws:
+            ws.receive_json()
+            state.revoke("all")
+            ws.receive_json()
+    assert exc.value.code == 4401
+
+
+def test_the_master_switch_drops_the_control_lock_with_the_sockets(client,
+                                                                   state):
+    """Every device is gone, so nobody is left holding the single-writer lock
+    — the first device back in after the switch returns claims it fresh."""
+    token = pair(client, state)
+    client.post("/rpc", json={"method": "remote.claim_control"},
+                headers=auth(token))
+    assert state.control_holder() is not None
+    state.set_flag("enabled", False)
+    assert state.control_holder() is None
+
+
+def test_the_host_window_hears_that_the_holder_went(service, state):
+    """The 3j card is still drawing whoever held control; settings.set is the
+    path the toggle actually takes, so that is where the event belongs."""
+    seen = []
+    service.events.subscribe(lambda t, p: seen.append((t, p)))
+    service.settings_set("remote_enabled", True)
+    state.claim_control("dev-1", "Booth")
+    service.settings_set("remote_enabled", False)
+    service._emit.flush()
+    assert ("control.holder", {}) in seen
+
+
+# ── F6: a vanished viewer's log tail is handed back ─────────────────────────
+# `logs.watch {on:true}` is ref-counted in the service and only decremented by
+# the client's own {on:false} — which a closed tab or a phone off Wi-Fi never
+# sends. The event socket is the one thing that knows the viewer is gone.
+
+def _watch_count(service, name="activity"):
+    watcher = service._log_watchers.get(name)
+    return watcher["count"] if watcher else 0
+
+
+def test_a_vanished_viewer_does_not_leak_its_log_tail(client, state, service):
+    token = pair(client, state, "Phone that walks away")
+    with client.websocket_connect(f"/ws?token={token}") as ws:
+        ws.receive_json()
+        body = client.post("/rpc", json={"method": "logs.watch",
+                                         "params": {"name": "activity",
+                                                    "on": True}},
+                           headers=auth(token)).json()
+        assert body["ok"] is True
+        assert _watch_count(service) == 1
+        # The browser is closed — no {on:false} is ever sent.
+    assert _watch_count(service) == 0, "the tail thread outlived every viewer"
+    watcher = service._log_watchers.get("activity")
+    assert watcher is None or watcher["stop"].is_set()
+
+
+def test_a_second_tab_keeps_the_tail_alive_until_the_last_one_goes(client,
+                                                                   state,
+                                                                   service):
+    """The same ref-count reasoning one layer up: a reload opens the new socket
+    before the old one closes, and a second tab is a second socket."""
+    token = pair(client, state, "Two tabs")
+    with client.websocket_connect(f"/ws?token={token}") as first:
+        first.receive_json()
+        client.post("/rpc", json={"method": "logs.watch",
+                                  "params": {"name": "activity", "on": True}},
+                    headers=auth(token))
+        with client.websocket_connect(f"/ws?token={token}") as second:
+            second.receive_json()
+            client.post("/rpc", json={"method": "logs.watch",
+                                      "params": {"name": "activity",
+                                                 "on": True}},
+                        headers=auth(token))
+            assert _watch_count(service) == 2
+        assert _watch_count(service) == 2, "one tab closing is not the viewer leaving"
+    assert _watch_count(service) == 0
+
+
+def test_a_client_that_closes_its_own_watch_is_not_unwound_twice(client, state,
+                                                                 service):
+    """The polite path still works: {on:false} decrements, and the socket
+    teardown must not then take the count negative or stop someone else's."""
+    token = pair(client, state, "Polite phone")
+    other = pair(client, state, "Local-ish second device")
+    with client.websocket_connect(f"/ws?token={other}") as keeper:
+        keeper.receive_json()
+        client.post("/rpc", json={"method": "logs.watch",
+                                  "params": {"name": "activity", "on": True}},
+                    headers=auth(other))
+        with client.websocket_connect(f"/ws?token={token}") as ws:
+            ws.receive_json()
+            client.post("/rpc", json={"method": "logs.watch",
+                                      "params": {"name": "activity",
+                                                 "on": True}},
+                        headers=auth(token))
+            client.post("/rpc", json={"method": "logs.watch",
+                                      "params": {"name": "activity",
+                                                 "on": False}},
+                        headers=auth(token))
+            assert _watch_count(service) == 1
+        assert _watch_count(service) == 1, "the other device is still watching"
+    assert _watch_count(service) == 0
+
+
 def test_the_bind_rule_needs_both_consent_and_intent(state):
     from cratebuilder.server import ANY_INTERFACE, LOOPBACK, bind_host
 
