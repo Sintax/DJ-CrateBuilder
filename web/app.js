@@ -22,7 +22,6 @@
     current: null,    // last progress.current payload
     overall: null,    // last progress.overall payload
   };
-  let quickScanIdleReason = '';
 
   const DL_MARK = { done: '✓', active: '▶', skipped: '⊘', error: '✗', queued: '·' };
   const DL_LOG_CLASS = { done: 'downloaded', skipped: 'skipped', error: 'error', queued: 'default' };
@@ -249,14 +248,9 @@
     setDisabled($('#dl-pause'), !dl.running,
       { reason: 'No download is running.', ttKey: 'main.pause_batch' });
     $('#dl-progress').style.opacity = dl.running ? '1' : '.6';
-
-    const qs = $('#quick-scan');
-    if (qs) {
-      qs.setAttribute('data-tt-text', dl.running
-        ? 'Unavailable while a batch is running — a scan and a download ' +
-          "can't share the host's yt-dlp session."
-        : quickScanIdleReason);
-    }
+    /* The panel's Scan-all quick action and the Watch List's own scan controls
+       both close while a batch owns the host's yt-dlp session (3c). */
+    renderWatchlistToolbar();
   }
 
   function renderCurrent() {
@@ -476,89 +470,937 @@
     renderBatch();
   }
 
-  function renderWatchlist() {
-    const rows = state.watchlist || [];
-    const pending = state.counts.pending_new || 0;
-    $('#wl-summary').innerHTML =
-      `<span class="cb-mono">${num(rows.length)}</span> channels · ` +
-      `<span class="cb-mono">${num(pending)}</span> new`;
-    $('#wl-dl-all').textContent = `⬇ Download All New (${num(pending)})`;
+  /* ── modal shell (3m) ─────────────────────────────────────────────────────
+     One dialog at a time, by construction: opening closes whatever was open,
+     which is also how Smart-Edit hands the Edit dialog off to Fix Link. Escape
+     and a click on the dim close it (every dialog here has a safe no-op exit);
+     Tab is trapped inside, and focus returns to whatever opened it. */
 
-    const host = $('#wl-cards');
-    host.innerHTML = '';
-    if (!rows.length) {
-      host.innerHTML =
-        '<div class="cb-card cb-pad"><span class="cb-mut">No channels tracked yet — ' +
-        'add one to have new uploads found automatically.</span></div>';
-      return;
+  let openDialog = null;
+
+  function modalFocusables(root) {
+    return $$('button, [href], input, select, textarea, [tabindex]', root)
+      .filter((el) => !el.disabled && el.tabIndex !== -1 && el.offsetParent !== null);
+  }
+
+  function closeModal() {
+    if (!openDialog) return;
+    const dying = openDialog;
+    openDialog = null;
+    document.removeEventListener('keydown', dying.onKey, true);
+    dying.dim.remove();
+    hideTip();
+    if (dying.restore && dying.restore.focus) {
+      try { dying.restore.focus(); } catch (_) { /* element left the DOM */ }
     }
+    if (dying.onClose) dying.onClose();
+  }
 
-    rows.forEach((row) => {
-      const name = row.name;
-      const newCount = row.new_count;
-      const unresolved = row.unresolved;
+  /* opts: {title, tag:{text,cls}, width, body(bodyEl, api), foot(footEl, api),
+            onClose}. `api` is {close, error(msg), busy(flag), body, foot}. */
+  function openModal(opts) {
+    closeModal();
+    const restore = document.activeElement;
 
-      const card = document.createElement('div');
-      card.className = 'cb-card';
-      card.style.cssText = 'padding:14px 16px;display:flex;flex-direction:column;gap:8px';
+    const dim = document.createElement('div');
+    dim.className = 'cb-dim';
+    const modal = document.createElement('div');
+    modal.className = 'cb-modal';
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    if (opts.width) modal.style.maxWidth = opts.width + 'px';
 
-      const head = document.createElement('div');
-      head.className = 'cb-row';
-      head.style.gap = '9px';
-      head.innerHTML =
-        `<span style="font-weight:600;font-size:14.5px;color:var(--cb-text)"></span>` +
-        `<span class="cb-tag cb-tag--grey"></span>` +
-        `<span class="cb-tag"></span>` +
-        (unresolved ? '<span class="cb-tag cb-tag--attn">Link unresolved</span>' : '') +
-        `<span class="cb-mono" style="margin-left:auto;color:var(--cb-line);font-size:12.5px;font-weight:500">${newCount} new</span>`;
-      head.children[0].textContent = name;
-      head.children[1].textContent = row.platform || '—';
-      head.children[2].textContent = row.genre || '(none)';
-      card.appendChild(head);
+    const head = document.createElement('div');
+    head.className = 'cb-mhead';
+    const title = document.createElement('span');
+    title.className = 'cb-mtitle';
+    title.textContent = opts.title || '';
+    modal.setAttribute('aria-label', opts.title || 'Dialog');
+    head.appendChild(title);
+    if (opts.tag) head.appendChild(tagNode(opts.tag.text, opts.tag.cls));
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'cb-btn cb-btn--quiet cb-btn--sm';
+    closeBtn.style.cssText = 'margin-left:auto;padding:3px 8px';
+    closeBtn.textContent = '✕';
+    if (opts.closeTtKey) closeBtn.setAttribute('data-tt', opts.closeTtKey);
+    closeBtn.addEventListener('click', closeModal);
+    head.appendChild(closeBtn);
 
+    const body = document.createElement('div');
+    body.className = 'cb-mbody';
+    const err = document.createElement('div');
+    err.className = 'cb-merr';
+    err.hidden = true;
+    const foot = document.createElement('div');
+    foot.className = 'cb-mfoot';
+
+    modal.append(head, body, err, foot);
+    dim.appendChild(modal);
+
+    const api = {
+      body, foot,
+      close: closeModal,
+      error(message) {
+        err.textContent = message || '';
+        err.hidden = !message;
+      },
+      busy(flag) {
+        modal.style.opacity = flag ? '.7' : '';
+        modal.style.pointerEvents = flag ? 'none' : '';
+      },
+    };
+
+    function onKey(e) {
+      if (e.key === 'Escape') { e.stopPropagation(); closeModal(); return; }
+      if (e.key !== 'Tab') return;
+      const items = modalFocusables(modal);
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      else if (!modal.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+    }
+    dim.addEventListener('mousedown', (e) => { if (e.target === dim) closeModal(); });
+    document.addEventListener('keydown', onKey, true);
+
+    openDialog = { dim, onKey, restore, onClose: opts.onClose };
+    document.body.appendChild(dim);
+    if (opts.body) opts.body(body, api);
+    if (opts.foot) opts.foot(foot, api);
+    bindTips(dim);
+    const wanted = (opts.focus && opts.focus()) ||
+                   modalFocusables(modal)[0] || closeBtn;
+    wanted.focus();
+    return api;
+  }
+
+  function modalButton(label, cls, onClick, ttKey) {
+    const b = document.createElement('button');
+    b.className = ('cb-btn cb-btn--sm ' + (cls || '')).trim();
+    b.textContent = label;
+    if (ttKey) b.setAttribute('data-tt', ttKey);
+    b.addEventListener('click', onClick);
+    return b;
+  }
+
+  function modalNote(text) {
+    const p = document.createElement('p');
+    p.className = 'cb-mnote';
+    p.textContent = text;
+    return p;
+  }
+
+  function labelled(labelText, control, hintText) {
+    const wrap = document.createElement('div');
+    const lab = document.createElement('div');
+    lab.className = 'cb-mlabel';
+    lab.textContent = labelText;
+    wrap.append(lab, control);
+    if (hintText) {
+      const hint = document.createElement('p');
+      hint.className = 'cb-mhint';
+      hint.textContent = hintText;
+      wrap.appendChild(hint);
+    }
+    return wrap;
+  }
+
+  function tagNode(text, extra) {
+    const el = document.createElement('span');
+    el.className = ('cb-tag ' + (extra || '')).trim();
+    el.textContent = text;
+    return el;
+  }
+
+  /* ── Watch List (3d) ──────────────────────────────────────────────────────
+     Cards are push-driven: watchlist.list fills them once and every
+     watchlist.card event replaces exactly one of them in place, so a scan
+     redrawing one channel never disturbs a button the user is on. The pinned
+     scan log consumes scan.line through the same renderer the log viewers use.
+
+     There is no watchlist.finished event, so "is a Watch List job running" is
+     tracked here: set when a start call is accepted, cleared by the terminal
+     DONE line every run emits. */
+
+  const WL_LOG_LIMIT = 500;
+  /* The service stores a placeholder URL for a channel whose real link was
+     never resolved; the Edit dialog must offer an empty field, not that
+     sentinel. A duplicate literal rather than an import, for the same reason
+     cratebuilder/db.py keeps its own copy of it. */
+  const WL_UNRESOLVED_URL_PREFIX = 'unresolved://';
+  /* run_scan / run_download always close with one of these (watchrun.py), and
+     nothing else in the scan log opens with them. */
+  const WL_RUN_DONE_PREFIXES = ['DONE Scan complete', 'DONE Download complete'];
+  const WL_BUSY_REASON = 'A Watch List scan or download is already running — ' +
+    'cancel it first, or wait for it to finish.';
+  /* Cancellation lands between channels — it cannot interrupt a channel
+     listing already in flight — so nothing here promises an immediate stop. */
+  const WL_CANCEL_ALL_NOTE = 'Cancelling — the channel in flight finishes what ' +
+    'it is on, then the run stops.';
+  const WL_CANCEL_ONE_NOTE = 'Cancelling — this channel stops once the work ' +
+    'already in flight finishes.';
+  const WL_URL_HINT = 'Paste the channel (…/@handle or …/channel/UC…) or a ' +
+    'playlist URL.';
+  /* 3m's Edit dialog adds the "leave it alone" half; on Add there is no
+     current channel for that sentence to be about. */
+  const WL_EDIT_URL_HINT = WL_URL_HINT + ' Leave as-is to keep the current channel.';
+  const WL_GENRE_WARNING = 'Saving a different genre moves the channel folder, ' +
+    'updates the database rows, and sets the Genre tag inside each file to ' +
+    'match. A failed database write rolls the move back.';
+  const WL_NO_HOST_ACTION = "Not wired up yet — creating and removing genre " +
+    "folders arrives with the host filesystem bridge.";
+
+  const wl = {
+    running: false,   // a "watchlist" job owns the host
+    cards: [],        // watchlist.list, updated in place by watchlist.card
+    current: null,    // last progress.current stamped job:"watchlist"
+    overall: null,    // last progress.overall stamped job:"watchlist"
+    doneSeq: 0,       // bumped by each terminal DONE line — see refresh()
+  };
+
+  function wlPending() {
+    return wl.cards.reduce((a, c) => a + (Number(c.new_count) || 0), 0);
+  }
+  function wlUnresolved() { return wl.cards.filter((c) => c.unresolved); }
+  function wlUrl(row) {
+    const url = row.url || '';
+    return url.startsWith(WL_UNRESOLVED_URL_PREFIX) ? '' : url;
+  }
+  function wlBusy(row) {
+    return row.status === 'downloading' || row.status === 'scanning';
+  }
+  function wlBusyReason(row) {
+    return row.status === 'downloading'
+      ? 'This channel is downloading — press ✕ Cancel on the card to stop it first.'
+      : 'This channel is being scanned — press ✕ Cancel on the card to stop it first.';
+  }
+  function fmtDate(ts) {
+    const secs = Number(ts);
+    if (!secs) return '';
+    return new Date(secs * 1000).toLocaleDateString();
+  }
+
+  /* Start (or join) a Watch List job. A download_new that lands on a run
+     already going comes back with its queue position instead of a job id —
+     the append-to-running the card's tooltip promises. */
+  async function wlRun(method, params, note) {
+    try {
+      const res = await call(method, params || {});
+      wl.running = true;
+      renderWatchlist();
+      if (res && res.queued_position) {
+        toast(`Queued at position ${res.queued_position} in the run already going.`);
+      } else if (note) toast(note);
+      return res;
+    } catch (_) { return null; }   /* call() already toasted the reason */
+  }
+
+  function wlActionButton(label, ttKey, cls, onClick, disabledReason) {
+    const b = document.createElement('button');
+    b.className = ('cb-btn cb-btn--sm ' + (cls || '')).trim();
+    b.textContent = label;
+    if (disabledReason) {
+      setDisabled(b, true, {
+        reason: (TOOLTIPS[ttKey] ? TOOLTIPS[ttKey] + '\n\n' : '') + disabledReason,
+      });
+    } else {
+      setDisabled(b, false, { ttKey });
+      b.addEventListener('click', onClick);
+    }
+    return b;
+  }
+
+  function wlCardNode(row) {
+    const busy = wlBusy(row);
+    const downloading = row.status === 'downloading';
+    const progress = row.progress || null;
+
+    const card = document.createElement('div');
+    card.className = 'cb-card cb-wlcard' + (busy ? ' is-running' : '');
+    card.dataset.cid = String(row.id);
+
+    const head = document.createElement('div');
+    head.className = 'cb-row';
+    head.style.gap = '9px';
+    const link = dbSafeLink(wlUrl(row));
+    let name;
+    if (link) {
+      name = document.createElement('a');
+      name.href = link;
+      name.target = '_blank';
+      name.rel = 'noopener';
+      if (TOOLTIPS['wl.card_title']) {
+        name.setAttribute('data-tt-text', TOOLTIPS['wl.card_title'].replace('{url}', link));
+      }
+    } else {
+      name = document.createElement('span');
+    }
+    name.className = 'cb-wlcard__name';
+    name.textContent = row.name;
+    head.appendChild(name);
+    head.appendChild(tagNode(row.platform || '—', 'cb-tag--grey'));
+    head.appendChild(tagNode(row.genre || '(none)', ''));
+    if (downloading) head.appendChild(tagNode('Downloading', 'cb-tag--fill'));
+    else if (row.status === 'scanning') head.appendChild(tagNode('Scanning', 'cb-tag--fill'));
+    if (row.unresolved) head.appendChild(tagNode('Link unresolved', 'cb-tag--attn'));
+    const count = document.createElement('span');
+    count.className = 'cb-wlcard__new';
+    count.textContent = `${num(row.new_count)} new` +
+      (downloading && progress ? ` · ${num(progress.done)} done` : '');
+    head.appendChild(count);
+    card.appendChild(head);
+
+    if (downloading) {
+      const bar = document.createElement('div');
+      bar.className = 'cb-bar';
+      bar.style.height = '6px';
+      const fill = document.createElement('div');
+      fill.className = 'cb-bar__fill';
+      fill.id = `wl-bar-${row.id}`;
+      fill.style.width = (progress ? progress.percent || 0 : 0) + '%';
+      bar.appendChild(fill);
+      card.appendChild(bar);
+
+      const line = document.createElement('div');
+      line.className = 'cb-mut cb-mono cb-wlcard__meta';
+      line.id = `wl-line-${row.id}`;
+      line.textContent = wlCurrentLine(row);
+      card.appendChild(line);
+    } else {
       const meta = document.createElement('div');
-      meta.className = 'cb-mut cb-mono';
-      meta.style.fontSize = '11px';
+      meta.className = 'cb-mut cb-mono cb-wlcard__meta';
       const bits = [];
       if (row.last_scan) bits.push(`last scan ${fmtWhen(row.last_scan)}`);
       bits.push(`${num(row.downloaded)} downloaded`);
-      if (unresolved) bits.push('folder has no canonical channel id');
+      if (row.date_added) bits.push(`added ${fmtDate(row.date_added)}`);
+      if (row.unresolved) bits.push('folder has no canonical channel id');
       bits.push(row.status || 'idle');
+      if (row.last_error && row.status !== 'idle') bits.push(row.last_error);
       meta.textContent = bits.join(' · ');
       card.appendChild(meta);
+    }
 
-      const actions = document.createElement('div');
-      actions.className = 'cb-row';
-      actions.style.cssText = 'gap:5px;flex-wrap:wrap';
-      [['🔍 Scan', 'wl.card_scan', 'cb-btn--quiet'],
-       ['⚡ Force Download', 'wl.card_force', 'cb-btn--quiet'],
-       [`⬇ Download New (${newCount})`, 'wl.card_download_new', ''],
-       ['✏ Edit', 'wl.card_edit', 'cb-btn--quiet'],
-       ['✕ Remove', 'wl.card_remove', 'cb-btn--quiet'],
-      ].forEach(([label, ttKey, extra]) => {
-        const b = document.createElement('button');
-        b.className = `cb-btn cb-btn--sm ${extra}`.trim();
-        b.textContent = label;
-        b.setAttribute('data-tt', ttKey);
-        b.disabled = true;
-        b.setAttribute('data-tt-text',
-          (TOOLTIPS[ttKey] ? TOOLTIPS[ttKey] + '\n\n' : '') +
-          'Not wired up yet — the Watch List actions arrive with the service layer.');
-        actions.appendChild(b);
-      });
-      if (unresolved) {
-        const fix = document.createElement('button');
-        fix.className = 'cb-btn cb-btn--sm';
-        fix.style.cssText = 'background:#FF8C00;border-color:#FF8C00;color:#1a1a1a;font-weight:600';
-        fix.textContent = '🛠 Fix Link';
-        fix.setAttribute('data-tt', 'wl.card_fix_link');
-        fix.disabled = true;
-        actions.appendChild(fix);
+    const actions = document.createElement('div');
+    actions.className = 'cb-wlcard__actions';
+    const why = busy ? wlBusyReason(row) : '';
+    actions.append(
+      wlActionButton('🔍 Scan', 'wl.card_scan', 'cb-btn--quiet',
+        () => wlRun('watchlist.scan', { channel_id: row.id }),
+        why || (dl.running ? TOOLTIPS['main.scan_batch_conflict'] : '') ||
+          (wl.running ? WL_BUSY_REASON : '')),
+      wlActionButton('⚡ Force Download', 'wl.card_force', 'cb-btn--quiet',
+        () => wlRun('watchlist.force_download', { channel_id: row.id }),
+        why || (wl.running ? WL_BUSY_REASON : '')),
+      wlActionButton(`⬇ Download New (${num(row.new_count)})`, 'wl.card_download_new', '',
+        () => wlRun('watchlist.download_new', { channel_id: row.id }),
+        why || (row.new_count ? '' :
+          'Nothing pending for this channel — run 🔍 Scan first.')));
+    if (row.unresolved) {
+      actions.appendChild(wlActionButton('🛠 Fix Link', 'wl.card_fix_link', 'cb-btn--fix',
+        () => openFixLink(row), why));
+    }
+    actions.append(
+      wlActionButton('✏ Edit', 'wl.card_edit', 'cb-btn--quiet',
+        () => openEditChannel(row), why),
+      busy
+        ? wlActionButton('✕ Cancel', 'wl.card_cancel', 'cb-btn--warn',
+            async () => {
+              try {
+                await call('watchlist.cancel', { channel_id: row.id });
+                toast(WL_CANCEL_ONE_NOTE);
+              } catch (_) { /* call() already toasted the reason */ }
+            })
+        : wlActionButton('✕ Remove', 'wl.card_remove', 'cb-btn--quiet',
+            () => openRemoveChannel(row)));
+    card.appendChild(actions);
+    return card;
+  }
+
+  /* The design's downloading line: track — percent · channel total. The live
+     progress.current frames are finer-grained than the card's own snapshot of
+     them, so they win when one has arrived for this run. */
+  function wlCurrentLine(row) {
+    const progress = row.progress || {};
+    const title = (wl.current && wl.current.title) || progress.title || '';
+    const percent = wl.current && wl.current.percent != null
+      ? wl.current.percent : progress.title_percent;
+    const parts = [];
+    parts.push(title || 'starting…');
+    if (percent != null) parts[0] += ` — ${percent}%`;
+    parts.push(`${num(row.downloaded)} downloaded`);
+    return parts.join(' · ');
+  }
+
+  function wlPaintProgress() {
+    wl.cards.forEach((row) => {
+      if (row.status !== 'downloading') return;
+      const fill = $(`#wl-bar-${row.id}`);
+      const line = $(`#wl-line-${row.id}`);
+      if (fill && wl.overall && wl.overall.percent != null) {
+        fill.style.width = wl.overall.percent + '%';
       }
-      card.appendChild(actions);
-      host.appendChild(card);
+      if (line) line.textContent = wlCurrentLine(row);
     });
+  }
+
+  function renderWatchlistToolbar() {
+    const pending = wlPending();
+    const unresolved = wlUnresolved().length;
+    const scanReason = dl.running ? TOOLTIPS['main.scan_batch_conflict']
+                                  : (wl.running ? WL_BUSY_REASON : '');
+
+    const quick = $('#quick-scan');
+    if (quick) setDisabled(quick, !!scanReason, { reason: scanReason, ttKey: 'wl.scan_all' });
+    setDisabled($('#wl-scan'), !!scanReason, { reason: scanReason, ttKey: 'wl.scan_all' });
+
+    setDisabled($('#wl-add'), wl.running,
+      { reason: WL_BUSY_REASON, ttKey: 'wl.add_channel' });
+    setDisabled($('#wl-links'), wl.running || !unresolved, {
+      reason: wl.running ? WL_BUSY_REASON
+        : 'Every channel already resolves to a real channel id — nothing to check.',
+      ttKey: 'wl.check_links',
+    });
+    setDisabled($('#wl-dl-all'), wl.running || !pending, {
+      reason: wl.running ? WL_BUSY_REASON
+        : 'No new tracks pending across any channels. Run 🔍 Scan for new first.',
+      ttKey: 'wl.download_all_new',
+    });
+    setDisabled($('#wl-cancel'), !wl.running, {
+      reason: 'No Watch List scan or download is running.',
+      ttKey: 'wl.cancel_all',
+    });
+    $('#wl-cancel').className = 'cb-btn ' + (wl.running ? 'cb-btn--warn' : 'cb-btn--quiet');
+    $('#wl-dl-all').textContent = `⬇ Download All New (${num(pending)})`;
+    $('#wl-summary').innerHTML =
+      `<span class="cb-mono">${num(wl.cards.length)}</span> channels · ` +
+      `<span class="cb-mono">${num(pending)}</span> new`;
+  }
+
+  function renderWatchlist() {
+    renderWatchlistToolbar();
+    const host = $('#wl-cards');
+    host.innerHTML = '';
+    if (!wl.cards.length) {
+      const empty = document.createElement('div');
+      empty.className = 'cb-card cb-pad';
+      const text = document.createElement('span');
+      text.className = 'cb-mut';
+      text.textContent = 'No channels tracked yet — add one to have new uploads ' +
+        'found automatically.';
+      empty.appendChild(text);
+      host.appendChild(empty);
+      return;
+    }
+    wl.cards.forEach((row) => host.appendChild(wlCardNode(row)));
     bindTips(host);
+  }
+
+  /* A watchlist.card event replaces exactly one card. Rebuilding the whole
+     list on every frame of a download would blow away focus and any hover the
+     user is on, several times a second. */
+  function wlApplyCard(card) {
+    if (!card || card.id == null) return;
+    const idx = wl.cards.findIndex((c) => c.id === card.id);
+    if (idx === -1) { wl.cards.push(card); renderWatchlist(); return; }
+    wl.cards[idx] = card;
+    const host = $('#wl-cards');
+    const old = host.querySelector(`[data-cid="${card.id}"]`);
+    if (!old) { renderWatchlist(); return; }
+    const node = wlCardNode(card);
+    host.replaceChild(node, old);
+    bindTips(node);
+    renderWatchlistToolbar();
+  }
+
+  /* An empty pinned log reads as broken rather than idle, so it says which it
+     is until the first line arrives. */
+  function wlLogReset() {
+    const box = $('#wl-log');
+    box.innerHTML = '';
+    const hint = document.createElement('div');
+    hint.className = 'cb-mut cb-log__empty';
+    hint.textContent = 'Scan lines appear here while a scan or a Watch List ' +
+      'download is running.';
+    box.appendChild(hint);
+  }
+
+  function wlLogAppend(entry) {
+    const box = $('#wl-log');
+    const hint = box.querySelector('.cb-log__empty');
+    if (hint) hint.remove();
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+    const text = entry.text || '';
+    box.appendChild(logLineNode(entry.ts ? `${entry.ts} | ${text}` : text,
+                                entry.level || 'default'));
+    while (box.childElementCount > WL_LOG_LIMIT) box.removeChild(box.firstElementChild);
+    if (atBottom) box.scrollTop = box.scrollHeight;
+  }
+
+  function wlIsRunDone(entry) {
+    const text = (entry && entry.text) || '';
+    return WL_RUN_DONE_PREFIXES.some((prefix) => text.startsWith(prefix));
+  }
+
+  /* ── Add Channel (plain dialog) ─────────────────────────────────────────── */
+
+  function genreSelect(current) {
+    const sel = document.createElement('select');
+    sel.className = 'cb-sel';
+    sel.style.flex = '1';
+    const list = (state.genres || []).slice();
+    if (!list.includes('(none)')) list.push('(none)');
+    if (current && !list.includes(current)) list.unshift(current);
+    list.forEach((g) => {
+      const o = document.createElement('option');
+      o.value = g;
+      o.textContent = g;
+      sel.appendChild(o);
+    });
+    if (current) sel.value = current;
+    return sel;
+  }
+
+  /* The design's Genre row: the combo, + New and − Remove. Neither button has
+     a service method behind it (no genre folder is created or deleted from the
+     web frontend yet), so both render with the registry tooltip plus the
+     reason, rather than as dead controls. */
+  function genreRow(sel) {
+    const row = document.createElement('div');
+    row.className = 'cb-row';
+    row.style.gap = '8px';
+    const add = document.createElement('button');
+    add.className = 'cb-btn cb-btn--quiet cb-btn--sm';
+    add.textContent = '+ New';
+    setDisabled(add, true, {
+      reason: (TOOLTIPS['main.new_genre'] ? TOOLTIPS['main.new_genre'] + '\n\n' : '') +
+        WL_NO_HOST_ACTION,
+    });
+    const drop = document.createElement('button');
+    drop.className = 'cb-btn cb-btn--warn cb-btn--sm';
+    drop.textContent = '− Remove';
+    setDisabled(drop, true, {
+      reason: (TOOLTIPS['db.genre_remove'] ? TOOLTIPS['db.genre_remove'] + '\n\n' : '') +
+        WL_NO_HOST_ACTION,
+    });
+    row.append(sel, add, drop);
+    return row;
+  }
+
+  function openAddChannel() {
+    let urlEl = null;
+    let genreEl = null;
+    openModal({
+      title: '+ Add Channel',
+      body(body) {
+        urlEl = document.createElement('input');
+        urlEl.className = 'cb-in cb-mono';
+        urlEl.style.fontSize = '12px';
+        urlEl.placeholder = 'https://www.youtube.com/@…   or   https://soundcloud.com/…';
+        body.appendChild(labelled('Channel / Playlist URL', urlEl, WL_URL_HINT));
+        genreEl = genreSelect('(none)');
+        body.appendChild(labelled('Genre', genreRow(genreEl)));
+      },
+      foot(foot, api) {
+        foot.appendChild(modalNote(
+          'The channel is looked up so it can be named; one that cannot be read ' +
+          'right now is still added, under its URL.'));
+        const cancel = modalButton('Cancel', 'cb-btn--quiet', closeModal);
+        cancel.style.marginLeft = 'auto';
+        const save = modalButton('Add Channel', 'cb-btn--fill', async () => {
+          const url = urlEl.value.trim();
+          if (!url) { api.error('Paste a channel URL first.'); urlEl.focus(); return; }
+          api.error('');
+          api.busy(true);
+          save.textContent = 'Adding…';
+          try {
+            await cbApi.call('watchlist.add', { url, genre: genreEl.value });
+            closeModal();
+            toast('Channel added to the Watch List.');
+            await refresh();
+          } catch (err) {
+            api.busy(false);
+            save.textContent = 'Add Channel';
+            api.error(err.userFacing ? err.message : 'The host could not add that channel.');
+          }
+        });
+        foot.append(cancel, save);
+      },
+      focus: () => urlEl,
+    });
+  }
+
+  /* ── Remove (plain yes/no) ──────────────────────────────────────────────── */
+
+  function openRemoveChannel(row) {
+    openModal({
+      title: `✕ Remove — ${row.name}`,
+      width: 480,
+      body(body) {
+        body.appendChild(modalNote(TOOLTIPS['wl.card_remove'] ||
+          'Removes this channel entry from the Watch List only.'));
+      },
+      foot(foot, api) {
+        const cancel = modalButton('Cancel', 'cb-btn--quiet', closeModal);
+        cancel.style.marginLeft = 'auto';
+        const go = modalButton('Remove channel', 'cb-btn--warn', async () => {
+          api.busy(true);
+          try {
+            await cbApi.call('watchlist.remove', { channel_id: row.id });
+            closeModal();
+            toast(`Removed ${row.name} — its files are untouched.`);
+            await refresh();
+          } catch (err) {
+            api.busy(false);
+            api.error(err.userFacing ? err.message : 'The host could not remove that channel.');
+          }
+        }, 'wl.card_remove');
+        foot.append(cancel, go);
+      },
+    });
+  }
+
+  /* ── Edit Channel (3m) ─────────────────────────────────────────────────────
+     No display-name field — the name comes from the resolved channel. The
+     monolith's "folder moved out of band" auto-heal note is absent: that
+     service method was deliberately not ported, and a note nothing verifies
+     would be a claim the frontend cannot make. */
+
+  /* The channel's folder path is derived host-side from base_dir + CrateLayout
+     (naming rules this page must not re-implement), and only the Database
+     viewer's watchlist rows carry it — so that is where it is read from. */
+  async function wlFolderFor(row) {
+    try {
+      const res = await cbApi.call('db.query', {
+        table: 'watchlist', filters: { search: row.name },
+        sort: { col: 'channel' }, offset: 0, limit: 200, want_total: false,
+      });
+      const hit = (res.rows || []).find((r) => r.id === row.id);
+      return (hit && hit.folder) || '';
+    } catch (_) { return ''; }
+  }
+
+  function openEditChannel(row) {
+    const local = state && state.host.transport === 'local';
+    const currentUrl = wlUrl(row);
+    const currentGenre = row.genre || '(none)';
+    let urlEl = null;
+    let genreEl = null;
+    let folderBtn = null;
+    let folder = '';
+
+    const api = openModal({
+      title: `✏ Edit — ${row.name}`,
+      body(body) {
+        urlEl = document.createElement('input');
+        urlEl.className = 'cb-in cb-mono';
+        urlEl.style.fontSize = '12px';
+        urlEl.value = currentUrl;
+        urlEl.placeholder = 'https://www.youtube.com/@…';
+        body.appendChild(labelled('Channel / Playlist URL', urlEl, WL_EDIT_URL_HINT));
+
+        const tools = document.createElement('div');
+        tools.className = 'cb-row';
+        tools.style.cssText = 'gap:8px;flex-wrap:wrap';
+        folderBtn = document.createElement('button');
+        folderBtn.className = 'cb-btn cb-btn--quiet cb-btn--sm';
+        folderBtn.textContent = local ? '📂 Open Folder' : '📋 Copy folder path';
+        setDisabled(folderBtn, true, {
+          reason: (TOOLTIPS['wl.card_open_folder'] ? TOOLTIPS['wl.card_open_folder'] + '\n\n' : '') +
+            'Looking the folder up on the host…',
+        });
+
+        const openLink = document.createElement('button');
+        openLink.className = 'cb-btn cb-btn--quiet cb-btn--sm';
+        openLink.textContent = '🌐 Open Link';
+        const safe = dbSafeLink(currentUrl);
+        if (safe) {
+          openLink.addEventListener('click', () => window.open(safe, '_blank', 'noopener'));
+        } else {
+          setDisabled(openLink, true, {
+            reason: currentUrl ? 'Only http and https links can be opened.'
+                               : 'This channel has no link yet — use 🛠 Smart-Edit Link.',
+          });
+        }
+
+        const smart = modalButton('🛠 Smart-Edit Link', 'cb-btn--quiet', () => {
+          /* Closes this dialog before Fix Link opens — the design's rule that
+             two modal grabs never fight over focus. */
+          closeModal();
+          openFixLink(row);
+        }, 'wl.card_smart_edit');
+        tools.append(folderBtn, openLink, smart);
+        body.appendChild(tools);
+
+        genreEl = genreSelect(currentGenre);
+        body.appendChild(labelled('Genre', genreRow(genreEl)));
+
+        const forget = modalButton('Forget unavailable tracks', 'cb-btn--quiet',
+          async () => {
+            try {
+              const res = await cbApi.call('watchlist.forget_unavailable',
+                                            { channel_id: row.id });
+              const n = (res && res.removed) || 0;
+              toast(`Forgot ${num(n)} permanently-unavailable track${n === 1 ? '' : 's'}.`);
+            } catch (err) {
+              api.error(err.userFacing ? err.message :
+                'The host could not forget this channel\'s unavailable tracks.');
+            }
+          }, 'wl.card_forget_unavailable');
+        forget.style.alignSelf = 'flex-start';
+        body.appendChild(forget);
+
+        const warn = document.createElement('div');
+        warn.className = 'cb-warnbox';
+        warn.textContent = WL_GENRE_WARNING;
+        body.appendChild(warn);
+      },
+      foot(foot, dialog) {
+        const cancel = modalButton('Cancel', 'cb-btn--quiet', closeModal);
+        cancel.style.marginLeft = 'auto';
+        const save = modalButton('Save', 'cb-btn--fill', async () => {
+          const url = urlEl.value.trim();
+          const genre = genreEl.value;
+          const params = { channel_id: row.id };
+          if (url && url !== currentUrl) params.url = url;
+          if (genre && genre !== currentGenre) params.genre = genre;
+          if (params.url === undefined && params.genre === undefined) {
+            closeModal();
+            return;
+          }
+          dialog.error('');
+          dialog.busy(true);
+          save.textContent = 'Saving…';
+          try {
+            const res = await cbApi.call('watchlist.edit', params);
+            closeModal();
+            const moved = res && res.genre;
+            toast(moved && moved.moved
+              ? `Saved — ${num(moved.moved)} track${moved.moved === 1 ? '' : 's'} moved to ${genre}.`
+              : 'Channel saved.');
+            await refresh();
+          } catch (err) {
+            /* A genre move is refused outright while a batch or Watch List job
+               runs; the host's own wording is the whole explanation, so it is
+               shown as-is rather than replaced. */
+            dialog.busy(false);
+            save.textContent = 'Save';
+            dialog.error(err.userFacing ? err.message :
+              'The host could not save that change.');
+          }
+        });
+        foot.append(cancel, save);
+      },
+      focus: () => urlEl,
+    });
+
+    wlFolderFor(row).then((path) => {
+      folder = path;
+      if (!folderBtn || !folderBtn.isConnected) return;
+      if (!folder) {
+        setDisabled(folderBtn, true, {
+          reason: (TOOLTIPS['wl.card_open_folder'] ? TOOLTIPS['wl.card_open_folder'] + '\n\n' : '') +
+            'The host has no folder recorded for this channel yet.',
+        });
+        return;
+      }
+      setDisabled(folderBtn, false, { ttKey: 'wl.card_open_folder' });
+      /* fs.* is refused on the remote transport server-side, so a remote
+         session is handed the path to copy instead — the same split the
+         Database viewer's context menu makes. The path is shown alongside it
+         there (there is nothing else to tell the user what would be copied);
+         locally the button opens it and 3m's dialog stays as designed. */
+      folderBtn.addEventListener('click',
+        () => (local ? dbReveal(folder, 'folder') : dbCopyText(folder, 'folder path')));
+      if (local) return;
+      const shown = document.createElement('div');
+      shown.className = 'cb-mut cb-mono';
+      shown.style.cssText = 'font-size:11px;overflow-wrap:anywhere';
+      shown.textContent = folder;
+      api.body.insertBefore(shown, folderBtn.parentElement.nextSibling);
+    });
+  }
+
+  /* ── Fix Link (3m) ────────────────────────────────────────────────────────
+     opts.queue = {index, total} drives the Check Links walk. opts.onNext moves
+     that walk on, and fires only when the dialog was applied or explicitly
+     skipped — closing it (✕, Escape, the dim) stops the walk instead, so
+     backing out of a 20-channel sweep is one gesture, not twenty. */
+
+  function wlCandidateMeta(candidate) {
+    const bits = [];
+    if (candidate.handle) bits.push(candidate.handle);
+    if (candidate.channel_id) bits.push(candidate.channel_id);
+    if (candidate.followers != null) bits.push(`${num(candidate.followers)} subscribers`);
+    if (candidate.confidence != null && !candidate.channel_id) {
+      bits.push(`${Math.round(candidate.confidence * 100)}% match`);
+    }
+    return bits.join(' · ');
+  }
+
+  function openFixLink(row, opts) {
+    opts = opts || {};
+    let listEl = null;
+    let pasteEl = null;
+    let picked = null;
+    let advance = false;
+
+    const api = openModal({
+      title: `🛠 Fix Link — ${row.name}` +
+             (opts.queue ? ` (${opts.queue.index} of ${opts.queue.total})` : ''),
+      width: 608,
+      tag: { text: 'Unresolved', cls: 'cb-tag--attn' },
+      /* Deferred a tick: this fires from inside closeModal, and the next
+         dialog must not open while the one that triggered it is unwinding. */
+      onClose() { if (advance && opts.onNext) setTimeout(opts.onNext, 0); },
+      body(body) {
+        body.appendChild(modalNote(
+          'This folder has no canonical channel id, so scans fall back to the ' +
+          `folder name. Pick the channel it belongs to — the top matches from a ` +
+          `search for “${row.name}”.`));
+        listEl = document.createElement('div');
+        listEl.style.cssText = 'display:flex;flex-direction:column;gap:8px';
+        const loading = document.createElement('div');
+        loading.className = 'cb-mut';
+        loading.style.fontSize = '12.5px';
+        loading.textContent = `Searching for “${row.name}”…`;
+        listEl.appendChild(loading);
+        body.appendChild(listEl);
+
+        const pasteRow = document.createElement('div');
+        pasteRow.className = 'cb-row';
+        pasteRow.style.gap = '9px';
+        const lab = document.createElement('span');
+        lab.className = 'cb-lab';
+        lab.style.width = '74px';
+        lab.textContent = 'Or paste:';
+        pasteEl = document.createElement('input');
+        pasteEl.className = 'cb-in cb-mono';
+        pasteEl.style.fontSize = '12px';
+        pasteEl.placeholder = 'https://www.youtube.com/@…';
+        pasteEl.addEventListener('input', () => {
+          if (!pasteEl.value.trim()) return;
+          picked = null;
+          $$('.cb-pick', listEl).forEach((el) => el.classList.remove('is-on'));
+          $$('input[type="radio"]', listEl).forEach((el) => { el.checked = false; });
+        });
+        pasteRow.append(lab, pasteEl);
+        body.appendChild(pasteRow);
+      },
+      foot(foot, dialog) {
+        foot.appendChild(modalNote(
+          'Resolving does not re-download anything — the next scan simply finds ' +
+          'the right listing.'));
+        const cancel = modalButton(opts.queue ? 'Skip channel' : 'Cancel',
+          'cb-btn--quiet', () => { advance = !!opts.queue; closeModal(); });
+        cancel.style.marginLeft = 'auto';
+        const apply = modalButton('Apply link', 'cb-btn--fill', async () => {
+          const pasted = pasteEl.value.trim();
+          if (!picked && !pasted) {
+            dialog.error('Pick a channel above, or paste its URL.');
+            return;
+          }
+          dialog.error('');
+          dialog.busy(true);
+          apply.textContent = 'Applying…';
+          try {
+            await cbApi.call('watchlist.resolve_apply', {
+              channel_id: row.id,
+              resolved_url: pasted || (picked && picked.url) || '',
+              resolved_channel_id: pasted ? '' : ((picked && picked.channel_id) || ''),
+            });
+            advance = true;
+            closeModal();
+            toast(`Link set for ${row.name}.`);
+            await refresh();
+          } catch (err) {
+            dialog.busy(false);
+            apply.textContent = 'Apply link';
+            dialog.error(err.userFacing ? err.message :
+              'The host could not save that link.');
+          }
+        });
+        foot.append(cancel, apply);
+      },
+    });
+
+    cbApi.call('watchlist.resolve_candidates', { channel_id: row.id })
+      .then((candidates) => {
+        if (!listEl || !listEl.isConnected) return;
+        listEl.innerHTML = '';
+        if (!candidates || !candidates.length) {
+          const none = document.createElement('div');
+          none.className = 'cb-mut';
+          none.style.fontSize = '12.5px';
+          none.textContent = 'No matches came back — paste the channel URL below instead.';
+          listEl.appendChild(none);
+          return;
+        }
+        candidates.forEach((candidate, index) => {
+          const dupe = candidate.duplicate_of;
+          const pick = document.createElement('label');
+          pick.className = 'cb-pick' + (dupe ? ' is-off' : '');
+          const radio = document.createElement('input');
+          radio.type = 'radio';
+          radio.name = 'cb-fixlink';
+          radio.className = 'cb-cbx';
+          radio.style.marginTop = '2px';
+          if (dupe) {
+            setDisabled(radio, true, {
+              reason: `Already tracked as “${dupe.name}” — linking this entry to it ` +
+                      'would leave you with two rows for one channel.',
+            });
+          } else {
+            radio.addEventListener('change', () => {
+              picked = candidate;
+              pasteEl.value = '';
+              $$('.cb-pick', listEl).forEach((el) => el.classList.remove('is-on'));
+              pick.classList.add('is-on');
+            });
+          }
+          const text = document.createElement('span');
+          text.className = 'cb-pick__text';
+          const name = document.createElement('span');
+          name.className = 'cb-pick__name';
+          name.textContent = candidate.title || row.name;
+          const meta = document.createElement('span');
+          meta.className = 'cb-pick__meta';
+          meta.textContent = wlCandidateMeta(candidate);
+          text.append(name, meta);
+          if (dupe) {
+            const note = document.createElement('span');
+            note.className = 'cb-pick__dupe';
+            note.textContent = `Already tracked as “${dupe.name}” — would duplicate`;
+            text.appendChild(note);
+          }
+          pick.append(radio, text);
+          listEl.appendChild(pick);
+          if (index === 0 && !dupe) { radio.checked = true; picked = candidate; pick.classList.add('is-on'); }
+        });
+        bindTips(listEl);
+      })
+      .catch((err) => {
+        if (!listEl || !listEl.isConnected) return;
+        listEl.innerHTML = '';
+        api.error(err.userFacing ? err.message : 'The search could not be run.');
+      });
+  }
+
+  /* Check Links walks every unresolved channel through Fix Link in turn. */
+  function runCheckLinks() {
+    const queue = wlUnresolved();
+    if (!queue.length) {
+      toast('Every channel already resolves to a real channel id.');
+      return;
+    }
+    let index = 0;
+    const next = () => {
+      if (index >= queue.length) { refresh(); return; }
+      const row = queue[index];
+      index += 1;
+      openFixLink(row, { queue: { index, total: queue.length }, onNext: next });
+    };
+    next();
   }
 
   /* ── log viewers (3e Activity / 3f Debug) ─────────────────────────────────
@@ -675,10 +1517,12 @@
     if (cursor < text.length) span.appendChild(document.createTextNode(text.slice(cursor)));
   }
 
-  function logRenderLine(kind, line, isCurrentMatch) {
-    const cfg = LOG_KINDS[kind];
+  /* One rendered log line: dimmed timestamp up to the first `|`, the rest in
+     the level's colour class. Shared with the Watch List's pinned scan log,
+     whose scan.line events already carry this same class vocabulary — the
+     level arrives on the event there instead of being read out of the text. */
+  function logLineNode(line, cls) {
     const div = document.createElement('div');
-    const cls = cfg.lineClass(line);
     const [ts, rest] = logSplitTsAndRest(line);
     if (ts) {
       const tsSpan = document.createElement('span');
@@ -690,6 +1534,12 @@
     restSpan.className = cls;
     restSpan.textContent = rest;
     div.appendChild(restSpan);
+    return div;
+  }
+
+  function logRenderLine(kind, line, isCurrentMatch) {
+    const div = logLineNode(line, LOG_KINDS[kind].lineClass(line));
+    const restSpan = div.lastChild;
     if (logState[kind].search) {
       logMarkMatches(restSpan, logState[kind].search);
       if (isCurrentMatch) {
@@ -2432,14 +3282,11 @@
       } catch (_) { /* call() already toasted the reason */ }
     });
 
+    wireWatchlist();
+
     // Actions the service does not implement yet stay visibly disabled, each
     // carrying the reason — never a dead control with no explanation.
-    [['#quick-scan', 'Scanning from the web frontend arrives with the download service.'],
-     ['#wl-scan', 'Scanning from the web frontend arrives with the download service.'],
-     ['#wl-add', 'Adding a channel arrives with the Watch List service.'],
-     ['#wl-links', 'Link checking arrives with the Watch List service.'],
-     ['#wl-dl-all', 'Downloading arrives with the download service.'],
-     ['#dl-openfolder', 'Folder actions arrive with the host filesystem bridge.'],
+    [['#dl-openfolder', 'Folder actions arrive with the host filesystem bridge.'],
      ['#dl-newgenre', 'Creating a genre folder arrives with the host filesystem bridge.'],
     ].forEach(([sel, why]) => {
       const el = $(sel);
@@ -2448,17 +3295,48 @@
       const existing = el.getAttribute('data-tt');
       const base = existing && TOOLTIPS[existing] ? TOOLTIPS[existing] + '\n\n' : '';
       el.setAttribute('data-tt-text', base + why);
-      if (sel === '#quick-scan') quickScanIdleReason = base + why;
     });
   }
 
-  async function refresh() {
+  function wireWatchlist() {
+    const scanAll = () => wlRun('watchlist.scan_all', {}, 'Scanning every channel…');
+    $('#quick-scan').addEventListener('click', () => { show('watchlist'); scanAll(); });
+    $('#wl-scan').addEventListener('click', scanAll);
+    $('#wl-add').addEventListener('click', openAddChannel);
+    $('#wl-links').addEventListener('click', runCheckLinks);
+    $('#wl-dl-all').addEventListener('click',
+      () => wlRun('watchlist.download_all_new', {}, 'Downloading every pending track…'));
+    $('#wl-cancel').addEventListener('click', async () => {
+      try {
+        await call('watchlist.cancel_all');
+        toast(WL_CANCEL_ALL_NOTE);
+      } catch (_) { /* call() already toasted the reason */ }
+    });
+    // Clears the pinned view only — activity.log on disk is untouched.
+    $('#wl-log-clear').addEventListener('click', wlLogReset);
+    $('#wl-log-open').addEventListener('click', () => show('activity-log'));
+    wlLogReset();
+  }
+
+  /* opts.watchlistEnded marks the resync that follows a terminal DONE line.
+     The host emits that line from inside the run's own `finally`, so the job
+     slot it is reported by is still held for a moment afterwards — taking the
+     snapshot's `running` at face value there would re-arm a run that has just
+     announced its end and leave the screen stuck on a job nothing can finish.
+     The doneSeq check covers the other direction: a DONE landing while some
+     unrelated refresh is in flight. */
+  async function refresh(opts) {
+    const seq = wl.doneSeq;
     state = await call('state.snapshot');
     state.platform = state.platform || null;
     // Host truth on every snapshot: a page load (or a manual refresh) while a
     // batch is running must show the running state, not wait for the next
     // progress event to reveal it.
     dl.running = !!(state.running && state.running.batch);
+    wl.cards = state.watchlist || [];
+    if (seq === wl.doneSeq && !(opts && opts.watchlistEnded)) {
+      wl.running = !!(state.running && state.running.watchlist);
+    }
     renderShell();
     renderOverview();
     renderGenres();
@@ -2478,17 +3356,33 @@
 
   function subscribeDownloadEvents() {
     cbApi.on('progress.current', (p) => {
+      if (p && p.job === 'watchlist') { wl.current = p; wlPaintProgress(); return; }
       if (!dl.running || !isBatchProgress(p)) return;
       dl.current = p;
       renderCurrent();
       renderQueueLog();
     });
     cbApi.on('progress.overall', (p) => {
+      if (p && p.job === 'watchlist') { wl.overall = p; wlPaintProgress(); return; }
       if (!dl.running || !isBatchProgress(p)) return;
       dl.overall = p;
       renderOverall();
       renderPanelBatchMini();
       renderOverviewRunning();
+    });
+    cbApi.on('watchlist.card', wlApplyCard);
+    cbApi.on('scan.line', (entry) => {
+      if (!entry) return;
+      wlLogAppend(entry);
+      if (!wlIsRunDone(entry)) return;
+      // The one signal a Watch List run has ended — there is no
+      // watchlist.finished event (see the WL_RUN_DONE_PREFIXES note).
+      wl.running = false;
+      wl.doneSeq += 1;
+      wl.current = null;
+      wl.overall = null;
+      renderWatchlist();
+      refresh({ watchlistEnded: true });
     });
     cbApi.on('queue.row', (r) => {
       if (!dl.running) return;
