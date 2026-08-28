@@ -296,3 +296,35 @@ def test_a_job_guard_refuses_the_start_before_the_slot_is_taken(service):
     assert service._job_running("batch") is False
     # The slot is untouched, so a start with no guard still works.
     service._start_job("batch", lambda: None)
+
+
+# ── F9: the isolation guard in tests/conftest.py is structural ──────────────
+
+def test_a_bare_service_lands_in_the_sandbox_not_the_developers_install():
+    """Every fixture in the suite passes explicit tmp paths, but nothing
+    stopped the next test from writing `CrateBuilderService()` bare — which
+    would probe the real cratebuilder.db beside the checkout and, through
+    `remote_state`, write the real cratebuilder_remote.json. The autouse
+    `_isolate_service_paths` fixture is what makes that impossible; this is
+    what proves the fixture is doing it.
+    """
+    import os
+
+    from cratebuilder import util
+    from cratebuilder.service import app_dir, repo_root
+
+    bare = CrateBuilderService()
+    sandbox = os.path.realpath(app_dir())
+    assert os.path.realpath(bare._db_path).startswith(sandbox)
+    assert os.path.realpath(bare._log_path).startswith(sandbox)
+    assert os.path.realpath(bare._debug_log_path).startswith(sandbox)
+    assert os.path.realpath(bare._links_path).startswith(sandbox)
+    assert os.path.realpath(bare._remote_path).startswith(sandbox)
+    assert not os.path.realpath(bare._db_path).startswith(
+        os.path.realpath(repo_root()) + os.sep)
+    # And the two paths Settings() would reach on its own, which are HOME's,
+    # not app_dir's — the second seam the fixture closes.
+    home = os.path.realpath(os.path.expanduser("~"))
+    assert "service_sandbox" in home, "HOME still points at a real profile"
+    assert os.path.realpath(util._config_path()).startswith(home)
+    assert os.path.realpath(util.default_base_dir()).startswith(home)
