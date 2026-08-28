@@ -10,6 +10,7 @@ import pytest
 
 from cratebuilder.batchrun import BatchRunner
 from cratebuilder.settings import Settings
+from cratebuilder.ydl import YdlPermanent
 
 from tests.test_watchrun import FakeSession, Harness
 
@@ -53,6 +54,77 @@ def test_a_scan_that_found_nothing_still_announces(tmp_path):
     found = notes(h.emit)
     assert len(found) == 1
     assert "0 new" in found[0]["body"]
+    assert found[0]["level"] == "info"          # a clean scan is routine
+
+
+def test_a_scan_whose_channels_errored_asks_to_be_looked_at(tmp_path):
+    """"0 new across 0 channels" at info is indistinguishable from a quiet
+    morning, and it is exactly what a scan that could not read a single channel
+    would otherwise report — the same escalation run_download and
+    BatchRunner._finish make."""
+    h = Harness(tmp_path, session=FakeSession(error=YdlPermanent(
+        "channel is gone", intent="list_channel", target="https://y/c")))
+    h.ops.run_scan([h.add_channel()])
+    found = notes(h.emit)
+    assert len(found) == 1
+    assert found[0]["level"] == "warn"
+    assert "1 channel failed" in found[0]["body"]
+
+
+def test_a_partly_failed_scan_reports_both_halves(tmp_path):
+    """What it managed AND what it lost — a run that only reported its failures
+    would hide the tracks the good channels found."""
+    good = FakeSession(listing=[
+        {"id": "d1", "title": "One", "url": "https://y/1", "upload_date": "20260101"},
+    ])
+    h = Harness(tmp_path, session=good)
+    ok = h.add_channel(url="https://www.youtube.com/channel/UCok/videos",
+                       name="Fine", channel_id="UCok")
+    bad = h.add_channel(url="https://www.youtube.com/channel/UCbad/videos",
+                        name="Broken", channel_id="UCbad")
+
+    real = good.list_channel
+
+    def flaky(url, ignore_no_formats=False):
+        if "UCbad" in url:
+            raise YdlPermanent("gone", intent="list_channel", target=url)
+        return real(url, ignore_no_formats)
+
+    good.list_channel = flaky
+    h.ops.run_scan([ok, bad])
+    note = notes(h.emit)[0]
+    assert note["level"] == "warn"
+    assert note["body"] == "1 new across 1 channel, 1 channel failed"
+
+
+def test_a_channel_that_only_needs_its_link_fixed_is_not_a_failed_scan(tmp_path):
+    """An unresolved channel is a gap the card already shows a Fix Link button
+    for, not the run failing — escalating on it would make every Watch List
+    with one unresolved entry cry wolf on every scan."""
+    h = Harness(tmp_path, session=FakeSession(listing=[]))
+    cid = h.db.add_watchlist_channel(
+        url="unresolved://Garage Archive", display_name="Garage Archive",
+        platform="YouTube", genre="House")
+    h.ops.run_scan([cid])
+    note = notes(h.emit)[0]
+    assert note["level"] == "info"
+    assert "failed" not in note["body"]
+
+
+def test_the_failure_tally_does_not_leak_into_the_next_run(tmp_path):
+    """_begin resets it, so a clean scan after a broken one reports clean."""
+    session = FakeSession(error=YdlPermanent(
+        "gone", intent="list_channel", target="https://y/c"))
+    h = Harness(tmp_path, session=session)
+    cid = h.add_channel()
+    h.ops.run_scan([cid])
+    assert notes(h.emit)[-1]["level"] == "warn"
+    session.error = None
+    h.emit.events.clear()
+    h.ops.run_scan([cid])
+    again = notes(h.emit)[0]
+    assert again["level"] == "info"
+    assert "failed" not in again["body"]
 
 
 def test_a_watch_list_download_announces_its_tally(tmp_path):
