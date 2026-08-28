@@ -18,6 +18,7 @@ from cratebuilder.batchrun import BatchRunner
 from cratebuilder.crate import CrateLayout
 from cratebuilder.db import DownloadsDatabase
 from cratebuilder.events import Coalescer, EventBus
+from cratebuilder.links import LINKS_FILE_NAME
 from cratebuilder.settings import Settings
 from cratebuilder.sidecar import is_unresolved_channel
 
@@ -28,6 +29,10 @@ DEBUG_LOG = "debug.log"
 
 LOCAL = "local"
 REMOTE = "remote"
+
+# The job registry's category for every Watch List run. One at a time, so a
+# scan and a download can never fight over the same channel folder.
+WATCHLIST_JOB = "watchlist"
 
 # Method prefixes the remote transport must refuse server-side. The design's
 # rule is that a browser elsewhere can never replace the binary it is talking
@@ -299,6 +304,36 @@ def _read_log_bytes(path):
         return None
 
 
+def _channel_id(params):
+    """The watchlist row id one call names. The contract spells it
+    "channel_id"; "id" is accepted too, since that is what the row itself
+    calls the same number."""
+    value = params.get("channel_id")
+    return params.get("id") if value is None else value
+
+
+def watchlist_card(row, **extra):
+    """One Watch List channel in the row shape the frontend renders.
+
+    The DB column names are normalised here rather than in JS so no screen has
+    to know the schema — and so a column rename is one edit, not a hunt through
+    the bundle. *extra* carries the fields only a live run can know (a channel's
+    download progress), which is why this is one function rather than two: the
+    card a scan pushes and the card the snapshot lists are the same card.
+    """
+    row = dict(row)
+    row["name"] = row.get("display_name") or row.get("url") or "Channel"
+    row["new_count"] = int(row.get("pending_new_count") or 0)
+    row["downloaded"] = int(row.get("total_downloaded") or 0)
+    row["last_scan"] = row.get("last_scanned_timestamp")
+    # Only YouTube entries can be resolved to a canonical channel id;
+    # SoundCloud has no equivalent, so a null there is not a fault.
+    row["unresolved"] = (str(row.get("platform") or "").lower() == "youtube"
+                         and not row.get("channel_id"))
+    row.update(extra)
+    return row
+
+
 def repo_root():
     """The directory holding the v1.3 script — the app's runtime data dir.
 
@@ -357,6 +392,11 @@ class CrateBuilderService:
         self._emit = Coalescer(self.events)
         self._jobs = {}
         self._batch_runner = None
+        self._watchlist_ops = None
+        # The durable channel-link store lives beside the database, so a test
+        # pointing db_path at a tmp dir never writes the developer's real one.
+        self._links_path = os.path.join(
+            os.path.dirname(self._db_path) or app_dir(), LINKS_FILE_NAME)
         self._log_watch_interval = log_watch_interval
         self._log_watchers = {}
 
@@ -423,6 +463,29 @@ class CrateBuilderService:
             "download.resume": lambda p: self.download_resume(),
             "download.cancel": lambda p: self.download_cancel(),
             "watchlist.list": lambda p: self.watchlist_list(),
+            "watchlist.scan": lambda p: self.watchlist_scan(_channel_id(p)),
+            "watchlist.scan_all": lambda p: self.watchlist_scan_all(),
+            "watchlist.download_new":
+                lambda p: self.watchlist_download_new(_channel_id(p)),
+            "watchlist.download_all_new":
+                lambda p: self.watchlist_download_all_new(),
+            "watchlist.force_download":
+                lambda p: self.watchlist_force_download(_channel_id(p)),
+            "watchlist.cancel": lambda p: self.watchlist_cancel(_channel_id(p)),
+            "watchlist.cancel_all": lambda p: self.watchlist_cancel_all(),
+            "watchlist.add": lambda p: self.watchlist_add(p.get("url"),
+                                                          p.get("genre")),
+            "watchlist.edit": lambda p: self.watchlist_edit(
+                _channel_id(p), p.get("url"), p.get("genre")),
+            "watchlist.remove":
+                lambda p: self.watchlist_remove(_channel_id(p)),
+            "watchlist.forget_unavailable":
+                lambda p: self.watchlist_forget_unavailable(_channel_id(p)),
+            "watchlist.resolve_candidates":
+                lambda p: self.watchlist_resolve_candidates(_channel_id(p)),
+            "watchlist.resolve_apply": lambda p: self.watchlist_resolve_apply(
+                _channel_id(p), p.get("resolved_url"),
+                p.get("resolved_channel_id")),
             "db.groups": lambda p: self.db_groups(p.get("preset"),
                                                    p.get("filters") or {}),
             "db.query": lambda p: self.db_query(
@@ -461,7 +524,7 @@ class CrateBuilderService:
             "batch": self.batch_list(),
             "watchlist": self.watchlist_list(),
             "running": {"batch": self._job_running("batch"),
-                        "watchlist": self._job_running("watchlist"),
+                        "watchlist": self._job_running(WATCHLIST_JOB),
                         "maintenance": self._job_running("maintenance")},
             "settings": self.settings_all(),
             "settings_path": self._settings.path,
@@ -514,28 +577,137 @@ class CrateBuilderService:
         }
 
     def watchlist_list(self):
-        """Watch List channels, with the row shape the frontend renders.
-
-        The DB column names are normalised here rather than in JS so no screen
-        has to know the schema — and so a column rename is one edit, not a hunt
-        through the bundle.
-        """
+        """Watch List channels, each as the card watchlist_card builds."""
         db = self._db()
         if db is None:
             return []
-        out = []
-        for row in db.get_all_watchlist_channels():
-            row = dict(row)
-            row["name"] = row.get("display_name") or row.get("url") or "Channel"
-            row["new_count"] = int(row.get("pending_new_count") or 0)
-            row["downloaded"] = int(row.get("total_downloaded") or 0)
-            row["last_scan"] = row.get("last_scanned_timestamp")
-            # Only YouTube entries can be resolved to a canonical channel id;
-            # SoundCloud has no equivalent, so a null there is not a fault.
-            row["unresolved"] = (str(row.get("platform") or "").lower() == "youtube"
-                                 and not row.get("channel_id"))
-            out.append(row)
-        return out
+        return [watchlist_card(row) for row in db.get_all_watchlist_channels()]
+
+    # ── watch list ────────────────────────────────────────────────────────────
+    # Dispatch only: every one of these is a thin wrapper over
+    # cratebuilder.watchrun, which owns the orchestration. What lives here is
+    # what the transport layer owns — turning a params dict into a row id,
+    # deciding whether a call starts a job or joins one, and refusing a call
+    # that has nothing to act on.
+
+    @property
+    def _watchlist(self):
+        """The Watch List operations, built on first use.
+
+        Imported here rather than at module scope because watchrun imports
+        CBError and watchlist_card from this module; deferring keeps the
+        dependency one-way and the import cycle impossible."""
+        if self._watchlist_ops is None:
+            from cratebuilder.watchrun import WatchlistOps
+            self._watchlist_ops = WatchlistOps(
+                self._settings, self._db_for_write, self.emit,
+                links_path=self._links_path, log_line=self.log_line,
+                counts=self.counts, flush=self._emit.flush)
+        return self._watchlist_ops
+
+    def _watchlist_rows(self):
+        db = self._db()
+        return db.get_all_watchlist_channels() if db is not None else []
+
+    def _watchlist_row(self, channel_id):
+        """The watchlist row one call names, or a CBError naming the miss."""
+        try:
+            wanted = int(channel_id)
+        except (TypeError, ValueError):
+            raise CBError("No channel was named.")
+        for row in self._watchlist_rows():
+            if row.get("id") == wanted:
+                return row
+        raise CBError("That channel is no longer in the Watch List.")
+
+    def watchlist_scan(self, channel_id):
+        """Scan one channel for new uploads."""
+        row = self._watchlist_row(channel_id)
+        return {"job_id": self._start_job(WATCHLIST_JOB,
+                                          self._watchlist.run_scan,
+                                          [row["id"]])}
+
+    def watchlist_scan_all(self):
+        """Scan every watched channel, in list order."""
+        ids = [row["id"] for row in self._watchlist_rows()]
+        if not ids:
+            raise CBError("No channels to scan.")
+        return {"job_id": self._start_job(WATCHLIST_JOB,
+                                          self._watchlist.run_scan, ids)}
+
+    def watchlist_download_new(self, channel_id):
+        """Download one channel's pending new tracks.
+
+        Pressed while a Watch List download is already running, the channel
+        joins that run's queue rather than being refused — the tkinter Watch
+        List's append-to-running, which is what the design's Download New
+        tooltip promises."""
+        row = self._watchlist_row(channel_id)
+        if self._job_running(WATCHLIST_JOB):
+            position = self._watchlist.enqueue(row["id"])
+            if position is not None:
+                return {"queued_position": position}
+            # No download run to join — a scan owns the job. Falling through
+            # lets _start_job give the "already running" answer rather than
+            # inventing a second one here.
+        return {"job_id": self._start_job(WATCHLIST_JOB,
+                                          self._watchlist.run_download,
+                                          [row["id"]])}
+
+    def watchlist_download_all_new(self):
+        """Download every channel's pending new tracks."""
+        ids = [row["id"] for row in self._watchlist_rows()
+               if int(row.get("pending_new_count") or 0) > 0]
+        if not ids:
+            raise CBError("No new tracks pending across any channels. Try "
+                          "Scan All first.")
+        return {"job_id": self._start_job(WATCHLIST_JOB,
+                                          self._watchlist.run_download, ids)}
+
+    def watchlist_force_download(self, channel_id):
+        """Re-process one channel's whole catalogue, skipping nothing."""
+        row = self._watchlist_row(channel_id)
+        if is_unresolved_channel(row):
+            raise CBError("This channel's link isn't resolved yet. Use Fix "
+                          "Link on the card first, then Force Download.")
+        job_id = self._start_job(WATCHLIST_JOB, self._watchlist.run_download,
+                                 [row["id"]], True)
+        return {"job_id": job_id}
+
+    def watchlist_cancel(self, channel_id):
+        """Stop the scan or download running on one channel."""
+        row = self._watchlist_row(channel_id)
+        return self._watchlist.cancel(row["id"])
+
+    def watchlist_cancel_all(self):
+        """Stop every in-progress Watch List scan and download."""
+        return self._watchlist.cancel_all()
+
+    def watchlist_add(self, url, genre=None):
+        return self._watchlist.add(url, genre)
+
+    def watchlist_edit(self, channel_id, url=None, genre=None):
+        row = self._watchlist_row(channel_id)
+        return self._watchlist.edit(row["id"], url=url, genre=genre)
+
+    def watchlist_remove(self, channel_id):
+        row = self._watchlist_row(channel_id)
+        return self._watchlist.remove(row["id"])
+
+    def watchlist_forget_unavailable(self, channel_id):
+        row = self._watchlist_row(channel_id)
+        return self._watchlist.forget_unavailable(row["id"])
+
+    def watchlist_resolve_candidates(self, channel_id):
+        row = self._watchlist_row(channel_id)
+        return self._watchlist.resolve_candidates(row["id"])
+
+    def watchlist_resolve_apply(self, channel_id, resolved_url=None,
+                                resolved_channel_id=None):
+        row = self._watchlist_row(channel_id)
+        return self._watchlist.resolve_apply(
+            row["id"], resolved_url=resolved_url,
+            channel_id=resolved_channel_id)
 
     def db_groups(self, preset, filters):
         """One level of the Downloads tab's group tree — counts only, no
