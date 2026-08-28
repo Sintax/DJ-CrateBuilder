@@ -200,6 +200,10 @@ class WatchlistOps:
         self._runner = None
         self._active_cid = None
         self._database = None
+        # Channels the CURRENT run could not get through, reset by _begin.
+        # Run-local instance state, like _queue and _mode: the job registry
+        # allows one "watchlist" run at a time, so there is only ever one.
+        self._failed = 0
 
     # ── Collaborators ─────────────────────────────────────────────────────────
     def _db(self):
@@ -304,6 +308,7 @@ class WatchlistOps:
             self._cancel_cids.clear()
             self._queue = list(queue)
             self._mode = mode
+            self._failed = 0
 
     def _end(self):
         """Close the run to joins. Cleared BEFORE the terminal flush, which
@@ -358,6 +363,7 @@ class WatchlistOps:
                 except Exception as exc:
                     # One channel blowing up is that channel's failure, never
                     # a run that ends without saying so.
+                    self._failed += 1
                     self._line(LINE_ERROR,
                                f"ERROR {self._name(cid)} — {str(exc)[:120]}")
                     count = None
@@ -376,8 +382,11 @@ class WatchlistOps:
         # "0 new across 0 channels" first would read as a routine success. A
         # CANCELLED run is not a crashed one; it returns through here and still
         # announces what it managed.
-        self._notify("Watch List scan",
-                     f"{total_new} new across {_plural(scanned, 'channel')}")
+        body = f"{total_new} new across {_plural(scanned, 'channel')}"
+        if self._failed:
+            body += f", {_plural(self._failed, 'channel')} failed"
+        self._notify("Watch List scan", body,
+                     level="warn" if self._failed else "info")
         return {"new": total_new, "channels": scanned}
 
     def _scan_channel(self, cid):
@@ -474,6 +483,12 @@ class WatchlistOps:
         verdict reached with no route to the network is downgraded, because a
         captive portal answers 404 for everything."""
         cid = row.get("id")
+        # This is where a scan that genuinely could not read a channel lands,
+        # and it is what run_scan's completion level is measured on. A channel
+        # whose LINK was never resolved is deliberately not counted here: that
+        # is a gap the card already shows a Fix Link button for, not the run
+        # failing.
+        self._failed += 1
         err = str(exc)[:120]
         verdict = scan_verdict_for(exc)
         if verdict is None:
@@ -572,7 +587,6 @@ class WatchlistOps:
         self._begin("download", [(cid, bool(force)) for cid in cids])
         index = 0
         downloaded = 0
-        failed = 0
         try:
             while True:
                 with self._lock:
@@ -583,7 +597,7 @@ class WatchlistOps:
                 try:
                     downloaded += self._download_channel(cid, force=entry_force)
                 except Exception as exc:
-                    failed += 1
+                    self._failed += 1
                     self._line(LINE_ERROR,
                                f"ERROR {self._name(cid)} — {str(exc)[:120]}")
         finally:
@@ -596,10 +610,10 @@ class WatchlistOps:
         # A run that lost channels is not routine, so it takes the level that
         # gets the attention treatment, exactly as BatchRunner._finish does.
         body = f"{_plural(downloaded, 'track')} downloaded"
-        if failed:
-            body += f", {_plural(failed, 'channel')} failed"
+        if self._failed:
+            body += f", {_plural(self._failed, 'channel')} failed"
         self._notify("Watch List download", body,
-                     level="warn" if failed else "info")
+                     level="warn" if self._failed else "info")
         return {"downloaded": downloaded}
 
     def _download_channel(self, cid, force=False):
