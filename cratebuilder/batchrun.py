@@ -2,6 +2,7 @@
 import random
 import threading
 import time
+from datetime import datetime
 
 from cratebuilder import activitylog
 from cratebuilder import artwork as cb_artwork
@@ -509,6 +510,18 @@ class BatchRunner:
             f"{self._skipped} skipped, {self._errors} failed"))
         self._flush()
         self._emit("batch.finished", dict(counts, cancelled=cancelled))
+        # The same summary as a notification, for a client that is not on the
+        # Downloads screen — the design's "batch complete" bell entry. A run
+        # that was stopped, or that lost tracks, is not routine, so it arrives
+        # at the level that gets the attention treatment.
+        self._emit("notification", {
+            "level": "warn" if (cancelled or self._errors) else "info",
+            "title": "Batch cancelled" if cancelled else "Batch complete",
+            "body": f"{self._downloaded} downloaded, {self._skipped} skipped, "
+                    f"{self._errors} failed",
+            "at": datetime.now().isoformat(timespec="seconds"),
+            "job": self._job,
+        })
         if self._counts is not None:
             try:
                 self._emit("state.patch", {"counts": self._counts()})

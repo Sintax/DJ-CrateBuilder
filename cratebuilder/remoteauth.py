@@ -92,6 +92,7 @@ def normalise_host(name):
 READ_METHODS = frozenset({
     "state.snapshot",
     "ui_strings",
+    "about.info",
     "settings.get",
     "batch.list",
     "watchlist.list",

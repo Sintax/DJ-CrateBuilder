@@ -68,21 +68,70 @@
     return host.getAttribute('data-tt-text') || (key ? TOOLTIPS[key] : '') || '';
   }
 
+  /* The hover half of the engine is ONE document-level tracker, not a listener
+     per control, and that is the whole fix for the disabled-reason tooltips.
+     A disabled form control dispatches no mouse events at all — not to itself
+     and not to its ancestors — so a `mouseenter` bound to it can never fire,
+     and every "why is this off" explainer in the bundle was unreachable.
+     Hit-testing is a separate mechanism and is NOT suppressed by `disabled`,
+     so asking what is under the pointer finds disabled controls exactly like
+     enabled ones. (`pointer-events: none` does remove an element from hit
+     testing — which is why the offline sweep in app.css, where every control
+     is deliberately inert, stays tooltip-free.)
+
+     Focus/blur stay per-element in bindTips: a disabled control cannot be
+     focused in the first place, so there is nothing there for them to miss. */
+  let tipUnder = null;
+
+  function tipHostAt(x, y) {
+    const el = document.elementFromPoint(x, y);
+    return el ? el.closest('[data-tt],[data-tt-text]') : null;
+  }
+
+  function tipTrack(x, y) {
+    const host = tipHostAt(x, y);
+    if (host === tipUnder) return;
+    tipUnder = host;
+    clearTimeout(tip.timer);
+    if (tip.host && tip.host !== host) hideTip();
+    if (!host) return;
+    tip.timer = setTimeout(() => {
+      if (tipUnder === host) showTip(host, tipText(host));
+    }, 350);
+  }
+
+  document.addEventListener('pointermove', (e) => {
+    if (e.pointerType === 'touch') return;      // touch is a long-press, not a hover
+    tipTrack(e.clientX, e.clientY);
+  }, true);
+  /* Leaving the window is not "moved to another control" — nothing else
+     reports it, so the last tracked host would otherwise stay armed. */
+  document.addEventListener('pointerout', (e) => {
+    if (e.relatedTarget) return;
+    tipUnder = null;
+    clearTimeout(tip.timer);
+    hideTip();
+  }, true);
+  document.addEventListener('pointerdown', () => {
+    tipUnder = null;
+    clearTimeout(tip.timer);
+    hideTip();
+  }, true);
+
   function bindTips(root) {
     $$('[data-tt],[data-tt-text]', root).forEach((host) => {
       if (host.__tipBound) return;
       host.__tipBound = true;
-      host.addEventListener('mouseenter', () => {
-        clearTimeout(tip.timer);
-        tip.timer = setTimeout(() => showTip(host, tipText(host)), 350);
-      });
-      host.addEventListener('mouseleave', () => { clearTimeout(tip.timer); hideTip(); });
       host.addEventListener('focus', () => showTip(host, tipText(host)));
       host.addEventListener('blur', hideTip);
     });
   }
 
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideTip(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    hideTip();
+    closeNotifications();
+  });
   addEventListener('scroll', hideTip, true);
 
   /* ── toast ─────────────────────────────────────────────────────────────── */
@@ -134,13 +183,16 @@
 
   /* ── navigation ────────────────────────────────────────────────────────── */
   const SCREENS = ['overview', 'downloads', 'watchlist', 'settings',
-                    'activity-log', 'debug-log', 'database'];
+                    'activity-log', 'debug-log', 'database', 'about'];
   /* The log screens and the database viewer aren't nav items (they open
      from Settings, per the contract's shell.not_in_nav) — while any of them
      is open, Settings stays the highlighted nav entry, per
-     shell.active_item_rule. */
+     shell.active_item_rule. About (3n) is in the same class: the contract's
+     nav is exactly four items, so About opens from the panel footer's build
+     line and from Settings, carries the same `‹ Settings` breadcrumb the
+     other four do, and leaves Settings highlighted. */
   const NAV_ALIAS = { 'activity-log': 'settings', 'debug-log': 'settings',
-                      'database': 'settings' };
+                      'database': 'settings', 'about': 'settings' };
   const LOG_KIND_BY_SCREEN = { 'activity-log': 'activity', 'debug-log': 'debug' };
   let currentScreen = null;
 
@@ -148,6 +200,11 @@
     if (!SCREENS.includes(name)) name = 'overview';
     const previous = currentScreen;
     currentScreen = name;
+    /* The control a tooltip is anchored to is about to be hidden, and nothing
+       else will report the pointer leaving it — a bubble left behind floats
+       over the new screen explaining a control that is no longer on it. */
+    hideTip();
+    tipUnder = null;
     $$('.cb-screen').forEach((s) => s.classList.toggle('is-on', s.id === 'screen-' + name));
     const navName = NAV_ALIAS[name] || name;
     $$('.cb-nav').forEach((a) => a.classList.toggle('is-on', a.dataset.screen === navName));
@@ -159,6 +216,8 @@
     const enteringKind = LOG_KIND_BY_SCREEN[name];
     if (enteringKind) logOpen(enteringKind);
     if (name === 'database' && previous !== 'database') dbOpen();
+    if (name === 'about') aboutOpen();
+    if (name !== 'overview') closeNotifications();
   }
 
   /* The nav is real anchors, so routing is the hash — that keeps deep links
@@ -180,20 +239,51 @@
     return new Date(secs * 1000).toLocaleDateString();
   }
 
+  /* The one count the contract lets the nav carry (shell.nav), and the only
+     place it is written. Called from the snapshot, from every state.patch, and
+     from a watchlist.card replacement — a badge that only tracked snapshots
+     would go stale the moment a scan reported its first channel. */
+  function renderNavCount() {
+    const pending = wl.cards.length ? wlPending()
+      : ((state && state.counts && state.counts.pending_new) || 0);
+    const badge = $('#nav-count');
+    badge.textContent = num(pending);
+    badge.hidden = pending === 0;
+    return pending;
+  }
+
+  /* The last reason `host.status` gave for being offline — remote access
+     switched off, a name the host does not answer to. Kept because the footer
+     repaints from a snapshot too, where that reason is not in scope. */
+  let hostReason = '';
+
+  /* The footer's dot and label are the `host.status` event made visible: its
+     `online` drives the colour, and the reason it carries is what the label's
+     tooltip says, on top of the registry's own sentence. */
+  function renderHostFooter() {
+    const host = state.host;
+    const dot = $('#host-dot');
+    dot.classList.toggle('is-on', !!host.online);
+    dot.classList.toggle('is-off', !host.online);
+    $('#host-label').textContent = host.online
+      ? (host.transport === 'local' ? 'host · this machine' : 'host · paired')
+      : 'host offline';
+    const row = $('#host-status');
+    const base = TOOLTIPS['remote.host_status'] || '';
+    if (hostReason) row.setAttribute('data-tt-text', base ? base + '\n\n' + hostReason
+                                                          : hostReason);
+    else row.removeAttribute('data-tt-text');
+  }
+
   function renderShell() {
     const app = state.app;
     const host = state.host;
     $('#mount-tag').textContent = host.transport === 'local' ? 'Local' : 'Remote';
-    $('#host-dot').classList.toggle('is-on', !!host.online);
-    $('#host-label').textContent = host.online
-      ? (host.transport === 'local' ? 'host · this machine' : 'host · paired')
-      : 'host offline';
-    $('#host-version').textContent = app.version ? `v${app.version} · build ${app.build}` : '';
+    renderHostFooter();
+    $('#host-version').textContent = app.version
+      ? `v${app.version} · build ${app.build}` : 'About';
 
-    const pending = state.counts.pending_new || 0;
-    const badge = $('#nav-count');
-    badge.textContent = pending;
-    badge.hidden = pending === 0;
+    renderNavCount();
     renderSessionBar();
   }
 
@@ -430,17 +520,372 @@
     codeIn.focus();
   }
 
+  /* ── notifications (3n) ───────────────────────────────────────────────────
+     Every `notification` the host pushes, kept client-side. There is no
+     server-side inbox and the design does not ask for one: the host emits an
+     announcement when something ends, and each device decides what it has
+     already seen. Persisted per browser so a reload does not erase the
+     morning's runs — the same localStorage the database viewer's column widths
+     live in, and guarded the same way, since a private window can refuse it.
+
+     No OS integration (the brief is explicit): this is the in-page bell, and
+     the toast that already fires stays as it was. */
+
+  const NOTE_LIMIT = 50;
+  const NOTE_STORE = 'cb_notifications';
+
+  const notes = { items: [], panel: null };
+
+  function loadNotes() {
+    try {
+      const raw = localStorage.getItem(NOTE_STORE);
+      const parsed = raw ? JSON.parse(raw) : [];
+      notes.items = Array.isArray(parsed) ? parsed.slice(0, NOTE_LIMIT) : [];
+    } catch (_) { notes.items = []; }
+  }
+
+  function saveNotes() {
+    try {
+      localStorage.setItem(NOTE_STORE, JSON.stringify(notes.items));
+    } catch (_) { /* storage refused — the list stays in memory only */ }
+  }
+
+  function unreadNotes() { return notes.items.filter((n) => !n.read).length; }
+
+  function noteLevelClass(n) {
+    if (n.level === 'error') return ' is-err';
+    if (n.level === 'warn' || n.level === 'warning') return ' is-warn';
+    return '';
+  }
+
+  /* The host stamps `at` in ITS local time, with no zone — which is right, it
+     is the host's clock the user is asking about. Anything unparseable falls
+     back to the arrival time rather than printing "Invalid Date". */
+  function fmtNoteWhen(at) {
+    const when = at ? new Date(at) : null;
+    const secs = when && !isNaN(when.getTime()) ? when.getTime() / 1000 : 0;
+    return secs ? fmtWhen(secs) : '';
+  }
+
+  function pushNote(n) {
+    notes.items.unshift({
+      level: n.level || 'info', title: n.title || 'Host',
+      body: n.body || '', at: n.at || new Date().toISOString(),
+      job: n.job || '', task: n.task || '', read: false,
+    });
+    if (notes.items.length > NOTE_LIMIT) notes.items.length = NOTE_LIMIT;
+    saveNotes();
+    renderBell();
+    renderOverviewRecent();
+    if (notes.panel) renderNotifications();
+  }
+
+  function renderBell() {
+    const badge = $('#ov-bell-count');
+    if (!badge) return;
+    const unread = unreadNotes();
+    badge.textContent = unread > 99 ? '99+' : String(unread);
+    badge.hidden = unread === 0;
+  }
+
+  function closeNotifications() {
+    if (!notes.panel) return;
+    notes.panel.remove();
+    notes.panel = null;
+    const bell = $('#ov-bell');
+    if (bell) bell.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('pointerdown', notesOutside, true);
+  }
+
+  function notesOutside(e) {
+    if (!notes.panel) return;
+    if (notes.panel.contains(e.target)) return;
+    if ($('#ov-bell') && $('#ov-bell').contains(e.target)) return;
+    closeNotifications();
+  }
+
+  function toggleNotifications() {
+    if (notes.panel) { closeNotifications(); return; }
+    const panel = document.createElement('div');
+    panel.className = 'cb-notif';
+    panel.id = 'cb-notif';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-label', 'Notifications');
+    document.body.appendChild(panel);
+    notes.panel = panel;
+    const bell = $('#ov-bell');
+    if (bell) {
+      bell.setAttribute('aria-expanded', 'true');
+      const r = bell.getBoundingClientRect();
+      panel.style.top = (r.bottom + 8) + 'px';
+      panel.style.left =
+        Math.max(10, Math.min(r.right - panel.offsetWidth,
+                              innerWidth - panel.offsetWidth - 10)) + 'px';
+    }
+    renderNotifications();
+    document.addEventListener('pointerdown', notesOutside, true);
+  }
+
+  function noteJumpFor(n) {
+    if (n.job === 'watchlist') return ['Open Watch List', 'watchlist'];
+    if (n.job === 'batch') return ['Open Downloads', 'downloads'];
+    return null;
+  }
+
+  function renderNotifications() {
+    const panel = notes.panel;
+    if (!panel) return;
+    panel.innerHTML = '';
+
+    const head = document.createElement('div');
+    head.className = 'cb-row';
+    const title = document.createElement('span');
+    title.style.cssText = 'font-weight:600;font-size:14px;color:var(--cb-text)';
+    title.textContent = 'Notifications';
+    head.append(title);
+    const unread = unreadNotes();
+    if (unread) head.appendChild(tagNode(`${num(unread)} new`, 'cb-tag--fill'));
+    const mark = document.createElement('button');
+    mark.className = 'cb-notif__link';
+    mark.style.marginLeft = 'auto';
+    mark.textContent = 'Mark all read';
+    setDisabled(mark, !unread, {
+      reason: 'Nothing is unread.',
+      ttText: 'Clear the count on the bell. The entries stay in the list.',
+    });
+    if (unread) {
+      mark.addEventListener('click', () => {
+        notes.items.forEach((n) => { n.read = true; });
+        saveNotes();
+        renderBell();
+        renderNotifications();
+      });
+    }
+    head.appendChild(mark);
+    panel.append(head, divNode());
+
+    if (!notes.items.length) {
+      panel.appendChild(ovEmpty('Nothing yet — finished scans, batches and ' +
+                                'errors from the host land here.'));
+    }
+    let seenRead = false;
+    notes.items.forEach((n) => {
+      if (n.read && !seenRead && notes.items.some((o) => !o.read)) {
+        seenRead = true;
+        panel.appendChild(divNode());
+      }
+      panel.appendChild(noteRow(n));
+    });
+
+    panel.appendChild(divNode());
+    const foot = document.createElement('div');
+    foot.className = 'cb-row';
+    const settings = document.createElement('a');
+    settings.href = '#settings';
+    settings.style.fontSize = '11.5px';
+    settings.textContent = 'Notification settings';
+    settings.addEventListener('click', closeNotifications);
+    const mirror = document.createElement('span');
+    mirror.className = 'cb-mut';
+    mirror.style.cssText = 'margin-left:auto;font-size:11px';
+    mirror.textContent = 'Mirrors the tray notifications';
+    foot.append(settings, mirror);
+    panel.appendChild(foot);
+    bindTips(panel);
+  }
+
+  function divNode() {
+    const el = document.createElement('div');
+    el.className = 'cb-div';
+    return el;
+  }
+
+  function noteRow(n) {
+    const row = document.createElement('div');
+    row.className = 'cb-notif__row' + (n.read ? ' is-read' : '');
+    const dot = document.createElement('span');
+    dot.className = 'cb-notif__dot';
+    const body = document.createElement('div');
+    body.className = 'cb-notif__body';
+    const text = document.createElement('div');
+    text.className = 'cb-notif__text' + noteLevelClass(n);
+    text.textContent = `${n.title} — ${n.body}`;
+    const meta = document.createElement('div');
+    meta.className = 'cb-row';
+    meta.style.cssText = 'gap:8px;margin-top:4px';
+    const when = document.createElement('span');
+    when.className = 'cb-notif__when';
+    when.textContent = fmtNoteWhen(n.at);
+    meta.appendChild(when);
+    const jump = noteJumpFor(n);
+    if (jump) {
+      const link = document.createElement('button');
+      link.className = 'cb-notif__link';
+      link.textContent = jump[0];
+      link.addEventListener('click', () => {
+        closeNotifications();
+        show(jump[1]);
+      });
+      meta.appendChild(link);
+    }
+    body.append(text, meta);
+    row.append(dot, body);
+    return row;
+  }
+
+  /* ── Overview (3a) ────────────────────────────────────────────────────────
+     Aggregates only — every number on this screen belongs to another screen,
+     and the design says so: this is the "what is happening" landing a remote
+     session needs, not a fifth place to change something. The one exception is
+     the Now-running card, whose Pause/Cancel drive whichever job is actually
+     running rather than the batch the artboard happens to draw. */
+
+  /* One label/value row. The value is truncated rather than wrapped — these
+     are paths, and a path that wraps takes the whole card with it — so the
+     untruncated string goes in its tooltip. */
+  function ovLine(label, value) {
+    const row = document.createElement('div');
+    row.className = 'cb-row cb-ov-line';
+    const left = document.createElement('span');
+    left.textContent = label;
+    const right = document.createElement('span');
+    right.className = 'cb-mono';
+    right.style.cssText = 'margin-left:auto;text-align:right;min-width:0';
+    right.textContent = value;
+    if (String(value).length > 22) {
+      right.tabIndex = 0;
+      right.setAttribute('data-tt-text', String(value));
+    }
+    row.append(left, right);
+    return row;
+  }
+
+  function ovEmpty(text) {
+    const el = document.createElement('div');
+    el.className = 'cb-ov-empty';
+    el.textContent = text;
+    return el;
+  }
+
+  /* Recent activity is the notification feed, three deep — the same entries
+     the bell holds, which is what the design shows in both places. */
+  function renderOverviewRecent() {
+    const box = $('#ov-recent');
+    if (!box) return;
+    box.innerHTML = '';
+    const recent = notes.items.slice(0, 3);
+    if (!recent.length) {
+      box.appendChild(ovEmpty('Nothing yet — finished scans, batches and ' +
+                              'errors land here.'));
+      return;
+    }
+    recent.forEach((n) => {
+      const item = document.createElement('div');
+      item.className = 'cb-ov-item';
+      const text = document.createElement('div');
+      text.className = 'cb-ov-item__text' + noteLevelClass(n);
+      text.textContent = `${n.title} — ${n.body}`;
+      const when = document.createElement('div');
+      when.className = 'cb-ov-item__when';
+      when.textContent = fmtNoteWhen(n.at);
+      item.append(text, when);
+      box.appendChild(item);
+    });
+  }
+
+  /* What the host wants looking at, counted off the cards it already sent.
+     Nothing here asks the host a question of its own: the Overview must not
+     cost a database pass every time it repaints. */
+  function renderOverviewAttention() {
+    const box = $('#ov-attention');
+    if (!box) return;
+    box.innerHTML = '';
+    const unresolved = wlUnresolved();
+    const failing = wl.cards.filter((c) => c.status === 'error'
+                                        || c.status === 'offline');
+    const unscanned = wl.cards.filter((c) => !c.last_scan);
+    const rows = [];
+    if (unresolved.length) {
+      rows.push([`${num(unresolved.length)} link${unresolved.length === 1 ? '' : 's'}`,
+        unresolved.length === 1
+          ? `${unresolved[0].name} is unresolved`
+          : 'channels cannot be scanned until their link is fixed',
+        'cb-tag--attn']);
+    }
+    if (failing.length) {
+      rows.push([num(failing.length),
+        `channel${failing.length === 1 ? '' : 's'} reported an error on the last scan`,
+        'cb-tag--grey']);
+    }
+    if (unscanned.length) {
+      rows.push([num(unscanned.length),
+        `channel${unscanned.length === 1 ? '' : 's'} never scanned`, 'cb-tag--grey']);
+    }
+    if (!rows.length) {
+      box.appendChild(ovEmpty('Nothing needs attention.'));
+      return;
+    }
+    rows.forEach(([tag, text, cls]) => {
+      const row = document.createElement('div');
+      row.className = 'cb-row';
+      row.style.cssText = 'gap:8px;font-size:12.5px;color:var(--cb-text)';
+      const span = document.createElement('span');
+      span.textContent = text;
+      row.append(tagNode(tag, cls), span);
+      box.appendChild(row);
+    });
+  }
+
+  /* The host's own configuration, read straight off the snapshot's settings —
+     the three the design names, plus where the database it is all counted
+     from actually lives. */
+  function renderOverviewHost() {
+    const box = $('#ov-host');
+    if (!box) return;
+    const s = state.settings || {};
+    box.innerHTML = '';
+    box.appendChild(ovLine('Save directory', s.base_dir || '—'));
+    box.appendChild(ovLine('Output', s.no_conversion
+      ? 'Source format' : `MP3 ${s.bitrate_quality || ''}`.trim()));
+    box.appendChild(ovLine('Cookies', !s.use_cookies ? 'Off'
+      : (s.cookie_method === 'Cookie File' ? 'Cookie file'
+                                           : (s.cookies_browser || 'Browser'))));
+    box.appendChild(ovLine('Database', state.library.path || '—'));
+    bindTips(box);
+  }
+
+  /* The Watch List card, fed from the same cards the nav badge is — so a
+     watchlist.card event moves the number here without a snapshot. */
+  function renderOverviewWatch() {
+    const channels = wl.cards.length || (state.counts || {}).watchlist || 0;
+    const pending = renderNavCount();
+    $('#ov-new').textContent = num(pending);
+    $('#ov-new-sub').textContent =
+      `new tracks across ${num(channels)} channel${channels === 1 ? '' : 's'}`;
+    $('#ov-dl-all').textContent = `⬇ Download All New (${num(pending)})`;
+    gateWrite($('#ov-dl-all'),
+      wl.running ? WL_BUSY_REASON
+        : (pending ? '' : 'No new tracks pending across any channels. Run ' +
+                          '🔍 Scan for new first.'),
+      'wl.download_all_new');
+    const interval = (state.settings || {}).auto_dl_interval;
+    $('#ov-auto').textContent = !interval || interval === 'Off'
+      ? 'off' : `every ${interval}`;
+    const last = wl.cards.reduce(
+      (a, c) => Math.max(a, Number(c.last_scan) || 0), 0);
+    $('#ov-last-scan').textContent = fmtWhen(last);
+  }
+
   function renderOverview() {
     const c = state.counts;
-    $('#ov-library').innerHTML =
-      `Library <span class="cb-mono">${num(c.downloads)}</span> tracks · ` +
-      `<span class="cb-mono">${num(c.genres)}</span> genres · ` +
-      `<span class="cb-mono">${num(c.watchlist)}</span> channels`;
-    $('#ov-new').textContent = num(c.pending_new);
-    $('#ov-new-sub').textContent =
-      `new tracks across ${num(c.watchlist)} channel${c.watchlist === 1 ? '' : 's'}`;
-    $('#ov-tracks').textContent = num(c.downloads);
-    $('#ov-dbpath').textContent = state.library.path || '';
+    const s = (n, word) => `<span class="cb-mono">${num(n)}</span> ` +
+      word + (n === 1 ? '' : 's');
+    $('#ov-library').innerHTML = 'Library ' + [s(c.downloads, 'track'),
+      s(c.genres, 'genre'), s(c.watchlist, 'channel')].join(' · ');
+    renderOverviewWatch();
+    renderOverviewHost();
+    renderOverviewAttention();
+    renderOverviewRecent();
     renderOverviewRunning();
   }
 
@@ -551,21 +996,91 @@
     $('#panel-batch-label').textContent = p ? `Batch ${num(p.done)} / ${num(p.total)}` : 'Batch 0 / 0';
   }
 
+  /* Which job the Now-running card is about. The artboard draws the batch
+     case, but all three job categories drive the same card — a Watch List run
+     or a maintenance sweep is just as much "what is happening", and hiding the
+     card for those would make the Overview lie about an idle host. Batch wins
+     when two run at once: it is the one with a Pause. */
+  function overviewJob() {
+    if (dl.running) {
+      return { key: 'batch', tag: 'Batch', current: dl.current,
+               overall: dl.overall, href: '#downloads',
+               link: 'Open Downloads →', pausable: true };
+    }
+    if (wl.running) {
+      return { key: 'watchlist', tag: 'Watch List', current: wl.current,
+               overall: wl.overall, href: '#watchlist',
+               link: 'Open Watch List →', pausable: false,
+               pauseReason: 'A Watch List run has no pause — cancel the run ' +
+                 'here, or cancel a single channel from its card.' };
+    }
+    if (mt.running) {
+      const spec = MAINT_TASKS[mt.task] || {};
+      return { key: 'maintenance', tag: spec.run || 'Maintenance',
+               current: mt.current, overall: mt.overall, href: '#settings',
+               link: 'Open Settings →', pausable: false,
+               pauseReason: 'A database maintenance job runs to the end or is ' +
+                 'cancelled; there is nothing to hold it at.' };
+    }
+    return null;
+  }
+
+  const OV_IDLE_REASON = 'Nothing is running on the host — start a batch from ' +
+    'Downloads, or scan the Watch List.';
+
   function renderOverviewRunning() {
-    const el = $('#ov-running');
-    if (!el) return;
-    el.hidden = !dl.running;
-    if (!dl.running) return;
-    const p = dl.overall;
-    $('#ov-run-meta').textContent = p
-      ? `${num(p.done)} / ${num(p.total)} · ${p.percent || 0}%` : 'starting…';
+    const card = $('#ov-running');
+    if (!card) return;
+    const job = overviewJob();
+    const tag = $('#ov-run-tag');
+    const open = $('#ov-open');
+    card.style.opacity = job ? '1' : '.72';
+    tag.textContent = job ? job.tag : 'Idle';
+    tag.className = 'cb-tag ' + (job ? 'cb-tag--fill' : 'cb-tag--grey');
+    open.href = job ? job.href : '#downloads';
+    open.textContent = job ? job.link : 'Open Downloads →';
+
+    const o = job && job.overall;
+    const p = job && job.current;
+    $('#ov-run-meta').textContent = !job ? ''
+      : (o ? `${num(o.done)} / ${num(o.total)}` +
+             (o.eta_text ? ` · ${o.eta_text}` : '')
+           : 'starting…');
+    $('#ov-run-title').textContent = !job
+      ? 'Nothing is running.'
+      : ((p && (p.title || p.note)) || 'starting…');
+    const bits = [];
+    if (p && p.percent != null) bits.push(`${p.percent}%`);
+    if (p && p.speed_text) bits.push(p.speed_text);
+    if (p && p.bitrate_text) bits.push(p.bitrate_text);
+    $('#ov-run-stats').textContent = bits.join(' · ');
+    $('#ov-run-cur').style.width =
+      (p && p.percent != null ? p.percent : 0) + '%';
+    $('#ov-run-all').style.width = (o ? o.percent || 0 : 0) + '%';
+    $('#ov-run-pct').textContent = (o ? o.percent || 0 : 0) + '%';
+
+    gateWrite($('#ov-pause'),
+      !job ? OV_IDLE_REASON : (job.pausable ? '' : job.pauseReason),
+      'main.pause_batch');
+    $('#ov-pause').textContent = dl.paused && job && job.pausable
+      ? '▶ Resume' : '⏸ Pause';
+    gateWrite($('#ov-cancel'), job ? '' : OV_IDLE_REASON,
+      job && job.key === 'maintenance' ? 'settings.maintenance_cancel'
+                                       : 'main.cancel_batch');
+    $('#ov-cancel').className = 'cb-btn cb-btn--sm ' +
+      (job ? 'cb-btn--warn' : 'cb-btn--quiet');
   }
 
   function skipBtn(row, warn) {
     const b = document.createElement('button');
     b.className = 'cb-btn cb-btn--sm cb-icon ' + (warn ? 'cb-btn--warn' : 'cb-btn--quiet');
     b.textContent = warn ? '⏭ Skip' : '⏭';
-    b.setAttribute('data-tt', row.state === 'skipped' ? 'main.row_skip_marked' : 'main.row_skip');
+    /* Three different things to say, and the registry has all three: a row
+       already marked, a row waiting its turn in a running batch (`warn` is
+       false only there and at rest), and the row being downloaded right now,
+       where "interrupted on the spot" is the promise being made. */
+    b.setAttribute('data-tt', row.state === 'skipped' ? 'main.row_skip_marked'
+      : (dl.running && !warn ? 'main.row_skip_queued' : 'main.row_skip'));
     b.addEventListener('click', async () => {
       await call('batch.skip', { id: row.id });
       state.batch = await call('batch.list');
@@ -730,11 +1245,14 @@
       { reason: block || reason, ttKey: 'main.start_downloads' });
   }
 
+  /* A closed control keeps saying what it does before it says why it is off —
+     losing the registry half is exactly when the user is most likely to be
+     asking what the control was for (the same rule wlGate follows). */
   function gateWrite(el, reason, ttKey) {
     if (!el) return;
     const block = writeBlocked();
     const why = block || reason;
-    setDisabled(el, !!why, why ? { reason: why } : { ttKey });
+    setDisabled(el, !!why, why ? { reason: tipPlus(ttKey, why) } : { ttKey });
   }
 
   function renderDownloads() {
@@ -1174,6 +1692,9 @@
 
   function renderWatchlist() {
     renderWatchlistToolbar();
+    // The nav badge and the Overview's copy of the same number are fed from
+    // these cards, so a scan reporting one channel moves all three.
+    renderOverviewWatch();
     const host = $('#wl-cards');
     host.innerHTML = '';
     if (!wl.cards.length) {
@@ -1206,6 +1727,8 @@
     host.replaceChild(node, old);
     bindTips(node);
     renderWatchlistToolbar();
+    renderOverviewWatch();
+    renderOverviewAttention();
   }
 
   /* An empty pinned log reads as broken rather than idle, so it says which it
@@ -4068,6 +4591,16 @@
     },
   };
 
+  /* Section-level help, keyed by the section name the contract's settings keys
+     group under. These are the registry's `?` strings — about a whole card,
+     not about one control. */
+  const SECTION_TOOLTIPS = {
+    'Download Behavior': 'settings.download_behavior',
+    'Browser Cookies': 'settings.cookies',
+    'Downloads Database': 'settings.database',
+    'Remote Access': 'remote.access_section',
+  };
+
   function renderSettings() {
     const grid = $('#settings-grid');
     grid.innerHTML = '';
@@ -4094,6 +4627,18 @@
       head.style.gap = '7px';
       head.innerHTML = '<span class="cb-sect"></span>';
       head.firstChild.textContent = sec.name;
+      /* Four sections carry a registry string about the section itself rather
+         than about any one control — the desktop app's `?` help icons. The
+         contract's third tooltip affordance is exactly this. */
+      const secTip = SECTION_TOOLTIPS[sec.name];
+      if (secTip && TOOLTIPS[secTip]) {
+        const help = document.createElement('span');
+        help.className = 'cb-help cb-tt-host';
+        help.tabIndex = 0;
+        help.textContent = '?';
+        help.setAttribute('data-tt', secTip);
+        head.appendChild(help);
+      }
       card.appendChild(head);
 
       sec.items.forEach((entry) => {
@@ -4116,6 +4661,279 @@
     }
     applySettingsDependencies();
     bindTips(grid);
+  }
+
+  /* ── About (3n) ───────────────────────────────────────────────────────────
+     Read-only, on both mounts: the design shows About in a remote session
+     precisely so you can tell whether the host is current. The author fields,
+     the two GitHub links and the whole FAQ come from `about.info`, which reads
+     them out of the desktop app's own source — one copy, no drift.
+
+     Links go through `fs.open_url`, which is LOCAL_ONLY: the host opens its own
+     browser. A remote browser can open its own, but the host cannot open one
+     for it, so remotely the address is copied instead — the same local/remote
+     split the database viewer's Open File / Copy Path pair uses. */
+
+  const about = { info: null, loading: false, open: {} };
+
+  /* The standing ruling: the updater is a separate effort and is not wired
+     here. Rendered visible and disabled with the reason, like every other
+     control the frontend has not reached — never removed, because the build
+     number beside them is the thing the design put them there for. */
+  const ABOUT_UPDATER_DEFERRED =
+    'Not wired up in the web frontend — the in-app updater is its own effort ' +
+    'and stays with the desktop app for now. Check for updates from the ' +
+    'desktop app\'s About tab; the build number above tells you where this ' +
+    'host is.';
+
+  const ABOUT_UPDATER_NOTE =
+    'The updater runs only in the local window on the host machine — a ' +
+    'browser somewhere else should not be able to replace the binary it is ' +
+    'talking to. The build number above tells you whether the host is current.';
+
+  async function openUrl(url) {
+    if (!url) { toast('No address for that link.', true); return; }
+    if (cbApi.transport === 'local') {
+      try { await call('fs.open_url', { url }); } catch (_) { /* toasted */ }
+      return;
+    }
+    await dbCopyText(url, 'link — open it in this browser');
+  }
+
+  function aboutLinkButton(label, url, ttKey) {
+    const b = document.createElement('button');
+    b.className = 'cb-btn cb-btn--quiet cb-btn--sm';
+    b.textContent = label;
+    if (ttKey) b.setAttribute('data-tt', ttKey);
+    b.addEventListener('click', () => openUrl(url));
+    return b;
+  }
+
+  function aboutRow(label, node) {
+    const row = document.createElement('div');
+    row.className = 'cb-about-row';
+    const lab = document.createElement('span');
+    lab.className = 'cb-about-lab';
+    lab.textContent = label;
+    row.append(lab, node);
+    return row;
+  }
+
+  function aboutFaqNode(rows) {
+    const box = document.createElement('div');
+    box.className = 'cb-faq';
+    if (!rows.length) {
+      const note = modalNote('The FAQ could not be read from the host.');
+      note.style.padding = '10px 12px';
+      box.appendChild(note);
+      return box;
+    }
+    rows.forEach((row, i) => {
+      const q = document.createElement('button');
+      q.className = 'cb-faq__q';
+      q.setAttribute('aria-expanded', about.open[i] ? 'true' : 'false');
+      const chev = document.createElement('span');
+      chev.className = 'cb-faq__chev';
+      chev.textContent = about.open[i] ? '▾' : '▸';
+      const text = document.createElement('span');
+      text.textContent = row.q;
+      q.append(chev, text);
+      const a = document.createElement('div');
+      a.className = 'cb-faq__a';
+      a.textContent = row.a;
+      a.hidden = !about.open[i];
+      q.addEventListener('click', () => {
+        about.open[i] = !about.open[i];
+        a.hidden = !about.open[i];
+        chev.textContent = about.open[i] ? '▾' : '▸';
+        q.setAttribute('aria-expanded', about.open[i] ? 'true' : 'false');
+      });
+      box.append(q, a);
+    });
+    return box;
+  }
+
+  function renderAbout() {
+    const host = $('#about-body');
+    if (!host) return;
+    host.innerHTML = '';
+    const info = about.info;
+    if (!info) {
+      host.appendChild(ovEmpty(about.loading ? 'Loading…'
+        : 'The host could not send the About details.'));
+      return;
+    }
+
+    // ── identity ──────────────────────────────────────────────────────────
+    const head = document.createElement('div');
+    head.className = 'cb-row';
+    head.style.gap = '14px';
+    const logo = document.createElement('img');
+    logo.src = 'assets/logo.png';
+    logo.alt = '';
+    logo.width = 54;
+    logo.height = 54;
+    logo.style.cssText = 'border-radius:8px;display:block;flex:none';
+    const names = document.createElement('div');
+    const name = document.createElement('div');
+    name.style.cssText =
+      'font-weight:600;font-size:19px;color:var(--cb-text);letter-spacing:-.015em';
+    name.textContent = info.app_name || 'DJ-CrateBuilder';
+    const build = document.createElement('div');
+    build.className = 'cb-mono cb-mut';
+    build.style.cssText = 'font-size:11.5px;margin-top:3px';
+    build.textContent = [info.version ? `version ${info.version}` : '',
+                         info.build_status].filter(Boolean).join(' · ');
+    names.append(name, build);
+    head.append(logo, names);
+    const mount = tagNode(
+      cbApi.transport === 'local' ? 'Local window'
+        : (session && session.read_only ? 'Read-only' : 'Remote session'),
+      'cb-tag--grey');
+    mount.style.marginLeft = 'auto';
+    head.appendChild(mount);
+    host.append(head, divNode());
+
+    // ── author ────────────────────────────────────────────────────────────
+    const author = document.createElement('div');
+    author.style.cssText = 'display:flex;gap:8px;align-items:flex-start';
+    const avatar = document.createElement('img');
+    avatar.src = info.avatar || 'assets/about_avatar.png';
+    avatar.alt = '';
+    avatar.width = 44;
+    avatar.height = 44;
+    avatar.style.cssText = 'border-radius:6px;display:block;flex:none';
+    const who = document.createElement('div');
+    who.style.cssText = 'display:flex;flex-direction:column;gap:3px;padding-top:3px';
+    const person = document.createElement('span');
+    person.className = 'cb-about-val';
+    person.textContent = info.created_by || '';
+    const mail = document.createElement('a');
+    mail.href = '#about';
+    mail.style.cssText = 'font-size:12.5px;text-decoration:underline';
+    mail.textContent = info.contact_email || '';
+    mail.setAttribute('data-tt', 'about.mail');
+    mail.addEventListener('click', (e) => {
+      e.preventDefault();
+      openUrl(`mailto:${info.contact_email || ''}`);
+    });
+    who.append(person, mail);
+    author.append(avatar, who);
+    host.appendChild(aboutRow('Created by', author));
+
+    const built = document.createElement('span');
+    built.className = 'cb-about-val';
+    built.textContent = info.description || '';
+    host.appendChild(aboutRow('Built with', built));
+
+    // ── links ─────────────────────────────────────────────────────────────
+    const links = document.createElement('div');
+    links.className = 'cb-row';
+    links.style.cssText = 'gap:9px;flex-wrap:wrap';
+    links.append(
+      aboutLinkButton('View on GitHub ↗', info.github_url, 'about.github'),
+      aboutLinkButton('↗ Submit Issues / Suggestions', info.issues_url,
+                      'about.issues'));
+    if (info.github_url) {
+      const licence = aboutLinkButton('Licence',
+        `${info.github_url.replace(/\/+$/, '')}/blob/main/LICENSE`);
+      licence.setAttribute('data-tt-text',
+        'Opens the project licence on GitHub. Remote sessions get the address ' +
+        'to open here instead.');
+      links.appendChild(licence);
+    }
+    host.appendChild(links);
+    if (info.note) {
+      const note = modalNote(info.note);
+      note.style.fontSize = '12px';
+      host.appendChild(note);
+    }
+
+    // ── updates (deferred, per the standing ruling) ────────────────────────
+    host.appendChild(divNode());
+    const upHead = document.createElement('div');
+    upHead.className = 'cb-row';
+    upHead.style.gap = '7px';
+    const upKick = document.createElement('span');
+    upKick.className = 'cb-sect';
+    upKick.textContent = 'Updates';
+    upHead.append(upKick, tagNode('Local session only', 'cb-tag--grey'));
+    const upRow = document.createElement('div');
+    upRow.className = 'cb-row';
+    upRow.style.cssText = 'gap:9px;flex-wrap:wrap';
+    /* Remote adds a second, independent reason — the contract's own copy says
+       it — so both are shown there and only the deferral is shown locally,
+       where "this is a remote session" would simply be untrue. */
+    const remoteHalf = cbApi.transport === 'local' ? null : true;
+    [['⟳ Check for updates', 'about.check_updates'],
+     ['⤓ Update Now', 'about.update_now']].forEach(([label, key]) => {
+      const b = document.createElement('button');
+      b.className = 'cb-btn cb-btn--sm';
+      b.textContent = label;
+      setDisabled(b, true, {
+        reason: (remoteHalf && TOOLTIPS[key] ? TOOLTIPS[key] + '\n\n' : '') +
+                ABOUT_UPDATER_DEFERRED,
+      });
+      upRow.appendChild(b);
+    });
+    const every = document.createElement('select');
+    every.className = 'cb-sel';
+    every.style.width = '150px';
+    every.innerHTML = '<option>Every 24 hours</option>';
+    setDisabled(every, true, {
+      reason: (TOOLTIPS['about.update_interval_readonly'] ||
+               TOOLTIPS['about.update_interval'] || '') +
+              '\n\n' + ABOUT_UPDATER_DEFERRED,
+    });
+    upRow.appendChild(every);
+    const warn = document.createElement('div');
+    warn.className = 'cb-warnbox';
+    warn.textContent = ABOUT_UPDATER_NOTE;
+    host.append(upHead, upRow, warn);
+
+    // ── FAQ ───────────────────────────────────────────────────────────────
+    host.appendChild(divNode());
+    const faqHead = document.createElement('div');
+    faqHead.className = 'cb-row';
+    const faqKick = document.createElement('span');
+    faqKick.className = 'cb-kick';
+    faqKick.textContent = 'Frequently Asked Questions';
+    const faqBtns = document.createElement('div');
+    faqBtns.className = 'cb-row';
+    faqBtns.style.cssText = 'margin-left:auto;gap:6px';
+    const rows = info.faq || [];
+    [['⊞', true, 'about.faq_expand'], ['⊟', false, 'about.faq_collapse']]
+      .forEach(([sym, opened, key]) => {
+        const b = document.createElement('button');
+        b.className = 'cb-btn cb-btn--quiet cb-btn--sm';
+        b.style.padding = '3px 8px';
+        b.textContent = sym;
+        setDisabled(b, !rows.length, {
+          reason: tipPlus(key, 'The FAQ could not be read from the host.'),
+          ttKey: key,
+        });
+        if (rows.length) {
+          b.addEventListener('click', () => {
+            rows.forEach((_, i) => { about.open[i] = opened; });
+            renderAbout();
+          });
+        }
+        faqBtns.appendChild(b);
+      });
+    faqHead.append(faqKick, faqBtns);
+    host.append(faqHead, aboutFaqNode(rows));
+    bindTips(host);
+  }
+
+  async function aboutOpen() {
+    if (about.info || about.loading) { renderAbout(); return; }
+    about.loading = true;
+    renderAbout();
+    try {
+      about.info = await call('about.info');
+    } catch (_) { /* call() already toasted the reason */ }
+    about.loading = false;
+    renderAbout();
   }
 
   /* ── wiring ────────────────────────────────────────────────────────────── */
@@ -4157,7 +4975,36 @@
     });
 
     $('#ov-refresh').addEventListener('click', refresh);
-    $('#ov-goto-wl').addEventListener('click', () => show('watchlist'));
+    $('#ov-bell').addEventListener('click', toggleNotifications);
+    $('#ov-dl-all').addEventListener('click',
+      () => wlRun('watchlist.download_all_new', {},
+                  'Downloading every pending track…'));
+    /* One pair of controls, whichever job is running — the card says which,
+       and these act on that one. Nothing is guessed: overviewJob() is the same
+       function that painted the card. */
+    $('#ov-pause').addEventListener('click', async () => {
+      const job = overviewJob();
+      if (!job || !job.pausable) return;
+      try {
+        if (dl.paused) { await call('download.resume'); dl.paused = false; }
+        else { await call('download.pause'); dl.paused = true; }
+        renderDownloadsHeader();
+        renderOverviewRunning();
+      } catch (_) { /* call() already toasted the reason */ }
+    });
+    $('#ov-cancel').addEventListener('click', async () => {
+      const job = overviewJob();
+      if (!job) return;
+      if (job.key === 'batch') { call('download.cancel').catch(() => {}); return; }
+      if (job.key === 'maintenance') {
+        call('db.maintenance_cancel').catch(() => {});
+        return;
+      }
+      try {
+        await call('watchlist.cancel_all');
+        toast(WL_CANCEL_ALL_NOTE);
+      } catch (_) { /* call() already toasted the reason */ }
+    });
 
     $('#dl-start').addEventListener('click', async () => {
       try {
@@ -4181,10 +5028,22 @@
 
     wireWatchlist();
 
+    /* Open Main Folder is a host-filesystem action, and the bridge exists now
+       (fs.reveal). Local opens it; remote copies the path, the same split the
+       Watch List card's Open Folder uses — a browser elsewhere cannot be shown
+       the host's file manager. */
+    $('#dl-openfolder').addEventListener('click', () => {
+      const path = (state.settings || {}).base_dir || '';
+      if (!path) { toast('No save directory is set.', true); return; }
+      if (cbApi.transport === 'local') dbReveal(path, 'folder');
+      else dbCopyText(path, 'the save directory path');
+    });
+
     // Actions the service does not implement yet stay visibly disabled, each
     // carrying the reason — never a dead control with no explanation.
-    [['#dl-openfolder', 'Folder actions arrive with the host filesystem bridge.'],
-     ['#dl-newgenre', 'Creating a genre folder arrives with the host filesystem bridge.'],
+    [['#dl-newgenre', 'Creating a genre folder is not wired up in the web ' +
+      'frontend — add the genre from the desktop app, or download into it ' +
+      'once and it appears here.'],
     ].forEach(([sel, why]) => {
       const el = $(sel);
       if (!el) return;
@@ -4251,16 +5110,25 @@
 
   function subscribeDownloadEvents() {
     cbApi.on('progress.current', (p) => {
-      if (p && p.job === 'watchlist') { wl.current = p; wlPaintProgress(); return; }
-      if (p && p.job === 'maintenance') { mt.current = p; maintPaint(); return; }
+      if (p && p.job === 'watchlist') {
+        wl.current = p; wlPaintProgress(); renderOverviewRunning(); return;
+      }
+      if (p && p.job === 'maintenance') {
+        mt.current = p; maintPaint(); renderOverviewRunning(); return;
+      }
       if (!dl.running || !isBatchProgress(p)) return;
       dl.current = p;
       renderCurrent();
       renderQueueLog();
+      renderOverviewRunning();
     });
     cbApi.on('progress.overall', (p) => {
-      if (p && p.job === 'watchlist') { wl.overall = p; wlPaintProgress(); return; }
-      if (p && p.job === 'maintenance') { mt.overall = p; maintPaint(); return; }
+      if (p && p.job === 'watchlist') {
+        wl.overall = p; wlPaintProgress(); renderOverviewRunning(); return;
+      }
+      if (p && p.job === 'maintenance') {
+        mt.overall = p; maintPaint(); renderOverviewRunning(); return;
+      }
       if (!dl.running || !isBatchProgress(p)) return;
       dl.overall = p;
       renderOverall();
@@ -4320,6 +5188,10 @@
        the dialog it would otherwise be shown in twice. */
     cbApi.on('notification', (n) => {
       if (!n) return;
+      /* The bell (3n) keeps every one of them, including the maintenance
+         summaries the progress dialog also shows: the dialog is a live view of
+         one run, the bell is the record of what the host has done. */
+      pushNote(n);
       if (n.job === 'maintenance') {
         mt.note = n;
         if (mt.view) { maintPaint(); return; }
@@ -4352,10 +5224,12 @@
     SETTINGS_KEYS = strings.settings_keys || [];
     if (!booted) {
       booted = true;
+      loadNotes();
       wire();
       subscribeDownloadEvents();
       subscribeSessionEvents();
     }
+    renderBell();
     await refresh();
     setHostOffline(false);
     bindTips(document);
@@ -4369,6 +5243,7 @@
       if (s && s.session) session = s.session;
       if (!state) return;
       state.host.online = !!(s && s.online);
+      hostReason = (s && s.reason) || '';
       renderShell();
       setHostOffline(!(s && s.online), s && s.reason);
       if (s && s.online) refresh().catch(() => {});
@@ -4392,6 +5267,11 @@
   /* A host that is down at first paint must not leave a blank page either —
      the shell stays, the offline bar explains, and Retry re-runs boot. */
   boot().catch((err) => {
+    /* Parked on the window as well as the console: a host driving this page
+       through evaluate_js can read a property, and cannot read the console —
+       so without this, a boot that fails inside the local window leaves
+       nothing but "offline" to diagnose from. */
+    window.__bootError = err && (err.stack || err.message || String(err));
     console.error(err);
     if (err && err.needsPairing) return;      // the pairing screen is already up
     if (!booted) {

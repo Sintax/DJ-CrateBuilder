@@ -1,7 +1,13 @@
 # Web UI (v2) — scaffold
 
-Status: **scaffold landed** on `feat/webui-v2`. Phase 1–2 of the build order in
-`UI-design/HANDOFF.md` §9. The tkinter app is untouched and still the shipping UI.
+Status: **feature-complete on `feat/webui-v2`**, phases 1–5 of the build order in
+`UI-design/HANDOFF.md` §9. Every screen in the design is built and driven by the
+host; the remote transport (pairing, read-only, control lock) is in. The tkinter
+app is untouched and remains the shipping UI — phase 6 (retiring it) has not
+been opened.
+
+See **[Status](#status--what-shipped)** at the foot for what shipped, what is
+deliberately still deferred, and why.
 
 ## What this is
 
@@ -33,10 +39,15 @@ transport is live.
 | `cratebuilder/ui_strings.py` | Shared registry: 76 tooltips + 42 settings keys, generated verbatim from `ui-contract.json` |
 | `web/` | `index.html`, `theme.css` (drop-in, unmodified), `app.css` (layout only), `api.js`, `app.js`, `assets/` |
 | `web_window.py` | Local pywebview host; `--screen <name>` opens straight to a screen |
+| `web_server.py` | Remote mount: uvicorn over `cratebuilder/server.py` |
+| `cratebuilder/server.py` | FastAPI app, WebSocket push, pairing, token auth |
+| `cratebuilder/remoteauth.py` | Device tokens, pairing codes, read-only flags, the control lock |
 
 Screens built: the shell (fixed 236px panel, four-item nav, host footer),
-Overview (`3a`), Downloads (`3b` idle), Watch List (`3d`), Settings (`3j`).
-Not built: log viewers, database viewer, dialogs, pairing, the remote transport.
+Overview (`3a`), Downloads (`3b`/`3c`), Watch List (`3d`), Activity and Debug
+log viewers (`3e`/`3f`), the three-tab Database viewer (`3g`/`3h`/`3i`),
+Settings (`3j`), pairing and host-offline (`3k`), the modal dialogs (`3m`), and
+Notifications + About (`3n`).
 
 ## Decisions worth keeping
 
@@ -92,8 +103,67 @@ never match the plain `uvicorn==…` that pip freeze reports. Packaging the bund
 into the PyInstaller spec is **not** done — `web/` must be added as data and
 uvicorn needs `--collect-submodules`.
 
+## Status — what shipped
+
+Everything below is on `feat/webui-v2`. `APP_VERSION` stays `"1.3"` and the
+tkinter app is byte-identical to `main`'s: nothing here changes the shipping app.
+
+**Screens.** All fourteen design ids. Downloads runs a real batch with current
+and overall progress, pause/resume, cancel and per-row skip; the Watch List
+streams its scan log line by line and drives per-channel scans, downloads,
+force-downloads, Fix Link and Edit Channel; the log viewers window a 5 MB file
+without loading it whole; the database viewer pages a 31,999-row library with
+persisted column widths and order; Settings autosaves per control; the Overview
+aggregates all of it and drives whichever job is running.
+
+**Transport.** One bundle, two mounts. `web_window.py` is the local pywebview
+window; `web_server.py` serves the same files to browsers. Pairing is a 6-digit
+code exchanged once for a device token, rate-limited host-side; read-only mode
+and a single-writer control lock gate every write; `update.*` and `fs.*` are
+refused server-side on the remote transport, not left to the client.
+
+**Notifications.** `notification` events from the host — scan finished, batch
+finished, maintenance finished, and any job that crashed — collect in a bell on
+the Overview with mark-all-read, and feed the Recent activity card. Client-side
+and per-browser (`localStorage`); there is no server-side inbox and no OS
+integration, which is what the design asks for.
+
+**Tooltips.** One registry (`cratebuilder/ui_strings.py`, generated) read by
+both frontends. Descriptive text comes from a registry key; a disabled control
+adds why it is off underneath. Both render on disabled controls — the hover half
+of the engine is one document-level pointer tracker asking what is under the
+cursor, because a disabled form control dispatches no mouse events at all and a
+per-element `mouseenter` on one can never fire.
+
+## Status — deliberately deferred
+
+Each of these renders visibly and disabled with the reason in its tooltip,
+rather than being hidden — the gap stays honest on screen.
+
+- **Updater controls** (`Check for updates`, `Update Now`, the auto-check
+  interval). The in-app updater is its own effort with its own risk profile
+  (it replaces the running binary), and `update.*` is LOCAL_ONLY besides. The
+  build number beside them is live, so About still answers "is this host
+  current".
+- **Folders Cleanup dialog** (`3m`'s per-channel review). The only destructive
+  flow in the design; `db.cleanup_scan` / `cleanup_apply` are unimplemented and
+  the Watch List tab's 🧹 button is disabled with that reason. Deleting a user's
+  files needs its own ask.
+- **TLS.** HANDOFF §8.2 says do not roll your own: plain HTTP is LAN-only, and
+  anything wider goes behind Caddy or a Cloudflare Tunnel. `--host-allow` exists
+  so a proxied deployment can name itself.
+- **QR pairing** (the contract's `qr_svg`). Needs a `qrcode` dependency nobody
+  authorised; the 6-digit code plus the printed URL cover the same ground.
+- **EventSource fallback** for networks that block WebSockets. The socket path
+  works everywhere tested; the fallback is a second push implementation to
+  maintain and nothing has needed it yet.
+- **Creating and removing genre folders** from the web UI. No service method;
+  the desktop app still does it, and a genre appears here as soon as something
+  is downloaded into it.
+
 ## Next
 
-Phase 3 in HANDOFF §9 order: log viewers, then the database viewer (payload-size
-constraints are easier to find locally), then the FastAPI transport with pairing.
-`APP_VERSION` stays `"1.3"`; nothing here changes the shipping app.
+Phase 6 in HANDOFF §9 order — retiring the tkinter UI — is the only phase left,
+and it is not opened. The tooltip registry is the checklist: every key it holds
+is either bound in the bundle or deliberately unbound (a local-only control, or
+one of the deferrals above).
