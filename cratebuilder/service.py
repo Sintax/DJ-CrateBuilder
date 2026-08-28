@@ -19,6 +19,7 @@ from cratebuilder.crate import CrateLayout
 from cratebuilder.db import DownloadsDatabase
 from cratebuilder.events import Coalescer, EventBus
 from cratebuilder.links import LINKS_FILE_NAME
+from cratebuilder.remoteauth import REMOTE_FILE_NAME, RemoteState
 from cratebuilder.settings import Settings
 from cratebuilder.sidecar import is_unresolved_channel
 
@@ -98,6 +99,30 @@ MAX_PREVIEW_BYTES = 8 * 1024 * 1024
 OPENABLE_EXTENSIONS = frozenset(rebuild.AUDIO_EXTS) | {
     ".jpg", ".jpeg", ".png", ".webp",
 }
+
+# The three Remote Access toggles the contract lists as settings keys but the
+# app's own config schema has no room for: they govern who may reach this
+# control surface, so they live in cratebuilder_remote.json beside the tokens
+# they gate rather than in the user's ordinary settings file. Mapped here so
+# settings.get/set still speak the contract's names.
+REMOTE_SETTINGS_KEYS = {
+    "remote_enabled": "enabled",
+    "remote_require_pairing": "require_pairing",
+    "remote_read_only": "read_only",
+}
+
+# base_dir is the trust root fs.reveal's containment check is measured against
+# (see _fs_path_is_contained), so a remote client able to move it could point
+# the boundary at anywhere on the host and then walk through it. The picker is
+# already LOCAL_ONLY; this closes the typed-path half.
+REMOTE_BASE_DIR_REFUSAL = (
+    "The save directory is the boundary that keeps a remote session inside "
+    "your crate folder, so it can only be changed from the app window on the "
+    "host machine.")
+
+REMOTE_SETTING_REFUSAL = (
+    "Remote access settings can only be changed from the app window on the "
+    "host machine.")
 
 _VERSION_RE = re.compile(r'^APP_VERSION\s*=\s*"([^"]+)"', re.M)
 _BUILD_RE = re.compile(r"^APP_BUILD\s*=\s*(\d+)", re.M)
@@ -403,10 +428,19 @@ class CrateBuilderService:
 
     def __init__(self, transport=LOCAL, settings=None, db_path=None,
                  log_path=None, debug_log_path=None,
-                 log_watch_interval=DEFAULT_LOG_WATCH_INTERVAL):
+                 log_watch_interval=DEFAULT_LOG_WATCH_INTERVAL,
+                 remote_state=None):
         if transport not in (LOCAL, REMOTE):
             raise ValueError(f"unknown transport: {transport}")
-        self.transport = transport
+        # The transport is a property of the CALL, not of the object: one
+        # process hosts both mounts (the desktop window and the server thread)
+        # over one service core, so `call(..., transport=REMOTE)` sets it for
+        # the duration of that call and this is only the fallback for callers
+        # that don't say. Thread-local, because the two mounts run on different
+        # threads — the server's routes are sync handlers, which Starlette runs
+        # in its threadpool, one request per thread.
+        self._default_transport = transport
+        self._call_transport = threading.local()
         self._settings = settings or Settings()
         self._db_path = db_path or os.path.join(app_dir(), DB_NAME)
         self._log_path = log_path or os.path.join(app_dir(), ACTIVITY_LOG)
@@ -427,6 +461,12 @@ class CrateBuilderService:
         # pointing db_path at a tmp dir never writes the developer's real one.
         self._links_path = os.path.join(
             os.path.dirname(self._db_path) or app_dir(), LINKS_FILE_NAME)
+        # Same reasoning for the remote-access store: a test pointing db_path
+        # at a tmp dir must never read or write the developer's real device
+        # tokens. Injectable so the window and the server thread share one.
+        self._remote_path = os.path.join(
+            os.path.dirname(self._db_path) or app_dir(), REMOTE_FILE_NAME)
+        self._remote_state = remote_state
         self._log_watch_interval = log_watch_interval
         self._log_watchers = {}
         self.reset_stale_watchlist_rows()
@@ -551,19 +591,50 @@ class CrateBuilderService:
 
     # ── dispatch ──────────────────────────────────────────────────────────────
 
-    def call(self, method, params=None):
+    @property
+    def transport(self):
+        """Which mount the call being served came in on.
+
+        Read all over this class (capabilities, the host-only refusals) and
+        answered per call, so the same service object tells the desktop window
+        it may reveal a folder and tells the server thread it may not.
+        """
+        return getattr(self._call_transport, "value", None) or self._default_transport
+
+    @property
+    def remote_state(self):
+        """The device-token / pairing store, built on first use.
+
+        Lazy for the same reason the database is: constructing one reads (and
+        can create) a file, which a service built only to answer a snapshot
+        should not do.
+        """
+        if self._remote_state is None:
+            self._remote_state = RemoteState(self._remote_path)
+        return self._remote_state
+
+    def call(self, method, params=None, transport=None):
         """Route one contract method name to its handler.
 
         The single entry point both transports use, so the local pywebview
-        bridge and a future WebSocket RPC cannot drift in what they accept.
+        bridge and the WebSocket/HTTP RPC cannot drift in what they accept.
+        *transport* names the mount this one call arrived on and holds for the
+        duration of the call; omitted, the constructor's value stands.
         """
-        if self.transport == REMOTE and method.startswith(LOCAL_ONLY):
-            raise CBError("That action is only available in the app window on "
-                          "the host machine.")
-        handler = self._methods().get(method)
-        if handler is None:
-            raise CBError(f"Unknown action: {method}")
-        return handler(dict(params or {}))
+        if transport is not None and transport not in (LOCAL, REMOTE):
+            raise ValueError(f"unknown transport: {transport}")
+        previous = getattr(self._call_transport, "value", None)
+        self._call_transport.value = transport or previous
+        try:
+            if self.transport == REMOTE and method.startswith(LOCAL_ONLY):
+                raise CBError("That action is only available in the app window "
+                              "on the host machine.")
+            handler = self._methods().get(method)
+            if handler is None:
+                raise CBError(f"Unknown action: {method}")
+            return handler(dict(params or {}))
+        finally:
+            self._call_transport.value = previous
 
     def _methods(self):
         return {
@@ -638,6 +709,12 @@ class CrateBuilderService:
                 p.get("name"), p.get("query"), bool(p.get("regex"))),
             "logs.download": lambda p: self.logs_download(p.get("name")),
             "logs.watch": lambda p: self.logs_watch(p.get("name"), p.get("on")),
+            "remote.config": lambda p: self.remote_config(),
+            "remote.devices": lambda p: self.remote_devices(),
+            "remote.pair_begin": lambda p: self.remote_pair_begin(),
+            "remote.pair_cancel": lambda p: self.remote_pair_cancel(),
+            "remote.revoke": lambda p: self.remote_revoke(
+                p.get("device_id") or p.get("token_hash")),
         }
 
     def _unavailable(self, what):
@@ -1378,6 +1455,10 @@ class CrateBuilderService:
         out = {}
         for entry in ui_strings.SETTINGS_KEYS:
             key = entry.get("key")
+            flag = REMOTE_SETTINGS_KEYS.get(key)
+            if flag is not None:
+                out[key] = self.remote_state.get_flag(flag)
+                continue
             get, _ = _binding(key)
             try:
                 out[key] = get(self._settings)
@@ -1388,6 +1469,9 @@ class CrateBuilderService:
     def settings_get(self, key):
         if not key:
             raise CBError("No setting was named.")
+        flag = REMOTE_SETTINGS_KEYS.get(key)
+        if flag is not None:
+            return {"key": key, "value": self.remote_state.get_flag(flag)}
         get, _ = _binding(key)
         try:
             return {"key": key, "value": get(self._settings)}
@@ -1402,10 +1486,18 @@ class CrateBuilderService:
         """
         if not key:
             raise CBError("No setting was named.")
+        flag = REMOTE_SETTINGS_KEYS.get(key)
+        if flag is not None:
+            if self.transport != LOCAL:
+                raise CBError(REMOTE_SETTING_REFUSAL)
+            return {"key": key,
+                    "value": self.remote_state.set_flag(flag, bool(value))}
         get, set_ = _binding(key)
         if key == "run_at_startup":
             return self._set_run_at_startup(value, get)
         if key == "base_dir":
+            if self.transport != LOCAL:
+                raise CBError(REMOTE_BASE_DIR_REFUSAL)
             value = _validate_base_dir(value)
         try:
             set_(self._settings, value)
@@ -1437,6 +1529,58 @@ class CrateBuilderService:
         except KeyError:
             raise CBError("Unknown setting: run_at_startup")
         return {"key": "run_at_startup", "value": get(self._settings)}
+
+    # ── remote access (design 3j's Remote Access card) ────────────────────────
+    # The card is live on the LOCAL mount and read-only on a remote one: every
+    # write here refuses off-host, because a browser that has been let in must
+    # not be able to widen the door it came through — turn off the pairing
+    # requirement, or drop the other devices that could take control back.
+    # `remote.claim_control` is deliberately NOT here: which device is asking
+    # is a fact of the connection, so the server answers that one itself.
+
+    def _require_local_remote_admin(self):
+        if self.transport != LOCAL:
+            raise CBError(REMOTE_SETTING_REFUSAL)
+
+    def remote_config(self):
+        """The Remote Access card's whole state in one call.
+
+        The live pairing code is included only for the local window. A remote
+        client asking for this must never be handed the code that would let it
+        pair a second device.
+        """
+        state = self.remote_state
+        out = dict(state.config())
+        out["devices"] = state.devices()
+        out["control"] = state.control_holder()
+        out["local"] = self.transport == LOCAL
+        if self.transport == LOCAL:
+            out["pairing"] = state.active_code()
+        return out
+
+    def remote_devices(self):
+        return {"devices": self.remote_state.devices()}
+
+    def remote_pair_begin(self):
+        """Mint the 6-digit code the desktop window shows. Local only."""
+        self._require_local_remote_admin()
+        return self.remote_state.begin_pairing()
+
+    def remote_pair_cancel(self):
+        self._require_local_remote_admin()
+        self.remote_state.cancel_pairing()
+        return {"pairing": None}
+
+    def remote_revoke(self, target):
+        """Drop one paired device, or every one of them for "all"."""
+        self._require_local_remote_admin()
+        wanted = str(target or "").strip()
+        if not wanted:
+            raise CBError("No device was named.")
+        removed = self.remote_state.revoke(wanted)
+        if removed:
+            self.emit("control.holder", self.remote_state.control_holder() or {})
+        return {"removed": removed, "devices": self.remote_state.devices()}
 
     # ── batch queue ───────────────────────────────────────────────────────────
 

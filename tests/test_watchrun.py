@@ -1036,7 +1036,6 @@ def test_an_unknown_channel_id_is_refused_by_name(tmp_path):
 def test_watchlist_methods_are_reachable_on_the_remote_transport(tmp_path):
     harness = Harness(tmp_path, FakeSession())
     service = _service(tmp_path, harness)
-    service.transport = "remote"
 
     names = [m for m in service._methods() if m.startswith("watchlist.")]
     assert len(names) == 15
@@ -1044,10 +1043,10 @@ def test_watchlist_methods_are_reachable_on_the_remote_transport(tmp_path):
         # The transport gate refuses before dispatch, so anything that gets
         # past it and fails on its own arguments has proven the point.
         try:
-            service.call(name, {"channel_id": 999})
+            service.call(name, {"channel_id": 999}, transport="remote")
         except CBError as exc:
             assert "only available in the app window" not in str(exc), name
-    assert service.call("watchlist.list") == []
+    assert service.call("watchlist.list", transport="remote") == []
 
 
 def test_a_genre_move_is_refused_while_either_download_runs(tmp_path):
