@@ -866,6 +866,57 @@ class DownloadsDatabase:
             self._log("error", f"get_download_count failed: {e}")
             return 0
 
+    def get_download(self, row_id):
+        """One downloads row by id, as a plain dict, or None.
+
+        The lookup behind an id-keyed artwork preview: the caller names a
+        row, never a path, so no client-supplied path ever reaches open()."""
+        try:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT * FROM downloads WHERE id = ?", (int(row_id),)
+                ).fetchone()
+                return dict(row) if row else None
+        except (TypeError, ValueError):
+            return None
+        except Exception as e:
+            self._log("error", f"get_download failed: {e}")
+            return None
+
+    def download_path_is_recorded(self, path):
+        """True when the library itself wrote *path* — a downloads row's
+        audio file or artwork sidecar, or a folder one of those sits
+        directly in.
+
+        Compared as stored, not resolved: these are strings the app wrote,
+        so an exact match is the whole point. Lets a row recorded before
+        the crate folder moved still be revealed without opening the door
+        to paths the library has never heard of."""
+        path = (path or "").strip()
+        if not path:
+            return False
+        needle = f"{self._escape_like(path)}%"
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT file_path, artwork_path FROM downloads "
+                    "WHERE file_path LIKE ? ESCAPE '\\' "
+                    "   OR artwork_path LIKE ? ESCAPE '\\' LIMIT 2000",
+                    [needle, needle]).fetchall()
+                recorded = [(r["file_path"], r["artwork_path"]) for r in rows]
+        except Exception as e:
+            self._log("error", f"download_path_is_recorded failed: {e}")
+            return False
+        target = os.path.normcase(os.path.normpath(path))
+        for pair in recorded:
+            for value in pair:
+                if not value:
+                    continue
+                norm = os.path.normcase(os.path.normpath(value))
+                if norm == target or os.path.dirname(norm) == target:
+                    return True
+        return False
+
     def clear_all_downloads(self):
         try:
             with self._conn() as conn:
@@ -1592,10 +1643,17 @@ class DownloadsDatabase:
         used only by the "Sidecar missing on disk" branch (its candidates
         are a Python list, not a SQL result) — every other filter sorts in
         SQL instead. artwork_embedded is a real 0/1 int already; everything
-        else is compared as lowercased text, matching COLLATE NOCASE."""
+        else is compared as lowercased text, and tie-broken on id so the
+        order matches the SQL branch's "ORDER BY ... , id {direction}" in
+        both directions rather than only under ASC.
+
+        One acknowledged divergence: str.lower() case-folds the whole of
+        Unicode where SQLite's COLLATE NOCASE folds ASCII only, so two
+        titles differing only in non-ASCII case can order differently
+        between this branch and the SQL one."""
         if order_by == "artwork_embedded":
-            return lambda r: int(bool(r.get("artwork_embedded")))
-        return lambda r: (r.get(order_by) or "").lower()
+            return lambda r: (int(bool(r.get("artwork_embedded"))), int(r.get("id") or 0))
+        return lambda r: ((r.get(order_by) or "").lower(), int(r.get("id") or 0))
 
     def query_artwork_rows(self, filter_name, *, search=None, order_by="title",
                            descending=False, limit=100, offset=0):

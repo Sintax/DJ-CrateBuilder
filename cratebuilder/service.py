@@ -8,7 +8,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import threading
 from datetime import datetime
 
@@ -47,11 +46,26 @@ DEFAULT_LOG_WATCH_INTERVAL = 1.0
 # db.query page size — the Downloads/Artwork tabs' "load more" step. A 20k-row
 # library must never arrive in one payload; this is what keeps that true.
 DEFAULT_DB_PAGE_SIZE = 200
+# The ceiling db.query enforces on any caller's limit, so the "never one
+# payload" property is the server's, not a convention the client happens to
+# follow — a browser on the remote transport is not code this host controls.
+MAX_DB_PAGE_SIZE = 5000
 # db.export_csv fetches the whole filtered set in one pass rather than paging
 # it — comfortably above any real library size while still bounding worst-case
 # memory, and avoids the LIMIT 0 footgun (SQLite reads that as "zero rows",
 # not "no limit").
 EXPORT_ROW_CAP = 1_000_000
+# db.artwork_preview holds the bytes, their base64 form, the data URL and the
+# JSON envelope live at once, so an uncapped read is a multiple of the file's
+# size in host memory. Far above any real cover art.
+MAX_PREVIEW_BYTES = 8 * 1024 * 1024
+# fs.reveal mode="open" hands the path to the OS default handler, which on
+# Windows means "execute" for .exe/.bat/.lnk and friends. Only the media the
+# Database viewer actually previews may be opened that way.
+OPENABLE_EXTENSIONS = frozenset({
+    ".mp3", ".m4a", ".opus", ".webm", ".flac", ".wav", ".ogg",
+    ".jpg", ".jpeg", ".png", ".webp",
+})
 
 _VERSION_RE = re.compile(r'^APP_VERSION\s*=\s*"([^"]+)"', re.M)
 _BUILD_RE = re.compile(r"^APP_BUILD\s*=\s*(\d+)", re.M)
@@ -412,11 +426,11 @@ class CrateBuilderService:
                                                    p.get("filters") or {}),
             "db.query": lambda p: self.db_query(
                 p.get("table"), p.get("filters") or {}, p.get("sort") or {},
-                p.get("offset", 0), p.get("limit", DEFAULT_DB_PAGE_SIZE)),
+                p.get("offset", 0), p.get("limit", DEFAULT_DB_PAGE_SIZE),
+                want_total=p.get("want_total", True)),
             "db.export_csv": lambda p: self.db_export_csv(
                 p.get("table"), p.get("filters") or {}, p.get("sort") or {}),
-            "db.artwork_preview": lambda p: self.db_artwork_preview(
-                p.get("path"), p.get("file_path")),
+            "db.artwork_preview": lambda p: self.db_artwork_preview(p.get("id")),
             "fs.pick_folder": lambda p: self.pick_folder(),
             "fs.reveal": lambda p: self.fs_reveal(p.get("path"),
                                                   p.get("mode", "folder")),
@@ -525,23 +539,18 @@ class CrateBuilderService:
     def db_groups(self, preset, filters):
         """One level of the Downloads tab's group tree — counts only, no
         rows. *filters* pins the levels already drilled into (see
-        DownloadsDatabase.group_downloads); the response's "levels" is the
-        preset's fixed hierarchy depth, so the caller can tell a returned
-        group is the deepest level (the next expand should fetch db.query
-        rows, not call db.groups again) without a wasted round trip that
-        would just come back empty."""
+        DownloadsDatabase.group_downloads)."""
         db = self._db()
         if db is None:
-            return {"available": False, "groups": [], "levels": 0}
+            return {"available": False, "groups": []}
         preset = preset or next(iter(DownloadsDatabase.GROUP_PRESETS))
-        hierarchy = DownloadsDatabase.GROUP_PRESETS.get(preset)
-        if hierarchy is None:
+        if DownloadsDatabase.GROUP_PRESETS.get(preset) is None:
             raise CBError(f"Unknown group-by preset: {preset!r}")
         try:
             groups = db.group_downloads(preset, filters)
         except ValueError as exc:
             raise CBError(str(exc))
-        return {"available": True, "groups": groups, "levels": len(hierarchy)}
+        return {"available": True, "groups": groups}
 
     # ── database viewer: contract-id row mapping ────────────────────────────
     # cratebuilder.db's helpers speak raw DB column names (channel_name,
@@ -615,9 +624,12 @@ class CrateBuilderService:
         }
 
     @staticmethod
-    def _map_artwork_row(row):
+    def _map_artwork_row(row, derive_on_disk=True):
         path = (row.get("artwork_path") or "").strip()
-        on_disk = os.path.isfile(path) if path else None
+        # The CSV export has no On Disk column, so statting every exported
+        # row would be a full-library filesystem scan for a value nothing
+        # reads.
+        on_disk = (os.path.isfile(path) if path else None) if derive_on_disk else None
         return {
             "id": row.get("id"),
             "title": row.get("title") or "(untitled)",
@@ -700,24 +712,45 @@ class CrateBuilderService:
             "ineligible_reason": reason,
         }
 
-    def _query_rows(self, table, filters, sort, offset, limit):
+    @classmethod
+    def _sort_column(cls, sort, mapping, default):
+        """The raw DB column one contract sort id names.
+
+        An unmapped id is refused rather than quietly falling back to the
+        default: a header that renders its own sort arrow while the query
+        ordered by something else is a lie the user can't see through."""
+        col = sort.get("col")
+        if col in (None, ""):
+            return default
+        mapped = mapping.get(col)
+        if mapped is None:
+            raise CBError(f"That column can't be sorted: {col}")
+        return mapped
+
+    def _query_rows(self, table, filters, sort, offset, limit,
+                    want_total=True, derive_on_disk=True):
         """(rows, total) for one Database-viewer table, rows mapped to the
         contract's UI column ids. Shared by db_query (one page) and
         db_export_csv (the whole filtered set, offset 0 / a very high
-        limit) so the two can never disagree about what a filter means."""
+        limit) so the two can never disagree about what a filter means.
+
+        want_total=False skips the count entirely (total comes back as
+        None) — "Sidecar missing on disk" has to stat every candidate to
+        count them, so a "load more" that already knows the total from its
+        first page must not pay for it again on every page turn."""
         db = self._db()
         if db is None:
-            return [], 0
+            return [], (0 if want_total else None)
         filters = dict(filters or {})
         sort = sort or {}
         offset = max(0, int(offset or 0))
         limit = max(0, int(limit or 0))
 
         if table == "downloads":
-            col = self._DL_SORT_MAP.get(sort.get("col"), "download_timestamp")
+            col = self._sort_column(sort, self._DL_SORT_MAP, "download_timestamp")
             descending = bool(sort.get("desc", True))
             try:
-                total = db.count_downloads(filters)
+                total = db.count_downloads(filters) if want_total else None
                 rows = db.query_downloads(filters, order_by=col,
                                           descending=descending,
                                           limit=limit, offset=offset)
@@ -728,16 +761,17 @@ class CrateBuilderService:
         if table == "artwork":
             filter_name = filters.get("filter_name") or DownloadsDatabase.ARTWORK_FILTERS[0]
             search = filters.get("search")
-            col = self._ART_SORT_MAP.get(sort.get("col"), "title")
+            col = self._sort_column(sort, self._ART_SORT_MAP, "title")
             descending = bool(sort.get("desc", False))
             try:
-                total = db.count_artwork_rows(filter_name, search=search)
+                total = (db.count_artwork_rows(filter_name, search=search)
+                         if want_total else None)
                 rows = db.query_artwork_rows(filter_name, search=search,
                                              order_by=col, descending=descending,
                                              limit=limit, offset=offset)
             except ValueError as exc:
                 raise CBError(str(exc))
-            return [self._map_artwork_row(r) for r in rows], total
+            return [self._map_artwork_row(r, derive_on_disk) for r in rows], total
 
         if table == "watchlist":
             rows = [self._map_watchlist_row(r)
@@ -746,7 +780,7 @@ class CrateBuilderService:
             if search:
                 rows = [r for r in rows if search in
                         f"{r['channel']} {r['link']} {r['folder']}".lower()]
-            key = self._WL_SORT_KEYS.get(sort.get("col"))
+            key = self._sort_column(sort, self._WL_SORT_KEYS, None)
             if key:
                 rows.sort(key=key, reverse=bool(sort.get("desc", False)))
             total = len(rows)
@@ -754,73 +788,94 @@ class CrateBuilderService:
                 rows = rows[offset:offset + limit]
             elif offset:
                 rows = rows[offset:]
-            return rows, total
+            return rows, (total if want_total else None)
 
         raise CBError(f"Unknown table: {table!r}")
 
-    def db_query(self, table, filters, sort, offset, limit):
-        """One page of {table}'s rows for the Database viewer — the 20k-row
-        Downloads library never arrives in a single call because *limit*
-        caps it (DEFAULT_DB_PAGE_SIZE unless the caller asks for fewer)."""
-        rows, total = self._query_rows(table, filters, sort, offset, limit)
+    def db_query(self, table, filters, sort, offset, limit, want_total=True):
+        """One page of {table}'s rows for the Database viewer.
+
+        *limit* is clamped to MAX_DB_PAGE_SIZE here, so a 20k-row library
+        arriving in one payload is impossible for any caller, not just for
+        the client this repo happens to ship."""
+        limit = min(max(1, int(limit or DEFAULT_DB_PAGE_SIZE)), MAX_DB_PAGE_SIZE)
+        rows, total = self._query_rows(table, filters, sort, offset, limit,
+                                       want_total=bool(want_total))
         return {"rows": rows, "total": total}
 
-    @staticmethod
-    def _csv_cell(key, value):
+    # A leading =, +, -, @, tab or CR makes Excel and LibreOffice read a cell
+    # as a formula. Track titles are third-party text straight off
+    # YouTube/SoundCloud, so a channel can name an upload =cmd|'/c calc'!A1
+    # and have it fire when the user opens their own export.
+    _CSV_FORMULA_LEADERS = ("=", "+", "-", "@", "\t", "\r")
+
+    @classmethod
+    def _csv_cell(cls, key, value):
         if key == "embedded":
             return "Yes" if value else "No"
-        return value if value not in (None,) else ""
+        if value is None:
+            return ""
+        if isinstance(value, str) and value[:1] in cls._CSV_FORMULA_LEADERS:
+            return "'" + value
+        return value
 
     def db_export_csv(self, table, filters, sort):
-        """The whole current filtered set for *table* as CSV — fetched and
-        written to a temp file only after the DB connection _query_rows
-        opened has already closed, never while it's held (the pooled lock
-        is app-wide and shared with the tkinter app; see the module note on
-        LOCAL_ONLY). Returns the CSV text inline too, so the browser side
-        can build a download Blob without a second round trip, matching how
-        logs.download's local-transport path already works."""
+        """The whole current filtered set for *table* as CSV text.
+
+        Returned inline only — nothing is written to disk. The browser
+        builds its download Blob from "csv" (the same shape logs.download's
+        local path already uses), and a host-side file would otherwise
+        accumulate one full copy of the library per export with nothing to
+        delete it."""
         columns = self._EXPORT_COLUMNS.get(table)
         if columns is None:
             raise CBError(f"Unknown export table: {table!r}")
-        rows, _total = self._query_rows(table, filters, sort, 0, EXPORT_ROW_CAP)
+        rows, _total = self._query_rows(table, filters, sort, 0, EXPORT_ROW_CAP,
+                                        want_total=False, derive_on_disk=False)
         buf = io.StringIO()
         writer = csv.writer(buf)
         writer.writerow([label for _key, label in columns])
         for row in rows:
             writer.writerow([self._csv_cell(key, row.get(key))
                              for key, _label in columns])
-        text = buf.getvalue()
-        handle = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".csv", prefix=f"cratebuilder_{table}_",
-            delete=False, newline="", encoding="utf-8")
-        try:
-            handle.write(text)
-        finally:
-            handle.close()
-        return {"path": handle.name, "filename": f"cratebuilder_{table}.csv",
-                "rows": len(rows), "csv": text}
+        return {"filename": f"cratebuilder_{table}.csv",
+                "rows": len(rows), "csv": buf.getvalue()}
 
-    def db_artwork_preview(self, path, file_path=None):
-        """{data_url} (base64) for one selected row's artwork — never sent
-        as part of a row payload. Prefers the sidecar file at *path*; falls
-        back to the bytes embedded in the MP3 at *file_path* so a track
-        whose sidecar was deleted still previews, matching the monolith's
-        _art_show_preview. {data_url: None} when neither source has
-        anything to show — the caller renders the empty-state text."""
-        path = (path or "").strip()
-        file_path = (file_path or "").strip()
+    def db_artwork_preview(self, row_id):
+        """{data_url} (base64) for one downloads row's artwork — never sent
+        as part of a row payload.
+
+        Keyed by row id, never by a path: the sidecar and MP3 paths are read
+        off the row itself, so no client-supplied path ever reaches open()
+        (HANDOFF §8.4). Prefers the sidecar file; falls back to the bytes
+        embedded in the MP3 so a track whose sidecar was deleted still
+        previews, matching the monolith's _art_show_preview. {data_url:
+        None} when neither source has anything to show — the caller renders
+        the empty-state text."""
+        db = self._db()
+        row = db.get_download(row_id) if db is not None else None
+        if row is None:
+            return {"data_url": None}
+        path = (row.get("artwork_path") or "").strip()
+        file_path = (row.get("file_path") or "").strip()
         data = None
         note = ""
         if path and os.path.isfile(path):
             try:
                 with open(path, "rb") as fh:
-                    data = fh.read()
+                    data = fh.read(MAX_PREVIEW_BYTES + 1)
             except OSError:
                 data = None
+            if data and len(data) > MAX_PREVIEW_BYTES:
+                return {"data_url": None,
+                        "note": "Image too large to preview"}
             if data:
                 note = os.path.basename(path)
         if not data and file_path:
             data = extract_cover(file_path)
+            if data and len(data) > MAX_PREVIEW_BYTES:
+                return {"data_url": None,
+                        "note": "Image too large to preview"}
             if data:
                 note = ("embedded artwork (no sidecar on disk)" if path
                         else "embedded artwork")
@@ -1233,20 +1288,56 @@ class CrateBuilderService:
         picked = window.create_file_dialog(webview.FOLDER_DIALOG)
         return {"path": picked[0] if picked else None}
 
+    def _fs_path_is_contained(self, path):
+        """True when *path* is somewhere the viewer is allowed to point the
+        OS at: inside the current crate folder, or a path the library
+        itself recorded.
+
+        The second clause is not slack — base_dir is a setting the user can
+        change, and every row written before that change names a folder
+        outside today's crate root. Refusing those would break "Open File"
+        on the user's own history; accepting anything at all would let page
+        content name a path the app has never seen."""
+        try:
+            target = os.path.realpath(path)
+        except OSError:
+            return False
+        root = (self._settings.get("base_dir") or "").strip()
+        if root:
+            try:
+                root = os.path.realpath(root)
+                if os.path.commonpath([root, target]) == root:
+                    return True
+            except (OSError, ValueError):
+                pass        # different drives, or an unresolvable base_dir
+        db = self._db()
+        return db is not None and db.download_path_is_recorded(path)
+
     def fs_reveal(self, path, mode="folder"):
         """Open *path* with its OS default app (mode="open") or select it
         in its containing folder (mode="folder", the default) — the
         Database viewer's Open File / Open Containing Folder context-menu
-        actions. Remote never reaches this: the LOCAL_ONLY prefix check in
-        call() already refuses every "fs." method server-side before
-        dispatch, and this repeats the check the way pick_folder does,
-        rather than trusting that alone."""
+        actions.
+
+        Remote never reaches this: the LOCAL_ONLY prefix check in call()
+        already refuses every "fs." method server-side before dispatch, and
+        this repeats the check the way pick_folder does, rather than
+        trusting that alone. Local is not a blank cheque either — mode
+        "open" is ShellExecute, so an .exe/.bat/.lnk there would be "run
+        this program" rather than "show me this track": only the audio and
+        image types the viewer itself displays are openable, and both modes
+        require the path to be one the library owns."""
         if self.transport != LOCAL:
             raise CBError("Opening files only works in the app window on the "
                           "host machine.")
         path = (path or "").strip()
         if not path:
             raise CBError("No path is recorded for this row.")
+        if mode == "open" and os.path.splitext(path)[1].lower() not in OPENABLE_EXTENSIONS:
+            raise CBError("Only the app's own audio and image files can be "
+                          "opened from here.")
+        if not self._fs_path_is_contained(path):
+            raise CBError("That path is outside the crate folder.")
         try:
             if mode == "open":
                 if not os.path.exists(path):
@@ -1262,7 +1353,7 @@ class CrateBuilderService:
                         if parent == folder:
                             break
                         folder = parent
-                    if not folder:
+                    if not folder or not os.path.isdir(folder):
                         raise CBError(f"Could not find a folder for:\n{path}")
                     self._os_open(folder)
         except OSError as exc:

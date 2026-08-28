@@ -1037,7 +1037,10 @@
     { id: 'platform', head: 'Platform', w: 80, align: 'w' },
     { id: 'embedded', head: 'Embedded', w: 80, align: 'center' },
     { id: 'sidecar', head: 'Sidecar', w: 170, align: 'w' },
-    { id: 'on_disk', head: 'On Disk', w: 70, align: 'center' },
+    /* on_disk is derived from a live filesystem check, not a SQL column, so
+       there is nothing for a paged query to ORDER BY — the header must not
+       offer a sort it cannot perform. */
+    { id: 'on_disk', head: 'On Disk', w: 70, align: 'center', sortable: false },
     { id: 'thumb_url', head: 'Thumbnail URL', w: 240, align: 'w' },
   ];
 
@@ -1047,7 +1050,7 @@
                 genre: 'All genres', search: '', sortCol: 'downloaded',
                 sortDesc: true, root: null, cols: null },
     watchlist: { search: '', sortCol: 'channel', sortDesc: false, rows: [],
-                total: 0, checked: {}, loaded: false, cols: null },
+                total: 0, offset: 0, checked: {}, loaded: false, cols: null },
     artwork: { filter: DB_ARTWORK_FILTERS[0], search: '', sortCol: 'title',
               sortDesc: false, rows: [], total: 0, offset: 0, selected: null,
               loaded: false, cols: null },
@@ -1209,14 +1212,16 @@
     catch (_) { /* call() already toasted the reason */ }
   }
 
+  /* A watchlist URL is stored text, and this page can reach fs.reveal — so a
+     javascript: value in that column must never become an href or a
+     window.open target. Anything that isn't http(s) renders as plain text. */
+  function dbSafeLink(url) {
+    return /^https?:\/\//i.test(url || '') ? url : '';
+  }
+
   async function dbExportCsv(table, filters, sort) {
     try {
       const res = await call('db.export_csv', { table, filters, sort });
-      if (!state || state.host.transport !== 'local') {
-        toast(`The ${table} export lives at ${res.path} on the host — browser ` +
-              'download arrives with a later update.');
-        return;
-      }
       const blob = new Blob([res.csv], { type: 'text/csv' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -1275,12 +1280,15 @@
   }
   async function dbLoadMoreRows(node) {
     const st = dbState.downloads;
+    /* want_total:false — the first page already established rowsTotal, and
+       recounting is a full scan for the filesystem-backed filters. */
     const res = await call('db.query', {
       table: 'downloads', filters: dbPathFilters(node.path),
-      sort: { col: st.sortCol, desc: st.sortDesc }, offset: node.rowsOffset, limit: DB_PAGE_SIZE,
+      sort: { col: st.sortCol, desc: st.sortDesc }, offset: node.rowsOffset,
+      limit: DB_PAGE_SIZE, want_total: false,
     });
     node.rows = node.rows.concat(res.rows);
-    node.rowsOffset += res.rows.length; node.rowsTotal = res.total;
+    node.rowsOffset += res.rows.length;
   }
   async function dbLoadGroups(node) {
     const st = dbState.downloads;
@@ -1303,7 +1311,8 @@
       try {
         const nextKey = dbNextHierarchyKey(dbState.downloads.groupPreset, node.path);
         if (nextKey === null) await dbLoadRows(node); else await dbLoadGroups(node);
-      } finally { node.loading = false; }
+      } catch (_) { node.error = true; }
+      finally { node.loading = false; }
     }
     dbRenderDownloadsTree();
   }
@@ -1316,23 +1325,41 @@
     try {
       const nextKey = dbNextHierarchyKey(st.groupPreset, []);
       if (nextKey === null) await dbLoadRows(root); else await dbLoadGroups(root);
-    } finally { root.loading = false; }
+    } catch (_) { root.error = true; }
+    finally { root.loading = false; }
     dbRenderDownloadsTree();
   }
+  /* ⊞ expands every GROUP, and stops there — the registry calls it "Expand
+     all groups" and the tkinter original is a pure display toggle. Descending
+     into leaves would mean one db.query per channel and the whole library in
+     the DOM, which is exactly what the paging design exists to avoid. */
   async function dbExpandRecursive(node) {
     if (node.depth >= 0) node.expanded = true;
+    if (dbNextHierarchyKey(dbState.downloads.groupPreset, node.path) === null) return;
     if (node.children === null && node.rows === null) {
-      const nextKey = dbNextHierarchyKey(dbState.downloads.groupPreset, node.path);
-      if (nextKey === null) await dbLoadRows(node); else await dbLoadGroups(node);
+      node.loading = true;
+      dbRenderDownloadsTree();
+      try { await dbLoadGroups(node); }
+      catch (_) { node.error = true; return; }
+      finally { node.loading = false; }
+      dbRenderDownloadsTree();
     }
     if (node.children) {
       for (const child of node.children) await dbExpandRecursive(child);
     }
   }
+  let dbExpandRunning = false;
   async function dbExpandAllDownloads() {
-    if (!dbState.downloads.root) return;
-    await dbExpandRecursive(dbState.downloads.root);
-    dbRenderDownloadsTree();
+    if (!dbState.downloads.root || dbExpandRunning) return;
+    dbExpandRunning = true;
+    const btn = $('#db-dl-expand');
+    setDisabled(btn, true, { reason: 'Expanding every group — one moment…' });
+    try { await dbExpandRecursive(dbState.downloads.root); }
+    finally {
+      dbExpandRunning = false;
+      setDisabled(btn, false, { ttKey: 'db.expand_all' });
+      dbRenderDownloadsTree();
+    }
   }
   function dbCollapseAllDownloads() {
     function walk(node) { if (node.children) node.children.forEach((c) => { c.expanded = false; walk(c); }); }
@@ -1439,23 +1466,32 @@
       td.style.cssText = `padding-left:${14 + (node.depth + 1) * 18}px;cursor:pointer;` +
                          'color:var(--cb-line);font-size:12px';
       td.textContent = `Load ${Math.min(DB_PAGE_SIZE, remaining)} more of ${remaining} remaining…`;
-      td.addEventListener('click', async () => { await dbLoadMoreRows(node); dbRenderDownloadsTree(); });
+      td.addEventListener('click', async () => {
+        try { await dbLoadMoreRows(node); }
+        catch (_) { /* call() already toasted the reason */ }
+        dbRenderDownloadsTree();
+      });
       tr.appendChild(td);
       tbody.appendChild(tr);
     }
-    function renderLoadingRow(depth) {
+    function renderNoteRow(depth, text, color) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
       td.colSpan = colset.order.length;
-      td.style.cssText = `padding-left:${14 + depth * 18}px;color:var(--cb-muted);font-size:12px`;
-      td.textContent = 'Loading…';
+      td.style.cssText = `padding-left:${14 + depth * 18}px;color:${color};font-size:12px`;
+      td.textContent = text;
       tr.appendChild(td);
       tbody.appendChild(tr);
     }
     function walk(node) {
       if (node.depth >= 0) renderGroupRow(node);
       if (!node.expanded) return;
-      if (node.loading) { renderLoadingRow(node.depth + 1); return; }
+      if (node.loading) { renderNoteRow(node.depth + 1, 'Loading…', 'var(--cb-muted)'); return; }
+      if (node.error && node.children === null && node.rows === null) {
+        renderNoteRow(node.depth + 1, 'Could not load this level — try ⟳ Refresh.',
+                      'var(--cb-err)');
+        return;
+      }
       if (node.children) node.children.forEach(walk);
       else if (node.rows) {
         node.rows.forEach((row) => renderLeafRow(row, node.depth + 1));
@@ -1536,10 +1572,26 @@
     try {
       const res = await call('db.query', {
         table: 'watchlist', filters: { search: st.search },
-        sort: { col: st.sortCol, desc: st.sortDesc }, offset: 0, limit: 100000,
+        sort: { col: st.sortCol, desc: st.sortDesc }, offset: 0, limit: DB_PAGE_SIZE,
       });
-      st.rows = res.rows; st.total = res.total; st.loaded = true;
-    } catch (_) { st.rows = []; st.total = 0; }
+      st.rows = res.rows; st.total = res.total; st.offset = res.rows.length;
+      st.loaded = true;
+    } catch (_) { st.rows = []; st.total = 0; st.offset = 0; }
+    dbRenderWatchlist();
+  }
+  /* Pages like the other two tabs rather than asking for the lot: a watch
+     list is usually dozens of channels, but "usually" is not a bound, and a
+     silent truncation would be worse than the round trip. */
+  async function dbWatchlistLoadMore() {
+    const st = dbState.watchlist;
+    try {
+      const res = await call('db.query', {
+        table: 'watchlist', filters: { search: st.search },
+        sort: { col: st.sortCol, desc: st.sortDesc }, offset: st.offset,
+        limit: DB_PAGE_SIZE, want_total: false,
+      });
+      st.rows = st.rows.concat(res.rows); st.offset += res.rows.length;
+    } catch (_) { /* call() already toasted the reason */ }
     dbRenderWatchlist();
   }
   function dbRenderWatchlistHeaders() {
@@ -1557,9 +1609,11 @@
   function dbWatchlistMenuItems(row) {
     const local = state && state.host.transport === 'local';
     const items = [];
+    const link = dbSafeLink(row.link);
     if (row.link) {
-      items.push({ label: 'Open link in browser',
-        onClick: () => window.open(row.link, '_blank', 'noopener') });
+      items.push({ label: 'Open link in browser', disabled: !link,
+        reason: link ? '' : 'Only http and https links can be opened.',
+        onClick: () => window.open(link, '_blank', 'noopener') });
       items.push({ label: 'Copy link', onClick: () => dbCopyText(row.link, 'link') });
       items.push('-');
     }
@@ -1592,11 +1646,18 @@
         } else if (id === 'channel') {
           td.style.fontWeight = '500'; td.textContent = row.channel;
         } else if (id === 'link') {
-          if (row.link) {
+          const safe = dbSafeLink(row.link);
+          if (safe) {
             const a = document.createElement('a');
-            a.href = row.link; a.target = '_blank'; a.rel = 'noopener';
-            a.className = 'cb-mono'; a.style.fontSize = '11.5px'; a.textContent = row.link;
+            a.href = safe; a.target = '_blank'; a.rel = 'noopener';
+            a.className = 'cb-mono'; a.style.fontSize = '11.5px'; a.textContent = safe;
             td.appendChild(a);
+          } else if (row.link) {
+            const span = document.createElement('span');
+            span.className = 'cb-mono cb-mut';
+            span.style.fontSize = '11.5px';
+            span.textContent = row.link;
+            td.appendChild(span);
           } else if (row.link_unresolved) {
             const span = document.createElement('span');
             span.className = 'cb-mono';
@@ -1639,11 +1700,23 @@
       });
       tbody.appendChild(tr);
     });
+    if (st.offset < st.total) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = colset.order.length;
+      const remaining = st.total - st.offset;
+      td.style.cssText = 'padding-left:14px;cursor:pointer;color:var(--cb-line);font-size:12px';
+      td.textContent = `Load ${Math.min(DB_PAGE_SIZE, remaining)} more of ${remaining} remaining…`;
+      td.addEventListener('click', dbWatchlistLoadMore);
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    }
     const bar = $('#db-wl-statbar');
     bar.innerHTML = '';
     const pending = st.rows.reduce((a, r) => a + (r.pending || 0), 0);
     const ticked = Object.values(st.checked).filter(Boolean).length;
-    [`${num(st.rows.length)} channel${st.rows.length === 1 ? '' : 's'}`,
+    [`${num(st.total)} channel${st.total === 1 ? '' : 's'}` +
+       (st.rows.length < st.total ? ` (${num(st.rows.length)} loaded)` : ''),
      `${num(pending)} pending new`, `${ticked} ticked for cleanup`].forEach((t) => {
       const span = document.createElement('span'); span.textContent = t; bar.appendChild(span);
     });
@@ -1678,11 +1751,17 @@
   }
   async function dbArtworkLoadMore() {
     const st = dbState.artwork;
-    const res = await call('db.query', {
-      table: 'artwork', filters: { filter_name: st.filter, search: st.search },
-      sort: { col: st.sortCol, desc: st.sortDesc }, offset: st.offset, limit: DB_PAGE_SIZE,
-    });
-    st.rows = st.rows.concat(res.rows); st.offset += res.rows.length; st.total = res.total;
+    /* want_total:false — "Sidecar missing on disk" counts by statting every
+       candidate in the library, so re-asking on every page turn would rescan
+       it each time for a number the first page already gave us. */
+    try {
+      const res = await call('db.query', {
+        table: 'artwork', filters: { filter_name: st.filter, search: st.search },
+        sort: { col: st.sortCol, desc: st.sortDesc }, offset: st.offset,
+        limit: DB_PAGE_SIZE, want_total: false,
+      });
+      st.rows = st.rows.concat(res.rows); st.offset += res.rows.length;
+    } catch (_) { /* call() already toasted the reason */ }
     dbRenderArtwork();
   }
   function dbRenderArtworkHeaders() {
@@ -1733,7 +1812,9 @@
     const box = $('#db-art-preview-box');
     box.textContent = 'Loading…';
     try {
-      const res = await call('db.artwork_preview', { path: row.sidecar_path, file_path: row.file_path });
+      /* Keyed by row id — the host looks the sidecar/MP3 paths up itself, so
+         this call can never name a file the library doesn't own. */
+      const res = await call('db.artwork_preview', { id: row.id });
       box.innerHTML = '';
       if (res.data_url) {
         const img = document.createElement('img');
@@ -1741,7 +1822,8 @@
         img.style.cssText = 'max-width:100%;max-height:100%;border-radius:6px;display:block;margin:auto';
         box.appendChild(img);
       } else {
-        box.textContent = row.sidecar_path ? 'Sidecar file is gone' : 'No artwork';
+        box.textContent = res.note ||
+          (row.sidecar_path ? 'Sidecar file is gone' : 'No artwork');
       }
       const meta = $('#db-art-preview-meta');
       meta.innerHTML = '';
