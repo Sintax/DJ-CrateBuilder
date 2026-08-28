@@ -205,7 +205,7 @@ def test_single_track_downloads_and_emits_the_whole_sequence(tmp_path):
     assert overall[0]["done"] == 0 and overall[0]["total"] == 1
     assert overall[-1] == {"done": 1, "total": 1, "downloaded": 1,
                            "skipped": 0, "errors": 0, "percent": 100,
-                           "eta_text": ""}
+                           "eta_text": "", "job": "batch"}
     assert harness.emit.of("batch.finished")[-1] == {
         "downloaded": 1, "skipped": 0, "errors": 0, "cancelled": False}
     assert harness.emit.of("state.patch")[-1] == {"counts": {"downloads": 7}}

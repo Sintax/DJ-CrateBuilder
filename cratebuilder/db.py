@@ -1100,16 +1100,19 @@ class DownloadsDatabase:
             self._log("error", f"update_watchlist_status failed: {e}")
 
     def reset_stale_watchlist_scans(self):
-        """Reset every 'scanning' row to 'idle'; returns how many were reset.
+        """Reset every in-flight row to 'idle'; returns how many were reset.
 
-        'scanning' is only meaningful while a live thread owns the row, and no
-        thread survives a restart — a row still saying it after a crash or an
-        update swap renders a ghost cancel button nothing can ever clear."""
+        'scanning' and 'downloading' are only meaningful while a live thread
+        owns the row, and no thread survives a restart — a row still saying one
+        of them after a crash or an update swap renders a ghost cancel button
+        nothing can ever clear. The web frontend writes 'downloading' where the
+        tkinter app only ever wrote 'scanning', and both open the same database,
+        so both values are cleared here rather than in one frontend."""
         try:
             with self._conn() as conn:
                 cur = conn.execute(
                     "UPDATE watchlist SET status = 'idle' "
-                    "WHERE status = 'scanning'")
+                    "WHERE status IN ('scanning', 'downloading')")
                 return cur.rowcount or 0
         except Exception as e:
             self._log("error", f"reset_stale_watchlist_scans failed: {e}")

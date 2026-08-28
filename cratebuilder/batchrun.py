@@ -18,6 +18,13 @@ from cratebuilder.download import (REASON_WIDTH, SkipOrCancel, TrackDownloader,
 from cratebuilder.ydl import YdlSession
 
 
+# Which job category a progress frame belongs to. One job per category runs at a
+# time, but a Main-tab batch and a Watch List download can run TOGETHER — both
+# drive a BatchRunner, and without this field the two progress streams are
+# indistinguishable and each overwrites the other's bar.
+DEFAULT_JOB = "batch"
+
+
 # ── Pure helpers ──────────────────────────────────────────────────────────────
 def resolve_sleep_range(policy):
     """The (min, max) throttle seconds a DownloadPolicy asks for, or None when
@@ -56,8 +63,9 @@ class _EventSink:
     No throttling of its own: the service's Coalescer is what rate-limits these,
     so every frame yt-dlp reports is handed over."""
 
-    def __init__(self, emit, title):
+    def __init__(self, emit, title, job=DEFAULT_JOB):
         self._emit = emit
+        self._job = job
         self.title = title
         self.percent = None
         self.speed_text = ""
@@ -90,6 +98,7 @@ class _EventSink:
         self._emit("progress.current", {
             "title": self.title, "percent": self.percent,
             "speed_text": self.speed_text, "bitrate_text": self.bitrate_text,
+            "job": self._job,
         })
 
 
@@ -121,7 +130,8 @@ class BatchRunner:
     def __init__(self, settings, db, emit, *, session_factory=YdlSession,
                  downloader_factory=TrackDownloader, ffmpeg_dir=None,
                  log_line=None, counts=None, flush=None, runner=None,
-                 write_sidecar=None, now=time.monotonic):
+                 write_sidecar=None, now=time.monotonic, job=DEFAULT_JOB):
+        self._job = job
         self._settings = settings
         self._db = db
         self._emit = emit
@@ -407,7 +417,8 @@ class BatchRunner:
                        and cb_artwork.artwork_available()),
             target_kbps=(str(policy.bitrate_quality).split() or ["192"])[0],
             suppress_channel_url=spec.suppress_channel_url)
-        return downloader.run(plan, _EventSink(self._emit, spec.title))
+        return downloader.run(plan, _EventSink(self._emit, spec.title,
+                                               self._job))
 
     def _settle(self, spec, title, verdict, tally):
         """Book one finished track: counters, the activity-log line the
@@ -485,6 +496,7 @@ class BatchRunner:
             "errors": self._errors,
             "percent": int(self._done / total * 100) if total else 0,
             "eta_text": eta_text(self._durations, total - self._done),
+            "job": self._job,
         })
 
     def _finish(self):
