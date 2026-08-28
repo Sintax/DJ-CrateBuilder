@@ -43,6 +43,10 @@ cratebuilder.db-shm
 cratebuilder.db-wal
 cratebuilder.db.bak-*
 cratebuilder_links.json
+# Remote-access state: the three toggles plus one SHA-256 per paired device.
+# Hashes, not tokens — but it is still the list of who can reach this host.
+cratebuilder_remote.json
+cratebuilder_remote.json.tmp
 
 # Backups & archives
 _BACKUP/

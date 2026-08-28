@@ -289,6 +289,41 @@ input[type="radio"].cb-cbx {
   border-radius: 6px; padding: 9px 11px;
 }
 
+/* ── remote transport (3k) ───────────────────────────────────────────────────
+   The offline shell's own bar has to stay usable while everything else is
+   inert — theme.css's .cb-offline kills pointer events on every control, and
+   the one control that must survive that is the Retry inside the bar. */
+.cb-offline .cb-offline-bar .cb-btn { pointer-events: auto; opacity: 1; }
+/* theme.css's .cb-offline rule covers buttons, text inputs and selects; the
+   Settings screen's checkboxes and the limiter slider are controls too, and
+   "every control is disabled rather than hidden" has to mean all of them. */
+.cb-offline .cb-cbx, .cb-offline .cb-slider, .cb-offline .cb-nav,
+.cb-offline .cb-help { opacity: .62; pointer-events: none; }
+
+/* The single-writer lock, stated above the content it is limiting. */
+.cb-session-bar {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+  padding: 9px 14px; border: 1px solid var(--cb-quiet); border-radius: 8px;
+  background: var(--cb-surface); color: var(--cb-muted);
+  font-size: 12.5px; line-height: 1.5;
+}
+.cb-offline .cb-session-bar { display: none; }
+
+/* Pairing (3k): the only thing an unpaired browser may reach, so it sits over
+   everything rather than inside a screen. */
+.cb-pair {
+  position: fixed; inset: 0; z-index: 200; display: grid; place-items: center;
+  padding: 24px; background: var(--cb-bg); overflow: auto;
+}
+.cb-pair__card {
+  width: min(460px, 100%); background: var(--cb-surface);
+  border: 1px solid var(--cb-line); border-radius: 10px;
+  box-shadow: var(--cb-shadow); padding: 38px 44px 32px;
+  display: flex; flex-direction: column; gap: 14px; text-align: center;
+}
+.cb-pair__card .cb-mlabel { text-align: left; }
+.cb-pair__card .cb-mhint { text-align: left; }
+
 /* The design targets desktop at >=1100px and states the layouts are not
    designed to reflow below it. Collapse to one column rather than clip a card
    off the edge — degrading is not the same as supporting a mobile breakpoint. */

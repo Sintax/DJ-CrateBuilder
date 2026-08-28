@@ -3,15 +3,23 @@
 Runs the same bundle a remote browser gets, bound to the local transport — so
 `update.*` and `fs.*` are reachable here and nowhere else. Start it with
 `python web_window.py`; the tkinter app is unaffected and can run beside it.
+
+When remote access is switched on in Settings ▸ Remote Access, the same
+process also serves the remote mount on a background thread — one
+`CrateBuilderService`, one job registry, one event bus, two transports. It is
+never started otherwise, and nothing here ever switches the setting on.
 """
 
 import json
 import os
 import sys
+import threading
 
 import webview
 
-from cratebuilder.service import CBError, CrateBuilderService
+from cratebuilder.service import LOCAL, CBError, CrateBuilderService
+
+REMOTE_PORT = 8770
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 WINDOW_TITLE = "DJ-CrateBuilder"
@@ -34,7 +42,9 @@ class JsApi:
 
     def call(self, method, params=None):
         try:
-            return {"ok": True, "result": self._service.call(method, params)}
+            return {"ok": True,
+                    "result": self._service.call(method, params,
+                                                 transport=LOCAL)}
         except CBError as exc:
             return {"ok": False, "error": str(exc)}
         except Exception as exc:                     # never kill the bridge
@@ -59,6 +69,29 @@ def start_push_bridge(window, service):
     window.events.closing += lambda: unsubscribe()
 
 
+def start_remote_mount(service, port=REMOTE_PORT):
+    """Serve the remote transport from this process, on a daemon thread.
+
+    Only ever called when the user has turned remote access on, which is also
+    what makes binding off-loopback legitimate: the toggle IS the consent. The
+    thread is a daemon so closing the window still ends the process.
+    """
+    import uvicorn                    # deferred: the window works without it
+
+    from cratebuilder.server import create_app
+
+    state = service.remote_state
+    app = create_app(service, state)
+    server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=port,
+                                           log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True,
+                              name="cratebuilder-remote")
+    thread.start()
+    print(f"Remote mount listening on http://0.0.0.0:{port}/ "
+          f"({state.device_count()} paired device(s))")
+    return server
+
+
 def main():
     index = os.path.join(WEB_DIR, "index.html")
     if not os.path.isfile(index):
@@ -70,7 +103,12 @@ def main():
         if pos < len(sys.argv):
             screen = "#" + sys.argv[pos]
 
-    service = CrateBuilderService(transport="local")
+    service = CrateBuilderService(transport=LOCAL)
+    if service.remote_state.get_flag("enabled"):
+        try:
+            start_remote_mount(service)
+        except Exception as exc:                     # never block the window
+            print(f"Remote mount could not start: {exc}", file=sys.stderr)
     webview.settings["ALLOW_DOWNLOADS"] = True       # Export CSV, log downloads
     window = webview.create_window(
         WINDOW_TITLE,

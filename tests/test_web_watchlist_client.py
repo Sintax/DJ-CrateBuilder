@@ -156,6 +156,10 @@ const TOOLTIPS = { 'main.scan_batch_conflict': 'BATCH-CONFLICT',
                    'wl.check_links': 'TT-LINKS', 'wl.download_all_new': 'TT-DLALL',
                    'wl.cancel_all': 'TT-CANCEL' };
 const dl = { running: false };
+/* The remote transport's read-only / control-lock verdict. Local sessions
+   always answer "", which is what every case below but `readOnly` exercises. */
+let blockedReason = '';
+function writeBlocked() { return blockedReason; }
 const els = {};
 function $(sel) {
   const id = sel.slice(1);
@@ -196,7 +200,16 @@ wl.running = false;
 wl.cards = [{ id: 1, new_count: 0, unresolved: false }];
 renderWatchlistToolbar();
 const nothingPending = snap();
-console.log(JSON.stringify({ idle, batching, scanning, nothingPending,
+wl.cards = [{ id: 1, new_count: 7, unresolved: true }];
+blockedReason = 'HOST-READ-ONLY';
+renderWatchlistToolbar();
+const readOnly = snap();
+blockedReason = '';
+// Back to the nothing-pending set, so the label assertion below reads the
+// state its own case left behind rather than this one's.
+wl.cards = [{ id: 1, new_count: 0, unresolved: false }];
+renderWatchlistToolbar();
+console.log(JSON.stringify({ idle, batching, scanning, nothingPending, readOnly,
                              label: $('#wl-dl-all').textContent }));
 """
 
@@ -258,6 +271,17 @@ def test_download_all_new_carries_the_live_count_and_closes_at_zero(app_js, tmp_
     assert r["idle"]["wl-links"]["off"] is False
     assert r["nothingPending"]["wl-links"]["off"] is True
     assert r["label"] == "⬇ Download All New (0)"
+
+
+def test_a_read_only_remote_session_closes_every_write_control(app_js, tmp_path):
+    """HANDOFF §8.3 / §2: read-only mode and the single-writer lock reach the
+    same place — the host's own one-line reason on every write control, Cancel
+    included (a device that may not start may not stop someone else either)."""
+    r = _run_node(tmp_path, "wltoolbar.mjs", _toolbar_source(app_js))
+    for key in ("wl-add", "wl-links", "wl-dl-all", "wl-scan", "wl-cancel",
+                "quick-scan"):
+        assert r["readOnly"][key]["off"] is True, key
+        assert r["readOnly"][key]["why"].endswith("HOST-READ-ONLY"), key
 
 
 # ── job.finished is the only resync trigger ─────────────────────────────────

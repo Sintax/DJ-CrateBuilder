@@ -105,6 +105,33 @@
     }
   }
 
+  /* ── remote session: read-only mode and the single-writer lock ────────────
+     The local window is always a writer and never contends for the lock
+     (HANDOFF §2 gives it precedence), so this is remote-only. The host answers
+     with the reason in one sentence — a disabled control's explainer is
+     exactly what that sentence is for, so nothing here paraphrases it. */
+
+  let session = null;             // remote only: the host's own verdict
+
+  function writeBlocked() {
+    if (!state || state.host.transport !== 'remote') return '';
+    if (!session) return '';
+    return session.can_write ? '' : (session.reason ||
+      'This device cannot control the host right now.');
+  }
+
+  /* Ask the host what this device may do. Cheap, and re-asked whenever the
+     lock changes — `control.holder` is pushed to every socket, so a client
+     that just lost control finds out without polling. */
+  async function refreshSession() {
+    if (!cbApi || cbApi.transport !== 'remote') { session = null; return null; }
+    try {
+      session = await cbApi.call('remote.session');
+      cbApi.session = session;
+    } catch (_) { session = cbApi.session || null; }
+    return session;
+  }
+
   /* ── navigation ────────────────────────────────────────────────────────── */
   const SCREENS = ['overview', 'downloads', 'watchlist', 'settings',
                     'activity-log', 'debug-log', 'database'];
@@ -167,6 +194,224 @@
     const badge = $('#nav-count');
     badge.textContent = pending;
     badge.hidden = pending === 0;
+    renderSessionBar();
+  }
+
+  /* The single-writer lock, made visible (HANDOFF §2). A remote client that
+     cannot write says why in one bar, and — unless the host is read-only,
+     where there is nothing to take — offers to take control. */
+  function renderSessionBar() {
+    const blocked = writeBlocked();
+    let bar = $('#cb-session-bar');
+    if (!blocked) { if (bar) bar.remove(); return; }
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.className = 'cb-session-bar';
+      bar.id = 'cb-session-bar';
+      const main = $('.cb-main');
+      main.insertBefore(bar, main.firstChild);
+    }
+    bar.innerHTML = '';
+    const tag = tagNode(session && session.read_only ? 'Read-only' : 'Watching',
+                        'cb-tag--grey');
+    const text = document.createElement('span');
+    text.textContent = blocked;
+    bar.append(tag, text);
+    if (session && !session.read_only) {
+      const take = document.createElement('button');
+      take.className = 'cb-btn cb-btn--sm';
+      take.style.marginLeft = 'auto';
+      take.dataset.readOk = '1';
+      take.textContent = 'Take control';
+      take.setAttribute('data-tt-text',
+        'Claims the single-writer lock so this device can start, cancel and ' +
+        'change things. Only one device can drive the host at a time; the app ' +
+        'window on the host machine always has precedence.');
+      take.addEventListener('click', async () => {
+        try {
+          session = await cbApi.call('remote.claim_control');
+          cbApi.session = session;
+          renderDownloads();
+          renderWatchlist();
+          renderSettings();
+          renderSessionBar();
+          toast('This device now has control.');
+        } catch (ex) {
+          toast(ex.userFacing ? ex.message : 'Could not take control.', true);
+        }
+      });
+      bar.appendChild(take);
+    }
+    bindTips(bar);
+  }
+
+  /* ── host offline (3k) ────────────────────────────────────────────────────
+     A dropped socket must never empty the screen: the last state stays put,
+     every control goes inert (theme.css's .cb-offline), and one bar says what
+     happened and offers the way back. A remote surface that blanks itself on a
+     dropped socket reads as data loss — the design says so in as many words,
+     and the acceptance criteria demand no blank page. */
+
+  let offlineSince = null;
+
+  function setHostOffline(offline) {
+    document.body.classList.toggle('cb-offline', !!offline);
+    let bar = $('#cb-offline-bar');
+    if (!offline) {
+      offlineSince = null;
+      if (bar) bar.remove();
+      return;
+    }
+    if (!offlineSince) offlineSince = new Date();
+    if (bar) return;
+    bar = document.createElement('div');
+    bar.className = 'cb-offline-bar';
+    bar.id = 'cb-offline-bar';
+    const dot = document.createElement('span');
+    dot.style.cssText = 'width:8px;height:8px;border-radius:50%;background:#B4B9C3;flex:none';
+    const text = document.createElement('span');
+    text.innerHTML = 'Host offline — showing the last state received ' +
+      '<span class="cb-mono" id="cb-offline-at"></span>';
+    const retry = document.createElement('button');
+    retry.className = 'cb-btn cb-btn--sm';
+    retry.id = 'cb-offline-retry';
+    retry.textContent = 'Retry';
+    retry.setAttribute('data-tt-text',
+      'Try the host again now instead of waiting for the next automatic ' +
+      'reconnect. Nothing you pressed while offline was queued — the host is ' +
+      'the only source of truth for what actually ran.');
+    retry.addEventListener('click', async () => {
+      retry.disabled = true;
+      retry.textContent = 'Retrying…';
+      cbApi.reconnect();
+      try {
+        await boot();               // re-runs the whole connect, once wired
+      } catch (_) {
+        retry.disabled = false;
+        retry.textContent = 'Retry';
+      }
+    });
+    bar.append(dot, text, retry);
+    document.body.insertBefore(bar, document.body.firstChild);
+    $('#cb-offline-at').textContent =
+      offlineSince.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    bindTips(bar);
+  }
+
+  /* ── pairing (3k) ─────────────────────────────────────────────────────────
+     The only thing an unpaired browser may reach. Rendered over everything —
+     there is no state behind it to protect, because the host refused to send
+     any. */
+
+  function showPairing(opts) {
+    opts = opts || {};
+    if ($('#cb-pair')) return;
+    hideTip();
+    const wrap = document.createElement('div');
+    wrap.className = 'cb-pair';
+    wrap.id = 'cb-pair';
+
+    const card = document.createElement('div');
+    card.className = 'cb-pair__card';
+
+    const brand = document.createElement('div');
+    brand.className = 'cb-row';
+    brand.style.cssText = 'gap:9px;justify-content:center;margin-bottom:22px';
+    brand.innerHTML = '<img src="assets/logo.png" alt="" width="26" height="26" ' +
+      'style="border-radius:6px;display:block;flex:none">' +
+      '<span style="font-weight:600;font-size:17px;letter-spacing:-.01em">CrateBuilder</span>' +
+      '<span class="cb-tag">Remote</span>';
+
+    const head = document.createElement('h3');
+    head.className = 'cb-h';
+    head.style.cssText = 'font-size:21px;margin-bottom:8px';
+    head.textContent = 'Pair with your desktop';
+
+    const lead = document.createElement('p');
+    lead.className = 'cb-mut';
+    lead.style.cssText = 'font-size:13.5px;max-width:350px;margin:0 auto;line-height:1.55';
+    lead.textContent = opts.reason === 'revoked'
+      ? 'This device is no longer paired with the host. Open Settings → ' +
+        'Remote Access on the desktop app, start a new pairing code, and type it below.'
+      : 'On the desktop app open Settings → Remote Access, then type the ' +
+        'pairing code below.';
+
+    const codeIn = document.createElement('input');
+    codeIn.className = 'cb-in cb-mono';
+    codeIn.id = 'cb-pair-code';
+    codeIn.inputMode = 'numeric';
+    codeIn.autocomplete = 'one-time-code';
+    codeIn.maxLength = 7;
+    codeIn.placeholder = '000 000';
+    codeIn.style.cssText =
+      'text-align:center;font-size:28px;letter-spacing:.18em;height:52px;' +
+      'color:var(--cb-accent);width:100%';
+
+    const nameIn = document.createElement('input');
+    nameIn.className = 'cb-in';
+    nameIn.id = 'cb-pair-name';
+    nameIn.placeholder = 'This device';
+    nameIn.value = cbApi.deviceName() || '';
+    nameIn.style.width = '100%';
+
+    const err = document.createElement('div');
+    err.className = 'cb-merr';
+    err.hidden = true;
+
+    const go = document.createElement('button');
+    go.className = 'cb-btn cb-btn--fill';
+    go.style.cssText = 'justify-content:center;width:100%;height:40px';
+    go.textContent = 'Pair this device';
+
+    const note = document.createElement('p');
+    note.className = 'cb-mut cb-mono';
+    note.style.cssText = 'font-size:11px;margin:14px 0 0';
+    note.textContent = 'Codes are good for five minutes and work once.';
+
+    async function submit() {
+      err.hidden = true;
+      go.disabled = true;
+      go.textContent = 'Pairing…';
+      try {
+        await cbApi.pair(codeIn.value.trim(), nameIn.value.trim());
+        wrap.remove();
+        await boot();
+      } catch (ex) {
+        err.textContent = ex.userFacing ? ex.message : 'Pairing failed.';
+        err.hidden = false;
+        go.disabled = false;
+        go.textContent = 'Pair this device';
+        codeIn.focus();
+        codeIn.select();
+      }
+    }
+    go.addEventListener('click', submit);
+    [codeIn, nameIn].forEach((el) => el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submit();
+    }));
+
+    card.append(brand, head, lead,
+      labelled('Pairing code', codeIn),
+      labelled('Device name', nameIn, 'Shown in the host\'s paired-devices list.'),
+      err, go, note);
+    wrap.appendChild(card);
+    document.body.appendChild(wrap);
+
+    /* When the host does not require a code, say so rather than demanding
+       one the user cannot get. Still rate-limited host-side. */
+    cbApi.pairInfo().then((info) => {
+      if (info && info.require_pairing === false) {
+        lead.textContent = 'This host is not asking for a pairing code. Name ' +
+          'this device and pair it.';
+        codeIn.placeholder = 'not required';
+      }
+      if (info && info.offline) {
+        err.textContent = 'The host is not answering. Check it is running, ' +
+          'then try again.';
+        err.hidden = false;
+      }
+    });
+    codeIn.focus();
   }
 
   function renderOverview() {
@@ -243,10 +488,12 @@
     tag.className = 'cb-tag ' + (dl.running ? 'cb-tag--fill' : 'cb-tag--grey');
     placeBatchControls(dl.running);
     updatePauseLabel();
-    setDisabled($('#dl-cancel'), !dl.running,
-      { reason: 'No download is running.', ttKey: 'main.cancel_batch' });
-    setDisabled($('#dl-pause'), !dl.running,
-      { reason: 'No download is running.', ttKey: 'main.pause_batch' });
+    gateWrite($('#dl-cancel'), dl.running ? '' : 'No download is running.',
+      'main.cancel_batch');
+    gateWrite($('#dl-pause'), dl.running ? '' : 'No download is running.',
+      'main.pause_batch');
+    gateWrite($('#quick-add'), '', 'main.batch_add');
+    gateWrite($('#dl-add'), '', 'main.batch_add');
     $('#dl-progress').style.opacity = dl.running ? '1' : '.6';
     /* The panel's Scan-all quick action and the Watch List's own scan controls
        both close while a batch owns the host's yt-dlp session (3c). */
@@ -332,16 +579,16 @@
       empty.textContent = "No URLs in batch — paste a link above and press '+ Add to Batch'";
       host.appendChild(empty);
       setStartDisabled(true, 'Add a link to the queue before starting a download.');
-      setDisabled($('#dl-clear'), running,
-        { reason: 'The queue is locked while a download is running. Cancel it first, or skip the row instead.',
-          ttKey: 'main.batch_clear' });
+      gateWrite($('#dl-clear'), running
+        ? 'The queue is locked while a download is running. Cancel it first, or skip the row instead.'
+        : '', 'main.batch_clear');
       renderQueueLog();
       return;
     }
     setStartDisabled(running, running ? 'A batch is already running.' : '');
-    setDisabled($('#dl-clear'), running,
-      { reason: 'The queue is locked while a download is running. Cancel it first, or skip the row instead.',
-        ttKey: 'main.batch_clear' });
+    gateWrite($('#dl-clear'), running
+      ? 'The queue is locked while a download is running. Cancel it first, or skip the row instead.'
+      : '', 'main.batch_clear');
 
     rows.forEach((row, i) => {
       const rt = dl.rows[row.id];
@@ -458,8 +705,20 @@
     meta.textContent = `${rows.length} track${rows.length === 1 ? '' : 's'} · ${processed} processed`;
   }
 
+  /* Every write control funnels through here so a read-only session (or one
+     without the control lock) closes them all with the host's own reason,
+     rather than each caller inventing its own wording. */
   function setStartDisabled(disabled, reason) {
-    setDisabled($('#dl-start'), disabled, { reason, ttKey: 'main.start_downloads' });
+    const block = writeBlocked();
+    setDisabled($('#dl-start'), !!(block || disabled),
+      { reason: block || reason, ttKey: 'main.start_downloads' });
+  }
+
+  function gateWrite(el, reason, ttKey) {
+    if (!el) return;
+    const block = writeBlocked();
+    const why = block || reason;
+    setDisabled(el, !!why, why ? { reason: why } : { ttKey });
   }
 
   function renderDownloads() {
@@ -802,7 +1061,7 @@
 
     const actions = document.createElement('div');
     actions.className = 'cb-wlcard__actions';
-    const why = busy ? wlBusyReason(row) : '';
+    const why = writeBlocked() || (busy ? wlBusyReason(row) : '');
     actions.append(
       wlActionButton('🔍 Scan', 'wl.card_scan', 'cb-btn--quiet',
         () => wlRun('watchlist.scan', { channel_id: row.id }),
@@ -829,9 +1088,9 @@
                 await call('watchlist.cancel', { channel_id: row.id });
                 toast(WL_CANCEL_ONE_NOTE);
               } catch (_) { /* call() already toasted the reason */ }
-            })
+            }, writeBlocked())
         : wlActionButton('✕ Remove', 'wl.card_remove', 'cb-btn--quiet',
-            () => openRemoveChannel(row)));
+            () => openRemoveChannel(row), writeBlocked()));
     card.appendChild(actions);
     return card;
   }
@@ -866,26 +1125,29 @@
   function renderWatchlistToolbar() {
     const pending = wlPending();
     const unresolved = wlUnresolved().length;
-    const scanReason = dl.running ? TOOLTIPS['main.scan_batch_conflict']
-                                  : (wl.running ? WL_BUSY_REASON : '');
+    const blocked = writeBlocked();
+    const scanReason = blocked ||
+      (dl.running ? TOOLTIPS['main.scan_batch_conflict']
+                  : (wl.running ? WL_BUSY_REASON : ''));
 
     const quick = $('#quick-scan');
     if (quick) wlGate(quick, scanReason, 'wl.scan_all');
     wlGate($('#wl-scan'), scanReason, 'wl.scan_all');
 
-    wlGate($('#wl-add'), wl.running ? WL_BUSY_REASON : '', 'wl.add_channel');
+    wlGate($('#wl-add'), blocked || (wl.running ? WL_BUSY_REASON : ''),
+      'wl.add_channel');
     wlGate($('#wl-links'),
-      wl.running ? WL_BUSY_REASON
+      blocked || (wl.running ? WL_BUSY_REASON
         : (unresolved ? ''
-           : 'Every channel already resolves to a real channel id — nothing to check.'),
+           : 'Every channel already resolves to a real channel id — nothing to check.')),
       'wl.check_links');
     wlGate($('#wl-dl-all'),
-      wl.running ? WL_BUSY_REASON
+      blocked || (wl.running ? WL_BUSY_REASON
         : (pending ? ''
-           : 'No new tracks pending across any channels. Run 🔍 Scan for new first.'),
+           : 'No new tracks pending across any channels. Run 🔍 Scan for new first.')),
       'wl.download_all_new');
     wlGate($('#wl-cancel'),
-      wl.running ? '' : 'No Watch List scan or download is running.',
+      blocked || (wl.running ? '' : 'No Watch List scan or download is running.'),
       'wl.cancel_all');
     $('#wl-cancel').className = 'cb-btn ' + (wl.running ? 'cb-btn--warn' : 'cb-btn--quiet');
     $('#wl-dl-all').textContent = `⬇ Download All New (${num(pending)})`;
@@ -1858,16 +2120,19 @@
   async function logDownload(kind) {
     try {
       const res = await call('logs.download', { name: kind });
-      if (!state || state.host.transport !== 'local') {
-        toast(`The ${kind} log lives at ${res.path} on the host — browser ` +
-              'download arrives with a later update.');
-        return res;
-      }
-      const full = await call('logs.tail', { name: kind, offset: 0, limit: 0 });
-      const text = full.lines.join('\n') + (full.lines.length ? '\n' : '');
-      const blob = new Blob([text], { type: 'text/plain' });
-      const url = URL.createObjectURL(blob);
       const filename = kind === 'activity' ? 'activity.log' : 'debug.log';
+      let blob;
+      if (state && state.host.transport === 'remote') {
+        /* The remote replacement for "System Viewer" (HANDOFF §5): the host
+           streams the file from /logs/<name> rather than the browser
+           rebuilding it out of the window it happens to have loaded. */
+        blob = await cbApi.fetchFile(`/logs/${encodeURIComponent(kind)}`);
+      } else {
+        const full = await call('logs.tail', { name: kind, offset: 0, limit: 0 });
+        const text = full.lines.join('\n') + (full.lines.length ? '\n' : '');
+        blob = new Blob([text], { type: 'text/plain' });
+      }
+      const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
       a.download = filename;
@@ -3135,10 +3400,42 @@
       cookiesOn ? 'Switch Method to Cookie File first.' : cookiesReason);
 
     // Run App on Startup writes the host's own registry — local window only.
-    set('run_at_startup', state.host.transport !== 'local',
+    const remoteMount = state.host.transport !== 'local';
+    set('run_at_startup', remoteMount,
       'Run App on Startup can only be changed from the app window on the host machine.');
 
+    /* The save directory is the boundary a remote session is contained by
+       (the host measures fs.reveal against it), so a remote browser must not
+       be able to move it. The host refuses the write either way; this is the
+       control saying so before the click. */
+    set('base_dir', remoteMount,
+      'The save directory is the boundary that keeps a remote session inside ' +
+      'your crate folder, so it can only be changed from the app window on ' +
+      'the host machine.');
+
+    /* Remote Access is read-only on a remote mount (3j): a browser that has
+       been let in must not be able to widen the door it came through. */
+    REMOTE_SETTING_KEYS.forEach((key) => set(key, remoteMount,
+      'Remote access settings can only be changed from the app window on the ' +
+      'host machine.'));
+
+    /* A read-only session, or one without the control lock, changes nothing
+       at all — the host refuses every settings.set. */
+    const blocked = writeBlocked();
+    if (blocked) {
+      /* The Downloads screen carries two settings controls of its own (3b's
+         Skip row), so the sweep is by data-key rather than by container —
+         a setting is a write wherever it happens to be drawn. */
+      $$('input,select,button', grid)
+        .concat($$('#screen-downloads [data-key]'))
+        .forEach((el) => {
+          if (el.dataset.readOk) return;
+          setDisabled(el, true, { reason: blocked });
+        });
+    }
+
     bindTips(grid);
+    bindTips($('#screen-downloads'));
   }
 
   async function save(key, value, el) {
@@ -3450,6 +3747,53 @@
     refs.close.focus();
   }
 
+  /* The three contract keys the host keeps in cratebuilder_remote.json rather
+     than the ordinary settings file — they govern who may reach this control
+     surface, so they live beside the device tokens they gate. */
+  const REMOTE_SETTING_KEYS = ['remote_enabled', 'remote_require_pairing',
+                               'remote_read_only'];
+
+  /* The Remote Access card's two live things — the code countdown's interval
+     and its subscription — held outside the builder so a re-render can stop
+     the previous card's before starting its own. */
+  const remoteCard = { tick: null, off: null };
+
+  /* Mark a control that reads rather than writes, so the read-only sweep in
+     applySettingsDependencies leaves it alone. */
+  function readOnlyOk(el) { el.dataset.readOk = '1'; return el; }
+
+  /* Revoking is the one destructive action on 3j's Remote Access card — every
+     paired device loses its token at once — so it goes through the same
+     confirm modal shell as every other destructive action. */
+  function openRevokeDevices(onDone) {
+    openModal({
+      title: 'Revoke all paired devices',
+      width: 460,
+      body(bodyEl) {
+        bodyEl.appendChild(modalNote(
+          'Every paired device loses its token immediately and has to pair ' +
+          'again with a fresh code. Nothing on disk is touched — no download, ' +
+          'no Watch List entry, no setting.'));
+      },
+      foot(footEl, api) {
+        footEl.append(
+          modalButton('Cancel', 'cb-btn--quiet', api.close),
+          modalButton('Revoke all', 'cb-btn--warn', async () => {
+            api.busy(true);
+            try {
+              await call('remote.revoke', { device_id: 'all' });
+              api.close();
+              toast('Every paired device was revoked.');
+              if (onDone) onDone(await call('remote.config'));
+            } catch (ex) {
+              api.busy(false);
+              api.error(ex.userFacing ? ex.message : 'Could not revoke.');
+            }
+          }, 'remote.revoke_all'));
+      },
+    });
+  }
+
   const SECTION_EXTRAS = {
     'Default Save Directory': (card) => {
       const row = card.querySelector('[data-key="base_dir"]')?.closest('.cb-set-row');
@@ -3509,7 +3853,7 @@
         await logDownload('debug');
       });
 
-      row.append(activityBtn, debugBtn, bothBtn);
+      row.append(readOnlyOk(activityBtn), readOnlyOk(debugBtn), readOnlyOk(bothBtn));
       card.appendChild(row);
     },
 
@@ -3521,7 +3865,7 @@
       openDb.className = 'cb-btn cb-btn--sm';
       openDb.textContent = '🗂 Open Database';
       openDb.addEventListener('click', () => show('database'));
-      row.appendChild(openDb);
+      row.appendChild(readOnlyOk(openDb));
       Object.keys(MAINT_TASKS).forEach((task) => {
         const spec = MAINT_TASKS[task];
         const b = document.createElement('button');
@@ -3549,6 +3893,143 @@
         row.appendChild(back);
       }
       card.appendChild(row);
+    },
+
+    /* 3j's Remote Access card, below its six toggles: who is paired, the way
+       to drop them, and the pairing code itself. Live on the local window,
+       read-only-with-reason on a remote mount — a browser that has been let in
+       must not be able to pair another one or revoke the host's own devices. */
+    'Remote Access': (card) => {
+      const local = state.host.transport === 'local';
+      /* One card at a time: renderSettings rebuilds the grid, so the previous
+         card's countdown and its subscription have to go with it. */
+      if (remoteCard.tick) clearInterval(remoteCard.tick);
+      if (remoteCard.off) remoteCard.off();
+      remoteCard.tick = null;
+      remoteCard.off = null;
+      const remoteReason = 'Remote access settings can only be changed from ' +
+        'the app window on the host machine.';
+
+      const div = document.createElement('div');
+      div.className = 'cb-div';
+      card.appendChild(div);
+
+      const row = document.createElement('div');
+      row.className = 'cb-row';
+      row.style.cssText = 'gap:9px;flex-wrap:wrap';
+      const lab = document.createElement('span');
+      lab.className = 'cb-lab';
+      lab.textContent = 'Paired devices';
+      const list = document.createElement('span');
+      list.className = 'cb-mono cb-mut';
+      list.id = 'remote-devices';
+      list.style.fontSize = '11.5px';
+      list.textContent = 'reading…';
+
+      const revoke = document.createElement('button');
+      revoke.className = 'cb-btn cb-btn--quiet cb-btn--sm';
+      revoke.style.marginLeft = 'auto';
+      revoke.textContent = 'Revoke all & re-pair';
+
+      row.append(lab, list, revoke);
+      card.appendChild(row);
+
+      const pairRow = document.createElement('div');
+      pairRow.className = 'cb-row';
+      pairRow.style.cssText = 'gap:9px;flex-wrap:wrap';
+      const pairBtn = document.createElement('button');
+      pairBtn.className = 'cb-btn cb-btn--sm';
+      pairBtn.textContent = '＋ Pair a device';
+      pairBtn.setAttribute('data-tt-text',
+        'Shows a 6-digit code here for five minutes. Enter it in the browser ' +
+        'on the other device to give it a long-lived token. The code works ' +
+        'once, and the host only ever stores a hash of the token it hands out.');
+      const codeOut = document.createElement('span');
+      codeOut.className = 'cb-mono';
+      codeOut.id = 'remote-code';
+      codeOut.style.cssText = 'font-size:22px;letter-spacing:.18em;color:var(--cb-accent)';
+      const codeNote = document.createElement('span');
+      codeNote.className = 'cb-mut cb-mono';
+      codeNote.id = 'remote-code-note';
+      codeNote.style.fontSize = '11px';
+      pairRow.append(pairBtn, codeOut, codeNote);
+      card.appendChild(pairRow);
+
+      const hint = document.createElement('div');
+      hint.className = 'cb-mut';
+      hint.id = 'remote-hint';
+      hint.style.cssText = 'font-size:11.5px;line-height:1.6';
+      card.appendChild(hint);
+
+      /* The countdown ticks off the expiry the host already sent — a clock,
+         not a poll. Nothing is asked of the host between renders; a device
+         actually pairing arrives as the `remote.devices` push below. */
+      function countdown(pairing) {
+        if (remoteCard.tick) clearInterval(remoteCard.tick);
+        remoteCard.tick = null;
+        if (!pairing || !pairing.expires_at) { codeNote.textContent = ''; return; }
+        const paintLeft = () => {
+          const left = Math.max(0, Math.round(pairing.expires_at - Date.now() / 1000));
+          codeNote.textContent = left
+            ? `expires in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`
+            : 'expired';
+          if (!left) {
+            codeOut.textContent = '';
+            clearInterval(remoteCard.tick);
+            remoteCard.tick = null;
+          }
+        };
+        paintLeft();
+        remoteCard.tick = setInterval(paintLeft, 1000);
+      }
+
+      function paint(cfg) {
+        const devices = (cfg && cfg.devices) || [];
+        list.textContent = devices.length
+          ? `${devices.length} — ` + devices.map((d) =>
+              `${d.name} (${d.paired_at ? fmtDate(d.paired_at) : 'unknown'})`).join(' · ')
+          : 'none paired yet';
+        setDisabled(revoke, !local || !devices.length,
+          { reason: !local ? remoteReason
+              : 'No devices are paired, so there is nothing to revoke.',
+            ttKey: 'remote.revoke_all' });
+        const pairing = cfg && cfg.pairing;
+        if (pairing && pairing.code) {
+          codeOut.textContent = `${pairing.code.slice(0, 3)} ${pairing.code.slice(3)}`;
+          countdown(pairing);
+        } else {
+          codeOut.textContent = '';
+          countdown(null);
+        }
+        hint.textContent = cfg && cfg.enabled
+          ? 'Remote access is on. The host serves this bundle to paired ' +
+            'devices on the network; a change here takes effect the next time ' +
+            'the host starts. Plain HTTP is LAN-only — put it behind a tunnel ' +
+            'for anything wider.'
+          : 'Remote access is off. The host answers on this machine only, and ' +
+            'no paired device can reach it from elsewhere.';
+      }
+
+      setDisabled(pairBtn, !local,
+        { reason: remoteReason, ttText: pairBtn.getAttribute('data-tt-text') });
+      pairBtn.addEventListener('click', async () => {
+        try {
+          await call('remote.pair_begin');
+          paint(await call('remote.config'));
+        } catch (_) { /* call() already toasted the reason */ }
+      });
+      revoke.addEventListener('click', () => openRevokeDevices(paint));
+
+      /* A device pairing is the one thing that changes this card without
+         anything on this screen being touched — the host pushes it, the card
+         repaints, and the used-up code disappears with it. */
+      remoteCard.off = cbApi.on('remote.devices', () => {
+        call('remote.config').then(paint).catch(() => {});
+      });
+
+      call('remote.config').then(paint).catch(() => {
+        list.textContent = 'unavailable';
+      });
     },
 
     'Browser Cookies': (card) => {
@@ -3838,27 +4319,64 @@
     });
   }
 
+  let booted = false;
+
   async function boot() {
     await cbApi.connect();
+    if (!cbApi.paired()) { showPairing({ reason: 'unpaired' }); return; }
+    await refreshSession();
     const strings = await call('ui_strings');
     TOOLTIPS = strings.tooltips || {};
     SETTINGS_KEYS = strings.settings_keys || [];
-    wire();
-    subscribeDownloadEvents();
+    if (!booted) {
+      booted = true;
+      wire();
+      subscribeDownloadEvents();
+      subscribeSessionEvents();
+    }
     await refresh();
+    setHostOffline(false);
     bindTips(document);
     show(location.hash.slice(1) || 'overview');
+  }
 
+  /* Wired once, and outside boot()'s try — these are exactly the handlers that
+     have to survive a host that went away mid-boot. */
+  function subscribeSessionEvents() {
     cbApi.on('host.status', (s) => {
+      if (s && s.session) session = s.session;
       if (!state) return;
-      state.host.online = !!s.online;
+      state.host.online = !!(s && s.online);
       renderShell();
-      document.body.classList.toggle('cb-offline', !s.online);
+      setHostOffline(!(s && s.online));
+      if (s && s.online) refresh().catch(() => {});
+    });
+    /* The single-writer lock changed hands. Every socket hears it, so a client
+       that just lost control finds out without asking — and re-asking is one
+       call, not a re-render of everything. */
+    cbApi.on('control.holder', async () => {
+      await refreshSession();
+      if (!state) return;
+      renderDownloads();
+      renderWatchlist();
+      renderSettings();
+    });
+    cbApi.on('auth.required', (info) => {
+      setHostOffline(false);
+      showPairing(info || {});
     });
   }
 
+  /* A host that is down at first paint must not leave a blank page either —
+     the shell stays, the offline bar explains, and Retry re-runs boot. */
   boot().catch((err) => {
     console.error(err);
+    if (err && err.needsPairing) return;      // the pairing screen is already up
+    if (!booted) {
+      booted = true;
+      subscribeSessionEvents();
+    }
+    setHostOffline(true);
     toast('Could not reach the host process.', true);
   });
 })();

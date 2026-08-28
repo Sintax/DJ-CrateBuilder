@@ -122,7 +122,11 @@ def test_settings_all_skips_keys_the_schema_lacks(service):
     values = service.settings_all()
     assert "skip_existing" in values
     assert "log_limit" in values          # bound to log_max_mb, which exists
-    assert "remote_enabled" not in values  # contract-only, no schema key at all
+    # Contract-only keys with nowhere to live are still skipped; the three
+    # remote_* toggles are not among them any more — they are backed by
+    # cratebuilder_remote.json (see REMOTE_SETTINGS_KEYS).
+    assert "notify_scan_found" not in values
+    assert values["remote_enabled"] is False
 
 
 # ── library ──────────────────────────────────────────────────────────────────
