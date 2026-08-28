@@ -199,7 +199,7 @@
         <span class="cb-mut" style="font-size:12.5px" id="wl-summary"></span>
       </div>
       <div class="cb-row" style="gap:8px;flex-wrap:wrap">
-        <button class="cb-btn cb-btn--fill" id="wl-add">+ Add Channel</button>
+        <button class="cb-btn cb-btn--fill" id="wl-add" data-tt="wl.add_channel">+ Add Channel</button>
         <button class="cb-btn" id="wl-links" style="border-color:#CC7A00;color:#A66300"
                 data-tt="wl.check_links">🛠 Check Links</button>
         <button class="cb-btn" id="wl-dl-all" data-tt="wl.download_all_new">⬇ Download All New</button>
@@ -213,8 +213,12 @@
         <div class="cb-row" style="padding:8px 14px;border-bottom:1px solid var(--cb-line-soft);gap:10px">
           <span class="cb-kick">Scan log</span>
           <span class="cb-mut cb-mono" style="font-size:11px">live · pinned</span>
-          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="wl-log-clear"
-                  style="margin-left:auto">Clear</button>
+          <div class="cb-row" style="margin-left:auto;gap:8px">
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="wl-log-clear"
+                    data-tt="wl.clear_scan_log">Clear</button>
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="wl-log-open"
+                    data-tt="wl.open_activity_log">Open Activity Log ↗</button>
+          </div>
         </div>
         <div class="cb-log" id="wl-log" style="height:156px;overflow:auto"></div>
       </div>

@@ -169,6 +169,88 @@ body { overflow: hidden; }
   color: var(--cb-dim); font-size: 11.5px; text-align: center; padding: 12px; overflow: hidden;
 }
 
+/* Watch List cards (3d) — the running card takes the 2px accent border, and
+   keeps the same box size by giving back the extra pixel in padding. */
+.cb-wlcard { padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+.cb-wlcard.is-running { border-color: var(--cb-accent); border-width: 2px; padding: 13px 15px; }
+.cb-wlcard__name { font-weight: 600; font-size: 14.5px; color: var(--cb-text); text-decoration: none; }
+a.cb-wlcard__name { border-bottom: 1px dotted var(--cb-line); }
+.cb-wlcard__new { margin-left: auto; font: 500 12.5px var(--cb-mono); color: var(--cb-line); }
+.cb-wlcard__meta { font-size: 11px; }
+.cb-wlcard__actions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+/* Fix Link is the design's one unresolved-orange control; --cb-unresolved is
+   too light for white text, so the label goes near-black as the design does. */
+.cb-btn--fix { background: var(--cb-unresolved); border-color: var(--cb-unresolved); color: #1A1A1A; font-weight: 600; }
+.cb-btn--fix:hover { background: #F08000; }
+
+/* Dialogs (3m) — centred modal over a dimmed page. .cb-dim/.cb-modal and the
+   head/body/foot shell are defined in the mockup's own <style>, not in
+   theme.css, so they live here, built from theme.css's tokens. */
+.cb-dim {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(36, 38, 43, .55);
+  padding: 30px; box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center;
+}
+.cb-modal {
+  background: var(--cb-surface);
+  border: 1px solid var(--cb-line);
+  border-radius: var(--cb-radius);
+  box-shadow: 0 18px 50px rgba(20, 22, 28, .4);
+  width: 100%; max-width: 520px; max-height: 100%;
+  display: flex; flex-direction: column; min-height: 0;
+}
+.cb-mhead {
+  display: flex; align-items: center; gap: 10px; flex: none;
+  padding: 14px 18px; border-bottom: 1px solid var(--cb-line);
+}
+.cb-mtitle { font: 600 15px var(--cb-font); color: var(--cb-text); letter-spacing: -.01em; }
+.cb-mbody {
+  padding: 16px 18px; display: flex; flex-direction: column; gap: 13px;
+  overflow: auto; min-height: 0;
+}
+.cb-mfoot {
+  display: flex; align-items: center; gap: 9px; flex: none; flex-wrap: wrap;
+  padding: 13px 18px; border-top: 1px solid var(--cb-line-soft);
+  background: var(--cb-surface-alt);
+}
+.cb-mlabel { font-weight: 600; font-size: 13px; color: var(--cb-text); margin-bottom: 5px; }
+.cb-mhint { color: var(--cb-muted); font-size: 11px; line-height: 1.55; margin: 6px 0 0; }
+.cb-mnote { color: var(--cb-muted); font-size: 12.5px; line-height: 1.6; margin: 0; }
+/* In a footer the note shares the row with the buttons: let it shrink and wrap
+   rather than pushing the primary action onto a second line. */
+.cb-mfoot .cb-mnote { flex: 1 1 170px; min-width: 0; font-size: 11.5px; }
+/* theme.css gives .cb-cbx its accent colour on checkboxes only; 3m's candidate
+   list uses the same class on radios. */
+input[type="radio"].cb-cbx {
+  width: 15px; height: 15px; margin: 0; accent-color: var(--cb-accent); cursor: pointer;
+}
+.cb-merr {
+  margin: 0 18px 14px; flex: none;
+  font-size: 12px; line-height: 1.5; color: var(--cb-err);
+  border: 1px solid var(--cb-line); border-radius: var(--cb-radius-sm);
+  background: var(--cb-accent-wash); padding: 8px 10px;
+}
+/* Radio candidate rows (Fix Link) */
+.cb-pick {
+  display: flex; gap: 11px; align-items: flex-start;
+  padding: 11px 12px; border: 1px solid var(--cb-quiet); border-radius: 7px; cursor: pointer;
+}
+.cb-pick:hover { background: #FBFBFC; border-color: var(--cb-line); }
+.cb-pick.is-on { border-color: var(--cb-accent); border-width: 2px; padding: 10px 11px; background: rgba(224,0,0, .04); }
+.cb-pick.is-off { opacity: .6; cursor: not-allowed; }
+.cb-pick__text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.cb-pick__name { font-size: 13.5px; font-weight: 500; color: var(--cb-text); }
+.cb-pick__meta { font: 400 11px var(--cb-mono); color: var(--cb-muted); }
+.cb-pick__dupe { font: 400 10.5px var(--cb-mono); color: var(--cb-warn); }
+/* #CC7A00 rather than a token, matching theme.css's own .cb-tag--attn: the
+   unresolved orange needs darkening for small text on a tinted fill. */
+.cb-warnbox {
+  font: 400 11.5px/1.6 var(--cb-font); color: #4B4F59;
+  background: rgba(255, 140, 0, .08); border: 1px solid #CC7A00;
+  border-radius: 6px; padding: 9px 11px;
+}
+
 /* The design targets desktop at >=1100px and states the layouts are not
    designed to reflow below it. Collapse to one column rather than clip a card
    off the edge — degrading is not the same as supporting a mobile breakpoint. */
