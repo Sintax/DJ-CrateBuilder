@@ -1,9 +1,12 @@
 """CrateBuilderService: transport gating, batch queue, settings and snapshots."""
 
+import threading
+
 import pytest
 
 from cratebuilder.db import DownloadsDatabase
-from cratebuilder.service import CBError, CrateBuilderService, version_info
+from cratebuilder.service import (JOB_FINISHED, CBError, CrateBuilderService,
+                                  version_info)
 from cratebuilder.settings import Settings
 
 
@@ -174,3 +177,74 @@ def test_version_info_parses_the_monolith():
 
 def test_version_info_missing_file_is_not_fatal(tmp_path):
     assert version_info(str(tmp_path / "gone.py")) == {"version": None, "build": None}
+
+
+# ── job lifecycle: the one event that cannot report a stale `running` ─────────
+# A run's own terminal events (batch.finished, the Watch List's closing DONE
+# scan line) are emitted from inside the job body, while _start_job still holds
+# the category's slot — so a client that resyncs on one of those can be told the
+# job is still running and re-arm a run that has already ended. job.finished is
+# emitted after the slot is released, which is what makes it safe to resync on.
+
+@pytest.mark.parametrize("category", ["batch", "watchlist"])
+def test_job_finished_is_emitted_after_the_slot_is_released(service, category):
+    seen = []
+    done = threading.Event()
+
+    def on_event(type, payload):
+        if type != JOB_FINISHED:
+            return
+        # Asked from the handler, exactly as a frontend would: both the job
+        # registry and a full snapshot must already say the category is free.
+        seen.append((payload,
+                     service._job_running(category),
+                     service.snapshot()["running"][category]))
+        done.set()
+
+    service.events.subscribe(on_event)
+    service._start_job(category, lambda: None)
+
+    assert done.wait(10), "job.finished was never emitted"
+    payload, registry_running, snapshot_running = seen[0]
+    assert payload == {"job": category}
+    assert registry_running is False
+    assert snapshot_running is False
+
+
+def test_an_event_emitted_from_inside_a_run_still_reports_it_as_running(service):
+    """The behaviour job.finished exists to work around, pinned so it cannot
+    quietly change and leave the client's reasoning stale."""
+    inside = []
+    done = threading.Event()
+
+    def on_event(type, payload):
+        if type == "batch.finished":
+            inside.append(service.snapshot()["running"]["batch"])
+        elif type == JOB_FINISHED:
+            done.set()
+
+    service.events.subscribe(on_event)
+    service._start_job(
+        "batch", lambda: service.emit("batch.finished", {"cancelled": False}))
+    assert done.wait(10)
+    assert inside == [True]
+
+
+def test_job_finished_fires_even_when_the_job_body_raises(service, monkeypatch):
+    # _start_job lets a failing body take its own worker thread down — only the
+    # slot and this event are guaranteed. The hook is swallowed so the crash
+    # this test causes on purpose is not reported as an unhandled one.
+    monkeypatch.setattr(threading, "excepthook", lambda args: None)
+    done = threading.Event()
+
+    def on_event(type, payload):
+        if type == JOB_FINISHED:
+            done.set()
+
+    def boom():
+        raise RuntimeError("the run blew up")
+
+    service.events.subscribe(on_event)
+    service._start_job("batch", boom)
+    assert done.wait(10)
+    assert service._job_running("batch") is False
