@@ -9,6 +9,7 @@ import time
 import pytest
 
 from cratebuilder.batchrun import BatchRunner
+from cratebuilder.download import Outcome
 from cratebuilder.settings import Settings
 from cratebuilder.ydl import YdlPermanent
 
@@ -166,6 +167,86 @@ def test_a_watch_list_download_that_lost_channels_asks_to_be_looked_at(tmp_path)
     assert len(found) == 1
     assert found[0]["level"] == "warn"
     assert "1 channel failed" in found[0]["body"]
+
+
+def test_a_force_download_whose_listing_fails_is_a_lost_channel(tmp_path):
+    """The Force Download button re-lists the channel, and that branch swallows
+    the exception rather than letting it reach run_download's outer `except` —
+    so nothing else in the run ever sees it. Without booking it here the run
+    closes at "0 tracks downloaded", `info`: a dead link reported as a quiet
+    afternoon."""
+    session = FakeSession(error=YdlPermanent(
+        "channel is gone", intent="list_channel", target="https://y/c"))
+    h = Harness(tmp_path, session=session)
+    cid = h.add_channel()
+    h.ops.run_download([cid], force=True)
+    found = notes(h.emit)
+    assert len(found) == 1
+    assert found[0]["level"] == "warn"
+    assert found[0]["body"] == "0 tracks downloaded, 1 channel failed"
+    assert h.emit.lines("error")            # the scan line said so all along
+
+
+def test_tracks_that_failed_inside_a_working_channel_also_escalate(tmp_path):
+    """The channel listed and downloaded; its tracks did not. `BatchRunner`
+    escalates a batch on exactly this, and a Watch List run that lost every
+    track it tried must not close at `info` either."""
+    session = FakeSession(listing=[
+        {"id": "e1", "title": "Doomed", "url": "https://y/1",
+         "upload_date": "20260101"},
+    ])
+    h = Harness(tmp_path, session=session)
+    cid = h.add_channel()
+    h.ops.run_scan([cid])
+    h.emit.events.clear()
+    h.outcomes["Doomed"] = Outcome(kind="failed", reason="HTTP 403",
+                                   title="Doomed")
+    h.ops.run_download([cid])
+    found = notes(h.emit)
+    assert len(found) == 1
+    assert found[0]["level"] == "warn"
+    assert "1 track failed" in found[0]["body"]
+    # A channel that worked is not a channel that failed.
+    assert "channel failed" not in found[0]["body"]
+
+
+def test_a_channel_that_only_needs_its_link_fixed_is_not_a_lost_download(tmp_path):
+    """Same ruling as on the scan side: the card already carries a Fix Link
+    button, so escalating here would cry wolf on every run."""
+    h = Harness(tmp_path, session=FakeSession(listing=[]))
+    cid = h.db.add_watchlist_channel(
+        url="unresolved://Garage Archive", display_name="Garage Archive",
+        platform="YouTube", genre="House")
+    h.ops.run_download([cid])
+    note = notes(h.emit)[0]
+    assert note["level"] == "info"
+    assert "failed" not in note["body"]
+
+
+def test_a_cancelled_download_is_not_a_lost_channel(tmp_path):
+    h = Harness(tmp_path, session=FakeSession(listing=[]))
+    cid = h.add_channel()
+    h.ops.cancel_all()
+    h.ops.run_download([cid])
+    note = notes(h.emit)[0]
+    assert note["level"] == "info"
+    assert "failed" not in note["body"]
+
+
+def test_the_download_tallies_do_not_leak_into_the_next_run(tmp_path):
+    session = FakeSession(error=YdlPermanent(
+        "gone", intent="list_channel", target="https://y/c"))
+    h = Harness(tmp_path, session=session)
+    cid = h.add_channel()
+    h.ops.run_download([cid], force=True)
+    assert notes(h.emit)[-1]["level"] == "warn"
+    session.error = None
+    session.listing = []
+    h.emit.events.clear()
+    h.ops.run_download([cid], force=True)
+    again = notes(h.emit)[0]
+    assert again["level"] == "info"
+    assert "failed" not in again["body"]
 
 
 def test_the_announcement_lands_after_the_run_s_closing_log_line(tmp_path):

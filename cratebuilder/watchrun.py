@@ -200,10 +200,13 @@ class WatchlistOps:
         self._runner = None
         self._active_cid = None
         self._database = None
-        # Channels the CURRENT run could not get through, reset by _begin.
-        # Run-local instance state, like _queue and _mode: the job registry
-        # allows one "watchlist" run at a time, so there is only ever one.
+        # What the CURRENT run lost, reset by _begin. Run-local instance state,
+        # like _queue and _mode: the job registry allows one "watchlist" run at
+        # a time, so there is only ever one. Channels it could not get through
+        # at all, and — on a download run — tracks that failed inside channels
+        # it did.
         self._failed = 0
+        self._track_errors = 0
 
     # ── Collaborators ─────────────────────────────────────────────────────────
     def _db(self):
@@ -309,6 +312,7 @@ class WatchlistOps:
             self._queue = list(queue)
             self._mode = mode
             self._failed = 0
+            self._track_errors = 0
 
     def _end(self):
         """Close the run to joins. Cleared BEFORE the terminal flush, which
@@ -607,17 +611,44 @@ class WatchlistOps:
                                   f"{_plural(downloaded, 'track')} downloaded")
             self._patch_counts()
         # After the try/finally for the same reason run_scan's is — see there.
-        # A run that lost channels is not routine, so it takes the level that
+        # A run that lost anything is not routine, so it takes the level that
         # gets the attention treatment, exactly as BatchRunner._finish does.
+        # Channels and tracks are counted separately because they are different
+        # losses: see _download_channel's docstring for which exits book which.
         body = f"{_plural(downloaded, 'track')} downloaded"
         if self._failed:
             body += f", {_plural(self._failed, 'channel')} failed"
+        if self._track_errors:
+            body += f", {_plural(self._track_errors, 'track')} failed"
+        lost = self._failed or self._track_errors
         self._notify("Watch List download", body,
-                     level="warn" if self._failed else "info")
+                     level="warn" if lost else "info")
         return {"downloaded": downloaded}
 
     def _download_channel(self, cid, force=False):
-        """One channel end to end. Returns how many tracks it downloaded."""
+        """One channel end to end. Returns how many tracks it downloaded.
+
+        Every exit that reports this channel as broken also books it against
+        the run's tally, so run_download's closing announcement can tell a run
+        that lost something from a run with nothing to do. There are four
+        exits, and they do not all count:
+
+        * a row that vanished, or a cancelled channel — neither is a failure,
+          and neither logs an error line;
+        * an unresolved link — deliberately NOT counted, exactly as in
+          run_scan: the card already carries a Fix Link button for it, and
+          escalating there would make every Watch List holding one unresolved
+          entry cry wolf on every run;
+        * a listing that would not load under `force` — counted here, because
+          nothing else sees it: this branch swallows the exception rather than
+          letting it reach run_download's outer `except`;
+        * a raise out of run_tracks — re-raised below, and counted by that
+          outer `except`.
+
+        Tracks that failed INSIDE a channel that otherwise worked are booked
+        separately (`_track_errors`): "one channel failed" would misdescribe a
+        channel that downloaded eight of its ten tracks.
+        """
         db = self._db()
         row = db.get_watchlist_channel(cid)
         if row is None or self._cancelled(cid):
@@ -636,6 +667,7 @@ class WatchlistOps:
                 entries = [e for e in self._session().list_channel(url)
                            if isinstance(e, dict)]
             except Exception as exc:
+                self._failed += 1
                 self._line(LINE_ERROR, f"ERROR {name} — {str(exc)[:120]}")
                 return 0
         else:
@@ -685,6 +717,11 @@ class WatchlistOps:
         db.update_watchlist_status(cid, "idle")
         self._flush()
         self._card(cid)
+        # The channel worked; some of its tracks did not. That is the same
+        # thing BatchRunner._finish escalates a batch on, and without it a run
+        # that lost every track it tried still closes at "0 tracks downloaded"
+        # on an `info` notification — indistinguishable from nothing to do.
+        self._track_errors += tally["errors"]
         self._line(LINE_DEFAULT if not tally["errors"] else LINE_ERROR,
                    f"SCAN {name} — {tally['downloaded']} downloaded, "
                    f"{tally['skipped']} skipped, {tally['errors']} failed")
