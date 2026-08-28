@@ -111,6 +111,12 @@ class MaintenanceOps:
     def cancelled(self):
         return self._cancel.is_set()
 
+    @staticmethod
+    def title_for(task):
+        """The user-facing name of one job — what the user actually pressed,
+        so a crash report can be headed with it rather than "maintenance"."""
+        return TASK_TITLES.get(task, task)
+
     # ── plumbing ──────────────────────────────────────────────────────────────
 
     def _db(self):
@@ -160,18 +166,24 @@ class MaintenanceOps:
             "note": note, "percent": None,
         })
 
-    def _notify(self, task, level, body):
+    def _notify(self, task, level, body, cancelled=False):
         """The completion announcement, in the contract's notification shape
         ({level, title, body, at}). Flushed first so the last progress frame
-        can never arrive after the summary that supersedes it."""
+        can never arrive after the summary that supersedes it.
+
+        *cancelled* is carried explicitly rather than left to be read back out
+        of the prose: the frontend has to tell a cancelled run from a finished
+        one, and inferring that from the wording means an edit to a sentence
+        here silently relabels the dialog."""
         self._flush()
         self._emit("notification", {
             "level": level,
-            "title": TASK_TITLES.get(task, task),
+            "title": self.title_for(task),
             "body": body,
             "at": self._now().isoformat(timespec="seconds"),
             "task": task,
             "job": MAINTENANCE_JOB,
+            "cancelled": bool(cancelled),
         })
 
     def _patch_counts(self):
@@ -252,30 +264,49 @@ class MaintenanceOps:
 
         Cancelling is safe for the same reason: the clear has not happened yet
         while the walk is running, so a cancelled rebuild leaves the existing
-        rows exactly as they were."""
+        rows exactly as they were.
+
+        So is a folder that cannot be read. An unreadable folder — an ACL, an
+        antivirus lock, a network share that drops mid-walk — must NEVER be
+        allowed to contribute zero rows and let the run continue, because the
+        clear that follows would then delete that channel's whole history
+        while the tracks are still on disk. Any OSError from the walk aborts
+        the entire rebuild before the clear, which is what the monolith does by
+        wrapping its whole `_work()` in one try (DJ-CrateBuilder_v1.3.py:14201).
+        The scan is only trustworthy if all of it succeeded."""
         self._begin(TASK_REBUILD)
         try:
             db = self._db()
             art_snapshot = db.get_artwork_by_path()
-            folders = self._channel_folders()
-            total = len(folders)
-            self._overall(TASK_REBUILD, 0, total)
             rows = []
             done = 0
-            for platform, genre, channel_path in folders:
-                if self._cancel.is_set():
-                    break
-                self._current(TASK_REBUILD, os.path.basename(channel_path),
-                              note=f"{platform} • {genre}")
-                rows.extend(self._scan_channel(platform, genre, channel_path,
-                                               art_snapshot))
-                done += 1
-                self._overall(TASK_REBUILD, done, total, found=len(rows))
+            total = 0
+            try:
+                folders = self._channel_folders()
+                total = len(folders)
+                self._overall(TASK_REBUILD, 0, total)
+                for platform, genre, channel_path in folders:
+                    if self._cancel.is_set():
+                        break
+                    self._current(TASK_REBUILD,
+                                  os.path.basename(channel_path),
+                                  note=f"{platform} • {genre}")
+                    rows.extend(self._scan_channel(platform, genre,
+                                                   channel_path, art_snapshot))
+                    done += 1
+                    self._overall(TASK_REBUILD, done, total, found=len(rows))
+            except OSError as exc:
+                raise CBError(
+                    f"Rebuild stopped — a folder in your library could not be "
+                    f"read ({exc}). Nothing was changed: the database is only "
+                    f"cleared once the whole library has been scanned, and a "
+                    f"scan that could not finish would delete the history of "
+                    f"every folder it missed.")
             if self._cancel.is_set():
                 self._notify(
                     TASK_REBUILD, "warn",
                     f"Cancelled after {done:,} of {total:,} channel folders. "
-                    f"The database was left unchanged.")
+                    f"The database was left unchanged.", cancelled=True)
                 return {"cancelled": True, "indexed": 0}
             if not rows:
                 self._notify(
@@ -299,33 +330,38 @@ class MaintenanceOps:
 
         Walked ahead of the scan so the bar is determinate — three listdirs
         deep is cheap next to reading a tag out of every file, and it is the
-        same traversal the scan then repeats one level lower."""
+        same traversal the scan then repeats one level lower.
+
+        Every OSError here propagates, deliberately: a genre folder that
+        cannot be listed means its channels never enter the scan at all, and
+        the clear that follows would erase exactly those channels' history.
+        A platform root that simply is not there is not an error — the crate
+        may only ever have held YouTube downloads."""
         found = []
         base = self._base_dir()
         for platform in PLATFORMS:
             proot = platform_dir(base, platform)
             if not os.path.isdir(proot):
                 continue
-            for genre_dir in sorted(self._listdir(proot)):
+            for genre_dir in sorted(os.listdir(proot)):
                 genre_path = os.path.join(proot, genre_dir)
                 if not os.path.isdir(genre_path):
                     continue
                 genre = CrateLayout.genre_value(genre_dir)
-                for channel_dir in sorted(self._listdir(genre_path)):
+                for channel_dir in sorted(os.listdir(genre_path)):
                     channel_path = os.path.join(genre_path, channel_dir)
                     if os.path.isdir(channel_path):
                         found.append((platform, genre, channel_path))
         return found
 
-    @staticmethod
-    def _listdir(path):
-        try:
-            return os.listdir(path)
-        except OSError:
-            return []
-
     def _scan_channel(self, platform, genre, channel_path, art_snapshot):
-        """One channel folder's tracks as downloads rows, read from disk."""
+        """One channel folder's tracks as downloads rows, read from disk.
+
+        `os.listdir` is deliberately unguarded — a folder that cannot be
+        listed must abort the rebuild, not quietly contribute nothing. The
+        per-file `getmtime` failure below IS swallowed, matching the monolith
+        (DJ-CrateBuilder_v1.3.py:14160): one unreadable file is a track this
+        rebuild cannot describe, not evidence the scan is untrustworthy."""
         sc = read_channel_sidecar(channel_path) or {}
         channel_name = sc.get("display_name") or os.path.basename(channel_path)
         channel_id = sc.get("channel_id")
@@ -334,7 +370,7 @@ class MaintenanceOps:
         art_index = rebuild.index_artwork_dir(channel_path)
 
         rows = []
-        for name in sorted(self._listdir(channel_path)):
+        for name in sorted(os.listdir(channel_path)):
             if not name.lower().endswith(rebuild.AUDIO_EXTS):
                 continue
             full = os.path.join(channel_path, name)
@@ -473,7 +509,8 @@ class MaintenanceOps:
                 summary = (f"Cancelled after {done:,} of {total:,} — tags "
                            f"already written are kept. ") + summary
             self._notify(TASK_REPAIR_TAGS,
-                         "warn" if (errors or cancelled) else "info", summary)
+                         "warn" if (errors or cancelled) else "info", summary,
+                         cancelled=cancelled)
             return {"fixed": fixed, "filled": filled, "untouched": untouched,
                     "errors": errors, "done": done, "total": total,
                     "cancelled": cancelled}
@@ -568,7 +605,7 @@ class _ArtworkRun:
                        f"already done are kept. ") + summary
         ops._notify(TASK_FETCH_ARTWORK,
                     "warn" if (cancelled or self.errors) else "info",
-                    summary + ".")
+                    summary + ".", cancelled=cancelled)
         return {"embedded": self.embedded, "repaired": self.repaired,
                 "recovered": self.recovered, "not_found": self.not_found,
                 "missing": self.missing, "skipped": self.skipped,

@@ -44,7 +44,21 @@ MAINTENANCE_JOB = "maintenance"
 # runs' own terminal events (`batch.finished`, the closing DONE scan line) —
 # those are emitted from inside the run, while the slot is still held. A
 # frontend refreshes its state on this; the others are display only.
+#
+# It also carries HOW the run ended — `ok` and `error` — because that is the
+# only place a crash can be reported from. A run that raises has no terminal
+# event of its own, so without these a frontend settles a dead job as a
+# success (which is exactly what it used to do).
 JOB_FINISHED = "job.finished"
+
+# What a crashed job is called in the error notification _start_job publishes.
+# Maintenance passes its own per-task title instead, since "Rebuild Database
+# from Files" is what the user pressed, not "Database maintenance".
+JOB_TITLES = {
+    "batch": "Downloads",
+    WATCHLIST_JOB: "Watch List",
+    MAINTENANCE_JOB: "Database maintenance",
+}
 
 # Method prefixes the remote transport must refuse server-side. The design's
 # rule is that a browser elsewhere can never replace the binary it is talking
@@ -406,6 +420,9 @@ class CrateBuilderService:
         self._batch_runner = None
         self._watchlist_ops = None
         self._maintenance_ops = None
+        # How many Watch List genre-move retag threads are writing tags right
+        # now. Guarded by self._lock, alongside the job registry it excludes.
+        self._retags = 0
         # The durable channel-link store lives beside the database, so a test
         # pointing db_path at a tmp dir never writes the developer's real one.
         self._links_path = os.path.join(
@@ -423,7 +440,7 @@ class CrateBuilderService:
         with self._lock:
             return category in self._jobs
 
-    def _start_job(self, category, target, *args):
+    def _start_job(self, category, target, *args, title=None, guard=None):
         """Run `target` on a daemon thread; refuse a second job per category.
 
         The run's own terminal events (`batch.finished`, the closing `DONE`
@@ -433,23 +450,104 @@ class CrateBuilderService:
         already ended. `job.finished` is emitted after the slot is released
         precisely so that answer cannot come back stale: it, not the display
         events, is what a frontend resyncs on.
+
+        A run that RAISES is caught here rather than being left to take its
+        worker thread down silently. It has no terminal event of its own, so
+        this is the only place its failure can be reported: an `error`-level
+        `notification` carrying the message, and `job.finished` stamped
+        `ok=False` so a frontend renders a failure instead of settling the
+        dialog as a green success. Both are emitted after the slot is
+        released, for the same reason `job.finished` always was.
+
+        *guard* is a callable run WHILE THIS HOLDS `self._lock`, immediately
+        after the slot is confirmed free and before it is taken; it refuses the
+        start by raising CBError. It exists so a check that has to be atomic
+        with claiming the slot — "no Watch List retag thread is writing tags
+        right now" — cannot be raced by one starting in between. It must never
+        re-acquire `self._lock`.
         """
         with self._lock:
             if category in self._jobs:
                 raise CBError(f"A {category} job is already running.")
+            if guard is not None:
+                guard()
             job_id = next(self._ids)
             self._jobs[category] = job_id
 
         def run():
+            error = None
             try:
                 target(*args)
+            except Exception as exc:
+                # A CBError's message was written to be read by the user;
+                # anything else needs its type to be identifiable at all.
+                message = str(exc).strip()
+                error = (message if isinstance(exc, CBError)
+                         else f"{type(exc).__name__}: {message}".rstrip(": "))
             finally:
                 with self._lock:
                     self._jobs.pop(category, None)
-                self.emit(JOB_FINISHED, {"job": category})
+                if error is not None:
+                    self.emit("notification", {
+                        "level": "error",
+                        "title": title or JOB_TITLES.get(category, category),
+                        "body": error,
+                        "at": datetime.now().isoformat(timespec="seconds"),
+                        "job": category,
+                    })
+                self.emit(JOB_FINISHED, {"job": category,
+                                         "ok": error is None,
+                                         "error": error})
 
         threading.Thread(target=run, daemon=True).start()
         return job_id
+
+    # ── tag-write exclusion ───────────────────────────────────────────────────
+    # mutagen's ID3.save() rewrites an MP3 in place, shifting the audio when the
+    # tag grows — so two threads saving the same file can truncate it. Only two
+    # things in the app write tags in bulk: the Watch List's genre-move retag
+    # and the db.repair_tags sweep. The monolith makes them exclusive with one
+    # `_tag_repair_active` flag it can only read from the Tk thread; here they
+    # are on different threads, so the claim and the check share the job lock —
+    # a retag can only start while no maintenance job holds the slot, and
+    # db.repair_tags can only take the slot while no retag is in flight.
+
+    def claim_tag_writes(self):
+        """Register a Watch List retag about to start. False means refuse."""
+        with self._lock:
+            if MAINTENANCE_JOB in self._jobs:
+                return False
+            self._retags += 1
+            return True
+
+    def release_tag_writes(self):
+        with self._lock:
+            self._retags = max(0, self._retags - 1)
+
+    def _refuse_while_retagging(self):
+        """`_start_job`'s guard for db.repair_tags. Runs while the job lock is
+        already held, so it must not take it again."""
+        if self._retags:
+            raise CBError("A Watch List genre change is rewriting that "
+                          "channel's genre tags right now. Two tag sweeps must "
+                          "never write the same file at once — wait for it to "
+                          "finish, then try again.")
+
+    def _require_idle_maintenance(self):
+        """Refuse a download while a maintenance job holds the slot.
+
+        The mirror of `_require_idle_library`, which refuses the three
+        table-rewriting maintenance jobs while a download runs. Without this
+        half the exclusion only holds in one direction: a download started
+        mid-rebuild writes rows that `clear_all_downloads()` then deletes, or
+        lands in the window between the clear and the backfill and is silently
+        dropped. The monolith leaves its Start button live during a rebuild and
+        has exactly that hole; this closes it rather than porting it."""
+        if self._job_running(MAINTENANCE_JOB):
+            raise CBError("A database maintenance job is running. It rewrites "
+                          "the downloads table, so a download started now "
+                          "could be lost — wait for it to finish, or cancel it "
+                          "from its progress window.")
 
     # ── dispatch ──────────────────────────────────────────────────────────────
 
@@ -644,7 +742,9 @@ class CrateBuilderService:
             self._watchlist_ops = WatchlistOps(
                 self._settings, self._db_for_write, self.emit,
                 links_path=self._links_path, log_line=self.log_line,
-                counts=self.counts, flush=self._emit.flush)
+                counts=self.counts, flush=self._emit.flush,
+                claim_tag_writes=self.claim_tag_writes,
+                release_tag_writes=self.release_tag_writes)
         return self._watchlist_ops
 
     def reset_stale_watchlist_rows(self):
@@ -705,6 +805,7 @@ class CrateBuilderService:
         List's append-to-running, which is what the design's Download New
         tooltip promises."""
         row = self._watchlist_row(channel_id)
+        self._require_idle_maintenance()
         if self._job_running(WATCHLIST_JOB):
             position = self._watchlist.enqueue(row["id"])
             if position is not None:
@@ -723,6 +824,7 @@ class CrateBuilderService:
         if not ids:
             raise CBError("No new tracks pending across any channels. Try "
                           "Scan All first.")
+        self._require_idle_maintenance()
         return {"job_id": self._start_job(WATCHLIST_JOB,
                                           self._watchlist.run_download, ids)}
 
@@ -732,6 +834,7 @@ class CrateBuilderService:
         if is_unresolved_channel(row):
             raise CBError("This channel's link isn't resolved yet. Use Fix "
                           "Link on the card first, then Force Download.")
+        self._require_idle_maintenance()
         job_id = self._start_job(WATCHLIST_JOB, self._watchlist.run_download,
                                  [row["id"]], True)
         return {"job_id": job_id}
@@ -756,7 +859,14 @@ class CrateBuilderService:
         from a Main-tab batch or a Watch List run — holds a save_dir and an
         expected_path computed from the old location, so the move would strand
         it writing into a folder the database no longer describes. A link or
-        plain-field edit touches no files and stays allowed."""
+        plain-field edit touches no files and stays allowed.
+
+        It is refused while a MAINTENANCE job runs for a second reason: the
+        move ends by rewriting the moved folder's genre tags, and a
+        db.repair_tags sweep may already be saving those same MP3s. Two
+        mutagen writes to one file is a truncated track, not a lost update —
+        so the two are made exclusive here and, for the reverse order, at
+        `claim_tag_writes`."""
         row = self._watchlist_row(channel_id)
         picked = (genre or "").strip()
         if picked and picked != (row.get("genre") or CrateLayout.NO_GENRE_VALUE):
@@ -765,6 +875,12 @@ class CrateBuilderService:
                               "can't be moved to another genre until it "
                               "finishes — cancel it first, or change the link "
                               "only.")
+            if self._job_running(MAINTENANCE_JOB):
+                raise CBError("A database maintenance job is running. A genre "
+                              "move rewrites the channel's genre tags, which "
+                              "must not happen while another sweep is writing "
+                              "to the same files — wait for it to finish, or "
+                              "change the link only.")
         return self._watchlist.edit(row["id"], url=url, genre=genre)
 
     def watchlist_remove(self, channel_id):
@@ -1220,8 +1336,12 @@ class CrateBuilderService:
         """Run one maintenance job on the maintenance job thread.
 
         The preflight runs HERE, on the calling thread, so a refusal reaches
-        the user as the answer to their click; `_start_job`'s worker would
-        swallow the same CBError raised a moment later."""
+        the user as the answer to their click; `_start_job`'s worker reports a
+        CBError raised a moment later as a crash instead.
+
+        db.repair_tags carries one extra guard, and it has to be checked while
+        the job slot is being claimed rather than before: a Watch List retag
+        starting in the gap would put two threads on the same MP3."""
         runners = {
             "db.rebuild": self._maintenance.run_rebuild,
             "db.dedupe": self._maintenance.run_dedupe,
@@ -1233,8 +1353,12 @@ class CrateBuilderService:
             raise CBError(f"Unknown maintenance job: {task!r}")
         self._require_idle_library(task)
         self._maintenance.preview(task)
-        return {"job_id": self._start_job(MAINTENANCE_JOB, runner),
-                "task": task}
+        guard = (self._refuse_while_retagging
+                 if task == "db.repair_tags" else None)
+        job_id = self._start_job(MAINTENANCE_JOB, runner,
+                                 title=self._maintenance.title_for(task),
+                                 guard=guard)
+        return {"job_id": job_id, "task": task}
 
     def maintenance_cancel(self):
         """Stop the running job after the item in flight. Safe to call when
@@ -1407,6 +1531,7 @@ class CrateBuilderService:
             if not any(r.get("state") != "skipped" for r in rows):
                 raise CBError("Add a link to the queue before starting a "
                               "download.")
+        self._require_idle_maintenance()
         runner = BatchRunner(
             self._settings, self._db_for_write(), self.emit,
             log_line=self.log_line, counts=self.counts,

@@ -168,7 +168,8 @@ class WatchlistOps:
                  session_factory=YdlSession, runner_factory=BatchRunner,
                  ffmpeg_dir=None, log_line=None, counts=None, flush=None,
                  spawn=_daemon, network_probe=network_is_reachable,
-                 now=time.monotonic, timestamp=None):
+                 now=time.monotonic, timestamp=None,
+                 claim_tag_writes=None, release_tag_writes=None):
         self._settings = settings
         self._db_factory = db_factory
         self._emit = emit
@@ -180,6 +181,13 @@ class WatchlistOps:
         self._counts = counts
         self._flush = flush or (lambda: None)
         self._spawn = spawn
+        # Asked before a genre move's retag thread starts writing tags, and
+        # released when it stops. The service answers False while a
+        # db.repair_tags sweep holds the maintenance slot — two mutagen saves
+        # to one MP3 truncate it. Defaulted to "always allowed" so a test (or
+        # any caller with no maintenance jobs at all) needs no wiring.
+        self._claim_tag_writes = claim_tag_writes or (lambda: True)
+        self._release_tag_writes = release_tag_writes or (lambda: None)
         self._network_probe = network_probe
         self._now = now
         self._timestamp = timestamp or (lambda: time.strftime("%H:%M:%S"))
@@ -875,20 +883,42 @@ class WatchlistOps:
         inside each file still names the genre it left. Off the calling thread
         because a large channel would otherwise hold the RPC open for as long as
         it takes to rewrite every tag — the monolith defers it behind a progress
-        dialog for the same reason. Returns how many tracks were queued."""
+        dialog for the same reason. Returns how many tracks were queued.
+
+        Refused, with a line in the scan log and no thread started, when a
+        maintenance tag sweep already owns the right to write tags. Both paths
+        end in `mutagen`'s ID3.save(), which rewrites the file in place and
+        shifts the audio when the tag grows — two of those interleaved on one
+        MP3 truncates it. The monolith refuses this exact pair the same way
+        (`_watchlist_retag_genre` checks `_tag_repair_active`,
+        DJ-CrateBuilder_v1.3.py:13578), and the move itself has already
+        committed either way: only the tags are skipped."""
         tag_genre = "" if genre == CrateLayout.NO_GENRE_VALUE else genre
         total = genrefix.count_channel_tracks(folder)
         if not total:
             return 0
+        if not self._claim_tag_writes():
+            self._line(LINE_ERROR,
+                       f"{name}: genre tags not updated — a tag repair is "
+                       f"already running. Use Settings ▸ Repair Track Tags "
+                       f"later.")
+            return 0
 
         def work():
             fixed = 0
-            for path, value in genrefix.iter_channel_tracks(folder, tag_genre):
-                changed, _filled = genrefix.repair_track(path, value)
-                if changed:
-                    fixed += 1
-            self._line(LINE_DONE, f"DONE {name} — "
-                                  f"{_plural(fixed, 'genre tag')} updated")
+            try:
+                for path, value in genrefix.iter_channel_tracks(folder,
+                                                                tag_genre):
+                    changed, _filled = genrefix.repair_track(path, value)
+                    if changed:
+                        fixed += 1
+                self._line(LINE_DONE, f"DONE {name} — "
+                                      f"{_plural(fixed, 'genre tag')} updated")
+            finally:
+                # Held for the whole sweep: releasing early would let a
+                # db.repair_tags run start on top of the files still being
+                # written.
+                self._release_tag_writes()
         self._spawn(work)
         return total
 

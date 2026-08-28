@@ -14,7 +14,7 @@ from cratebuilder import maintenance
 from cratebuilder.db import DownloadsDatabase
 from cratebuilder.maintenance import (TASK_DEDUPE, TASK_FETCH_ARTWORK,
                                       TASK_REBUILD, TASK_REPAIR_TAGS,
-                                      MaintenanceOps)
+                                      MaintenanceOps)  # noqa: F401
 from cratebuilder.service import CBError, CrateBuilderService
 from cratebuilder.settings import Settings
 
@@ -159,6 +159,79 @@ def test_a_cancelled_rebuild_never_clears_the_table(ops, db_path, crate,
     assert [r["title"] for r in kept] == ["kept.mp3"]
 
 
+def _blind_one_folder(monkeypatch, doomed):
+    """Make os.listdir raise for exactly one path, as an ACL or a dropped
+    network share would. The FAILURE is the fixture here — chmod games are
+    unreliable on Windows and would test the OS, not the rebuild."""
+    real = os.listdir
+
+    def listdir(path):
+        if os.path.normcase(str(path)) == os.path.normcase(str(doomed)):
+            raise PermissionError(13, "Access is denied", str(doomed))
+        return real(path)
+
+    monkeypatch.setattr(maintenance.os, "listdir", listdir)
+
+
+def test_an_unreadable_channel_folder_aborts_before_the_clear(ops, db_path,
+                                                              crate,
+                                                              monkeypatch):
+    """The whole point of M1: a folder that cannot be listed must never
+    contribute zero rows and let the clear proceed — that would delete the
+    history of tracks still sitting on disk."""
+    db = DownloadsDatabase(db_path)
+    for name in ("Track A.mp3", "Track B.mp3"):
+        seed_download(db, str(crate / "YouTube" / "Drum & Bass" /
+                              "DnB Portal" / name))
+    before = sorted(r["file_path"] for r in db.get_all_downloads())
+
+    _blind_one_folder(monkeypatch,
+                      crate / "YouTube" / "Drum & Bass" / "DnB Portal")
+
+    with pytest.raises(CBError, match="could not be read"):
+        ops.run_rebuild()
+
+    after = sorted(r["file_path"]
+                   for r in DownloadsDatabase(db_path).get_all_downloads())
+    assert after == before, "the downloads table must be byte-identical"
+    assert (crate / "YouTube" / "Drum & Bass" / "DnB Portal" /
+            "Track B.mp3").is_file()
+
+
+def test_an_unreadable_genre_folder_aborts_too(ops, db_path, crate,
+                                               monkeypatch):
+    """A genre folder that cannot be listed hides whole channels from the
+    enumeration, so it is the same loss one level up."""
+    db = DownloadsDatabase(db_path)
+    seed_download(db, str(crate / "YouTube" / "Drum & Bass" / "DnB Portal" /
+                          "Track A.mp3"))
+    _blind_one_folder(monkeypatch, crate / "YouTube" / "Drum & Bass")
+
+    with pytest.raises(CBError, match="could not be read"):
+        ops.run_rebuild()
+
+    assert len(DownloadsDatabase(db_path).get_all_downloads()) == 1
+
+
+def test_the_abort_says_nothing_was_changed(ops, crate, monkeypatch):
+    _blind_one_folder(monkeypatch, crate / "SoundCloud" / "House" / "DJ Foo")
+    with pytest.raises(CBError) as caught:
+        ops.run_rebuild()
+    assert "Nothing was changed" in str(caught.value)
+
+
+def test_a_missing_platform_root_is_not_an_error(tmp_path, db_path):
+    """Half a crate is ordinary — plenty of libraries never held a SoundCloud
+    download. Only a folder that EXISTS and cannot be read is a failure."""
+    root = tmp_path / "yt-only"
+    make_mp3(root / "YouTube" / "House" / "Chan" / "a.mp3")
+    s = Settings(path=str(tmp_path / "c.json"))
+    s.set("base_dir", str(root))
+    ops = MaintenanceOps(s, lambda: DownloadsDatabase(db_path), Recorder())
+
+    assert ops.run_rebuild()["indexed"] == 1
+
+
 def test_a_stale_cancel_never_kills_the_next_run(ops, db_path):
     """Starting a run clears the flag — a cancel left over from the previous
     job must not stop the one the user just asked for."""
@@ -253,7 +326,8 @@ def test_repair_tags_writes_the_folder_genre_onto_every_track(ops, crate):
     assert ID3(track).getall("TCON")[0].text[0] == "Drum & Bass"
 
 
-def test_repair_tags_keeps_what_it_wrote_before_a_cancel(ops, crate):
+def test_repair_tags_keeps_what_it_wrote_before_a_cancel(ops, crate,
+                                                         monkeypatch):
     """The Cancel tooltip's promise: each file is complete the moment it is
     saved, so a cancel midway keeps every tag already written."""
     pytest.importorskip("mutagen")
@@ -269,11 +343,9 @@ def test_repair_tags_keeps_what_it_wrote_before_a_cancel(ops, crate):
             ops.cancel()
         return out
 
-    maintenance.genrefix.repair_track = cancel_after_first
-    try:
-        result = ops.run_repair_tags()
-    finally:
-        maintenance.genrefix.repair_track = real
+    monkeypatch.setattr(maintenance.genrefix, "repair_track",
+                        cancel_after_first)
+    result = ops.run_repair_tags()
 
     assert result["cancelled"] is True
     assert result["done"] == 1
@@ -281,7 +353,7 @@ def test_repair_tags_keeps_what_it_wrote_before_a_cancel(ops, crate):
     assert len(seen) == 1, "nothing was processed after the cancel"
 
 
-def test_repair_tags_counts_a_failing_write_without_stopping(ops):
+def test_repair_tags_counts_a_failing_write_without_stopping(ops, monkeypatch):
     pytest.importorskip("mutagen")
     real = maintenance.genrefix.repair_track
     calls = []
@@ -292,11 +364,8 @@ def test_repair_tags_counts_a_failing_write_without_stopping(ops):
             raise OSError("locked")
         return real(path, genre, **kw)
 
-    maintenance.genrefix.repair_track = one_bad_apple
-    try:
-        result = ops.run_repair_tags()
-    finally:
-        maintenance.genrefix.repair_track = real
+    monkeypatch.setattr(maintenance.genrefix, "repair_track", one_bad_apple)
+    result = ops.run_repair_tags()
 
     assert result["errors"] == 1
     assert result["done"] == 3
@@ -524,8 +593,270 @@ def test_job_finished_names_the_maintenance_category(service, crate):
     assert done.wait(20), "the job never announced itself finished"
 
     finished = [p for t, p in seen if t == "job.finished"]
-    assert finished[-1] == {"job": "maintenance"}
+    assert finished[-1] == {"job": "maintenance", "ok": True, "error": None}
     assert service.snapshot()["running"]["maintenance"] is False
+
+
+def test_the_task_property_names_the_run_and_clears_after_it(ops, monkeypatch):
+    """The snapshot's maintenance_task comes off this, so it has to be the
+    real property and not a value a stub happened to hold."""
+    seen = []
+    real = maintenance.genrefix.count_library_tracks
+
+    def peek(dirs):
+        seen.append(ops.task)
+        return real(dirs)
+
+    monkeypatch.setattr(maintenance.genrefix, "count_library_tracks", peek)
+    assert ops.task is None
+    ops.run_repair_tags()
+
+    assert seen == [TASK_REPAIR_TAGS], "the task is named while it runs"
+    assert ops.task is None, "and released the moment it ends"
+
+
+def test_a_crashed_maintenance_job_reports_the_failure(service, crate,
+                                                       monkeypatch):
+    """M2: a run that raises has no summary of its own, so job.finished's
+    ok/error and an error notification are the only report there is."""
+    seen = []
+    done = threading.Event()
+
+    def on_event(type, payload):
+        if type in ("job.finished", "notification"):
+            seen.append((type, payload))
+        if type == "job.finished":
+            done.set()
+
+    service.events.subscribe(on_event)
+    _blind_one_folder(monkeypatch,
+                      crate / "YouTube" / "Drum & Bass" / "DnB Portal")
+
+    service.call("db.rebuild")
+    assert done.wait(20), "the crashed job never announced itself finished"
+
+    kinds = [t for t, _ in seen]
+    assert kinds == ["notification", "job.finished"]
+    note = seen[0][1]
+    assert note["level"] == "error"
+    # The job's own name, not the category — it is what the user pressed.
+    assert note["title"] == "Rebuild Database from Files"
+    assert "could not be read" in note["body"]
+    finished = seen[1][1]
+    assert finished == {"job": "maintenance", "ok": False,
+                        "error": note["body"]}
+    assert service.snapshot()["running"]["maintenance"] is False
+
+
+def test_a_cancelled_run_says_so_in_the_notification(ops, monkeypatch):
+    """L1: the frontend must not have to read Python prose to tell a
+    cancelled run from a finished one."""
+    real = maintenance.genrefix.repair_track
+
+    def cancel_immediately(path, genre, **kw):
+        ops.cancel()
+        return real(path, genre, **kw)
+
+    monkeypatch.setattr(maintenance.genrefix, "repair_track",
+                        cancel_immediately)
+    ops.run_repair_tags()
+
+    note = ops.recorder.last("notification")
+    assert note["cancelled"] is True
+    assert note["level"] == "warn"
+
+
+def test_a_completed_run_is_not_flagged_cancelled(ops):
+    ops.run_rebuild()
+    assert ops.recorder.last("notification")["cancelled"] is False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# M3 — a tag sweep and a genre-move retag can never write the same MP3
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _watched_channel(db, crate, genre="Drum & Bass"):
+    return db.add_watchlist_channel(
+        url="https://www.youtube.com/channel/UCfixture",
+        display_name="DnB Portal", platform="YouTube", genre=genre,
+        channel_id="UCfixture")
+
+
+def test_a_genre_move_is_refused_while_a_maintenance_job_runs(service, db_path,
+                                                              crate):
+    """M3(a): the move ends by rewriting the folder's genre tags, and a
+    repair sweep may already be saving those same files."""
+    cid = _watched_channel(DownloadsDatabase(db_path), crate)
+    gate = threading.Event()
+    service._start_job("maintenance", gate.wait)
+    try:
+        with pytest.raises(CBError, match="maintenance job is running"):
+            service.watchlist_edit(cid, genre="House")
+    finally:
+        gate.set()
+
+
+def test_a_link_only_edit_is_still_allowed_during_maintenance(service, db_path,
+                                                              crate):
+    """The refusal is about tag writes, so an edit that touches no file
+    stays allowed — the same split the download guard already makes."""
+    cid = _watched_channel(DownloadsDatabase(db_path), crate)
+    gate = threading.Event()
+    service._start_job("maintenance", gate.wait)
+    try:
+        service.watchlist_edit(cid, url="https://www.youtube.com/@moved")
+    finally:
+        gate.set()
+
+
+def test_repair_tags_is_refused_while_a_retag_holds_the_tag_writes(service,
+                                                                   crate):
+    """M3(b): the reverse order. The service tracks retag liveness, so a
+    sweep cannot start on top of files a genre move is still writing."""
+    assert service.claim_tag_writes() is True
+    try:
+        with pytest.raises(CBError, match="genre change is rewriting"):
+            service.call("db.repair_tags")
+    finally:
+        service.release_tag_writes()
+    # Released, the same call goes through.
+    assert service.call("db.repair_tags")["task"] == "db.repair_tags"
+
+
+def test_a_retag_is_refused_while_a_maintenance_job_runs(service):
+    """M3(c): the claim itself is what a retag thread asks before it starts
+    writing, and it is answered under the same lock that holds the job
+    registry — so a sweep starting in the gap cannot be missed."""
+    gate = threading.Event()
+    service._start_job("maintenance", gate.wait)
+    try:
+        assert service.claim_tag_writes() is False
+    finally:
+        gate.set()
+
+
+def test_the_other_maintenance_jobs_are_not_blocked_by_a_retag(service, crate,
+                                                               duplicated):
+    """Only db.repair_tags writes tags. Refusing the other three on a retag
+    would be a guard about nothing."""
+    assert service.claim_tag_writes() is True
+    try:
+        assert service.call("db.dedupe")["task"] == "db.dedupe"
+    finally:
+        service.release_tag_writes()
+
+
+def test_a_watchlist_retag_skips_and_says_why_when_refused(tmp_path, crate,
+                                                           db_path):
+    """The watchrun half: no thread is started, the scan log carries the
+    reason, and the move itself is untouched."""
+    from cratebuilder.watchrun import WatchlistOps
+
+    rec = Recorder()
+    spawned = []
+    settings = Settings(path=str(tmp_path / "wl.json"))
+    settings.set("base_dir", str(crate))
+    ops = WatchlistOps(settings, lambda: DownloadsDatabase(db_path), rec,
+                       links_path=str(tmp_path / "links.json"),
+                       spawn=spawned.append,
+                       claim_tag_writes=lambda: False)
+
+    folder = str(crate / "YouTube" / "Drum & Bass" / "DnB Portal")
+    assert ops._retag(folder, "House", "DnB Portal") == 0
+    assert spawned == [], "no tag-writing thread may start"
+    lines = [p for p in rec.of("scan.line")]
+    assert any("a tag repair is already running" in (p.get("text") or "")
+               for p in lines)
+
+
+def test_a_watchlist_retag_releases_the_claim_when_it_finishes(tmp_path, crate,
+                                                               db_path):
+    pytest.importorskip("mutagen")
+    from cratebuilder.watchrun import WatchlistOps
+
+    released = []
+    settings = Settings(path=str(tmp_path / "wl.json"))
+    settings.set("base_dir", str(crate))
+    ops = WatchlistOps(settings, lambda: DownloadsDatabase(db_path),
+                       Recorder(), links_path=str(tmp_path / "links.json"),
+                       spawn=lambda work: work(),   # run it here, in order
+                       claim_tag_writes=lambda: True,
+                       release_tag_writes=lambda: released.append(True))
+
+    folder = str(crate / "YouTube" / "Drum & Bass" / "DnB Portal")
+    assert ops._retag(folder, "House", "DnB Portal") == 2
+    assert released == [True], "the claim is held for the whole sweep, then let go"
+
+
+def test_a_retag_that_blows_up_still_releases_the_claim(tmp_path, crate,
+                                                        db_path, monkeypatch):
+    """A claim leaked by a crashing retag would lock Repair Track Tags out
+    for the rest of the session."""
+    from cratebuilder import watchrun
+    from cratebuilder.watchrun import WatchlistOps
+
+    released = []
+    settings = Settings(path=str(tmp_path / "wl.json"))
+    settings.set("base_dir", str(crate))
+    ops = WatchlistOps(settings, lambda: DownloadsDatabase(db_path),
+                       Recorder(), links_path=str(tmp_path / "links.json"),
+                       spawn=lambda work: work(),
+                       claim_tag_writes=lambda: True,
+                       release_tag_writes=lambda: released.append(True))
+
+    def boom(path, genre, **kw):
+        raise OSError("the share went away")
+
+    # repair_track, not iter_channel_tracks: the latter is what
+    # count_channel_tracks is built on, so blowing it up would fail before the
+    # claim is ever made and prove nothing about releasing it.
+    monkeypatch.setattr(watchrun.genrefix, "repair_track", boom)
+    folder = str(crate / "YouTube" / "Drum & Bass" / "DnB Portal")
+    with pytest.raises(OSError):
+        ops._retag(folder, "House", "DnB Portal")
+    assert released == [True]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# L5 — the reverse guard: a download cannot start mid-rebuild either
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_a_batch_download_is_refused_while_maintenance_runs(service):
+    gate = threading.Event()
+    service._start_job("maintenance", gate.wait)
+    service.batch_add("https://www.youtube.com/watch?v=abcdefghijk")
+    try:
+        with pytest.raises(CBError, match="rewrites the downloads table"):
+            service.call("download.start")
+    finally:
+        gate.set()
+
+
+def test_a_watchlist_download_is_refused_while_maintenance_runs(service,
+                                                                db_path,
+                                                                crate):
+    cid = _watched_channel(DownloadsDatabase(db_path), crate)
+    gate = threading.Event()
+    service._start_job("maintenance", gate.wait)
+    try:
+        with pytest.raises(CBError, match="rewrites the downloads table"):
+            service.watchlist_force_download(cid)
+    finally:
+        gate.set()
+
+
+def test_a_watchlist_scan_is_still_allowed_during_maintenance(service, db_path,
+                                                              crate):
+    """Only the download entry points are gated. A scan adds rows a rebuild
+    re-derives from disk anyway, and gating it would stop the scheduler dead
+    for the length of an artwork backfill."""
+    _watched_channel(DownloadsDatabase(db_path), crate)
+    gate = threading.Event()
+    service._start_job("maintenance", gate.wait)
+    try:
+        service.watchlist_scan_all()
+    finally:
+        gate.set()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -569,6 +900,17 @@ def test_every_task_quotes_a_tooltip_the_registry_actually_has(app_js):
     assert len(keys) == 4
     for key in keys:
         assert key in ui_strings.TOOLTIPS, key
+
+
+def test_the_cancel_tooltip_is_the_registrys_not_a_paraphrase(app_js):
+    """The design carries this copy on the 3m shell's Cancel (dc.html:923) and
+    the registry holds it, so the button reads it by key. Skip is the opposite
+    case — 3m draws no Skip, so its text has nowhere to come from but here."""
+    from cratebuilder import ui_strings
+    assert "settings.maintenance_cancel" in ui_strings.TOOLTIPS
+    assert "'settings.maintenance_cancel'" in app_js
+    assert "MAINT_CANCEL_TT" not in app_js, "the paraphrase is gone"
+    assert "MAINT_SKIP_TT" in app_js
 
 
 def test_the_four_buttons_name_the_four_service_methods(app_js, service):
@@ -660,6 +1002,108 @@ console.log(JSON.stringify({
     assert result["done"]["item"] == "2 embedded, 0 none found."
 
 
+def _settle_harness(app_js, body):
+    """maintPaint + maintSettle over stub DOM handles."""
+    return "\n".join([
+        "const num = (n) => Number(n || 0).toLocaleString();",
+        "const TOOLTIPS = {};",
+        _slice(app_js, "  const MAINT_TASKS = {", "  const MAINT_BUSY_REASON"),
+        "const mt = { running: true, task: 'db.repair_tags', view: null, "
+        "overall: null, current: null, note: null };",
+        _slice(app_js, "  function maintPaint()", "  const SECTION_EXTRAS = {"),
+        """
+function cell() {
+  return { textContent: null, classList: { added: [],
+    add(c) { this.added.push(c); } } };
+}
+function view(task) {
+  const tag = { textContent: 'Running', className: 'cb-tag cb-tag--fill' };
+  const refs = { fill: { style: { width: '42%' } }, item: cell(),
+                 counts: cell(), tally: cell(), kick: cell(),
+                 note: cell(), close: { focus() {}, style: {}, hidden: true },
+                 cancel: { hidden: false },
+                 skip: { hidden: false } };
+  return { task, refs, modal: { querySelector: () => tag }, tag };
+}
+function settle(task, payload, note, overall) {
+  const v = view(task);
+  mt.view = v; mt.note = note; mt.overall = overall || null;
+  mt.running = true; mt.task = task;
+  maintSettle(payload);
+  return { tag: v.tag.textContent, tagClass: v.tag.className,
+           kick: v.refs.kick.textContent, item: v.refs.item.textContent,
+           itemClasses: v.refs.item.classList.added,
+           width: v.refs.fill.style.width,
+           cancelHidden: v.refs.cancel.hidden,
+           skipHidden: v.refs.skip.hidden,
+           closeHidden: v.refs.close.hidden,
+           running: mt.running };
+}
+console.log(JSON.stringify({
+  ok: settle('db.rebuild', { job: 'maintenance', ok: true, error: null },
+             { body: 'Indexed 7 tracks.', cancelled: false },
+             { done: 3, total: 3, percent: 100, found: 7 }),
+  cancelled: settle('db.repair_tags',
+             { job: 'maintenance', ok: true, error: null },
+             { body: 'Cancelled after 3 of 7 — tags already written are kept.',
+               cancelled: true },
+             { done: 3, total: 7, percent: 42 }),
+  // The wording no longer decides anything: a finished run whose summary
+  // happens to open with the word is still a finish.
+  wordingOnly: settle('db.rebuild',
+             { job: 'maintenance', ok: true, error: null },
+             { body: 'Cancelled downloads were skipped.', cancelled: false },
+             { done: 3, total: 3, percent: 100 }),
+  failed: settle('db.rebuild',
+             { job: 'maintenance', ok: false,
+               error: 'Rebuild stopped — a folder could not be read.' },
+             null, { done: 1, total: 3, percent: 33 }),
+  failedNoReason: settle('db.rebuild',
+             { job: 'maintenance', ok: false, error: null }, null, null),
+}));
+""",
+    ])
+
+
+def test_the_dialog_settles_into_finished_cancelled_or_failed(app_js, tmp_path):
+    """M2: a run that raised must never settle green at 100%. L1: cancelled
+    comes off the notification's own flag, not off its prose."""
+    r = _run_node(tmp_path, "maintsettle.mjs", _settle_harness(app_js, None))
+
+    assert r["ok"]["tag"] == "Finished"
+    assert r["ok"]["tagClass"] == "cb-tag cb-tag--ok"
+    assert r["ok"]["kick"] == "Result"
+    assert r["ok"]["width"] == "100%"
+    assert r["ok"]["item"] == "Indexed 7 tracks."
+
+    assert r["cancelled"]["tag"] == "Cancelled"
+    assert r["cancelled"]["tagClass"] == "cb-tag cb-tag--grey"
+    assert r["cancelled"]["kick"] == "Stopped"
+
+    assert r["wordingOnly"]["tag"] == "Finished", \
+        "the summary's wording must not decide the outcome"
+
+    failed = r["failed"]
+    assert failed["tag"] == "Failed"
+    assert failed["tagClass"] == "cb-tag cb-tag--err"
+    assert failed["kick"] == "Failed"
+    assert failed["item"] == "Rebuild stopped — a folder could not be read."
+    assert "is-failed" in failed["itemClasses"]
+    # The bar is left where it stopped: how far it got is the useful thing,
+    # and filling it would read as done.
+    assert failed["width"] == "42%"
+
+    assert r["failedNoReason"]["item"] == \
+        "The job stopped without reporting why."
+
+    # Whatever the outcome, the run is released and only Close is left.
+    for key in ("ok", "cancelled", "failed"):
+        assert r[key]["running"] is False
+        assert r[key]["cancelHidden"] is True
+        assert r[key]["skipHidden"] is True
+        assert r[key]["closeHidden"] is False
+
+
 class _StubOps:
     """A MaintenanceOps stand-in whose every run blocks until released."""
 
@@ -670,6 +1114,10 @@ class _StubOps:
 
     def preview(self, task):
         return {"task": task}
+
+    @staticmethod
+    def title_for(task):
+        return task
 
     def _blocking(self):
         self._gate.wait()

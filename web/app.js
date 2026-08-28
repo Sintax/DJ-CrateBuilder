@@ -3262,9 +3262,11 @@
   const MAINT_BUSY_REASON =
     'A database maintenance job is running. Only one runs at a time — wait ' +
     'for it to finish, or cancel it from its progress window.';
-  const MAINT_CANCEL_TT =
-    'Stop after the item being worked on right now. Everything already ' +
-    'written is kept.';
+  /* The Cancel copy is the design's own (artboard 3m) and lives in the
+     registry as `settings.maintenance_cancel`; the footer reads it by key.
+     Skip has no design copy at all — 3m draws no Skip button — so its text is
+     inline, per the same rule that governs every other control the contract
+     has nothing to say about. */
   const MAINT_SKIP_TT =
     'Give up on the track being fetched right now and move straight on to ' +
     'the next one. Only this track is skipped.';
@@ -3371,8 +3373,8 @@
           foot.appendChild(refs.skip);
         }
         refs.cancel = modalButton('Cancel', 'cb-btn--warn',
-          () => call('db.maintenance_cancel').catch(() => {}));
-        refs.cancel.setAttribute('data-tt-text', MAINT_CANCEL_TT);
+          () => call('db.maintenance_cancel').catch(() => {}),
+          'settings.maintenance_cancel');
         if (!spec.skip) refs.cancel.style.marginLeft = 'auto';
         refs.close = modalButton('Close', 'cb-btn--quiet', api.close);
         refs.close.hidden = true;
@@ -3404,32 +3406,47 @@
   }
 
   /* The host released the slot. Settle the dialog in place rather than
-     yanking it away mid-read: the bar completes, the summary the run
-     published takes over the current-item line, and the only control left is
-     Close. */
-  function maintSettle() {
+     yanking it away mid-read: the outcome takes over the head tag and the
+     current-item line, and the only control left is Close.
+
+     Three outcomes, and which one is NEVER guessed from the summary's
+     wording. `ok` comes from job.finished — false means the run raised, and
+     the run then has no summary of its own, so completing the bar and
+     painting it green would be reporting a success that did not happen.
+     `cancelled` comes from the run's own notification, where the run computed
+     it. Everything else is a finish. */
+  function maintSettle(payload) {
     mt.running = false;
     mt.task = null;
     if (!mt.view) return;
     const { refs, modal } = mt.view;
-    const cancelled = !!(mt.note && /^Cancelled/.test(mt.note.body || ''));
+    const failed = !!(payload && payload.ok === false);
+    const cancelled = !failed && !!(mt.note && mt.note.cancelled);
     const tag = modal && modal.querySelector('.cb-tag');
     if (tag) {
-      tag.textContent = cancelled ? 'Cancelled' : 'Finished';
-      tag.className = 'cb-tag ' + (cancelled ? 'cb-tag--grey' : 'cb-tag--ok');
+      tag.textContent = failed ? 'Failed' : (cancelled ? 'Cancelled' : 'Finished');
+      tag.className = 'cb-tag ' +
+        (failed ? 'cb-tag--err' : (cancelled ? 'cb-tag--grey' : 'cb-tag--ok'));
     }
-    refs.fill.style.width = '100%';
-    // The line stops being a track name and becomes the run's whole summary:
-    // it has to wrap instead of truncating, and "Current" no longer describes
-    // what it holds.
-    refs.kick.textContent = cancelled ? 'Stopped' : 'Result';
+    // A failed run's bar is left exactly where it stopped — how far it got is
+    // the one useful thing left on it, and filling it would read as done.
+    if (!failed) refs.fill.style.width = '100%';
+    // The line stops being a track name and becomes the run's outcome: it has
+    // to wrap instead of truncating, and "Current" no longer describes it.
+    refs.kick.textContent = failed ? 'Failed'
+      : (cancelled ? 'Stopped' : 'Result');
     refs.item.classList.add('is-summary');
+    if (failed) {
+      refs.item.classList.add('is-failed');
+      refs.item.textContent = (payload && payload.error) ||
+        'The job stopped without reporting why.';
+    }
     if (refs.skip) refs.skip.hidden = true;
     refs.cancel.hidden = true;
     refs.close.hidden = false;
     refs.close.style.marginLeft = 'auto';
     refs.note.textContent = '';
-    maintPaint();
+    if (!failed) maintPaint();
     refs.close.focus();
   }
 
@@ -3788,7 +3805,7 @@
         wl.current = null;
         wl.overall = null;
       } else if (job === 'maintenance') {
-        maintSettle();
+        maintSettle(p);
       } else {
         return;
       }
@@ -3804,7 +3821,11 @@
         mt.note = n;
         if (mt.view) { maintPaint(); return; }
       }
-      toast(`${n.title} — ${n.body}`, n.level === 'error');
+      // `warn` is the level a cancelled run, or one with per-track failures,
+      // reports at — an outcome that wants looking at, so it takes the
+      // attention treatment rather than reading as routine.
+      toast(`${n.title} — ${n.body}`,
+        n.level === 'error' || n.level === 'warn');
     });
     cbApi.on('state.patch', (p) => {
       if (!state || !p || !p.counts) return;
