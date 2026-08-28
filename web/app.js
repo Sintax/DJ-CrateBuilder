@@ -1332,10 +1332,13 @@
   /* ⊞ expands every GROUP, and stops there — the registry calls it "Expand
      all groups" and the tkinter original is a pure display toggle. Descending
      into leaves would mean one db.query per channel and the whole library in
-     the DOM, which is exactly what the paging design exists to avoid. */
+     the DOM, which is exactly what the paging design exists to avoid.
+     The leaf test comes FIRST so a leaf-level group is left honestly ▸: marking
+     it expanded would draw an open caret over nothing, and the next click would
+     collapse it instead of loading its rows. */
   async function dbExpandRecursive(node) {
-    if (node.depth >= 0) node.expanded = true;
     if (dbNextHierarchyKey(dbState.downloads.groupPreset, node.path) === null) return;
+    if (node.depth >= 0) node.expanded = true;
     if (node.children === null && node.rows === null) {
       node.loading = true;
       dbRenderDownloadsTree();
@@ -1715,9 +1718,14 @@
     bar.innerHTML = '';
     const pending = st.rows.reduce((a, r) => a + (r.pending || 0), 0);
     const ticked = Object.values(st.checked).filter(Boolean).length;
+    /* pending is summed over the LOADED rows only, so it carries the same
+       "(N loaded)" qualifier as the channel count — an unqualified number
+       next to a full total would read as a figure for the whole list. */
+    const partial = st.rows.length < st.total;
     [`${num(st.total)} channel${st.total === 1 ? '' : 's'}` +
-       (st.rows.length < st.total ? ` (${num(st.rows.length)} loaded)` : ''),
-     `${num(pending)} pending new`, `${ticked} ticked for cleanup`].forEach((t) => {
+       (partial ? ` (${num(st.rows.length)} loaded)` : ''),
+     `${num(pending)} pending new` + (partial ? ' (in loaded rows)' : ''),
+     `${ticked} ticked for cleanup`].forEach((t) => {
       const span = document.createElement('span'); span.textContent = t; bar.appendChild(span);
     });
     bindTips(tbody);

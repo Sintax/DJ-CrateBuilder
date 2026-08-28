@@ -455,6 +455,76 @@ def test_db_artwork_preview_on_remote_cannot_read_an_arbitrary_file(tmp_path):
         assert remote.call("db.artwork_preview", params) == {"data_url": None}
 
 
+def test_db_artwork_preview_refuses_bytes_that_are_not_an_image(dbsvc, tmp_path):
+    """A stored artwork_path pointing at a text file used to come back as
+    data:image/jpeg with the file's contents base64'd inside it — the label
+    now comes from the bytes, so anything that isn't an image is refused."""
+    svc, db = dbsvc
+    secret = tmp_path / "outside" / "secret.txt"
+    secret.parent.mkdir()
+    secret.write_bytes(b"SENSITIVE-NOT-AN-IMAGE" * 4)
+    _add_download(db, video_id="a", title="A", channel_name="C",
+                  artwork_path=str(secret))
+    row_id = svc.db_query("artwork", {}, {}, 0, 5)["rows"][0]["id"]
+
+    result = svc.db_artwork_preview(row_id)
+    assert result["data_url"] is None
+    assert "SENSITIVE" not in str(result)
+
+
+def test_db_artwork_preview_labels_a_webp_sidecar_as_webp(dbsvc, tmp_path):
+    """raw_thumbnail writes .webp sidecars; they were labelled image/jpeg."""
+    svc, db = dbsvc
+    webp = tmp_path / "cover.webp"
+    webp.write_bytes(b"RIFF" + b"\x24\x00\x00\x00" + b"WEBPVP8 " + b"\x00" * 24)
+    _add_download(db, video_id="a", title="A", channel_name="C",
+                  artwork_path=str(webp))
+    row_id = svc.db_query("artwork", {}, {}, 0, 5)["rows"][0]["id"]
+
+    assert svc.db_artwork_preview(row_id)["data_url"].startswith(
+        "data:image/webp;base64,")
+
+
+def test_db_artwork_preview_asks_the_containment_gate_before_reading(
+        dbsvc, tmp_path, monkeypatch):
+    """Defence in depth: the stored path goes through the same gate fs.reveal
+    uses. Its DB-records clause accepts every path the downloads table itself
+    holds, so the gate is inert against today's row shapes — this pins that it
+    is consulted at all, for the day something else writes that column."""
+    svc, db = dbsvc
+    jpg = tmp_path / "cover.jpg"
+    jpg.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg-bytes")
+    _add_download(db, video_id="a", title="A", channel_name="C",
+                  artwork_path=str(jpg))
+    row_id = svc.db_query("artwork", {}, {}, 0, 5)["rows"][0]["id"]
+    assert svc.db_artwork_preview(row_id)["data_url"]        # baseline
+
+    monkeypatch.setattr(svc, "_fs_path_is_contained", lambda p: False)
+    assert svc.db_artwork_preview(row_id) == {"data_url": None}
+
+
+def test_db_artwork_preview_holds_no_db_lock_while_reading_the_sidecar(
+        dbsvc, tmp_path, monkeypatch):
+    """The containment gate hits the DB; the read must still happen off the
+    pooled lock (Task 6's rule)."""
+    svc, db = dbsvc
+    jpg = tmp_path / "cover.jpg"
+    jpg.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg-bytes")
+    _add_download(db, video_id="a", title="A", channel_name="C",
+                  artwork_path=str(jpg))
+    row_id = svc.db_query("artwork", {}, {}, 0, 5)["rows"][0]["id"]
+    monkeypatch.setattr(svc, "_db", lambda: db)
+
+    lock_states = []
+    real_open = service_module.open if hasattr(service_module, "open") else open
+    monkeypatch.setattr(
+        service_module, "open",
+        lambda *a, **k: (lock_states.append(db._lock.locked()), real_open(*a, **k))[1],
+        raising=False)
+    assert svc.db_artwork_preview(row_id)["data_url"]
+    assert lock_states == [False]
+
+
 # ── fs.reveal ─────────────────────────────────────────────────────────────────
 
 def _crate_file(svc, name, body=b"x"):
@@ -581,3 +651,57 @@ def test_fs_reveal_folder_mode_selects_in_explorer_on_windows(dbsvc, monkeypatch
     assert isinstance(seen["args"], list)
     assert seen["args"] == ["explorer", "/select,", os.path.normpath(target)]
     assert "shell" not in seen["kwargs"]
+
+
+def test_fs_reveal_checks_the_extension_of_the_resolved_target(dbsvc, monkeypatch):
+    """A link inside the crate called cover.jpg whose target is payload.exe
+    passed the extension gate on its own name while containment resolved it —
+    the two must agree on which file they are talking about."""
+    svc, _db = dbsvc
+    payload = _crate_file(svc, "payload.exe")
+    link = _crate_file(svc, "cover.jpg")
+    real_realpath = os.path.realpath
+
+    def fake_realpath(p, *a, **k):
+        if os.path.normcase(str(p)) == os.path.normcase(link):
+            return real_realpath(payload)
+        return real_realpath(p, *a, **k)
+
+    monkeypatch.setattr(service_module.os.path, "realpath", fake_realpath)
+    calls = []
+    monkeypatch.setattr(svc, "_os_open", lambda p: calls.append(p))
+    monkeypatch.setattr(service_module.subprocess, "Popen",
+                        lambda *a, **k: pytest.fail("nothing may be launched"))
+
+    with pytest.raises(CBError, match="audio and image"):
+        svc.fs_reveal(link, "open")
+    assert calls == []
+
+
+def test_fs_reveal_opens_every_audio_type_the_library_indexes(dbsvc, monkeypatch):
+    """Rebuild-DB indexes rebuild.AUDIO_EXTS; "Open File" refused .oga/.mp4/
+    .m4b rows the app itself had put in the table."""
+    from cratebuilder import rebuild
+
+    svc, _db = dbsvc
+    calls = []
+    monkeypatch.setattr(svc, "_os_open", lambda p: calls.append(p))
+    monkeypatch.setattr(service_module.subprocess, "Popen",
+                        lambda *a, **k: pytest.fail("nothing may be launched"))
+    for ext in rebuild.AUDIO_EXTS:
+        assert svc.fs_reveal(_crate_file(svc, f"track{ext}"), "open") == {"opened": True}
+    assert len(calls) == len(rebuild.AUDIO_EXTS)
+
+
+def test_fs_reveal_still_refuses_executables_after_the_audio_set_widened(
+        dbsvc, monkeypatch):
+    svc, _db = dbsvc
+    calls = []
+    monkeypatch.setattr(svc, "_os_open", lambda p: calls.append(p))
+    monkeypatch.setattr(service_module.subprocess, "Popen",
+                        lambda *a, **k: pytest.fail("nothing may be launched"))
+    for name in ("a.exe", "a.bat", "a.cmd", "a.com", "a.scr", "a.hta",
+                 "a.js", "a.vbs", "a.msi", "a.lnk", "a.ps1", "a.txt"):
+        with pytest.raises(CBError):
+            svc.fs_reveal(_crate_file(svc, name), "open")
+    assert calls == []
