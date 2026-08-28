@@ -634,6 +634,52 @@ def test_fs_reveal_folder_mode_selects_in_explorer_on_windows(dbsvc, monkeypatch
     assert "shell" not in seen["kwargs"]
 
 
+def test_fs_reveal_opens_a_directory_instead_of_selecting_it(dbsvc, monkeypatch):
+    """`explorer /select,` on a FOLDER highlights it inside its parent rather
+    than opening it — an Open Folder action must open the folder itself."""
+    svc, _db = dbsvc
+    base = svc._settings.get("base_dir")
+    folder = os.path.join(base, "YouTube", "Drum & Bass", "DnB Portal")
+    os.makedirs(folder, exist_ok=True)
+    monkeypatch.setattr(service_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        service_module.subprocess, "Popen",
+        lambda *a, **k: pytest.fail("a folder must never go through /select,"))
+    calls = []
+    monkeypatch.setattr(svc, "_os_open", lambda p: calls.append(p))
+
+    assert svc.fs_reveal(folder, "folder") == {"opened": True}
+    assert calls == [folder]
+
+
+def test_fs_reveal_open_mode_accepts_a_directory(dbsvc, monkeypatch):
+    """A folder has no extension for the allow-list to match, so gating it on
+    one refused every folder outright."""
+    svc, _db = dbsvc
+    base = svc._settings.get("base_dir")
+    folder = os.path.join(base, "SoundCloud", "House")
+    os.makedirs(folder, exist_ok=True)
+    calls = []
+    monkeypatch.setattr(svc, "_os_open", lambda p: calls.append(p))
+
+    assert svc.fs_reveal(folder, "open") == {"opened": True}
+    assert calls == [folder]
+
+
+def test_fs_reveal_still_refuses_a_directory_outside_the_library(dbsvc, tmp_path,
+                                                                 monkeypatch):
+    """The directory case is a new branch, not a new hole: containment is
+    still checked before anything is opened."""
+    svc, _db = dbsvc
+    outsider = tmp_path / "elsewhere-dir"
+    outsider.mkdir()
+    monkeypatch.setattr(svc, "_os_open",
+                        lambda p: pytest.fail("must never open an outsider"))
+    for mode in ("folder", "open"):
+        with pytest.raises(CBError):
+            svc.fs_reveal(str(outsider), mode)
+
+
 def test_fs_reveal_checks_the_extension_of_the_resolved_target(dbsvc, monkeypatch):
     """A link inside the crate called cover.jpg whose target is payload.exe
     passed the extension gate on its own name while containment resolved it —
