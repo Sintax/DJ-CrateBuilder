@@ -11,7 +11,7 @@ import sys
 import threading
 from datetime import datetime
 
-from cratebuilder import activitylog, startup, ui_strings, util
+from cratebuilder import activitylog, rebuild, startup, ui_strings, util
 from cratebuilder.artwork import DEFAULT_COVER_ART_MODE, extract_cover
 from cratebuilder.batchresolve import platform_dir
 from cratebuilder.batchrun import BatchRunner
@@ -61,11 +61,12 @@ EXPORT_ROW_CAP = 1_000_000
 MAX_PREVIEW_BYTES = 8 * 1024 * 1024
 # fs.reveal mode="open" hands the path to the OS default handler, which on
 # Windows means "execute" for .exe/.bat/.lnk and friends. Only the media the
-# Database viewer actually previews may be opened that way.
-OPENABLE_EXTENSIONS = frozenset({
-    ".mp3", ".m4a", ".opus", ".webm", ".flac", ".wav", ".ogg",
+# Database viewer actually previews may be opened that way — derived from the
+# library's own audio set so a Rebuild-DB run can never index a row that
+# "Open File" then refuses, plus the sidecar types artwork.raw_thumbnail writes.
+OPENABLE_EXTENSIONS = frozenset(rebuild.AUDIO_EXTS) | {
     ".jpg", ".jpeg", ".png", ".webp",
-})
+}
 
 _VERSION_RE = re.compile(r'^APP_VERSION\s*=\s*"([^"]+)"', re.M)
 _BUILD_RE = re.compile(r"^APP_BUILD\s*=\s*(\d+)", re.M)
@@ -851,13 +852,34 @@ class CrateBuilderService:
         embedded in the MP3 so a track whose sidecar was deleted still
         previews, matching the monolith's _art_show_preview. {data_url:
         None} when neither source has anything to show — the caller renders
-        the empty-state text."""
+        the empty-state text.
+
+        Stored paths go through the same containment gate fs.reveal uses
+        before they are opened. Be honest about what that buys: its
+        DB-records clause accepts every path the downloads table already
+        holds, so the gate is inert against today's row shapes and only
+        starts biting if something other than a downloads row ever feeds
+        this. What actually stops a non-image being served is the MIME
+        label — read from the bytes rather than assumed, so anything that
+        isn't a PNG/JPEG/WebP is refused instead of shipped as image/jpeg
+        with the file's contents base64'd inside it.
+
+        The two branches bound their read differently: the sidecar stops at
+        the syscall (MAX_PREVIEW_BYTES + 1), while extract_cover materialises
+        the whole APIC frame before its size is checked. That path is a
+        DB-recorded MP3 the library wrote, never a caller's choice, so the
+        worst case is a legitimately huge embedded cover briefly costing
+        host memory."""
         db = self._db()
         row = db.get_download(row_id) if db is not None else None
         if row is None:
             return {"data_url": None}
         path = (row.get("artwork_path") or "").strip()
         file_path = (row.get("file_path") or "").strip()
+        if path and not self._fs_path_is_contained(path):
+            path = ""
+        if file_path and not self._fs_path_is_contained(file_path):
+            file_path = ""
         data = None
         note = ""
         if path and os.path.isfile(path):
@@ -881,7 +903,14 @@ class CrateBuilderService:
                         else "embedded artwork")
         if not data:
             return {"data_url": None}
-        mime = "image/png" if data[:8] == b"\x89PNG\r\n\x1a\n" else "image/jpeg"
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            mime = "image/png"
+        elif data[:3] == b"\xff\xd8\xff":
+            mime = "image/jpeg"
+        elif data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            mime = "image/webp"
+        else:
+            return {"data_url": None, "note": "That file is not an image"}
         width = height = None
         try:
             from PIL import Image
@@ -1326,14 +1355,23 @@ class CrateBuilderService:
         "open" is ShellExecute, so an .exe/.bat/.lnk there would be "run
         this program" rather than "show me this track": only the audio and
         image types the viewer itself displays are openable, and both modes
-        require the path to be one the library owns."""
+        require the path to be one the library owns.
+
+        The extension gate reads the RESOLVED name, so a symlink or junction
+        called cover.jpg cannot smuggle a payload.exe past it — the check and
+        the containment test then agree on which file they are talking
+        about."""
         if self.transport != LOCAL:
             raise CBError("Opening files only works in the app window on the "
                           "host machine.")
         path = (path or "").strip()
         if not path:
             raise CBError("No path is recorded for this row.")
-        if mode == "open" and os.path.splitext(path)[1].lower() not in OPENABLE_EXTENSIONS:
+        try:
+            target = os.path.realpath(path)
+        except OSError:
+            raise CBError("That path is outside the crate folder.")
+        if mode == "open" and os.path.splitext(target)[1].lower() not in OPENABLE_EXTENSIONS:
             raise CBError("Only the app's own audio and image files can be "
                           "opened from here.")
         if not self._fs_path_is_contained(path):
