@@ -69,6 +69,91 @@ body { overflow: hidden; }
 .cb-cards { display: flex; flex-direction: column; gap: 10px; }
 .cb-big { font-size: 30px; font-weight: 500; color: var(--cb-accent); line-height: 1; }
 
+/* Overview (3a) — the 1.4fr/1fr pair over a three-up row of summary cards */
+.cb-grid-ov {
+  display: grid; grid-template-columns: 1.4fr minmax(0, 1fr);
+  gap: 14px; align-items: start;
+}
+.cb-grid-3 {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px; align-items: start;
+}
+.cb-grid-ov > *, .cb-grid-3 > * { min-width: 0; }
+.cb-ov-line { font-size: 12.5px; color: #4B4F59; }
+/* .cb-card sets overflow-wrap:anywhere so a long path cannot widen the grid —
+   which would otherwise break the LABEL one letter per line once the value
+   claims the row. The label never wraps; the value truncates and carries the
+   whole string in its tooltip. */
+.cb-ov-line > :first-child { flex: none; white-space: nowrap; }
+.cb-ov-line > :last-child {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cb-ov-mini { gap: 9px; padding: 14px 16px; }
+.cb-ov-list { display: flex; flex-direction: column; gap: 9px; }
+.cb-ov-item { display: flex; flex-direction: column; gap: 3px; }
+.cb-ov-item__text { font-size: 12.5px; color: var(--cb-text); }
+.cb-ov-item__when { font: 400 11px var(--cb-mono); color: var(--cb-muted); white-space: nowrap; }
+.cb-ov-empty { font-size: 12.5px; color: var(--cb-muted); }
+
+/* Notifications bell (3a header) and its panel (3n) */
+.cb-bell {
+  position: relative; display: grid; place-items: center;
+  width: 30px; height: 30px; flex: none;
+  border: 1px solid var(--cb-line); border-radius: var(--cb-radius);
+  background: var(--cb-surface); color: var(--cb-line); cursor: pointer;
+}
+.cb-bell:hover { background: var(--cb-accent-wash); }
+.cb-bell__count {
+  position: absolute; top: -3px; right: -3px; min-width: 15px; height: 15px;
+  border-radius: 8px; background: var(--cb-accent); color: #fff;
+  font: 500 9.5px/15px var(--cb-mono); text-align: center;
+}
+.cb-notif {
+  position: fixed; z-index: 85; width: 392px; max-width: calc(100vw - 20px);
+  background: var(--cb-surface); border: 1px solid var(--cb-line);
+  border-radius: var(--cb-radius); box-shadow: var(--cb-shadow-pop);
+  padding: 14px 16px; display: flex; flex-direction: column; gap: 12px;
+  max-height: min(560px, calc(100vh - 90px)); overflow: auto;
+}
+.cb-notif__row { display: flex; gap: 10px; align-items: flex-start; }
+.cb-notif__row.is-read { opacity: .55; }
+.cb-notif__dot {
+  width: 6px; height: 6px; border-radius: 50%; margin-top: 6px; flex: none;
+  background: var(--cb-accent);
+}
+.cb-notif__row.is-read .cb-notif__dot { background: #B4B9C3; }
+.cb-notif__body { min-width: 0; }
+.cb-notif__text { font-size: 12.5px; color: var(--cb-text); }
+.cb-notif__when { font: 400 10.5px var(--cb-mono); color: var(--cb-muted); }
+.cb-notif__link { font-size: 11px; background: none; border: 0; padding: 0;
+  color: var(--cb-line); cursor: pointer; text-decoration: underline; }
+.cb-notif__text.is-err { color: var(--cb-err); }
+.cb-notif__text.is-warn { color: var(--cb-warn); }
+
+/* About (3n) */
+.cb-about-row { display: flex; gap: 8px; align-items: flex-start; }
+.cb-about-lab {
+  font-weight: 600; font-size: 13px; color: var(--cb-text);
+  width: 88px; flex: none;
+}
+.cb-about-val { font-size: 13.5px; color: var(--cb-text); }
+.cb-faq { border: 1px solid var(--cb-line-soft); border-radius: 7px; overflow: hidden; }
+.cb-faq__q {
+  display: flex; gap: 9px; align-items: baseline; width: 100%;
+  padding: 10px 12px; border: 0; border-bottom: 1px solid var(--cb-line-soft);
+  background: var(--cb-surface); text-align: left; cursor: pointer;
+  font: 500 12.5px var(--cb-font); color: var(--cb-text);
+}
+.cb-faq__q:hover { background: var(--cb-surface-alt); }
+.cb-faq > :last-child { border-bottom: none; }
+.cb-faq__chev { color: var(--cb-line); font-size: 11px; flex: none; }
+.cb-faq__a {
+  padding: 0 12px 11px 32px; border-bottom: 1px solid var(--cb-line-soft);
+  font-size: 12px; line-height: 1.65; color: #4B4F59; white-space: pre-line;
+}
+.cb-foot-link { color: var(--cb-muted); text-decoration: none; }
+.cb-foot-link:hover { color: var(--cb-line); text-decoration: underline; }
+
 /* Batch queue rows */
 .cb-qrow {
   display: flex; align-items: center; gap: 10px;
@@ -98,7 +183,10 @@ body { overflow: hidden; }
   border-color: var(--cb-quiet);
   color: var(--cb-muted);
   cursor: not-allowed;
-  pointer-events: auto;          /* keep hover so the reason tooltip still shows */
+  /* Keep the control in hit testing: app.js's tooltip tracker asks what is
+     under the pointer, and pointer-events:none would hide a disabled control
+     from that question — which is exactly when its reason needs reading. */
+  pointer-events: auto;
 }
 .cb-btn[disabled] { background: var(--cb-surface); }
 
@@ -329,6 +417,7 @@ input[type="radio"].cb-cbx {
    off the edge — degrading is not the same as supporting a mobile breakpoint. */
 @media (max-width: 1099px) {
   .cb-grid-2 { grid-template-columns: minmax(0, 1fr); }
+  .cb-grid-ov, .cb-grid-3 { grid-template-columns: minmax(0, 1fr); }
   .cb-span-2 { grid-column: auto; }
   .cb-screen { max-width: none; }
 }

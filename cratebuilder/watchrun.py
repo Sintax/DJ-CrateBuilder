@@ -4,6 +4,7 @@ import os
 import shutil
 import threading
 import time
+from datetime import datetime
 
 from cratebuilder import genrefix
 from cratebuilder import links as cb_links
@@ -265,6 +266,17 @@ class WatchlistOps:
         self._emit("scan.line", {"ts": self._timestamp(), "level": level,
                                  "text": text})
 
+    def _notify(self, title, body, level="info"):
+        """One run's closing announcement, in the contract's notification
+        shape. The pinned scan log already says this line by line; this is what
+        reaches a client that is not looking at that screen — the bell panel on
+        3n, and the design's "scan found tracks" / "batch complete" entries."""
+        self._emit("notification", {
+            "level": level, "title": title, "body": body,
+            "at": datetime.now().isoformat(timespec="seconds"),
+            "job": WATCHLIST_JOB,
+        })
+
     def _card(self, cid, **extra):
         row = self._db().get_watchlist_channel(cid)
         if row is not None:
@@ -357,6 +369,8 @@ class WatchlistOps:
             self._flush()
             self._line(LINE_DONE, f"DONE Scan complete — {total_new} new across "
                                   f"{_plural(scanned, 'channel')}")
+            self._notify("Watch List scan",
+                         f"{total_new} new across {_plural(scanned, 'channel')}")
             self._patch_counts()
         return {"new": total_new, "channels": scanned}
 
@@ -569,6 +583,8 @@ class WatchlistOps:
             self._flush()
             self._line(LINE_DONE, f"DONE Download complete — "
                                   f"{_plural(downloaded, 'track')} downloaded")
+            self._notify("Watch List download",
+                         f"{_plural(downloaded, 'track')} downloaded")
             self._patch_counts()
         return {"downloaded": downloaded}
 

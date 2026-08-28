@@ -42,11 +42,14 @@
     </nav>
 
     <div class="cb-panel__foot">
-      <div class="cb-row" style="gap:8px;font-size:12px;color:#6B7280">
+      <div class="cb-row" id="host-status" tabindex="0" data-tt="remote.host_status"
+           style="gap:8px;font-size:12px;color:#6B7280">
         <span class="cb-dot" id="host-dot"></span>
         <span class="cb-mono" id="host-label" style="font-size:11px">connecting…</span>
       </div>
-      <span class="cb-mono cb-mut" id="host-version" style="font-size:10.5px"></span>
+      <a class="cb-mono cb-mut cb-foot-link" href="#about" id="host-version"
+         style="font-size:10.5px"
+         data-tt-text="Open About — the author, the FAQ, and the build this host is running."></a>
       <div id="panel-batch-mini" hidden style="display:flex;flex-direction:column;gap:6px">
         <div class="cb-bar" style="height:5px"><div class="cb-bar__fill" id="panel-batch-fill" style="width:0"></div></div>
         <span class="cb-mono cb-mut" id="panel-batch-label" style="font-size:10.5px">Batch 0 / 0</span>
@@ -62,22 +65,54 @@
       <div class="cb-row">
         <h4 class="cb-h">Overview</h4>
         <span class="cb-mut" style="font-size:12.5px" id="ov-library"></span>
-        <div style="margin-left:auto" class="cb-row">
+        <div class="cb-row" style="margin-left:auto;gap:8px">
           <button class="cb-btn cb-btn--quiet cb-btn--sm" id="ov-refresh"
                   data-tt="main.refresh">⟳ Refresh</button>
+          <button class="cb-bell" id="ov-bell" data-tt="main.notifications"
+                  aria-haspopup="dialog" aria-expanded="false"
+                  aria-label="Notifications">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"
+                 stroke="currentColor" stroke-width="1.4" stroke-linecap="round"
+                 stroke-linejoin="round" aria-hidden="true">
+              <path d="M8 2a4.4 4.4 0 0 0-4.4 4.4c0 3-1.4 4.2-1.4 4.2h11.6s-1.4-1.2-1.4-4.2A4.4 4.4 0 0 0 8 2Z"></path>
+              <path d="M6.6 13.4a1.6 1.6 0 0 0 2.8 0"></path>
+            </svg>
+            <span class="cb-bell__count" id="ov-bell-count" hidden>0</span>
+          </button>
         </div>
       </div>
 
-      <div class="cb-card cb-pad" id="ov-running" hidden>
-        <div class="cb-row">
-          <span class="cb-kick">Now running</span>
-          <span class="cb-tag cb-tag--fill">Batch</span>
-          <span class="cb-mut cb-mono" style="margin-left:auto;font-size:11.5px"
-                id="ov-run-meta"></span>
+      <div class="cb-grid-ov">
+        <div class="cb-card cb-pad" id="ov-running">
+          <div class="cb-row">
+            <span class="cb-kick">Now running</span>
+            <span class="cb-tag cb-tag--grey" id="ov-run-tag">Idle</span>
+            <span class="cb-mut cb-mono" style="margin-left:auto;font-size:11.5px"
+                  id="ov-run-meta"></span>
+          </div>
+          <div>
+            <div class="cb-row" style="gap:8px;margin-bottom:7px;align-items:baseline">
+              <span style="font-size:13.5px;color:var(--cb-text)" id="ov-run-title">—</span>
+              <span class="cb-mut cb-mono" style="margin-left:auto;font-size:11.5px"
+                    id="ov-run-stats"></span>
+            </div>
+            <div class="cb-bar"><div class="cb-bar__fill" id="ov-run-cur" style="width:0"></div></div>
+          </div>
+          <div>
+            <div class="cb-row" style="gap:8px;margin-bottom:7px">
+              <span class="cb-lab">Overall</span>
+              <span class="cb-mut cb-mono" style="margin-left:auto;font-size:11.5px"
+                    id="ov-run-pct">0%</span>
+            </div>
+            <div class="cb-bar"><div class="cb-bar__fill cb-bar__fill--overall" id="ov-run-all" style="width:0"></div></div>
+          </div>
+          <div class="cb-row" style="gap:8px;margin-top:2px">
+            <button class="cb-btn cb-btn--sm" id="ov-pause">⏸ Pause</button>
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="ov-cancel">Cancel</button>
+            <a href="#downloads" id="ov-open" style="margin-left:auto;font-size:12px">Open Downloads →</a>
+          </div>
         </div>
-      </div>
 
-      <div class="cb-grid-2">
         <div class="cb-card cb-pad">
           <span class="cb-kick">Watch List</span>
           <div class="cb-row" style="align-items:flex-end;gap:8px">
@@ -85,17 +120,32 @@
             <span class="cb-mut" style="font-size:12.5px;padding-bottom:4px"
                   id="ov-new-sub">new tracks</span>
           </div>
-          <button class="cb-btn cb-btn--sm" id="ov-goto-wl"
-                  style="align-self:flex-start">Open Watch List</button>
+          <div class="cb-div"></div>
+          <div class="cb-row cb-ov-line"><span>Auto-download</span>
+            <span class="cb-mono" style="margin-left:auto" id="ov-auto">—</span></div>
+          <div class="cb-row cb-ov-line"><span>Last full scan</span>
+            <span class="cb-mono" style="margin-left:auto" id="ov-last-scan">never</span></div>
+          <button class="cb-btn" id="ov-dl-all" style="justify-content:center;width:100%"
+                  data-tt="wl.download_all_new">⬇ Download All New (0)</button>
+          <a href="#watchlist" id="ov-goto-wl" style="font-size:12px">Open Watch List →</a>
         </div>
+      </div>
 
-        <div class="cb-card cb-pad">
-          <span class="cb-kick">Library</span>
-          <div class="cb-row" style="align-items:flex-end;gap:8px">
-            <span class="cb-mono cb-big" id="ov-tracks">0</span>
-            <span class="cb-mut" style="font-size:12.5px;padding-bottom:4px">tracks downloaded</span>
-          </div>
-          <div class="cb-mut cb-mono" style="font-size:11px" id="ov-dbpath"></div>
+      <div class="cb-grid-3">
+        <div class="cb-card cb-pad cb-ov-mini">
+          <span class="cb-kick">Recent activity</span>
+          <div id="ov-recent" class="cb-ov-list"></div>
+          <a href="#activity-log" style="font-size:12px;margin-top:2px">Activity Log →</a>
+        </div>
+        <div class="cb-card cb-pad cb-ov-mini">
+          <span class="cb-kick">Needs attention</span>
+          <div id="ov-attention" class="cb-ov-list"></div>
+          <a href="#watchlist" style="font-size:12px;margin-top:2px">Watch List →</a>
+        </div>
+        <div class="cb-card cb-pad cb-ov-mini">
+          <span class="cb-kick">Host</span>
+          <div id="ov-host" class="cb-ov-list"></div>
+          <a href="#settings" style="font-size:12px;margin-top:2px">Settings →</a>
         </div>
       </div>
     </section>
@@ -127,7 +177,8 @@
             <div class="cb-kick" style="margin-bottom:5px">Genre</div>
             <select class="cb-sel" id="dl-genre" style="width:100%"></select>
           </div>
-          <button class="cb-btn cb-btn--quiet" id="dl-newgenre">+ New genre</button>
+          <button class="cb-btn cb-btn--quiet" id="dl-newgenre"
+                  data-tt="main.new_genre">+ New genre</button>
           <button class="cb-btn cb-btn--fill" id="dl-add"
                   data-tt="main.batch_add">+ Add to Batch</button>
         </div>
@@ -156,7 +207,7 @@
         </select>
         <span class="cb-help cb-tt-host" data-tt="main.skip_mode">?</span>
         <button class="cb-btn cb-btn--quiet" id="dl-openfolder"
-                style="margin-left:auto" data-tt="settings.open_folder">📂 Open Main Folder</button>
+                style="margin-left:auto" data-tt="main.open_folder">📂 Open Main Folder</button>
       </div>
 
       <div class="cb-row" style="gap:10px" id="dl-actions-row">
@@ -231,6 +282,9 @@
         <span class="cb-mut" style="font-size:12.5px">Every option writes straight to
           <span class="cb-mono" id="cfg-path">the host's config</span></span>
         <span class="cb-mono" style="margin-left:auto;font-size:10.5px;color:var(--cb-ok)">All changes autosave</span>
+        <a class="cb-btn cb-btn--quiet cb-btn--sm" href="#about" id="settings-about"
+           style="text-decoration:none"
+           data-tt-text="The author, the FAQ, and the build this host is running.">About ↗</a>
       </div>
       <div class="cb-grid-2" id="settings-grid"></div>
     </section>
@@ -391,6 +445,15 @@
         </div>
         <div class="cb-statbar" id="db-art-statbar"></div>
       </div>
+    </section>
+
+    <!-- 3n — About (opened from the panel footer or Settings) -->
+    <section class="cb-screen" id="screen-about">
+      <div class="cb-crumb">
+        <a class="cb-back" href="#settings" data-tt="log.back_to_settings">‹ Settings</a>
+        <span class="cb-mut" style="font-size:12.5px">About</span>
+      </div>
+      <div class="cb-card cb-pad" id="about-body"></div>
     </section>
 
   </main>

@@ -14,6 +14,7 @@ A desktop application for batch-downloading audio from YouTube and SoundCloud as
 - <sub>[Installation](#installation)</sub>
 - <sub>[Updates](#updates)</sub>
 - <sub>[Usage](#usage)</sub>
+- <sub>[Web UI (preview)](#web-ui-preview)</sub>
 - <sub>[Browser Cookie Authentication](#browser-cookie-authentication)</sub>
 - <sub>[Settings](#settings)</sub>
 - <sub>[Building from Source](#building-from-source)</sub>
@@ -201,6 +202,64 @@ certificate-free freeware.
 
 ---
 
+<a name="web-ui-preview"></a>
+
+## Web UI (preview)&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
+
+A browser-based control surface for the same app, so a batch or a Watch List scan
+can be watched and driven from another device on your network. It is a **preview**
+and runs from source only — the desktop app is still the shipping UI, and nothing
+below changes it.
+
+### Run it on this machine
+
+```bash
+pip install -r requirements.txt     # adds pywebview, fastapi, uvicorn
+python web_window.py                # a native window over the same interface
+```
+
+`python web_window.py --screen watchlist` opens straight to a screen
+(`overview`, `downloads`, `watchlist`, `settings`, `about`).
+
+### Reach it from another device
+
+First switch it on, in the window from the step above: **Settings ▸ Remote
+Access ▸ "Allow remote control over the internet"**. Until that is on, every
+route refuses — the toggle is the consent, and it is off by default. Read-only
+mode and a single-writer control lock live on the same card, along with the list
+of paired devices and a revoke button.
+
+```bash
+python web_server.py                # binds 127.0.0.1 only
+python web_server.py --lan          # binds 0.0.0.0 — needs the toggle above
+```
+
+The server starts on port 8770 and prints a **6-digit pairing code**. Open
+`http://<host>:8770/` on the other device, type the code, and that browser is
+paired: it stores a long-lived device token and does not ask again. Codes last
+five minutes and work once (`--pair` prints a fresh one). An unpaired browser
+reaches the pairing screen and nothing else.
+
+Plain HTTP is **LAN-only by design**. For anything reaching further, terminate
+TLS upstream (Caddy, or a Cloudflare Tunnel) rather than in the app — and tell
+the server the public name it will be reached by:
+
+```bash
+python web_server.py --lan --host-allow crate.example.com
+```
+
+Without it the DNS-rebinding defence refuses the proxy's `Host` header. The name
+is remembered, so `--host-allow` is a one-time setup flag. Both entry points
+accept it.
+
+### Known gaps
+
+The updater controls, the Folders Cleanup review dialog, and creating genre
+folders are not wired up in the web UI yet. They render disabled with the reason
+in their tooltip; use the desktop app for those.
+
+---
+
 <a name="browser-cookie-authentication"></a>
 
 ## Browser Cookie Authentication&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
@@ -270,6 +329,12 @@ The `--collect-submodules`/`--hidden-import` flags bundle the local `cratebuilde
 package, the lazily-imported tray dependencies (pystray + Pillow), and send2trash
 (used by Folders Cleanup to move files to the Recycle Bin). Copy
 `ffmpeg.exe` and `ffprobe.exe` into `dist\DJ-CrateBuilder\`.
+
+Packaging the [Web UI](#web-ui-preview) as well needs two more things, and is
+not part of the command above: add `web/` as data (`--add-data "web;web"`, or an
+entry in the spec's `datas`) so the bundle ships beside the executable, and add
+`--collect-submodules uvicorn`, whose protocol and loop implementations are
+imported by name at runtime and are invisible to PyInstaller's analysis.
 
 ### Create Installer
 

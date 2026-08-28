@@ -1,5 +1,6 @@
 """Transport-agnostic action surface shared by the local window and remote clients."""
 
+import ast
 import base64
 import csv
 import io
@@ -9,6 +10,7 @@ import re
 import subprocess
 import sys
 import threading
+import webbrowser
 from datetime import datetime
 
 from cratebuilder import activitylog, rebuild, startup, ui_strings, util
@@ -126,6 +128,33 @@ REMOTE_SETTING_REFUSAL = (
 
 _VERSION_RE = re.compile(r'^APP_VERSION\s*=\s*"([^"]+)"', re.M)
 _BUILD_RE = re.compile(r"^APP_BUILD\s*=\s*(\d+)", re.M)
+
+# The About screen's own copy. The avatar is the bundle's, at the 44x44 the
+# tkinter label uses; the note is the monolith's bug/suggestion line, which
+# lives inside a widget call there and so has no constant to read.
+ABOUT_AVATAR = "assets/about_avatar.png"
+ABOUT_NOTE = ("*(For any bugs encountered or suggestions you'd like to make, "
+              "submit them using the Submit Issues/Suggestions button.)")
+# Which monolith module constant fills which About field.
+ABOUT_CONSTANTS = {
+    "created_by": "ABOUT_CREATED_BY",
+    "contact_email": "ABOUT_CONTACT_EMAIL",
+    "description": "ABOUT_DESCRIPTION",
+    "github_url": "GITHUB_URL",
+    "issues_url": "GITHUB_ISSUES_URL",
+}
+# The About tab's FAQ is a local list inside this function, not a constant.
+ABOUT_FAQ_OWNER = "_build_about_tab"
+ABOUT_FAQ_NAME = "faq"
+
+# What fs.open_url will hand to the host's browser. mailto is the author's
+# contact link; nothing else is a scheme a page of ours has any reason to open,
+# and file:/ javascript: on os.startfile is how a link becomes an execution.
+OPENABLE_URL_SCHEMES = ("http", "https", "mailto")
+
+# about_info parses a 13k-line file, so the result is kept until the file
+# changes underneath it. Keyed by path -> (stat signature, payload).
+_ABOUT_CACHE = {}
 
 
 class CBError(Exception):
@@ -417,6 +446,74 @@ def version_info(script_path=None):
             "build": int(build.group(1)) if build else None}
 
 
+def about_info(script_path=None):
+    """The About screen's content, read out of the monolith as source text.
+
+    Parsed with `ast` for the reason version_info is parsed at all: importing
+    the v1.3 script builds a Tk window. The author fields and the two GitHub
+    URLs are module constants; the FAQ is a local list inside
+    `_build_about_tab`, so there is nothing importable even if that were free —
+    and thirty questions copied into a second file drift within a release.
+
+    A file that cannot be read or parsed yields empty fields rather than an
+    error: the About screen still renders, minus the parts it could not find.
+    """
+    path = script_path or os.path.join(repo_root(), MAIN_SCRIPT)
+    try:
+        stamp = os.stat(path)
+        signature = (stamp.st_mtime_ns, stamp.st_size)
+    except OSError:
+        signature = None
+    cached = _ABOUT_CACHE.get(path)
+    if signature is not None and cached and cached[0] == signature:
+        return dict(cached[1])
+
+    info = {name: "" for name in ABOUT_CONSTANTS}
+    info["faq"] = []
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+    except (OSError, SyntaxError, ValueError):
+        return info
+
+    wanted = {const: field for field, const in ABOUT_CONSTANTS.items()}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            field = wanted.get(getattr(target, "id", None))
+            if field and isinstance(node.value, ast.Constant) \
+                    and isinstance(node.value.value, str):
+                info[field] = node.value.value
+    info["faq"] = _about_faq(tree)
+    if signature is not None:
+        _ABOUT_CACHE[path] = (signature, dict(info))
+    return info
+
+
+def _about_faq(tree):
+    """The [(question, answer), ...] literal `_build_about_tab` builds its
+    accordion from, as the {q, a} rows the web About screen renders."""
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.FunctionDef)
+                and node.name == ABOUT_FAQ_OWNER):
+            continue
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Assign):
+                continue
+            names = [getattr(t, "id", None) for t in inner.targets]
+            if ABOUT_FAQ_NAME not in names:
+                continue
+            try:
+                pairs = ast.literal_eval(inner.value)
+            except (ValueError, TypeError):
+                return []
+            return [{"q": str(item[0]), "a": str(item[1])}
+                    for item in pairs
+                    if isinstance(item, (list, tuple)) and len(item) >= 2]
+    return []
+
+
 class CrateBuilderService:
     """Every UI action, transport-agnostic.
 
@@ -699,9 +796,11 @@ class CrateBuilderService:
                 lambda p: self.maintenance_start("db.fetch_artwork"),
             "db.maintenance_cancel": lambda p: self.maintenance_cancel(),
             "db.maintenance_skip": lambda p: self.maintenance_skip(),
+            "about.info": lambda p: self.about(),
             "fs.pick_folder": lambda p: self.pick_folder(),
             "fs.reveal": lambda p: self.fs_reveal(p.get("path"),
                                                   p.get("mode", "folder")),
+            "fs.open_url": lambda p: self.open_url(p.get("url")),
             "logs.tail": lambda p: self.logs_tail(
                 p.get("name"), p.get("offset"), p.get("limit", DEFAULT_LOG_WINDOW),
                 bool(p.get("before"))),
@@ -765,6 +864,27 @@ class CrateBuilderService:
         """The shared tooltip registry, so no string is duplicated in JS."""
         return {"tooltips": ui_strings.TOOLTIPS,
                 "settings_keys": ui_strings.SETTINGS_KEYS}
+
+    def about(self):
+        """Everything the About screen renders, including the build number.
+
+        Readable on both transports: the design shows About in a remote
+        session precisely so you can tell whether the host is current. Only
+        the updater controls beside it are local-session-only, and those are
+        gated by the `update.` prefix in LOCAL_ONLY, not here.
+        """
+        info = about_info()
+        version = version_info()
+        return {
+            **info,
+            **version,
+            "app_name": "DJ-CrateBuilder",
+            "avatar": ABOUT_AVATAR,
+            "note": ABOUT_NOTE,
+            "build_status": (f"You're on build {version['build']}."
+                             if version.get("build") is not None else ""),
+            "can_open_urls": self.transport == LOCAL,
+        }
 
     # ── library / database ────────────────────────────────────────────────────
 
@@ -2011,6 +2131,29 @@ class CrateBuilderService:
                     self._os_open(folder)
         except OSError as exc:
             raise CBError(f"Could not open that location: {exc}")
+        return {"opened": True}
+
+    def open_url(self, url):
+        """Open *url* in the host's own browser — the About screen's GitHub,
+        Submit Issues and mailto links, exactly as `_build_about_tab` does.
+
+        Remote never reaches this (the LOCAL_ONLY "fs." prefix refuses it
+        before dispatch, and this repeats the check the way fs_reveal does);
+        a remote session is handed the URL to copy instead. The scheme
+        allow-list is not ceremony: webbrowser.open falls back to the OS
+        handler, where a file: or javascript: URL stops being navigation.
+        """
+        if self.transport != LOCAL:
+            raise CBError("Links open in the app window on the host machine. "
+                          "Copy the address instead.")
+        url = (url or "").strip()
+        scheme = url.split(":", 1)[0].lower() if ":" in url else ""
+        if scheme not in OPENABLE_URL_SCHEMES:
+            raise CBError("Only web and mail links can be opened from here.")
+        try:
+            webbrowser.open(url)
+        except Exception as exc:
+            raise CBError(f"Could not open that link: {exc}")
         return {"opened": True}
 
     @staticmethod
