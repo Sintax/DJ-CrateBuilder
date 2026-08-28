@@ -399,6 +399,7 @@ class CrateBuilderService:
             os.path.dirname(self._db_path) or app_dir(), LINKS_FILE_NAME)
         self._log_watch_interval = log_watch_interval
         self._log_watchers = {}
+        self.reset_stale_watchlist_rows()
 
     # ── events / jobs ─────────────────────────────────────────────────────────
 
@@ -605,6 +606,26 @@ class CrateBuilderService:
                 counts=self.counts, flush=self._emit.flush)
         return self._watchlist_ops
 
+    def reset_stale_watchlist_rows(self):
+        """Clear 'scanning'/'downloading' left behind by a killed frontend.
+
+        Runs once per service, at construction: those statuses only mean
+        anything while a live thread owns the row, and no thread survives the
+        process. Without this the web frontend has no stale-status recovery at
+        all — the tkinter app calls the same helper at ITS startup, but a user
+        who only ever opens the web UI would never reach it, and Task 9's
+        downloading card greys out every control except a Cancel for a job that
+        is not running. Never creates the database: a service pointed at a path
+        with no file yet has no rows to clear.
+        """
+        db = self._db()
+        if db is None:
+            return 0
+        try:
+            return db.reset_stale_watchlist_scans()
+        except Exception:
+            return 0
+
     def _watchlist_rows(self):
         db = self._db()
         return db.get_all_watchlist_channels() if db is not None else []
@@ -687,7 +708,22 @@ class CrateBuilderService:
         return self._watchlist.add(url, genre)
 
     def watchlist_edit(self, channel_id, url=None, genre=None):
+        """Change a channel's link and/or genre.
+
+        A genre change is refused while EITHER download category is running: it
+        moves the channel folder on disk, and a TrackDownloader mid-flight —
+        from a Main-tab batch or a Watch List run — holds a save_dir and an
+        expected_path computed from the old location, so the move would strand
+        it writing into a folder the database no longer describes. A link or
+        plain-field edit touches no files and stays allowed."""
         row = self._watchlist_row(channel_id)
+        picked = (genre or "").strip()
+        if picked and picked != (row.get("genre") or CrateLayout.NO_GENRE_VALUE):
+            if self._job_running("batch") or self._job_running(WATCHLIST_JOB):
+                raise CBError("A download is running. The channel's folder "
+                              "can't be moved to another genre until it "
+                              "finishes — cancel it first, or change the link "
+                              "only.")
         return self._watchlist.edit(row["id"], url=url, genre=genre)
 
     def watchlist_remove(self, channel_id):

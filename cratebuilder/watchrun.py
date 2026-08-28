@@ -15,13 +15,24 @@ from cratebuilder.crate import (ChannelCrate, CrateLayout, SkipMode,
 # cratebuilder.service does NOT import this module at import time — it reaches
 # WatchlistOps through a deferred import inside its own accessor — so importing
 # it from here is a one-way dependency, not a cycle.
-from cratebuilder.service import CBError, watchlist_card
+from cratebuilder.service import WATCHLIST_JOB, CBError, watchlist_card
 from cratebuilder.sidecar import (canonical_channel_url, channel_id_from_url,
                                   channel_url_from_id, classify_scan_error,
                                   is_unresolved_channel, watch_fetch_url,
                                   write_channel_sidecar)
 from cratebuilder.ydl import (YdlOffline, YdlPermanent, YdlSession,
                               YdlUnclassified, network_is_reachable)
+
+# The scan log's level vocabulary — the plan's normative scan.line contract, and
+# the same class names web/app.js's log renderer already produces, so a line can
+# be handed to it untranslated. The design's four scan-log colours map onto them:
+# an ordinary SCAN line is default, a HELD premiere reads as skipped, a finished
+# run reads as downloaded, and a failure is an error.
+LINE_DEFAULT = "default"
+LINE_DONE = "downloaded"
+LINE_HELD = "skipped"
+LINE_ERROR = "error"
+LINE_LEVELS = (LINE_DEFAULT, LINE_DONE, LINE_HELD, LINE_ERROR)
 
 # How often a mid-track progress frame may redraw a channel card. yt-dlp reports
 # many frames per second and each one would otherwise replace a whole card in
@@ -157,7 +168,7 @@ class WatchlistOps:
                  session_factory=YdlSession, runner_factory=BatchRunner,
                  ffmpeg_dir=None, log_line=None, counts=None, flush=None,
                  spawn=_daemon, network_probe=network_is_reachable,
-                 now=time.monotonic):
+                 now=time.monotonic, timestamp=None):
         self._settings = settings
         self._db_factory = db_factory
         self._emit = emit
@@ -171,6 +182,7 @@ class WatchlistOps:
         self._spawn = spawn
         self._network_probe = network_probe
         self._now = now
+        self._timestamp = timestamp or (lambda: time.strftime("%H:%M:%S"))
         self._lock = threading.Lock()
         self._cancel_all = threading.Event()
         self._cancel_cids = set()
@@ -200,6 +212,20 @@ class WatchlistOps:
             raise CBError("That channel is no longer in the Watch List.")
         return row
 
+    def _name(self, cid):
+        """A channel's display name for a log line, falling back to its id.
+
+        Only the outer catch-all guards need this: every classified failure is
+        reported from inside a path that already holds the row. A bare row id is
+        exactly the wrong thing to show a user asking which channel broke."""
+        try:
+            row = self._db().get_watchlist_channel(cid)
+        except Exception:
+            row = None
+        if row is None:
+            return f"channel {cid}"
+        return row.get("display_name") or row.get("url") or f"channel {cid}"
+
     def _folder(self, row, create=False):
         """The channel's crate folder. Pure naming via CrateLayout; the
         directory is created here (never under the database lock) because a
@@ -218,7 +244,18 @@ class WatchlistOps:
 
     # ── Events ────────────────────────────────────────────────────────────────
     def _line(self, level, text):
-        self._emit("scan.line", {"level": level, "text": text})
+        """One line into the pinned scan log, in the plan's normative shape:
+        {ts, level, text}.
+
+        *level* is the log renderer's own class vocabulary (see LINE_LEVELS) so
+        Task 9 can hand these straight to Task 5's line renderer with no
+        translation shim; which KIND of line it is stays in the text's leading
+        keyword (SCAN / HELD / ERROR / DONE), exactly as the design's scan log
+        shows it. The timestamp is stamped here, at the moment the line is
+        produced, rather than on arrival — a client that reconnects mid-run must
+        not re-date the backlog."""
+        self._emit("scan.line", {"ts": self._timestamp(), "level": level,
+                                 "text": text})
 
     def _card(self, cid, **extra):
         row = self._db().get_watchlist_channel(cid)
@@ -234,14 +271,26 @@ class WatchlistOps:
             pass
 
     # ── Cancellation ──────────────────────────────────────────────────────────
-    def _begin(self, mode):
+    def _begin(self, mode, queue=()):
         """Start a run: drop every stale cancel request, exactly as a fresh
-        user-initiated scan clears the monolith's leftover flag."""
+        user-initiated scan clears the monolith's leftover flag.
+
+        The queue is seeded in the SAME locked section that publishes the mode.
+        Published separately, a join landing between the two would be given a
+        position in a queue the run is about to overwrite — acknowledged, then
+        silently dropped."""
         with self._lock:
             self._cancel_all.clear()
             self._cancel_cids.clear()
+            self._queue = list(queue)
             self._mode = mode
-            self._queue = []
+
+    def _end(self):
+        """Close the run to joins. Cleared BEFORE the terminal flush, which
+        forwards coalesced events to every subscriber and is long enough for a
+        join to land in and be lost."""
+        with self._lock:
+            self._mode = None
 
     def _cancelled(self, cid):
         if self._cancel_all.is_set():
@@ -281,22 +330,25 @@ class WatchlistOps:
         try:
             for cid in cids:
                 if self._cancel_all.is_set():
-                    self._line("info", "Scan cancelled.")
+                    self._line(LINE_DEFAULT, "SCAN Cancelled — the remaining "
+                                             "channels were skipped")
                     break
                 try:
                     count = self._scan_channel(cid)
                 except Exception as exc:
                     # One channel blowing up is that channel's failure, never
                     # a run that ends without saying so.
-                    self._line("error", f"ERROR {cid} — {str(exc)[:120]}")
+                    self._line(LINE_ERROR,
+                               f"ERROR {self._name(cid)} — {str(exc)[:120]}")
                     count = None
                 if count is not None:
                     scanned += 1
                     total_new += count
         finally:
+            self._end()
             self._flush()
-            self._line("done", f"DONE Scan complete — {total_new} new across "
-                               f"{_plural(scanned, 'channel')}")
+            self._line(LINE_DONE, f"DONE Scan complete — {total_new} new across "
+                                  f"{_plural(scanned, 'channel')}")
             self._patch_counts()
         return {"new": total_new, "channels": scanned}
 
@@ -313,8 +365,8 @@ class WatchlistOps:
         # that is what produced the HTTP 404s the monolith guards against.
         if is_unresolved_channel(row):
             db.update_watchlist_status(cid, "needs_resolve")
-            self._line("error", f"ERROR {name} — channel id unresolved, "
-                                f"using folder name")
+            self._line(LINE_ERROR, f"ERROR {name} — channel id unresolved, "
+                                   f"using folder name")
             self._card(cid)
             return None
         if self._cancelled(cid):
@@ -322,7 +374,7 @@ class WatchlistOps:
 
         db.update_watchlist_status(cid, "scanning")
         self._card(cid)
-        self._line("scan", f"SCAN {name} — enumerating uploads…")
+        self._line(LINE_DEFAULT, f"SCAN {name} — enumerating uploads…")
 
         platform = row.get("platform") or "YouTube"
         # The same encoded listing URL a Watch List download feeds yt-dlp, so
@@ -365,21 +417,21 @@ class WatchlistOps:
             pending_entries=new_entries,
             status="found" if count else "idle")
 
-        self._line("scan", f"SCAN {name} — {len(entries)} entries, "
-                           f"{count} new since last scan")
+        self._line(LINE_DEFAULT, f"SCAN {name} — {len(entries)} entries, "
+                                 f"{count} new since last scan")
         if upcoming:
-            self._line("held", f"HELD {name} — "
-                               f"{_plural(len(upcoming), 'premiere')} held back")
+            self._line(LINE_HELD, f"HELD {name} — "
+                                  f"{_plural(len(upcoming), 'premiere')} held back")
         if unavailable:
-            self._line("info", f"SCAN {name} — "
-                               f"{len(unavailable)} permanently unavailable, "
-                               f"skipped")
+            self._line(LINE_DEFAULT, f"SCAN {name} — "
+                                     f"{len(unavailable)} permanently unavailable, "
+                                     f"skipped")
         self._card(cid)
         return count
 
     def _scan_cancelled(self, db, cid, name):
         db.update_watchlist_status(cid, "idle")
-        self._line("info", f"Scan cancelled: {name}")
+        self._line(LINE_DEFAULT, f"SCAN {name} — scan cancelled")
         self._card(cid)
         return None
 
@@ -412,7 +464,7 @@ class WatchlistOps:
                        f"scan next time you're online."
                        if verdict == "offline" else
                        f"ERROR {name} — {err}")
-        self._line("error", message)
+        self._line(LINE_ERROR, message)
         self._card(cid)
 
     def _backfill(self, db, row, platform, on_disk, now_ts):
@@ -454,13 +506,18 @@ class WatchlistOps:
             return False
 
     # ── Downloads ─────────────────────────────────────────────────────────────
-    def enqueue(self, cid):
+    def enqueue(self, cid, force=False):
         """Join a channel onto the download run that is already going.
 
         The queue is read live by run_download, so an appended channel simply
         runs after the ones already listed — the headless twin of the monolith's
         _watchlist_append_to_running. A channel already queued is never queued
         twice; its existing position comes back instead.
+
+        *force* rides on the QUEUE ENTRY, not the run: a Download New pressed
+        while a Force Download is in flight must fetch that channel's pending
+        entries with the Watch List's own skip rule, not re-take its whole
+        catalogue because of what some other channel asked for.
 
         Returns the 1-based position, or None when there is no download run to
         join (a scan is running, or the run finished between the caller's check
@@ -469,20 +526,22 @@ class WatchlistOps:
         with self._lock:
             if self._mode != "download":
                 return None
-            if cid in self._queue:
-                return self._queue.index(cid) + 1
-            self._queue.append(cid)
+            for index, (queued, _force) in enumerate(self._queue):
+                if queued == cid:
+                    return index + 1
+            self._queue.append((cid, bool(force)))
             return len(self._queue)
 
     def run_download(self, cids, force=False):
         """Download each channel in turn — the "watchlist" job's download body.
 
-        *force* re-processes the channel's whole catalogue with skipping off;
-        otherwise only the pending entries the last scan stored are fetched, and
-        the Watch List's own skip rule decides what is already owned."""
-        self._begin("download")
-        with self._lock:
-            self._queue = list(cids)
+        *force* is the mode the channels named in *cids* were requested with; it
+        re-processes a channel's whole catalogue with skipping off, where the
+        default fetches only the pending entries the last scan stored and lets
+        the Watch List's own skip rule decide what is already owned. It is
+        carried per queue entry, so a channel that joins later keeps the mode it
+        was asked for."""
+        self._begin("download", [(cid, bool(force)) for cid in cids])
         index = 0
         downloaded = 0
         try:
@@ -490,18 +549,18 @@ class WatchlistOps:
                 with self._lock:
                     if self._cancel_all.is_set() or index >= len(self._queue):
                         break
-                    cid = self._queue[index]
+                    cid, entry_force = self._queue[index]
                 index += 1
                 try:
-                    downloaded += self._download_channel(cid, force=force)
+                    downloaded += self._download_channel(cid, force=entry_force)
                 except Exception as exc:
-                    self._line("error", f"ERROR {cid} — {str(exc)[:120]}")
+                    self._line(LINE_ERROR,
+                               f"ERROR {self._name(cid)} — {str(exc)[:120]}")
         finally:
+            self._end()
             self._flush()
-            with self._lock:
-                self._mode = None
-            self._line("done", f"DONE Download complete — "
-                               f"{_plural(downloaded, 'track')} downloaded")
+            self._line(LINE_DONE, f"DONE Download complete — "
+                                  f"{_plural(downloaded, 'track')} downloaded")
             self._patch_counts()
         return {"downloaded": downloaded}
 
@@ -513,8 +572,8 @@ class WatchlistOps:
             return 0
         name = row.get("display_name") or row.get("url") or "Channel"
         if is_unresolved_channel(row):
-            self._line("error", f"ERROR {name} — link unresolved; fix the link "
-                                f"before downloading")
+            self._line(LINE_ERROR, f"ERROR {name} — link unresolved; fix the link "
+                                   f"before downloading")
             return 0
 
         folder = self._folder(row, create=True)
@@ -525,12 +584,12 @@ class WatchlistOps:
                 entries = [e for e in self._session().list_channel(url)
                            if isinstance(e, dict)]
             except Exception as exc:
-                self._line("error", f"ERROR {name} — {str(exc)[:120]}")
+                self._line(LINE_ERROR, f"ERROR {name} — {str(exc)[:120]}")
                 return 0
         else:
             entries = pending_entries(row)
         if not entries:
-            self._line("info", f"SCAN {name} — nothing pending")
+            self._line(LINE_DEFAULT, f"SCAN {name} — nothing pending")
             return 0
 
         specs = track_specs(row, folder, entries, row_id=cid)
@@ -539,13 +598,16 @@ class WatchlistOps:
         state = {"done": 0, "total": len(specs), "percent": 0,
                  "title": "", "title_percent": None, "at": None}
         self._card(cid, progress=dict(state))
-        self._line("scan", f"SCAN {name} — downloading "
-                           f"{_plural(len(specs), 'track')}…")
+        self._line(LINE_DEFAULT, f"SCAN {name} — downloading "
+                                 f"{_plural(len(specs), 'track')}…")
 
         runner = self._runner_factory(
             self._settings, db, self._channel_emit(cid, state),
             session_factory=self._session_factory,
-            ffmpeg_dir=self._ffmpeg_dir, log_line=self._log_line)
+            ffmpeg_dir=self._ffmpeg_dir, log_line=self._log_line,
+            # Stamps every progress frame this run emits, so the Main tab's bar
+            # can tell them from its own concurrent batch.
+            job=WATCHLIST_JOB)
         with self._lock:
             self._runner, self._active_cid = runner, cid
         try:
@@ -571,7 +633,7 @@ class WatchlistOps:
         db.update_watchlist_status(cid, "idle")
         self._flush()
         self._card(cid)
-        self._line("scan" if not tally["errors"] else "error",
+        self._line(LINE_DEFAULT if not tally["errors"] else LINE_ERROR,
                    f"SCAN {name} — {tally['downloaded']} downloaded, "
                    f"{tally['skipped']} skipped, {tally['errors']} failed")
         return tally["downloaded"]
@@ -622,8 +684,8 @@ class WatchlistOps:
         try:
             identity = self._session().probe_identity(url)
         except Exception as exc:
-            self._line("error", f"ERROR {url} — couldn't read the channel "
-                                f"({util.condense_error(str(exc))})")
+            self._line(LINE_ERROR, f"ERROR {url} — couldn't read the channel "
+                                   f"({util.condense_error(str(exc))})")
         else:
             display = identity.display_name or ""
             channel_id = identity.channel_id or channel_id
@@ -640,7 +702,7 @@ class WatchlistOps:
             raise CBError("That channel is already in the Watch List.")
         row = db.get_watchlist_channel(new_id) or {}
         self._mirror_link(row, url, channel_id)
-        self._line("done", f"DONE Added {display or url}")
+        self._line(LINE_DONE, f"DONE Added {display or url}")
         self._card(new_id)
         self._patch_counts()
         return {"channel_id": new_id}
@@ -649,7 +711,7 @@ class WatchlistOps:
         """Drop the watchlist row. Files and folders are untouched."""
         row = self._row(cid)
         self._db().remove_watchlist_channel(cid)
-        self._line("info", f"Removed: {row.get('display_name') or cid}")
+        self._line(LINE_DONE, f"DONE Removed {row.get('display_name') or cid}")
         self._patch_counts()
         return {"ok": True}
 
@@ -659,8 +721,8 @@ class WatchlistOps:
         row = self._row(cid)
         url = canonical_channel_url(row.get("url") or "")
         removed = self._db().forget_unavailable_for_channel(url)
-        self._line("info", f"{row.get('display_name')}: forgot "
-                           f"{_plural(removed, 'unavailable track')}")
+        self._line(LINE_DEFAULT, f"SCAN {row.get('display_name')} — forgot "
+                                 f"{_plural(removed, 'unavailable track')}")
         return {"removed": removed}
 
     def edit(self, cid, url=None, genre=None):
@@ -671,17 +733,29 @@ class WatchlistOps:
         then the downloads rewrite, then the out-of-database mirrors, then the
         genre tags inside the files), and the URL is only re-pointed once that
         has settled — so a failed link resolve can never leave a half-moved
-        channel behind."""
+        channel behind.
+
+        A refusal is reported before it is raised: the caller gets the CBError,
+        but every other client learns about it too, and the card is re-emitted
+        from whatever the database now holds. Raising straight out would leave
+        every other viewer showing the state the edit did not reach."""
         row = self._row(cid)
+        name = row.get("display_name") or row.get("url") or "Channel"
         result = {"ok": True}
         picked = (genre or "").strip()
-        if picked and picked != (row.get("genre") or CrateLayout.NO_GENRE_VALUE):
-            result["genre"] = self._change_genre(row, picked)
-            row = self._row(cid)
-        if url is not None:
-            new_url = (url or "").strip()
-            if new_url and new_url != (row.get("url") or ""):
-                result["link"] = self._apply_url(row, new_url)
+        try:
+            if picked and picked != (row.get("genre")
+                                     or CrateLayout.NO_GENRE_VALUE):
+                result["genre"] = self._change_genre(row, picked)
+                row = self._row(cid)
+            if url is not None:
+                new_url = (url or "").strip()
+                if new_url and new_url != (row.get("url") or ""):
+                    result["link"] = self._apply_url(row, new_url)
+        except CBError as exc:
+            self._line(LINE_ERROR, f"ERROR {name} — {exc}")
+            self._card(cid)
+            raise
         self._card(cid)
         return result
 
@@ -689,9 +763,22 @@ class WatchlistOps:
         """Move a channel between genres: folder, then database, then mirrors.
 
         A destination that already exists is refused rather than merged — the
-        collision is the user's to resolve. If the database rewrite fails while
+        collision is the user's to resolve. If the database write fails while
         files have already moved, the move is rolled back so disk and database
-        never drift apart."""
+        never drift apart.
+
+        Success is judged by READING THE ROW BACK, not by the rowcount
+        move_channel_downloads returns. That rowcount counts `downloads` rows,
+        and a channel folder holding audio with no matching downloads rows is a
+        perfectly ordinary state — legacy files, a rebuilt database, tracks the
+        user dropped in by hand. The monolith treats that zero as a failure
+        (DJ-CrateBuilder_v1.3.py:12573) and rolls the folder back while the
+        genre it just committed stands, which is exactly the drift the rollback
+        exists to prevent; this does not port that. The write sets
+        watchlist.genre in the same transaction as the downloads rewrite, so the
+        row's own genre is the honest answer to "did it commit?" — and
+        move_channel_downloads never raises, so there is nothing else to read.
+        """
         cid = row.get("id")
         db = self._db()
         platform = row.get("platform") or "YouTube"
@@ -712,13 +799,8 @@ class WatchlistOps:
                 raise CBError(f"Unable to move the channel folder: {exc}")
             rows = db.move_channel_downloads(wl_id=cid, old_dir=src,
                                              new_dir=dst, new_genre=picked)
-            if rows == 0 and tracks > 0:
-                try:
-                    shutil.move(dst, src)
-                except OSError:
-                    pass
-                raise CBError("The folder move was rolled back because the "
-                              "database could not be updated.")
+            if not self._genre_committed(cid, picked):
+                self._rollback_move(cid, src, dst, picked)
             self._repoint(row, platform, old_genre, picked, folder=dst)
             retagging = self._retag(dst, picked,
                                     row.get("display_name") or "")
@@ -737,6 +819,32 @@ class WatchlistOps:
         self._repoint(row, platform, old_genre, picked,
                       folder=dst if os.path.isdir(dst) else None)
         return {"moved": 0, "rows": 0, "retagging": 0}
+
+    def _genre_committed(self, cid, picked):
+        """Did the move's transaction land? Read the row's own genre back."""
+        row = self._db().get_watchlist_channel(cid)
+        return row is not None and (row.get("genre") or "") == picked
+
+    def _rollback_move(self, cid, src, dst, picked):
+        """Put the files back where the (uncommitted) database still says they
+        are, then refuse the edit. Always raises.
+
+        Nothing to undo on the database side — the transaction did not commit,
+        which is how we got here. If the files cannot be put back, the two would
+        disagree with the folder at *dst* and the row at the old genre, so the
+        row is dragged to *picked* instead: whichever way this goes, the genre
+        column and the folder location agree when it returns."""
+        try:
+            shutil.move(dst, src)
+        except OSError as exc:
+            self._db().update_watchlist_channel_fields(cid, genre=picked)
+            raise CBError(
+                f"The database could not be updated and the folder could not "
+                f"be put back ({exc}). The channel is filed under “{picked}” "
+                f"on disk; its download history still names the old folder — "
+                f"run Rebuild Database to reconcile it.")
+        raise CBError("The folder move was rolled back because the database "
+                      "could not be updated. Nothing was changed.")
 
     def _retag(self, folder, genre, name):
         """Realign the moved folder's genre tags on a worker thread.
@@ -757,8 +865,8 @@ class WatchlistOps:
                 changed, _filled = genrefix.repair_track(path, value)
                 if changed:
                     fixed += 1
-            self._line("done", f"DONE {name} — "
-                               f"{_plural(fixed, 'genre tag')} updated")
+            self._line(LINE_DONE, f"DONE {name} — "
+                                  f"{_plural(fixed, 'genre tag')} updated")
         self._spawn(work)
         return total
 
@@ -826,9 +934,9 @@ class WatchlistOps:
         try:
             identity = self._session().probe_identity(new_url)
         except Exception as exc:
-            self._line("error", f"ERROR {row.get('display_name')} — couldn't "
-                                f"resolve the channel id "
-                                f"({util.condense_error(str(exc))})")
+            self._line(LINE_ERROR, f"ERROR {row.get('display_name')} — couldn't "
+                                   f"resolve the channel id "
+                                   f"({util.condense_error(str(exc))})")
             return {"resolved": False, "url": new_url}
         ucid = identity.channel_id or channel_id_from_url(identity.channel_url)
         if not ucid:
@@ -925,6 +1033,6 @@ class WatchlistOps:
         if not url:
             raise CBError("Pick a channel to link to.")
         result = self._persist_resolved(row, ucid, url=url)
-        self._line("done", f"DONE Channel set: {row.get('display_name')}")
+        self._line(LINE_DONE, f"DONE Channel set: {row.get('display_name')}")
         self._card(cid)
         return result

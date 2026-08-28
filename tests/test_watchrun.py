@@ -1,7 +1,10 @@
 """WatchlistOps: scans, per-channel downloads and channel management."""
 
+import contextlib
 import json
 import os
+import re
+import sqlite3
 
 import pytest
 
@@ -157,6 +160,41 @@ class Harness:
         return self.db.get_watchlist_channel(cid)
 
 
+class _FailingCursor:
+    """Delegates every statement to the real connection, except the one whose
+    SQL contains *needle* — that raises, the way a locked or corrupted database
+    would."""
+
+    def __init__(self, conn, needle):
+        self._conn = conn
+        self._needle = needle
+
+    def execute(self, sql, *args, **kwargs):
+        if self._needle in sql:
+            raise sqlite3.OperationalError("database is locked")
+        return self._conn.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def break_sql(db, needle):
+    """Make one SQL statement fail for real, at the database layer.
+
+    The method under test is never replaced — it runs in full, its transaction
+    raises inside its own `with self._conn()`, that context manager rolls back,
+    and the method's own `except` returns 0 having committed nothing. Every
+    other statement, including the read-backs, goes through untouched."""
+    real_conn = db._conn
+
+    @contextlib.contextmanager
+    def failing_conn():
+        with real_conn() as conn:
+            yield _FailingCursor(conn, needle)
+
+    db._conn = failing_conn
+
+
 def _settings(tmp_path):
     settings = Settings(path=str(tmp_path / "config.json"))
     settings.update({"base_dir": str(tmp_path / "crate"),
@@ -292,6 +330,35 @@ def test_scan_lines_read_the_way_the_design_shows_them(tmp_path):
     assert cards[-1]["name"] == "Deep House Daily"
 
 
+def test_every_scan_line_matches_the_plans_normative_shape(tmp_path):
+    """docs/specs/plans/webui-v2-implementation.md:94 —
+    scan.line {ts: "HH:MM:SS", level: default|downloaded|skipped|error, text}.
+    The level vocabulary is web/app.js's own log-line class names, so Task 9
+    can hand these to Task 5's renderer with no translation."""
+    listing = _entries("A")
+    listing.append({"id": "up", "title": "Premiere",
+                    "live_status": "is_upcoming"})
+    harness = Harness(tmp_path, FakeSession(listing=listing))
+    good = harness.add_channel()
+    bad = harness.add_channel(url="unresolved://Garage Archive",
+                              name="Garage Archive", channel_id=None)
+    harness.ops.run_scan([good, bad])
+    harness.ops.remove(bad)
+
+    payloads = harness.emit.of("scan.line")
+    assert len(payloads) >= 5
+    for payload in payloads:
+        assert set(payload) == {"ts", "level", "text"}
+        assert re.fullmatch(r"\d{2}:\d{2}:\d{2}", payload["ts"])
+        assert payload["level"] in watchrun.LINE_LEVELS
+        assert payload["text"] and payload["text"] == payload["text"].strip()
+    # All four levels are actually reachable, and every line leads with its
+    # keyword so a prefix filter cannot miss one.
+    assert {p["level"] for p in payloads} == set(watchrun.LINE_LEVELS)
+    assert all(p["text"].split()[0] in ("SCAN", "HELD", "ERROR", "DONE")
+               for p in payloads)
+
+
 def test_scan_holds_back_a_premiere_and_says_so(tmp_path):
     listing = _entries("Out Now")
     listing.append({"id": "up", "title": "Premiere",
@@ -302,7 +369,7 @@ def test_scan_holds_back_a_premiere_and_says_so(tmp_path):
 
     assert harness.row(cid)["pending_new_count"] == 1
     assert any(line.startswith("HELD Deep House Daily — 1 premiere held back")
-               for line in harness.emit.lines("held"))
+               for line in harness.emit.lines(watchrun.LINE_HELD))
 
 
 def test_scan_refuses_an_unresolved_channel_before_touching_yt_dlp(tmp_path):
@@ -314,7 +381,7 @@ def test_scan_refuses_an_unresolved_channel_before_touching_yt_dlp(tmp_path):
     assert harness.session.listed == []
     assert harness.row(cid)["status"] == "needs_resolve"
     assert any("channel id unresolved" in line
-               for line in harness.emit.lines("error"))
+               for line in harness.emit.lines(watchrun.LINE_ERROR))
 
 
 def test_a_transient_scan_failure_leaves_the_row_exactly_as_it_was(tmp_path):
@@ -344,7 +411,7 @@ def test_a_dead_channel_zeroes_the_pending_list_and_asks_for_a_fix(tmp_path):
     assert row["status"] == "needs_resolve"
     assert row["pending_new_count"] == 0
     assert json.loads(row["pending_entries_json"]) == []
-    assert any("Fix Link" in line for line in harness.emit.lines("error"))
+    assert any("Fix Link" in line for line in harness.emit.lines(watchrun.LINE_ERROR))
 
 
 def test_scan_all_reports_one_total_across_every_channel(tmp_path):
@@ -375,7 +442,8 @@ def test_cancelling_a_run_stops_before_the_next_channel(tmp_path):
     harness.ops.run_scan([first, second])
 
     assert harness.row(second)["status"] == "idle"
-    assert "Scan cancelled." in harness.emit.lines("info")
+    assert any(line.startswith("SCAN Cancelled")
+               for line in harness.emit.lines(watchrun.LINE_DEFAULT))
 
 
 # ── Download ─────────────────────────────────────────────────────────────────
@@ -423,6 +491,16 @@ def test_a_downloading_card_carries_the_progress_the_design_renders(tmp_path):
     assert harness.emit.of("watchlist.card")[-1]["status"] == "idle"
 
 
+def test_progress_frames_name_the_job_that_produced_them(tmp_path):
+    harness = Harness(tmp_path, FakeSession())
+    cid = _scanned(harness, ("One",))
+    harness.ops.run_download([cid])
+
+    frames = harness.emit.of("progress.overall") + harness.emit.of("progress.current")
+    assert frames
+    assert {f["job"] for f in frames} == {"watchlist"}
+
+
 def test_nothing_can_join_a_run_that_is_not_a_download(tmp_path):
     harness = Harness(tmp_path, FakeSession(listing=_entries("A")))
     cid = harness.add_channel()
@@ -432,6 +510,42 @@ def test_nothing_can_join_a_run_that_is_not_a_download(tmp_path):
     assert harness.ops.enqueue(cid) is None       # a scan owns the job
     harness.ops.run_download([cid])
     assert harness.ops.enqueue(cid) is None       # ...and the run has ended
+
+
+def test_a_join_is_never_acknowledged_into_a_queue_that_is_discarded(tmp_path):
+    """The two windows a join could be accepted into and then dropped: before
+    run_download seeds its queue, and during the terminal flush."""
+    harness = Harness(tmp_path, FakeSession())
+    cid = _scanned(harness, ("One",))
+    second = harness.add_channel(url="https://www.youtube.com/channel/UCxyz",
+                                 name="Second", channel_id="UCxyz")
+
+    # _begin publishes the mode and the queue in one locked section, so a join
+    # can only ever land in the queue the run actually iterates.
+    harness.ops._begin("download", [(cid, False)])
+    assert harness.ops.enqueue(second) == 2
+    assert harness.ops._queue == [(cid, False), (second, False)]
+
+    # ...and the run is closed to joins before the TERMINAL flush, which is
+    # real work. A mid-run flush still accepts (the run is genuinely live);
+    # only the last one, after _end, must refuse.
+    during_flush = []
+    harness.ops._flush = lambda: during_flush.append(harness.ops.enqueue(second))
+    harness.ops.run_download([cid])
+    assert during_flush[-1] is None
+    assert during_flush[:-1] and all(p is not None for p in during_flush[:-1])
+
+
+def test_an_unexpected_failure_names_the_channel_not_its_row_id(tmp_path):
+    harness = Harness(tmp_path, FakeSession())
+    cid = harness.add_channel()
+    harness.ops._scan_channel = lambda c: (_ for _ in ()).throw(
+        RuntimeError("boom"))
+
+    harness.ops.run_scan([cid])
+
+    errors = harness.emit.lines(watchrun.LINE_ERROR)
+    assert errors == ["ERROR Deep House Daily — boom"]
 
 
 def test_download_new_skips_a_track_the_channel_already_owns(tmp_path):
@@ -479,7 +593,8 @@ def test_download_says_so_when_there_is_nothing_pending(tmp_path):
     harness.ops.run_download([cid])
 
     assert harness.plans == []
-    assert any("nothing pending" in line for line in harness.emit.lines("info"))
+    assert any("nothing pending" in line
+               for line in harness.emit.lines(watchrun.LINE_DEFAULT))
 
 
 def test_a_second_channel_can_join_the_running_download_queue(tmp_path):
@@ -505,6 +620,41 @@ def test_a_second_channel_can_join_the_running_download_queue(tmp_path):
 
     assert joins == [2]
     assert sorted(p.title for p in harness.plans) == ["Joined", "One"]
+
+
+def test_a_channel_joining_a_forced_run_still_downloads_new_only(tmp_path):
+    """force rides on the queue entry, not the run: Download New pressed while
+    a Force Download is in flight must not re-take the joiner's catalogue."""
+    harness = Harness(tmp_path, FakeSession(listing=_entries("Forced")))
+    forced = harness.add_channel()
+    joiner = harness.add_channel(url="https://www.youtube.com/channel/UCxyz",
+                                 name="Joiner", channel_id="UCxyz")
+    harness.db.update_watchlist_scan_result(
+        joiner, timestamp=1, pending_count=1,
+        pending_entries=_entries("Fresh"), status="found")
+    joiner_folder = harness.folder(name="Joiner")
+    os.makedirs(joiner_folder, exist_ok=True)
+    with open(os.path.join(joiner_folder, "Owned.mp3"), "w",
+              encoding="utf-8") as fh:
+        fh.write("x")
+
+    joined = []
+    original = harness.ops._download_channel
+
+    def join_then_download(cid, force=False):
+        if not joined:
+            joined.append(harness.ops.enqueue(joiner))
+        return original(cid, force=force)
+
+    harness.ops._download_channel = join_then_download
+    harness.ops.run_download([forced], force=True)
+
+    assert joined == [2]
+    # The forced channel took its whole listing; the joiner took only its one
+    # pending entry and left "Owned" alone.
+    assert [p.title for p in harness.plans] == ["Forced", "Fresh"]
+    assert harness.session.listed == [
+        "https://www.youtube.com/channel/UCabc/videos"]
 
 
 def test_cancelling_one_channel_leaves_the_rest_of_the_run_alone(tmp_path):
@@ -564,7 +714,7 @@ def test_add_still_tracks_a_channel_the_probe_could_not_read(tmp_path):
     row = harness.row(result["channel_id"])
     assert row["display_name"] == "https://www.youtube.com/@offline"
     assert any("couldn't read the channel" in line
-               for line in harness.emit.lines("error"))
+               for line in harness.emit.lines(watchrun.LINE_ERROR))
 
 
 def test_remove_drops_the_row_and_leaves_the_folder_alone(tmp_path):
@@ -630,20 +780,59 @@ def test_editing_the_genre_moves_the_folder_and_rewrites_the_rows(tmp_path):
 
 
 def test_a_failed_database_rewrite_rolls_the_folder_move_back(tmp_path):
+    """The real move_channel_downloads runs — only its SQL is broken, so the
+    transaction genuinely fails, its own error path runs and nothing commits.
+    Replacing the method outright is what hid this: the method is what writes
+    watchlist.genre, so mocking it away means the drift can never appear."""
     harness = Harness(tmp_path, FakeSession())
     cid = harness.add_channel()
     src = harness.folder()
     os.makedirs(src, exist_ok=True)
-    with open(os.path.join(src, "Track.mp3"), "w", encoding="utf-8") as fh:
+    track = os.path.join(src, "Track.mp3")
+    with open(track, "w", encoding="utf-8") as fh:
         fh.write("x")
-    harness.db.move_channel_downloads = lambda **kwargs: 0
+    harness.db.add_download(
+        video_id="v1", title="Track", channel_name="Deep House Daily",
+        channel_url="https://www.youtube.com/channel/UCabc/videos",
+        platform="YouTube", genre="House", file_path=track,
+        upload_date="20260101", bitrate="192 kbps MP3")
+    break_sql(harness.db, "UPDATE OR REPLACE downloads")
 
     with pytest.raises(CBError, match="rolled back"):
         harness.ops.edit(cid, genre="Techno")
 
-    assert os.path.isfile(os.path.join(src, "Track.mp3"))
+    # Disk and database agree: both still say House.
+    assert os.path.isfile(track)
     assert not os.path.exists(harness.folder(genre="Techno"))
     assert harness.row(cid)["genre"] == "House"
+    assert harness.db.get_all_downloads()[0]["file_path"] == track
+    # ...and the failure reached every client, not just the caller.
+    assert any("rolled back" in line
+               for line in harness.emit.lines(watchrun.LINE_ERROR))
+    assert harness.emit.of("watchlist.card")[-1]["genre"] == "House"
+
+
+def test_a_channel_of_unrecorded_files_moves_without_a_spurious_rollback(tmp_path):
+    """Audio on disk with no downloads rows — legacy files, a rebuilt database,
+    tracks dropped in by hand — makes move_channel_downloads return 0 while its
+    transaction commits perfectly. Reading that zero as a failure is what made
+    the folder go back while the row said the new genre."""
+    harness = Harness(tmp_path, FakeSession())
+    cid = harness.add_channel()
+    src = harness.folder()
+    os.makedirs(src, exist_ok=True)
+    with open(os.path.join(src, "Legacy.mp3"), "w", encoding="utf-8") as fh:
+        fh.write("x")
+    assert harness.db.get_all_downloads() == []
+
+    result = harness.ops.edit(cid, genre="Techno")
+
+    dst = harness.folder(genre="Techno")
+    assert result["genre"]["rows"] == 0
+    assert result["genre"]["moved"] == 1
+    assert os.path.isfile(os.path.join(dst, "Legacy.mp3"))
+    assert not os.path.exists(src)
+    assert harness.row(cid)["genre"] == "Techno"
 
 
 def test_a_genre_move_onto_an_existing_folder_is_refused(tmp_path):
@@ -811,7 +1000,68 @@ def test_watchlist_methods_are_reachable_on_the_remote_transport(tmp_path):
     service = _service(tmp_path, harness)
     service.transport = "remote"
 
+    names = [m for m in service._methods() if m.startswith("watchlist.")]
+    assert len(names) == 14
+    for name in names:
+        # The transport gate refuses before dispatch, so anything that gets
+        # past it and fails on its own arguments has proven the point.
+        try:
+            service.call(name, {"channel_id": 999})
+        except CBError as exc:
+            assert "only available in the app window" not in str(exc), name
     assert service.call("watchlist.list") == []
+
+
+def test_a_genre_move_is_refused_while_either_download_runs(tmp_path):
+    harness = Harness(tmp_path, FakeSession())
+    cid = harness.add_channel()
+    service = _service(tmp_path, harness)
+    src = harness.folder()
+    os.makedirs(src, exist_ok=True)
+    with open(os.path.join(src, "Track.mp3"), "w", encoding="utf-8") as fh:
+        fh.write("x")
+
+    for category in ("batch", "watchlist"):
+        service._jobs[category] = 1
+        try:
+            with pytest.raises(CBError, match="folder can't be moved"):
+                service.call("watchlist.edit",
+                             {"channel_id": cid, "genre": "Techno"})
+            # A link edit touches no files and stays allowed.
+            service.call("watchlist.edit",
+                         {"channel_id": cid,
+                          "url": "https://www.youtube.com/channel/UCnew"})
+        finally:
+            service._jobs.pop(category, None)
+
+    assert harness.row(cid)["genre"] == "House"
+    assert os.path.isfile(os.path.join(src, "Track.mp3"))
+    assert harness.row(cid)["channel_id"] == "UCnew"
+
+
+def test_a_killed_frontend_leaves_no_row_stuck_mid_job(tmp_path):
+    harness = Harness(tmp_path, FakeSession())
+    scanning = harness.add_channel()
+    downloading = harness.add_channel(
+        url="https://www.youtube.com/channel/UCxyz", name="Second",
+        channel_id="UCxyz")
+    harness.db.update_watchlist_status(scanning, "scanning")
+    harness.db.update_watchlist_status(downloading, "downloading")
+
+    # A fresh service is a fresh process: neither status can still be true.
+    service = _service(tmp_path, harness)
+
+    assert harness.row(scanning)["status"] == "idle"
+    assert harness.row(downloading)["status"] == "idle"
+    assert service.call("watchlist.list")[0]["status"] == "idle"
+
+
+def test_the_startup_reset_never_brings_a_database_into_existence(tmp_path):
+    db_path = tmp_path / "not-created" / "cratebuilder.db"
+    CrateBuilderService(settings=_settings(tmp_path), db_path=str(db_path),
+                        log_path=str(tmp_path / "activity.log"),
+                        debug_log_path=str(tmp_path / "debug.log"))
+    assert not db_path.exists()
 
 
 def test_force_download_refuses_an_unresolved_channel(tmp_path):

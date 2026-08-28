@@ -2468,15 +2468,23 @@
     bindTips(document);
   }
 
+  // A Main-tab batch and a Watch List download are separate job categories and
+  // can run at the same time, both driving the same runner. Every progress
+  // frame names its job, so the Main tab takes only its own — without this the
+  // watch-list run repaints this bar, its ETA and its current-track line.
+  function isBatchProgress(p) {
+    return !p || !p.job || p.job === 'batch';
+  }
+
   function subscribeDownloadEvents() {
     cbApi.on('progress.current', (p) => {
-      if (!dl.running) return;
+      if (!dl.running || !isBatchProgress(p)) return;
       dl.current = p;
       renderCurrent();
       renderQueueLog();
     });
     cbApi.on('progress.overall', (p) => {
-      if (!dl.running) return;
+      if (!dl.running || !isBatchProgress(p)) return;
       dl.overall = p;
       renderOverall();
       renderPanelBatchMini();

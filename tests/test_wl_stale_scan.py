@@ -28,6 +28,18 @@ def test_scanning_rows_reset_to_idle_and_are_counted(tmp_path):
         ["idle", "idle", "idle"]
 
 
+def test_downloading_rows_are_swept_too(tmp_path):
+    """The web frontend writes 'downloading' where the tkinter app only wrote
+    'scanning', and both open the same database — so a row left mid-download by
+    a killed frontend has to be cleared by whichever one starts next. Task 9's
+    downloading card greys out every control except a Cancel, so a stuck row
+    there is a permanently dead card."""
+    db, ids = _db_with(tmp_path, ["downloading", "scanning", "found"])
+    assert db.reset_stale_watchlist_scans() == 2
+    assert [db.get_watchlist_channel(w)["status"] for w in ids] == \
+        ["idle", "idle", "found"]
+
+
 def test_every_other_status_survives_untouched(tmp_path):
     """The sweep must not eat real state — a 'found' card's new-track badge,
     a dead link's needs_resolve, an offline marker."""
