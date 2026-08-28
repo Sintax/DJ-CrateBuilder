@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import socket
+import threading
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
@@ -26,8 +27,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from cratebuilder import remoteauth
-from cratebuilder.remoteauth import (DISABLED_REASON, ControlHeld,
-                                     PairingRefused, RemoteState,
+from cratebuilder.remoteauth import (CLOSE_DISABLED, DISABLED_REASON,
+                                     ControlHeld, PairingRefused, RemoteState,
                                      UNPAIRED_REASON)
 from cratebuilder.service import REMOTE, CBError, CrateBuilderService
 
@@ -293,6 +294,45 @@ def create_app(service, remote_state, web_dir=WEB_DIR, allowed_hosts=None):
     def refused(message):
         return {"ok": False, "error": message}
 
+    # ── remote log-watch bookkeeping ─────────────────────────────────────────
+    # `logs.watch {on:true}` starts a ref-counted tail thread in the service,
+    # and the only thing that decrements it is the client's own {on:false} —
+    # which a closed tab or a phone that drops off Wi-Fi never sends, so the
+    # 1 Hz poll thread and its bus traffic would outlive every viewer. The
+    # event socket is the one thing that knows the viewer is gone, so the
+    # counts are mirrored per device here and unwound when that device's LAST
+    # socket closes. Local (pywebview) callers are untouched: their window
+    # closing is the process ending.
+    log_watches = {}                    # device id -> {log name: count}
+    log_watches_lock = threading.Lock()
+
+    def _note_log_watch(device_id, name, on):
+        with log_watches_lock:
+            held = log_watches.setdefault(device_id, {})
+            if on:
+                held[name] = held.get(name, 0) + 1
+            else:
+                left = held.get(name, 0) - 1
+                if left > 0:
+                    held[name] = left
+                else:
+                    held.pop(name, None)
+            if not held:
+                log_watches.pop(device_id, None)
+
+    def _release_log_watches(device_id):
+        """Hand back every watch this device still holds. Called once its last
+        socket has gone, so nothing it opened can outlive it."""
+        with log_watches_lock:
+            held = log_watches.pop(device_id, None) or {}
+        for name, count in held.items():
+            for _ in range(count):
+                try:
+                    service.call("logs.watch", {"name": name, "on": False},
+                                 transport=REMOTE)
+                except Exception:
+                    break       # the log is gone or already unwatched
+
     # ── pairing (the only routes reachable unpaired) ─────────────────────────
 
     @app.get("/pair/info")
@@ -349,8 +389,11 @@ def create_app(service, remote_state, web_dir=WEB_DIR, allowed_hosts=None):
             return refused(reason)
         remote_state.touch_control(device["id"])
         try:
-            return {"ok": True,
-                    "result": service.call(method, params, transport=REMOTE)}
+            result = service.call(method, params, transport=REMOTE)
+            if method == "logs.watch":
+                _note_log_watch(device["id"], params.get("name"),
+                                bool(params.get("on")))
+            return {"ok": True, "result": result}
         except CBError as exc:
             return refused(str(exc))
         except Exception as exc:                      # never kill the mount
@@ -437,7 +480,7 @@ def create_app(service, remote_state, web_dir=WEB_DIR, allowed_hosts=None):
 
         loop = asyncio.get_running_loop()
         outbox = asyncio.Queue(maxsize=EVENT_QUEUE_MAX)
-        cut_off = False
+        cut_code = None
 
         def _put(frame):
             """Enqueue on the loop thread, dropping the oldest when full."""
@@ -459,13 +502,21 @@ def create_app(service, remote_state, web_dir=WEB_DIR, allowed_hosts=None):
             except RuntimeError:
                 pass                # loop already closing; drop the frame
 
-        def cut_socket():
-            """This device was revoked. Called from whatever thread revoked it,
-            so it hops to the loop and ends the sender with the sentinel — the
-            same clean stop a disconnect uses, never a mid-send cancellation."""
+        def cut_socket(reason):
+            """This device's access was withdrawn — revoked, or the master
+            switch turned off. Called from whatever thread withdrew it, so it
+            hops to the loop and ends the sender with the sentinel — the same
+            clean stop a disconnect uses, never a mid-send cancellation.
+
+            The two reasons close with different codes because they are
+            different facts about the client's token: revoked means throw it
+            away, disabled means keep it and keep retrying."""
+            code = (WS_DISABLED if reason == CLOSE_DISABLED
+                    else WS_UNAUTHORIZED)
+
             def stop():
-                nonlocal cut_off
-                cut_off = True
+                nonlocal cut_code
+                cut_code = code
                 _put(None)
             try:
                 loop.call_soon_threadsafe(stop)
@@ -489,11 +540,13 @@ def create_app(service, remote_state, web_dir=WEB_DIR, allowed_hosts=None):
                 if frame is None:
                     break
                 await websocket.send_json(frame)
-            if cut_off:
-                # Revoked mid-stream. 4401 rather than a plain close so the
-                # browser drops its dead token and shows the pairing screen
-                # instead of reconnecting with it every three seconds.
-                await websocket.close(code=WS_UNAUTHORIZED)
+            if cut_code is not None:
+                # Cut mid-stream. An application close code rather than a plain
+                # close, so the browser can tell revocation (drop the token,
+                # show the pairing screen) from the master switch going down
+                # (keep the token, keep retrying) instead of reconnecting with
+                # a dead token every three seconds.
+                await websocket.close(code=cut_code)
         except (WebSocketDisconnect, RuntimeError):
             pass
         finally:
@@ -507,6 +560,11 @@ def create_app(service, remote_state, web_dir=WEB_DIR, allowed_hosts=None):
             if remote_state.unregister_connection(device["id"], conn_key):
                 service.emit("control.holder",
                              remote_state.control_holder() or {})
+            # Same ref-count, one layer up: only the device's last socket
+            # going means the viewer is really gone, and only then may the
+            # log tails it opened be handed back (F6).
+            if not remote_state.is_connected(device["id"]):
+                _release_log_watches(device["id"])
 
     async def _watch_for_disconnect(websocket, outbox):
         """Nothing is expected from the client — this exists so a disconnect is
