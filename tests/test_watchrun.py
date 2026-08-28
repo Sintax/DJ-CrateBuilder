@@ -744,6 +744,42 @@ def test_forget_unavailable_clears_only_this_channel(tmp_path):
         "https://www.youtube.com/channel/UCabc") == 0
 
 
+def test_details_reports_the_folder_and_both_counts(tmp_path):
+    """The Edit dialog's three lazy reads. `tracks` is what a genre move would
+    carry, so it must be the same count _change_genre reports as `moved`."""
+    harness = Harness(tmp_path, FakeSession())
+    cid = harness.add_channel()
+    folder = harness.folder()
+    os.makedirs(folder, exist_ok=True)
+    for name in ("One.mp3", "Two.mp3", "cover.jpg", "cratebuilder.json"):
+        with open(os.path.join(folder, name), "w", encoding="utf-8") as fh:
+            fh.write("x")
+    harness.db.record_unavailable(
+        video_id="v1", platform="YouTube",
+        channel_url="https://www.youtube.com/channel/UCabc",
+        title="Gone", reason="Removed")
+
+    assert harness.ops.details(cid) == {
+        "folder": folder, "tracks": 2, "unavailable": 1}
+
+
+def test_details_on_a_channel_with_no_folder_yet(tmp_path):
+    """Never creates the folder, and answers zero rather than raising."""
+    harness = Harness(tmp_path, FakeSession())
+    cid = harness.add_channel()
+
+    details = harness.ops.details(cid)
+
+    assert details["tracks"] == 0 and details["unavailable"] == 0
+    assert not os.path.exists(details["folder"])
+
+
+def test_details_refuses_a_channel_that_is_gone(tmp_path):
+    harness = Harness(tmp_path, FakeSession())
+    with pytest.raises(CBError):
+        harness.ops.details(9999)
+
+
 def test_editing_the_genre_moves_the_folder_and_rewrites_the_rows(tmp_path):
     harness = Harness(tmp_path, FakeSession())
     cid = harness.add_channel()
@@ -981,6 +1017,8 @@ def test_the_dispatch_table_routes_every_watchlist_method(tmp_path):
     _drain(service)
     assert harness.row(cid)["pending_new_count"] == 1
     assert service.call("watchlist.cancel_all") == {"cancelled": True}
+    assert set(service.call("watchlist.details", {"channel_id": cid})) == {
+        "folder", "tracks", "unavailable"}
 
 
 def test_an_unknown_channel_id_is_refused_by_name(tmp_path):
@@ -1001,7 +1039,7 @@ def test_watchlist_methods_are_reachable_on_the_remote_transport(tmp_path):
     service.transport = "remote"
 
     names = [m for m in service._methods() if m.startswith("watchlist.")]
-    assert len(names) == 14
+    assert len(names) == 15
     for name in names:
         # The transport gate refuses before dispatch, so anything that gets
         # past it and fails on its own arguments has proven the point.

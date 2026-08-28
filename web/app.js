@@ -619,9 +619,10 @@
      redrawing one channel never disturbs a button the user is on. The pinned
      scan log consumes scan.line through the same renderer the log viewers use.
 
-     There is no watchlist.finished event, so "is a Watch List job running" is
-     tracked here: set when a start call is accepted, cleared by the terminal
-     DONE line every run emits. */
+     "Is a Watch List job running" is set optimistically when a start call is
+     accepted and cleared by the host's `job.finished` — never by reading the
+     run's own terminal DONE line, which the host emits while it still holds
+     the job slot. */
 
   const WL_LOG_LIMIT = 500;
   /* The service stores a placeholder URL for a channel whose real link was
@@ -629,9 +630,6 @@
      sentinel. A duplicate literal rather than an import, for the same reason
      cratebuilder/db.py keeps its own copy of it. */
   const WL_UNRESOLVED_URL_PREFIX = 'unresolved://';
-  /* run_scan / run_download always close with one of these (watchrun.py), and
-     nothing else in the scan log opens with them. */
-  const WL_RUN_DONE_PREFIXES = ['DONE Scan complete', 'DONE Download complete'];
   const WL_BUSY_REASON = 'A Watch List scan or download is already running — ' +
     'cancel it first, or wait for it to finish.';
   /* Cancellation lands between channels — it cannot interrupt a channel
@@ -645,18 +643,28 @@
   /* 3m's Edit dialog adds the "leave it alone" half; on Add there is no
      current channel for that sentence to be about. */
   const WL_EDIT_URL_HINT = WL_URL_HINT + ' Leave as-is to keep the current channel.';
+  /* 3m's warn box, verbatim — including the confirmation clause, which the
+     Save path below now actually honours. */
   const WL_GENRE_WARNING = 'Saving a different genre moves the channel folder, ' +
     'updates the database rows, and sets the Genre tag inside each file to ' +
-    'match. A failed database write rolls the move back.';
+    'match. You get a confirmation naming the track count first, and a failed ' +
+    'database write rolls the move back.';
   const WL_NO_HOST_ACTION = "Not wired up yet — creating and removing genre " +
     "folders arrives with the host filesystem bridge.";
+  /* The DB's own status vocabulary, in the words the card should say it in.
+     An unmapped status renders as-is rather than being hidden — a status the
+     frontend has not met is still worth showing. */
+  const WL_STATUS_TEXT = {
+    idle: 'idle', found: 'new tracks found', scanning: 'scanning',
+    downloading: 'downloading', needs_resolve: 'link needs fixing',
+    offline: 'offline — no network', error: 'error',
+  };
 
   const wl = {
     running: false,   // a "watchlist" job owns the host
     cards: [],        // watchlist.list, updated in place by watchlist.card
     current: null,    // last progress.current stamped job:"watchlist"
     overall: null,    // last progress.overall stamped job:"watchlist"
-    doneSeq: 0,       // bumped by each terminal DONE line — see refresh()
   };
 
   function wlPending() {
@@ -696,18 +704,23 @@
     } catch (_) { return null; }   /* call() already toasted the reason */
   }
 
+  /* A disabled control keeps saying what it does, then why it is off — losing
+     the registry half while a control is closed is exactly when the user is
+     most likely to be asking what it was for. */
+  function tipPlus(ttKey, reason) {
+    return (ttKey && TOOLTIPS[ttKey] ? TOOLTIPS[ttKey] + '\n\n' : '') + reason;
+  }
+
+  function wlGate(el, reason, ttKey) {
+    setDisabled(el, !!reason, { reason: tipPlus(ttKey, reason || ''), ttKey });
+  }
+
   function wlActionButton(label, ttKey, cls, onClick, disabledReason) {
     const b = document.createElement('button');
     b.className = ('cb-btn cb-btn--sm ' + (cls || '')).trim();
     b.textContent = label;
-    if (disabledReason) {
-      setDisabled(b, true, {
-        reason: (TOOLTIPS[ttKey] ? TOOLTIPS[ttKey] + '\n\n' : '') + disabledReason,
-      });
-    } else {
-      setDisabled(b, false, { ttKey });
-      b.addEventListener('click', onClick);
-    }
+    wlGate(b, disabledReason, ttKey);
+    if (!disabledReason) b.addEventListener('click', onClick);
     return b;
   }
 
@@ -771,12 +784,18 @@
       const meta = document.createElement('div');
       meta.className = 'cb-mut cb-mono cb-wlcard__meta';
       const bits = [];
-      if (row.last_scan) bits.push(`last scan ${fmtWhen(row.last_scan)}`);
+      if (row.last_scan) bits.push(`Last scan ${fmtWhen(row.last_scan)}`);
       bits.push(`${num(row.downloaded)} downloaded`);
       if (row.date_added) bits.push(`added ${fmtDate(row.date_added)}`);
       if (row.unresolved) bits.push('folder has no canonical channel id');
-      bits.push(row.status || 'idle');
-      if (row.last_error && row.status !== 'idle') bits.push(row.last_error);
+      const status = row.status || 'idle';
+      /* 3d's unresolved card stops at "folder has no canonical channel id" —
+         repeating the needs_resolve status after it would say the same thing
+         twice, in the database's words rather than the user's. */
+      if (!(row.unresolved && status === 'needs_resolve')) {
+        bits.push(WL_STATUS_TEXT[status] || status);
+      }
+      if (row.last_error && status !== 'idle') bits.push(row.last_error);
       meta.textContent = bits.join(' · ');
       card.appendChild(meta);
     }
@@ -851,25 +870,23 @@
                                   : (wl.running ? WL_BUSY_REASON : '');
 
     const quick = $('#quick-scan');
-    if (quick) setDisabled(quick, !!scanReason, { reason: scanReason, ttKey: 'wl.scan_all' });
-    setDisabled($('#wl-scan'), !!scanReason, { reason: scanReason, ttKey: 'wl.scan_all' });
+    if (quick) wlGate(quick, scanReason, 'wl.scan_all');
+    wlGate($('#wl-scan'), scanReason, 'wl.scan_all');
 
-    setDisabled($('#wl-add'), wl.running,
-      { reason: WL_BUSY_REASON, ttKey: 'wl.add_channel' });
-    setDisabled($('#wl-links'), wl.running || !unresolved, {
-      reason: wl.running ? WL_BUSY_REASON
-        : 'Every channel already resolves to a real channel id — nothing to check.',
-      ttKey: 'wl.check_links',
-    });
-    setDisabled($('#wl-dl-all'), wl.running || !pending, {
-      reason: wl.running ? WL_BUSY_REASON
-        : 'No new tracks pending across any channels. Run 🔍 Scan for new first.',
-      ttKey: 'wl.download_all_new',
-    });
-    setDisabled($('#wl-cancel'), !wl.running, {
-      reason: 'No Watch List scan or download is running.',
-      ttKey: 'wl.cancel_all',
-    });
+    wlGate($('#wl-add'), wl.running ? WL_BUSY_REASON : '', 'wl.add_channel');
+    wlGate($('#wl-links'),
+      wl.running ? WL_BUSY_REASON
+        : (unresolved ? ''
+           : 'Every channel already resolves to a real channel id — nothing to check.'),
+      'wl.check_links');
+    wlGate($('#wl-dl-all'),
+      wl.running ? WL_BUSY_REASON
+        : (pending ? ''
+           : 'No new tracks pending across any channels. Run 🔍 Scan for new first.'),
+      'wl.download_all_new');
+    wlGate($('#wl-cancel'),
+      wl.running ? '' : 'No Watch List scan or download is running.',
+      'wl.cancel_all');
     $('#wl-cancel').className = 'cb-btn ' + (wl.running ? 'cb-btn--warn' : 'cb-btn--quiet');
     $('#wl-dl-all').textContent = `⬇ Download All New (${num(pending)})`;
     $('#wl-summary').innerHTML =
@@ -935,11 +952,6 @@
                                 entry.level || 'default'));
     while (box.childElementCount > WL_LOG_LIMIT) box.removeChild(box.firstElementChild);
     if (atBottom) box.scrollTop = box.scrollHeight;
-  }
-
-  function wlIsRunDone(entry) {
-    const text = (entry && entry.text) || '';
-    return WL_RUN_DONE_PREFIXES.some((prefix) => text.startsWith(prefix));
   }
 
   /* ── Add Channel (plain dialog) ─────────────────────────────────────────── */
@@ -1034,7 +1046,7 @@
 
   function openRemoveChannel(row) {
     openModal({
-      title: `✕ Remove — ${row.name}`,
+      title: `Remove — ${row.name}`,
       width: 480,
       body(body) {
         body.appendChild(modalNote(TOOLTIPS['wl.card_remove'] ||
@@ -1066,36 +1078,40 @@
      service method was deliberately not ported, and a note nothing verifies
      would be a claim the frontend cannot make. */
 
-  /* The channel's folder path is derived host-side from base_dir + CrateLayout
-     (naming rules this page must not re-implement), and only the Database
-     viewer's watchlist rows carry it — so that is where it is read from. */
-  async function wlFolderFor(row) {
+  /* The folder path, the movable-track count and the unavailable-track count
+     are all host facts a card cannot carry (each costs a listdir or a COUNT,
+     and a card is re-emitted many times a second during a run), so the dialog
+     asks for them once, on open. */
+  async function wlDetails(row) {
     try {
-      const res = await cbApi.call('db.query', {
-        table: 'watchlist', filters: { search: row.name },
-        sort: { col: 'channel' }, offset: 0, limit: 200, want_total: false,
-      });
-      const hit = (res.rows || []).find((r) => r.id === row.id);
-      return (hit && hit.folder) || '';
-    } catch (_) { return ''; }
+      const res = await cbApi.call('watchlist.details', { channel_id: row.id });
+      return { folder: (res && res.folder) || '',
+               tracks: Number((res && res.tracks) || 0),
+               unavailable: Number((res && res.unavailable) || 0) };
+    } catch (_) { return null; }
   }
 
-  function openEditChannel(row) {
+  /* prefill carries the values the user had typed when a confirmation step
+     took the dialog away, so backing out of that confirmation returns them to
+     the dialog they left rather than to the stored row. */
+  function openEditChannel(row, prefill) {
     const local = state && state.host.transport === 'local';
     const currentUrl = wlUrl(row);
     const currentGenre = row.genre || '(none)';
     let urlEl = null;
     let genreEl = null;
     let folderBtn = null;
+    let forgetBtn = null;
     let folder = '';
+    let movableTracks = null;   // null until watchlist.details answers
 
     const api = openModal({
-      title: `✏ Edit — ${row.name}`,
+      title: `Edit — ${row.name}`,
       body(body) {
         urlEl = document.createElement('input');
         urlEl.className = 'cb-in cb-mono';
         urlEl.style.fontSize = '12px';
-        urlEl.value = currentUrl;
+        urlEl.value = (prefill && prefill.url !== undefined) ? prefill.url : currentUrl;
         urlEl.placeholder = 'https://www.youtube.com/@…';
         body.appendChild(labelled('Channel / Playlist URL', urlEl, WL_EDIT_URL_HINT));
 
@@ -1132,23 +1148,28 @@
         tools.append(folderBtn, openLink, smart);
         body.appendChild(tools);
 
-        genreEl = genreSelect(currentGenre);
+        genreEl = genreSelect((prefill && prefill.genre) || currentGenre);
         body.appendChild(labelled('Genre', genreRow(genreEl)));
 
-        const forget = modalButton('Forget unavailable tracks', 'cb-btn--quiet',
+        /* The count lands with watchlist.details; until then the button says
+           what it does without claiming a number it does not have. */
+        forgetBtn = modalButton('Forget unavailable tracks', 'cb-btn--quiet',
           async () => {
+            forgetBtn.disabled = true;
             try {
               const res = await cbApi.call('watchlist.forget_unavailable',
                                             { channel_id: row.id });
               const n = (res && res.removed) || 0;
+              forgetBtn.textContent = 'Forget unavailable tracks (0)';
               toast(`Forgot ${num(n)} permanently-unavailable track${n === 1 ? '' : 's'}.`);
             } catch (err) {
+              forgetBtn.disabled = false;
               api.error(err.userFacing ? err.message :
                 'The host could not forget this channel\'s unavailable tracks.');
             }
           }, 'wl.card_forget_unavailable');
-        forget.style.alignSelf = 'flex-start';
-        body.appendChild(forget);
+        forgetBtn.style.alignSelf = 'flex-start';
+        body.appendChild(forgetBtn);
 
         const warn = document.createElement('div');
         warn.className = 'cb-warnbox';
@@ -1168,21 +1189,26 @@
             closeModal();
             return;
           }
+          /* 3m: "You get a confirmation naming the track count first." A genre
+             change moves the folder on disk, rewrites the downloads rows and
+             retags every file — it does not go through on one dropdown pick. */
+          if (params.genre !== undefined) {
+            closeModal();
+            openGenreMoveConfirm(row, params, movableTracks,
+                                 () => openEditChannel(row, { url, genre }));
+            return;
+          }
           dialog.error('');
           dialog.busy(true);
           save.textContent = 'Saving…';
           try {
-            const res = await cbApi.call('watchlist.edit', params);
+            await cbApi.call('watchlist.edit', params);
             closeModal();
-            const moved = res && res.genre;
-            toast(moved && moved.moved
-              ? `Saved — ${num(moved.moved)} track${moved.moved === 1 ? '' : 's'} moved to ${genre}.`
-              : 'Channel saved.');
+            toast('Channel saved.');
             await refresh();
           } catch (err) {
-            /* A genre move is refused outright while a batch or Watch List job
-               runs; the host's own wording is the whole explanation, so it is
-               shown as-is rather than replaced. */
+            /* The host's own wording is the whole explanation, so it is shown
+               as-is rather than replaced. */
             dialog.busy(false);
             save.textContent = 'Save';
             dialog.error(err.userFacing ? err.message :
@@ -1194,9 +1220,14 @@
       focus: () => urlEl,
     });
 
-    wlFolderFor(row).then((path) => {
-      folder = path;
-      if (!folderBtn || !folderBtn.isConnected) return;
+    wlDetails(row).then((details) => {
+      if (!api.body.isConnected) return;    // dialog closed while in flight
+      if (details && details.unavailable && forgetBtn) {
+        forgetBtn.textContent = `Forget unavailable tracks (${num(details.unavailable)})`;
+      }
+      movableTracks = details ? details.tracks : null;
+      folder = details ? details.folder : '';
+      if (!folderBtn) return;
       if (!folder) {
         setDisabled(folderBtn, true, {
           reason: (TOOLTIPS['wl.card_open_folder'] ? TOOLTIPS['wl.card_open_folder'] + '\n\n' : '') +
@@ -1218,6 +1249,62 @@
       shown.style.cssText = 'font-size:11px;overflow-wrap:anywhere';
       shown.textContent = folder;
       api.body.insertBefore(shown, folderBtn.parentElement.nextSibling);
+    });
+  }
+
+  /* 3m's genre-move confirmation. A separate dialog rather than an inline
+     step, because one dialog is open at a time (openModal closes the Edit one
+     on the way in) — so Back re-opens Edit with what the user had typed.
+     *tracks* is null when watchlist.details never answered; the copy then says
+     so instead of naming a count it does not have. */
+  function openGenreMoveConfirm(row, params, tracks, onBack) {
+    let confirmed = false;
+    openModal({
+      title: `Move — ${row.name}`,
+      width: 480,
+      onClose() { if (!confirmed && onBack) setTimeout(onBack, 0); },
+      body(body) {
+        const count = tracks == null
+          ? 'The tracks in this channel\'s folder'
+          : `${num(tracks)} track${tracks === 1 ? '' : 's'}`;
+        body.appendChild(modalNote(
+          `${count} will move from “${row.genre || '(none)'}” to ` +
+          `“${params.genre}”. The database rows are rewritten to match and the ` +
+          `Genre tag inside each file is updated.`));
+        const warn = document.createElement('div');
+        warn.className = 'cb-warnbox';
+        warn.textContent = 'A failed database write rolls the move back, so ' +
+          'disk and database never disagree. Retagging runs in the background ' +
+          'and reports into the scan log when it finishes.';
+        body.appendChild(warn);
+      },
+      foot(foot, dialog) {
+        const back = modalButton('Back', 'cb-btn--quiet', closeModal);
+        back.style.marginLeft = 'auto';
+        const go = modalButton('Move the folder', 'cb-btn--fill', async () => {
+          dialog.error('');
+          dialog.busy(true);
+          go.textContent = 'Moving…';
+          try {
+            const res = await cbApi.call('watchlist.edit', params);
+            confirmed = true;
+            closeModal();
+            const moved = res && res.genre;
+            toast(moved && moved.moved
+              ? `Moved ${num(moved.moved)} track${moved.moved === 1 ? '' : 's'} to ${params.genre}.`
+              : `Channel filed under ${params.genre}.`);
+            await refresh();
+          } catch (err) {
+            /* A genre move is refused outright while a batch or Watch List job
+               runs; the host's wording is the whole explanation. */
+            dialog.busy(false);
+            go.textContent = 'Move the folder';
+            dialog.error(err.userFacing ? err.message :
+              'The host could not move that channel.');
+          }
+        });
+        foot.append(back, go);
+      },
     });
   }
 
@@ -1254,10 +1341,14 @@
          dialog must not open while the one that triggered it is unwinding. */
       onClose() { if (advance && opts.onNext) setTimeout(opts.onNext, 0); },
       body(body) {
+        /* 3m says "a YouTube search"; a SoundCloud entry is searched on
+           SoundCloud instead (watchrun.resolve_candidates), so the sentence
+           names whichever one is about to run. */
+        const where = row.platform === 'SoundCloud' ? 'SoundCloud' : 'YouTube';
         body.appendChild(modalNote(
           'This folder has no canonical channel id, so scans fall back to the ' +
           `folder name. Pick the channel it belongs to — the top matches from a ` +
-          `search for “${row.name}”.`));
+          `${where} search for “${row.name}”.`));
         listEl = document.createElement('div');
         listEl.style.cssText = 'display:flex;flex-direction:column;gap:8px';
         const loading = document.createElement('div');
@@ -3318,25 +3409,21 @@
     wlLogReset();
   }
 
-  /* opts.watchlistEnded marks the resync that follows a terminal DONE line.
-     The host emits that line from inside the run's own `finally`, so the job
-     slot it is reported by is still held for a moment afterwards — taking the
-     snapshot's `running` at face value there would re-arm a run that has just
-     announced its end and leave the screen stuck on a job nothing can finish.
-     The doneSeq check covers the other direction: a DONE landing while some
-     unrelated refresh is in flight. */
-  async function refresh(opts) {
-    const seq = wl.doneSeq;
+  /* The snapshot is the only source of "is anything running": it can be taken
+     at face value because the host releases a job's slot BEFORE it announces
+     the end with job.finished (see _start_job), so no resync triggered by that
+     event can be answered with a stale `running`. The runs' own terminal
+     events (batch.finished, the closing DONE scan line) are display only and
+     never drive a refresh. */
+  async function refresh() {
     state = await call('state.snapshot');
     state.platform = state.platform || null;
     // Host truth on every snapshot: a page load (or a manual refresh) while a
     // batch is running must show the running state, not wait for the next
     // progress event to reveal it.
     dl.running = !!(state.running && state.running.batch);
+    wl.running = !!(state.running && state.running.watchlist);
     wl.cards = state.watchlist || [];
-    if (seq === wl.doneSeq && !(opts && opts.watchlistEnded)) {
-      wl.running = !!(state.running && state.running.watchlist);
-    }
     renderShell();
     renderOverview();
     renderGenres();
@@ -3371,35 +3458,49 @@
       renderOverviewRunning();
     });
     cbApi.on('watchlist.card', wlApplyCard);
-    cbApi.on('scan.line', (entry) => {
-      if (!entry) return;
-      wlLogAppend(entry);
-      if (!wlIsRunDone(entry)) return;
-      // The one signal a Watch List run has ended — there is no
-      // watchlist.finished event (see the WL_RUN_DONE_PREFIXES note).
-      wl.running = false;
-      wl.doneSeq += 1;
-      wl.current = null;
-      wl.overall = null;
-      renderWatchlist();
-      refresh({ watchlistEnded: true });
-    });
+    // The pinned scan log, and nothing else: a run's closing DONE line is a
+    // log line, not a state signal (see job.finished below).
+    cbApi.on('scan.line', (entry) => { if (entry) wlLogAppend(entry); });
     cbApi.on('queue.row', (r) => {
       if (!dl.running) return;
       dl.rows[r.id] = { state: r.state, title: r.title, detail: r.detail };
       renderBatch();
     });
-    cbApi.on('batch.finished', async (r) => {
+    // Also display only — the tally and the local reset, no resync. The host
+    // is still holding the batch's job slot when this arrives.
+    cbApi.on('batch.finished', (r) => {
       dl.running = false;
       dl.paused = false;
       dl.rows = {};
       dl.current = null;
       dl.overall = null;
+      renderDownloads();
+      renderOverviewRunning();
       const parts = `${num(r.downloaded)} downloaded, ${num(r.skipped)} skipped, ` +
         `${num(r.errors)} error${r.errors === 1 ? '' : 's'}`;
       toast((r.cancelled ? 'Batch cancelled — ' : 'Batch finished — ') + parts,
         !r.cancelled && r.errors > 0);
-      await refresh();
+    });
+    /* The one event that means a job category is free again — emitted after
+       the host releases the slot, so the snapshot this asks for cannot come
+       back still claiming the run is going. Both job categories resync here;
+       neither reads its own terminal event for this. */
+    cbApi.on('job.finished', (p) => {
+      const job = p && p.job;
+      if (job === 'batch') {
+        dl.running = false;
+        dl.paused = false;
+        dl.rows = {};
+        dl.current = null;
+        dl.overall = null;
+      } else if (job === 'watchlist') {
+        wl.running = false;
+        wl.current = null;
+        wl.overall = null;
+      } else {
+        return;
+      }
+      refresh();
     });
     cbApi.on('state.patch', (p) => {
       if (!state || !p || !p.counts) return;
