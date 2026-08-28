@@ -7,7 +7,10 @@ window are unaffected and can run beside it.
 Binds 127.0.0.1 unless `--lan` is given AND remote access has been switched on
 in the host's own settings — nothing here ever turns that on for you. Plain
 HTTP is LAN-only by design (HANDOFF §8.2): put it behind Caddy or a Cloudflare
-Tunnel for anything wider.
+Tunnel for anything wider — and when you do, name the public hostname with
+`--host-allow <name>` (repeatable, remembered), or the DNS-rebinding defence
+will refuse the browser's Host and Origin, which are the proxy's name rather
+than this machine's.
 """
 
 import argparse
@@ -86,6 +89,12 @@ def main(argv=None):
                              "when remote access is enabled in settings")
     parser.add_argument("--pair", action="store_true",
                         help="print a fresh pairing code at startup")
+    parser.add_argument("--host-allow", action="append", default=None,
+                        metavar="NAME", dest="host_allow",
+                        help="a host name this server should answer to, beyond "
+                             "addresses and this machine's own name — the "
+                             "public name of a proxy or tunnel, or a Tailscale "
+                             "MagicDNS name. Repeatable; saved for next time.")
     parser.add_argument("--data-dir", default=None,
                         help="run against a throwaway config/database/token "
                              "store in this folder instead of the app dir")
@@ -94,20 +103,32 @@ def main(argv=None):
     service = build_service(args.data_dir)
     state = service.remote_state
 
+    if args.host_allow:
+        state.add_extra_hosts(args.host_allow)
+
     host = bind_host(state, lan=args.lan)
     if host is None:
         sys.exit(LAN_REFUSED)
 
     app = create_app(service, state)
     where = args.data_dir or app_dir()
+    enabled = state.get_flag("enabled")
     print(f"DJ-CrateBuilder remote mount  ·  http://{host}:{args.port}/")
     print(f"  data dir     : {where}")
     print(f"  token store  : {os.path.join(where, REMOTE_FILE_NAME)}")
     print(f"  paired       : {state.device_count()} device(s)")
     print(f"  read-only    : {'on' if state.get_flag('read_only') else 'off'}")
-    if not state.get_flag("enabled"):
+    extra = state.extra_hosts()
+    answers_to = ", ".join(extra) if extra else "(addresses and this machine only)"
+    print(f"  also answers to: {answers_to}")
+    # A code minted while the toggle is off is inert — /pair refuses it — so
+    # printing one would send the user off to type something that cannot work.
+    if enabled:
+        announce_pairing(state, host, args.port, force=args.pair)
+    else:
         print(DISABLED_NOTE)
-    announce_pairing(state, host, args.port, force=args.pair)
+        if args.pair:
+            print("  (--pair ignored: a code would be refused until then.)")
     uvicorn.Server(uvicorn.Config(app, host=host, port=args.port,
                                   log_level="info", **uvicorn_kwargs())).run()
 

@@ -8,6 +8,9 @@ where `update.*` and `fs.*` are already refused server-side.
 
 No tkinter, by the package's rule. TLS is out of scope on purpose (HANDOFF
 §8.2): put this behind Caddy or a Cloudflare Tunnel; plain HTTP is LAN-only.
+A proxied deployment must name its public hostname — `--host-allow <name>` on
+either entry point — or the DNS-rebinding defence below will refuse the
+browser's Host and Origin, which are the proxy's name and not this machine's.
 """
 
 import asyncio
@@ -51,6 +54,12 @@ WS_UNAUTHORIZED = 4401
 # because the client's token is still good — it must keep it and keep retrying,
 # not drop it and demand a fresh pairing code.
 WS_DISABLED = 4403
+# "This page's origin is not one I answer to." Also distinct from 4401, and for
+# the same reason: the token is fine, the DEPLOYMENT is wrong, and a client that
+# read this as revocation would throw away a good token and send the user to a
+# pairing screen that cannot fix it. Mirrors the HTTP 421 the Host check
+# returns, which is where the number comes from.
+WS_BAD_ORIGIN = 4421
 
 
 def bind_host(remote_state, lan=False):
@@ -72,12 +81,24 @@ def bind_host(remote_state, lan=False):
 # CAN do is resolve a name it controls to 127.0.0.1 and become same-origin with
 # a loopback-bound host — at which point /pair is reachable with no preflight.
 # A rebinding attack needs a DOMAIN NAME, so the defence is to accept only an
-# address literal, localhost, or this machine's own name.
+# address literal, localhost, this machine's own name, and any name the user has
+# explicitly added with `--host-allow` (RemoteState.extra_hosts).
+#
+# That last clause is what keeps the documented deployment working: behind Caddy
+# or a Cloudflare Tunnel the browser sends the PUBLIC name, and a Tailscale
+# MagicDNS name is how a booth machine is actually reached. Naming it is the
+# user's decision, which is exactly the difference between it and an
+# attacker-chosen domain.
 
 _ALLOWED_HOST_NAMES = {"localhost", "localhost.localdomain"}
-BAD_HOST_REASON = ("That host name is not one this server answers to. Reach "
-                   "it by address, or by the host machine's own name.")
-BAD_ORIGIN_REASON = "Cross-origin connections are not accepted."
+BAD_HOST_REASON = (
+    "That host name is not one this server answers to. Reach it by address or "
+    "by the host machine's own name — or start the host with "
+    "--host-allow <name> to add the name you are using.")
+BAD_ORIGIN_REASON = (
+    "That page's origin is not one this host answers to. If you are reaching "
+    "it through a proxy or a tunnel, start the host with --host-allow <name> "
+    "naming the public address.")
 
 
 def _local_names():
@@ -94,15 +115,9 @@ def _local_names():
 
 def host_is_allowed(host_header, allowed_names=None):
     """True when a Host header names this machine rather than someone's domain."""
-    raw = (host_header or "").strip().lower()
+    raw = remoteauth.normalise_host(host_header)
     if not raw:
         return False            # HTTP/1.1 requires it; a browser always sends it
-    if raw.startswith("["):                       # [::1]:8770
-        raw = raw[1:].split("]")[0]
-    elif raw.count(":") == 1:
-        raw = raw.split(":")[0]
-    if not raw:
-        return False
     try:
         ipaddress.ip_address(raw)
         return True             # an address literal cannot be rebound
@@ -111,19 +126,32 @@ def host_is_allowed(host_header, allowed_names=None):
     return raw in (allowed_names if allowed_names is not None else _local_names())
 
 
-def origin_matches_host(origin, host_header):
-    """True when a WebSocket upgrade is same-origin (or has no Origin at all).
+def origin_is_allowed(origin, host_header, allowed_names=None):
+    """True when a WebSocket upgrade comes from somewhere this host answers to.
 
     Browsers always send Origin on an upgrade and — unlike `fetch` — the
     WebSocket API is NOT subject to the same-origin policy, so without this a
     page on any site could open the event socket. A non-browser client (a
     script, a test harness) sends no Origin and is not what this defends
     against; it still needs a valid token.
+
+    Same-origin is the ordinary case. The second clause is for a proxy that
+    rewrites Host to the upstream: the browser then sends its real Origin (the
+    public name) against a Host of 127.0.0.1, and the two cannot match however
+    correct the deployment is — so the configured names are consulted as well.
+    An address literal is NOT blanket-accepted here, unlike in a Host header: a
+    page served from an attacker's own IP would otherwise pass.
     """
     if not origin:
         return True
-    netloc = origin.split("://", 1)[-1].strip().lower().rstrip("/")
-    return bool(netloc) and netloc == (host_header or "").strip().lower()
+    netloc = str(origin).split("://", 1)[-1].strip().lower().rstrip("/")
+    if not netloc:
+        return False
+    if netloc == (host_header or "").strip().lower():
+        return True
+    name = remoteauth.normalise_host(origin)
+    return bool(name) and name in (allowed_names if allowed_names is not None
+                                   else _local_names())
 
 
 class RpcBody(BaseModel):
@@ -213,9 +241,11 @@ def create_app(service, remote_state, web_dir=WEB_DIR, allowed_hosts=None):
     window and this server are provably the same core — one job registry, one
     event bus, one token store.
 
-    *allowed_hosts* overrides the Host-header allow-list (address literals,
+    *allowed_hosts* REPLACES the built-in allow-list (address literals,
     localhost and this machine's own name); pass a set only to test the policy
-    or to serve under a name this host cannot discover for itself.
+    itself. The ordinary way to add a name is `RemoteState.extra_hosts`, which
+    `--host-allow` writes and which is merged in below — read per request, so
+    adding a name does not need a restart.
     """
     install_log_redaction()
     app = FastAPI(title="DJ-CrateBuilder", docs_url=None, redoc_url=None,
@@ -223,9 +253,15 @@ def create_app(service, remote_state, web_dir=WEB_DIR, allowed_hosts=None):
     app.state.service = service
     app.state.remote = remote_state
 
+    def allowed_names():
+        base = set(allowed_hosts) if allowed_hosts is not None else _local_names()
+        return base | set(remote_state.extra_hosts())
+
+    app.state.allowed_names = allowed_names
+
     @app.middleware("http")
     async def check_host(request: Request, call_next):
-        if not host_is_allowed(request.headers.get("host"), allowed_hosts):
+        if not host_is_allowed(request.headers.get("host"), allowed_names()):
             return JSONResponse({"detail": BAD_HOST_REASON}, status_code=421)
         return await call_next(request)
 
@@ -378,15 +414,24 @@ def create_app(service, remote_state, web_dir=WEB_DIR, allowed_hosts=None):
         listener can never see a track title, a channel name or a path.
         """
         enabled = remote_state.get_flag("enabled")
+        # The Host allow-list is HTTP middleware, which a WebSocket scope never
+        # reaches — this is the socket's half of the same defence, and it is
+        # measured against the same set of names.
+        origin_ok = origin_is_allowed(websocket.headers.get("origin"),
+                                      websocket.headers.get("host"),
+                                      allowed_names())
         token = websocket.query_params.get("token") or ""
         device = remote_state.authenticate(token) if enabled else None
-        origin_ok = origin_matches_host(websocket.headers.get("origin"),
-                                        websocket.headers.get("host"))
         await websocket.accept()
         if not enabled:
             await websocket.close(code=WS_DISABLED)
             return
-        if device is None or not origin_ok:
+        if not origin_ok:
+            # NOT 4401: the token is good and the deployment is wrong. A client
+            # that read this as revocation would throw a valid token away.
+            await websocket.close(code=WS_BAD_ORIGIN)
+            return
+        if device is None:
             await websocket.close(code=WS_UNAUTHORIZED)
             return
 

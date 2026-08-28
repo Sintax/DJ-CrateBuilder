@@ -71,7 +71,22 @@ def start_push_bridge(window, service):
     window.events.closing += lambda: unsubscribe()
 
 
-def start_remote_mount(service, port=REMOTE_PORT, lan=False):
+def host_allow_args(argv):
+    """Every `--host-allow NAME` in *argv*, in order.
+
+    Hand-parsed rather than argparse'd because this entry point has no parser —
+    it forwards `--screen` positionally and is launched by the app, not typed.
+    """
+    names = []
+    for index, token in enumerate(argv):
+        if token == "--host-allow" and index + 1 < len(argv):
+            names.append(argv[index + 1])
+        elif token.startswith("--host-allow="):
+            names.append(token.split("=", 1)[1])
+    return names
+
+
+def start_remote_mount(service, port=REMOTE_PORT, lan=False, host_allow=None):
     """Serve the remote transport from this process, on a daemon thread.
 
     Binds through `server.bind_host`, the same rule `web_server.py` uses:
@@ -80,6 +95,10 @@ def start_remote_mount(service, port=REMOTE_PORT, lan=False):
     put a control surface on the LAN without being asked. Returns None when
     `--lan` was asked for and the toggle says no.
 
+    *host_allow* names this host should also answer to — the public name of a
+    proxy or tunnel, or a Tailscale MagicDNS name. Merged into the store, so
+    naming one once configures it for good.
+
     The thread is a daemon so closing the window still ends the process.
     """
     import uvicorn                    # deferred: the window works without it
@@ -87,6 +106,8 @@ def start_remote_mount(service, port=REMOTE_PORT, lan=False):
     from cratebuilder.server import bind_host, create_app, uvicorn_kwargs
 
     state = service.remote_state
+    if host_allow:
+        state.add_extra_hosts(host_allow)
     host = bind_host(state, lan=lan)
     if host is None:
         print("Remote mount: --lan needs 'Allow remote control over the "
@@ -118,7 +139,8 @@ def main():
     service = CrateBuilderService(transport=LOCAL)
     if service.remote_state.get_flag("enabled"):
         try:
-            start_remote_mount(service, lan="--lan" in sys.argv)
+            start_remote_mount(service, lan="--lan" in sys.argv,
+                               host_allow=host_allow_args(sys.argv))
         except Exception as exc:                     # never block the window
             print(f"Remote mount could not start: {exc}", file=sys.stderr)
     webview.settings["ALLOW_DOWNLOADS"] = True       # Export CSV, log downloads

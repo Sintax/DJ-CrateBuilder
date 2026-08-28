@@ -254,7 +254,11 @@
 
   let offlineSince = null;
 
-  function setHostOffline(offline) {
+  /* When the host says WHY it is refusing — remote access switched off, or a
+     name it does not answer to — the bar says that instead of "offline". A
+     Retry against a host that is up and refusing can never succeed, and a bar
+     that hides the reason sends the user to look at their network. */
+  function setHostOffline(offline, reason) {
     document.body.classList.toggle('cb-offline', !!offline);
     let bar = $('#cb-offline-bar');
     if (!offline) {
@@ -263,7 +267,11 @@
       return;
     }
     if (!offlineSince) offlineSince = new Date();
-    if (bar) return;
+    if (bar) {
+      const why = $('#cb-offline-why', bar);
+      if (why) why.textContent = reason || '';
+      return;
+    }
     bar = document.createElement('div');
     bar.className = 'cb-offline-bar';
     bar.id = 'cb-offline-bar';
@@ -294,7 +302,12 @@
         retry.textContent = 'Retry';
       }
     });
-    bar.append(dot, text, retry);
+    const why = document.createElement('span');
+    why.id = 'cb-offline-why';
+    why.style.cssText = 'opacity:.9;min-width:0';
+    why.textContent = reason || '';
+
+    bar.append(dot, text, why, retry);
     document.body.insertBefore(bar, document.body.firstChild);
     $('#cb-offline-at').textContent =
       offlineSince.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -4357,7 +4370,7 @@
       if (!state) return;
       state.host.online = !!(s && s.online);
       renderShell();
-      setHostOffline(!(s && s.online));
+      setHostOffline(!(s && s.online), s && s.reason);
       if (s && s.online) refresh().catch(() => {});
     });
     /* The single-writer lock changed hands. Every socket hears it, so a client

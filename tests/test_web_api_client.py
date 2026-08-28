@@ -50,13 +50,16 @@ const win = {
   setTimeout: (fn) => { timers.push(fn); return timers.length; },
   clearTimeout: (id) => { if (id) timers[id - 1] = null; },
   console,
+  // `rpcAnswer` lets a case make /rpc fail the way the host would.
+  rpcAnswer: { ok: true, status: 200, body: { ok: true, result: {} } },
   fetch: async (url) => {
     if (url === '/pair') return { ok: true, status: 200, json: async () => ({
       token: 'TOKEN-ABC', device: { id: 'd1', name: 'Driver' },
       session: { can_write: false } }) };
     if (url === '/pair/info') return { ok: true, status: 200,
       json: async () => ({ require_pairing: true }) };
-    return { ok: true, status: 200, json: async () => ({ ok: true, result: {} }) };
+    const a = win.rpcAnswer;
+    return { ok: a.ok, status: a.status, json: async () => a.body };
   },
 };
 win.window = win;
@@ -150,6 +153,88 @@ def test_a_dropped_socket_schedules_exactly_one_reconnect(tmp_path):
 """)
     assert r["pending"] == 1
     assert r["open"] == 1
+
+
+def test_a_4421_close_keeps_the_token_and_does_not_retry(tmp_path):
+    """4421 means "this page's origin is not one I answer to" — a deployment
+    problem, not an auth one. Reading it as revocation would throw away a
+    perfectly good token and send the user to a pairing screen that cannot fix
+    it; retrying would hammer a host whose answer will not change."""
+    r = _run_node(tmp_path, """
+  await cbApi.connect();
+  await cbApi.pair('123456', 'Driver');
+  const status = [];
+  cbApi.on('host.status', (p) => status.push(p));
+  const auth = [];
+  cbApi.on('auth.required', (p) => auth.push(p.reason));
+  all.filter((s) => s.readyState !== 3).forEach((s) => {
+    s.readyState = 3;
+    if (s.onclose) s.onclose({ code: 4421 });
+  });
+  console.log(JSON.stringify({
+    paired: cbApi.paired(), auth,
+    pending: timers.filter(Boolean).length,
+    reason: (status[status.length - 1] || {}).reason || '',
+    retrying: (status[status.length - 1] || {}).retrying,
+    ...snap() }));
+""")
+    assert r["paired"] is True          # token kept
+    assert r["auth"] == []              # never reported as revocation
+    assert r["pending"] == 0            # no retry storm
+    assert r["retrying"] is False
+    assert "--host-allow" in r["reason"]
+
+
+def test_a_4403_close_keeps_the_token_and_says_why(tmp_path):
+    r = _run_node(tmp_path, """
+  await cbApi.connect();
+  await cbApi.pair('123456', 'Driver');
+  const status = [];
+  cbApi.on('host.status', (p) => status.push(p));
+  all.filter((s) => s.readyState !== 3).forEach((s) => {
+    s.readyState = 3;
+    if (s.onclose) s.onclose({ code: 4403 });
+  });
+  console.log(JSON.stringify({
+    paired: cbApi.paired(),
+    pending: timers.filter(Boolean).length,
+    reason: (status[status.length - 1] || {}).reason || '',
+    retrying: (status[status.length - 1] || {}).retrying }));
+""")
+    assert r["paired"] is True
+    assert r["pending"] == 1            # keeps trying: the host may come back
+    assert r["retrying"] is True
+    assert "Remote access is switched off" in r["reason"]
+
+
+def test_a_refused_call_surfaces_the_hosts_own_reason(tmp_path):
+    """403 carries DISABLED_REASON and 421 carries BAD_HOST_REASON. Collapsing
+    either into "The host is unreachable." sends the user to look at their
+    network while the host is telling them exactly what to change."""
+    r = _run_node(tmp_path, """
+  await cbApi.connect();
+  await cbApi.pair('123456', 'Driver');
+  const out = {};
+  const status = [];
+  cbApi.on('host.status', (p) => status.push(p));
+  win.rpcAnswer = { ok: false, status: 403,
+                    body: { detail: 'Remote access is switched off on this host.' } };
+  try { await cbApi.call('state.snapshot'); } catch (e) { out.forbidden = e.message; }
+  win.rpcAnswer = { ok: false, status: 421,
+                    body: { detail: 'That host name is not one this server answers to.' } };
+  try { await cbApi.call('state.snapshot'); } catch (e) { out.misdirected = e.message; }
+  win.rpcAnswer = { ok: false, status: 500, body: {} };
+  try { await cbApi.call('state.snapshot'); } catch (e) { out.opaque = e.message; }
+  out.status = status.map((s) => s.reason || '');
+  console.log(JSON.stringify(out));
+""")
+    assert r["forbidden"] == "Remote access is switched off on this host."
+    assert r["misdirected"] == "That host name is not one this server answers to."
+    # A failure with no body still gets the honest generic.
+    assert r["opaque"] == "The host is unreachable."
+    # …and the offline shell is told the reason, so the bar can say it.
+    assert r["status"][:2] == ["Remote access is switched off on this host.",
+                               "That host name is not one this server answers to."]
 
 
 def test_a_4401_close_drops_the_token_and_stops_retrying(tmp_path):

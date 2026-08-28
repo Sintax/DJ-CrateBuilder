@@ -71,6 +71,51 @@ def test_the_embedded_thread_uses_the_same_bind_rule_as_the_entry_point(tmp_path
     assert bind_host(state, lan=True) == ANY_INTERFACE
 
 
+def test_a_disabled_host_does_not_print_a_pairing_code(tmp_path, capsys,
+                                                       monkeypatch):
+    """A code minted while the toggle is off is inert — /pair refuses it — so
+    printing one sends the user to type something that cannot work."""
+    import web_server
+
+    state = RemoteState(str(tmp_path / "remote.json"))
+    assert state.get_flag("enabled") is False
+
+    started = {}
+    monkeypatch.setattr(web_server.uvicorn, "Server",
+                        lambda config: type("S", (), {"run": lambda s: started.setdefault("ran", True)})())
+    monkeypatch.setattr(web_server, "build_service",
+                        lambda data_dir: type("Svc", (), {"remote_state": state})())
+    monkeypatch.setattr(web_server, "create_app", lambda *a, **k: object())
+
+    web_server.main(["--port", "0", "--pair", "--data-dir", str(tmp_path)])
+    printed = capsys.readouterr().out
+    assert "Pairing code" not in printed
+    assert "remote access is OFF" in printed
+    assert state.active_code() is None      # not even minted
+
+    # With the toggle on, --pair prints one as before.
+    state.set_flag("enabled", True)
+    web_server.main(["--port", "0", "--pair", "--data-dir", str(tmp_path)])
+    assert "Pairing code" in capsys.readouterr().out
+
+
+def test_host_allow_is_persisted_by_the_entry_point(tmp_path, capsys, monkeypatch):
+    import web_server
+
+    state = RemoteState(str(tmp_path / "remote.json"))
+    monkeypatch.setattr(web_server.uvicorn, "Server",
+                        lambda config: type("S", (), {"run": lambda s: None})())
+    monkeypatch.setattr(web_server, "build_service",
+                        lambda data_dir: type("Svc", (), {"remote_state": state})())
+    monkeypatch.setattr(web_server, "create_app", lambda *a, **k: object())
+
+    web_server.main(["--port", "0", "--data-dir", str(tmp_path),
+                     "--host-allow", "https://cb.example.com/",
+                     "--host-allow", "booth.tailnet.ts.net"])
+    assert state.extra_hosts() == ["cb.example.com", "booth.tailnet.ts.net"]
+    assert "cb.example.com" in capsys.readouterr().out
+
+
 def test_the_console_banners_survive_a_cp1252_terminal():
     """A Windows console at the default code page raises UnicodeEncodeError on
     print(), which takes the process down before it ever listens — which is
