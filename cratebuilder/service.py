@@ -854,15 +854,13 @@ class CrateBuilderService:
         None} when neither source has anything to show — the caller renders
         the empty-state text.
 
-        Stored paths go through the same containment gate fs.reveal uses
-        before they are opened. Be honest about what that buys: its
-        DB-records clause accepts every path the downloads table already
-        holds, so the gate is inert against today's row shapes and only
-        starts biting if something other than a downloads row ever feeds
-        this. What actually stops a non-image being served is the MIME
-        label — read from the bytes rather than assumed, so anything that
-        isn't a PNG/JPEG/WebP is refused instead of shipped as image/jpeg
-        with the file's contents base64'd inside it.
+        Both paths come straight off the row this method reads itself, so
+        there is no client-supplied path to gate — fs.reveal's containment
+        check has nothing to add here and is not used. What actually stops
+        a non-image being served is the MIME label — read from the bytes
+        rather than assumed, so anything that isn't a PNG/JPEG/WebP is
+        refused instead of shipped as image/jpeg with the file's contents
+        base64'd inside it.
 
         The two branches bound their read differently: the sidecar stops at
         the syscall (MAX_PREVIEW_BYTES + 1), while extract_cover materialises
@@ -876,10 +874,6 @@ class CrateBuilderService:
             return {"data_url": None}
         path = (row.get("artwork_path") or "").strip()
         file_path = (row.get("file_path") or "").strip()
-        if path and not self._fs_path_is_contained(path):
-            path = ""
-        if file_path and not self._fs_path_is_contained(file_path):
-            file_path = ""
         data = None
         note = ""
         if path and os.path.isfile(path):

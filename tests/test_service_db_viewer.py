@@ -485,28 +485,9 @@ def test_db_artwork_preview_labels_a_webp_sidecar_as_webp(dbsvc, tmp_path):
         "data:image/webp;base64,")
 
 
-def test_db_artwork_preview_asks_the_containment_gate_before_reading(
-        dbsvc, tmp_path, monkeypatch):
-    """Defence in depth: the stored path goes through the same gate fs.reveal
-    uses. Its DB-records clause accepts every path the downloads table itself
-    holds, so the gate is inert against today's row shapes — this pins that it
-    is consulted at all, for the day something else writes that column."""
-    svc, db = dbsvc
-    jpg = tmp_path / "cover.jpg"
-    jpg.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg-bytes")
-    _add_download(db, video_id="a", title="A", channel_name="C",
-                  artwork_path=str(jpg))
-    row_id = svc.db_query("artwork", {}, {}, 0, 5)["rows"][0]["id"]
-    assert svc.db_artwork_preview(row_id)["data_url"]        # baseline
-
-    monkeypatch.setattr(svc, "_fs_path_is_contained", lambda p: False)
-    assert svc.db_artwork_preview(row_id) == {"data_url": None}
-
-
 def test_db_artwork_preview_holds_no_db_lock_while_reading_the_sidecar(
         dbsvc, tmp_path, monkeypatch):
-    """The containment gate hits the DB; the read must still happen off the
-    pooled lock (Task 6's rule)."""
+    """The sidecar read must happen off the pooled lock (Task 6's rule)."""
     svc, db = dbsvc
     jpg = tmp_path / "cover.jpg"
     jpg.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg-bytes")
