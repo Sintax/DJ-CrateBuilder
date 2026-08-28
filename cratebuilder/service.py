@@ -1587,7 +1587,15 @@ class CrateBuilderService:
         The extension gate reads the RESOLVED name, so a symlink or junction
         called cover.jpg cannot smuggle a payload.exe past it — the check and
         the containment test then agree on which file they are talking
-        about."""
+        about.
+
+        A DIRECTORY is its own case in both modes, and the reason is that
+        neither of the file cases means anything for one: `explorer /select,`
+        on a folder highlights it inside its PARENT rather than opening it,
+        and the extension allow-list has nothing to match, so "open" would
+        refuse every folder outright. Either mode on a directory therefore
+        means "open this folder" — which is what the Watch List's and the
+        Database viewer's Open Folder actions are asking for."""
         if self.transport != LOCAL:
             raise CBError("Opening files only works in the app window on the "
                           "host machine.")
@@ -1598,13 +1606,17 @@ class CrateBuilderService:
             target = os.path.realpath(path)
         except OSError:
             raise CBError("That path is outside the crate folder.")
-        if mode == "open" and os.path.splitext(target)[1].lower() not in OPENABLE_EXTENSIONS:
+        is_dir = os.path.isdir(target)
+        if (mode == "open" and not is_dir
+                and os.path.splitext(target)[1].lower() not in OPENABLE_EXTENSIONS):
             raise CBError("Only the app's own audio and image files can be "
                           "opened from here.")
         if not self._fs_path_is_contained(path):
             raise CBError("That path is outside the crate folder.")
         try:
-            if mode == "open":
+            if is_dir:
+                self._os_open(path)
+            elif mode == "open":
                 if not os.path.exists(path):
                     raise CBError(f"This file is no longer on disk:\n{path}")
                 self._os_open(path)
@@ -1612,7 +1624,8 @@ class CrateBuilderService:
                 if sys.platform == "win32" and os.path.exists(path):
                     subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
                 else:
-                    folder = path if os.path.isdir(path) else os.path.dirname(path)
+                    # Never a directory — that case returned above.
+                    folder = os.path.dirname(path)
                     while folder and not os.path.isdir(folder):
                         parent = os.path.dirname(folder)
                         if parent == folder:
