@@ -669,3 +669,53 @@ def test_query_artwork_rows_paging_stable_with_search_and_order_by(tmp_path):
     assert len(titles) == 12
     assert len(set(titles)) == 12
     assert "Excluded" not in titles
+
+
+# ── get_download / download_path_is_recorded ────────────────────────────────
+
+def test_get_download_returns_one_row_or_none(tmp_path):
+    db = _new_db(tmp_path)
+    _add(db, title="Only Track", channel_name="Chan")
+    row_id = db.query_downloads(limit=1)[0]["id"]
+    row = db.get_download(row_id)
+    assert row["title"] == "Only Track"
+    assert type(row) is dict
+    assert db.get_download(row_id + 999) is None
+    assert db.get_download(None) is None
+    assert db.get_download("not-an-id") is None
+
+
+def test_download_path_is_recorded_matches_files_sidecars_and_folders(tmp_path):
+    db = _new_db(tmp_path)
+    art = str(tmp_path / "crate" / "cover.jpg")
+    _add(db, title="Track", channel_name="Chan", artwork_path=art)
+    file_path = db.query_downloads(limit=1)[0]["file_path"]
+
+    assert db.download_path_is_recorded(file_path) is True
+    assert db.download_path_is_recorded(art) is True
+    assert db.download_path_is_recorded(os.path.dirname(file_path)) is True
+    assert db.download_path_is_recorded(os.path.dirname(art)) is True
+    assert db.download_path_is_recorded(str(tmp_path / "elsewhere.exe")) is False
+    assert db.download_path_is_recorded("") is False
+    assert db.download_path_is_recorded(None) is False
+
+
+def test_download_path_is_recorded_escapes_like_wildcards(tmp_path):
+    db = _new_db(tmp_path)
+    _add(db, title="Track", channel_name="Chan")
+    # "%" would match everything if the needle weren't escaped
+    assert db.download_path_is_recorded("%") is False
+    assert db.download_path_is_recorded("/_/") is False
+
+
+def test_broken_filter_sort_tiebreak_matches_the_sql_branch(tmp_path):
+    """Ties resolve on id in the sort direction in both branches — Python's
+    stable sort with reverse=True would otherwise keep id ASC."""
+    db = _new_db(tmp_path)
+    for i in range(4):
+        _add(db, title="Same Title", channel_name=f"C{i}",
+             artwork_path=str(tmp_path / f"gone{i}.jpg"))
+    rows = db.query_artwork_rows("Sidecar missing on disk", order_by="title",
+                                 descending=True, limit=10)
+    ids = [r["id"] for r in rows]
+    assert ids == sorted(ids, reverse=True)
