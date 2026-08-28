@@ -263,9 +263,13 @@ input[type="radio"].cb-cbx {
 .cb-maint__item.is-summary { white-space: normal; overflow: visible; line-height: 1.55; }
 .cb-maint__counts { font-size: 11.5px; }
 .cb-maint__tally { margin-left: auto; font-size: 11.5px; color: var(--cb-ok); }
-/* The "Finished" state of that dialog's head tag — theme.css ships grey, fill
-   and attn, but not a settled-and-well one. */
+/* A run that raised: the reason reads as an error, and the bar stays wherever
+   it stopped rather than filling. */
+.cb-maint__item.is-failed { color: var(--cb-err); }
+/* The settled states of that dialog's head tag — theme.css ships grey, fill
+   and attn, but neither a settled-and-well nor a failed one. */
 .cb-tag--ok { border-color: var(--cb-ok); color: var(--cb-ok); background: var(--cb-surface); }
+.cb-tag--err { border-color: var(--cb-err); color: var(--cb-err); background: var(--cb-accent-wash); }
 
 /* Radio candidate rows (Fix Link) */
 .cb-pick {

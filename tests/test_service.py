@@ -206,7 +206,7 @@ def test_job_finished_is_emitted_after_the_slot_is_released(service, category):
 
     assert done.wait(10), "job.finished was never emitted"
     payload, registry_running, snapshot_running = seen[0]
-    assert payload == {"job": category}
+    assert payload == {"job": category, "ok": True, "error": None}
     assert registry_running is False
     assert snapshot_running is False
 
@@ -230,14 +230,16 @@ def test_an_event_emitted_from_inside_a_run_still_reports_it_as_running(service)
     assert inside == [True]
 
 
-def test_job_finished_fires_even_when_the_job_body_raises(service, monkeypatch):
-    # _start_job lets a failing body take its own worker thread down — only the
-    # slot and this event are guaranteed. The hook is swallowed so the crash
-    # this test causes on purpose is not reported as an unhandled one.
-    monkeypatch.setattr(threading, "excepthook", lambda args: None)
+def test_a_raising_job_reports_the_failure_rather_than_dying_quietly(service):
+    """A run that raises has no terminal event of its own, so job.finished is
+    the only place its failure can be told — and a frontend that took it at
+    face value would settle a dead job as a success."""
+    seen = []
     done = threading.Event()
 
     def on_event(type, payload):
+        if type in (JOB_FINISHED, "notification"):
+            seen.append((type, payload))
         if type == JOB_FINISHED:
             done.set()
 
@@ -248,3 +250,45 @@ def test_job_finished_fires_even_when_the_job_body_raises(service, monkeypatch):
     service._start_job("batch", boom)
     assert done.wait(10)
     assert service._job_running("batch") is False
+
+    types = [t for t, _ in seen]
+    assert types == ["notification", JOB_FINISHED], \
+        "the failure is announced before the slot is declared free"
+    note = seen[0][1]
+    assert note["level"] == "error"
+    assert note["title"] == "Downloads"
+    assert note["body"] == "RuntimeError: the run blew up"
+    finished = seen[1][1]
+    assert finished["job"] == "batch"
+    assert finished["ok"] is False
+    assert finished["error"] == "RuntimeError: the run blew up"
+
+
+def test_a_cberror_from_a_job_is_reported_as_its_own_message(service):
+    """CBError messages are written to be read by the user, so they are not
+    dressed with an exception type the way an unexpected crash is."""
+    seen = []
+    done = threading.Event()
+    service.events.subscribe(
+        lambda t, p: (seen.append((t, p)), done.set()) if t == JOB_FINISHED
+        else None)
+
+    def refuse():
+        raise CBError("The library folder is on a drive that went away.")
+
+    service._start_job("watchlist", refuse, title="Watch List scan")
+    assert done.wait(10)
+    assert seen[0][1]["error"] == "The library folder is on a drive that went away."
+
+
+def test_a_job_guard_refuses_the_start_before_the_slot_is_taken(service):
+    """The guard runs under the job lock, so what it checks cannot change
+    between the check and the slot being claimed."""
+    def refuse():
+        raise CBError("not right now")
+
+    with pytest.raises(CBError, match="not right now"):
+        service._start_job("batch", lambda: None, guard=refuse)
+    assert service._job_running("batch") is False
+    # The slot is untouched, so a start with no guard still works.
+    service._start_job("batch", lambda: None)
