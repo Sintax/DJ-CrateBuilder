@@ -126,6 +126,64 @@ REMOTE_SETTING_REFUSAL = (
     "Remote access settings can only be changed from the app window on the "
     "host machine.")
 
+# The three cross-job refusals, spelled once. Each is raised from two places —
+# the synchronous pre-flight a clicker sees, and the guard `_start_job` runs
+# under the job lock — and the two must say exactly the same thing.
+MAINTENANCE_BLOCKS_DOWNLOAD = (
+    "A database maintenance job is running. It rewrites the downloads table, "
+    "so a download started now could be lost — wait for it to finish, or "
+    "cancel it from its progress window.")
+
+RETAG_BLOCKS_DOWNLOAD = (
+    "A Watch List genre change is rewriting a channel's genre tags right now. "
+    "A download landing new files in that folder would tag the same files at "
+    "the same moment — wait for it to finish, then try again.")
+
+RETAG_BLOCKS_TAG_SWEEP = (
+    "A Watch List genre change is rewriting that channel's genre tags right "
+    "now. Two tag sweeps must never write the same file at once — wait for it "
+    "to finish, then try again.")
+
+DOWNLOAD_BLOCKS_LIBRARY = (
+    "A download is running. This rewrites the downloads table, so it has to "
+    "wait — cancel the run or let it finish, then try again.")
+
+RETAG_BLOCKS_GENRE_MOVE = (
+    "A Watch List genre change is still rewriting a channel's genre tags. A "
+    "second genre move would put two tag writers on the same files — wait for "
+    "it to finish, then try again.")
+
+# The settings the tkinter app freezes for the length of a run
+# (`_set_download_lock`, DJ-CrateBuilder_v1.3.py:9994), mapped from the widgets
+# it disables to the contract keys that drive them:
+#
+#   _skip_existing_cb → skip_existing        _skip_mode_combo  → skip_mode
+#   _bitrate_combo    → bitrate_quality      _bitrate_upgrade_cb → bitrate_auto_upgrade
+#   _no_conv_cb       → no_conversion        _cover_art_combo  → cover_art_mode
+#   _limit_enable_cb / _limit_slider / the ± buttons
+#                     → limit_enabled, limit_minutes
+#   _settings_dir_entry / _settings_browse_btn → base_dir
+#
+# The freeze is what makes the per-track re-read of the policy safe: both
+# frontends re-read every setting for every track, so anything writable
+# mid-run lands on the very next track of a run the user believes is pinned —
+# and a base_dir change scatters one batch across two crate roots. The three
+# DB-maintenance buttons in the same widget list are already refused server
+# side by `_require_idle_library`; `_update_btn` has no web equivalent.
+# `cover_art_enabled` is deliberately absent, because the monolith leaves its
+# checkbox live — this ports the lock, it does not widen it.
+DOWNLOAD_LOCKED_SETTINGS = {
+    "base_dir": "the save directory",
+    "skip_existing": "the skip-existing option",
+    "skip_mode": "the skip mode",
+    "bitrate_quality": "the output quality",
+    "bitrate_auto_upgrade": "the bitrate auto-upgrade",
+    "no_conversion": "the no-conversion option",
+    "cover_art_mode": "the cover-art formatting",
+    "limit_enabled": "the length limiter",
+    "limit_minutes": "the length limit",
+}
+
 _VERSION_RE = re.compile(r'^APP_VERSION\s*=\s*"([^"]+)"', re.M)
 _BUILD_RE = re.compile(r"^APP_BUILD\s*=\s*(\d+)", re.M)
 
@@ -659,9 +717,19 @@ class CrateBuilderService:
     # db.repair_tags can only take the slot while no retag is in flight.
 
     def claim_tag_writes(self):
-        """Register a Watch List retag about to start. False means refuse."""
+        """Register a Watch List retag about to start. False means refuse.
+
+        Refused while a maintenance job holds the slot, and refused while
+        ANOTHER retag is still sweeping: two genre moves on one channel in
+        quick succession (A→B, then B→C before the first sweep ends) would
+        otherwise put two `genrefix.repair_track` writers on the same MP3s,
+        which is the truncation this whole mechanism exists to prevent. The
+        pre-flight in `watchlist_edit` is what the user normally sees; this is
+        the half that cannot be raced, because the check and the claim share
+        one hold of the lock.
+        """
         with self._lock:
-            if MAINTENANCE_JOB in self._jobs:
+            if MAINTENANCE_JOB in self._jobs or self._retags:
                 return False
             self._retags += 1
             return True
@@ -670,30 +738,41 @@ class CrateBuilderService:
         with self._lock:
             self._retags = max(0, self._retags - 1)
 
-    def _refuse_while_retagging(self):
-        """`_start_job`'s guard for db.repair_tags. Runs while the job lock is
-        already held, so it must not take it again."""
-        if self._retags:
-            raise CBError("A Watch List genre change is rewriting that "
-                          "channel's genre tags right now. Two tag sweeps must "
-                          "never write the same file at once — wait for it to "
-                          "finish, then try again.")
+    # Every refusal below reads `self._jobs` / `self._retags` WITHOUT taking
+    # `self._lock`, because each is called from two places: once on the calling
+    # thread as the synchronous pre-flight (so a refusal is the answer to the
+    # user's click rather than a crash notification a moment later), and once
+    # as `_start_job`'s `guard`, which runs with the lock already held and is
+    # the call that actually decides. Taking the lock here would deadlock the
+    # second; a torn read in the first is harmless, since the guard re-asks.
 
-    def _require_idle_maintenance(self):
-        """Refuse a download while a maintenance job holds the slot.
+    def _refuse_while_retagging(self):
+        """`_start_job`'s guard for db.repair_tags."""
+        if self._retags:
+            raise CBError(RETAG_BLOCKS_TAG_SWEEP)
+
+    def _require_idle_for_download(self):
+        """Refuse a download while a maintenance job or a retag is live.
 
         The mirror of `_require_idle_library`, which refuses the three
-        table-rewriting maintenance jobs while a download runs. Without this
-        half the exclusion only holds in one direction: a download started
-        mid-rebuild writes rows that `clear_all_downloads()` then deletes, or
-        lands in the window between the clear and the backfill and is silently
-        dropped. The monolith leaves its Start button live during a rebuild and
-        has exactly that hole; this closes it rather than porting it."""
-        if self._job_running(MAINTENANCE_JOB):
-            raise CBError("A database maintenance job is running. It rewrites "
-                          "the downloads table, so a download started now "
-                          "could be lost — wait for it to finish, or cancel it "
-                          "from its progress window.")
+        table-rewriting maintenance jobs while a download runs. Without the
+        maintenance half the exclusion only holds in one direction: a download
+        started mid-rebuild writes rows that `clear_all_downloads()` then
+        deletes, or lands in the window between the clear and the backfill and
+        is silently dropped. The monolith leaves its Start button live during a
+        rebuild and has exactly that hole; this closes it rather than porting
+        it.
+
+        The retag half is the same argument one layer down: a download landing
+        new files into a folder a genre-move sweep is still walking tags them
+        (`batchrun._settle` → `TrackDownloader.tag`) while `genrefix` is saving
+        the same file. `watchlist_edit` already refuses the move while a
+        download runs; this is the reverse order.
+        """
+        if MAINTENANCE_JOB in self._jobs:
+            raise CBError(MAINTENANCE_BLOCKS_DOWNLOAD)
+        if self._retags:
+            raise CBError(RETAG_BLOCKS_DOWNLOAD)
 
     # ── dispatch ──────────────────────────────────────────────────────────────
 
@@ -1011,7 +1090,7 @@ class CrateBuilderService:
         List's append-to-running, which is what the design's Download New
         tooltip promises."""
         row = self._watchlist_row(channel_id)
-        self._require_idle_maintenance()
+        self._require_idle_for_download()
         if self._job_running(WATCHLIST_JOB):
             position = self._watchlist.enqueue(row["id"])
             if position is not None:
@@ -1021,7 +1100,8 @@ class CrateBuilderService:
             # inventing a second one here.
         return {"job_id": self._start_job(WATCHLIST_JOB,
                                           self._watchlist.run_download,
-                                          [row["id"]])}
+                                          [row["id"]],
+                                          guard=self._require_idle_for_download)}
 
     def watchlist_download_all_new(self):
         """Download every channel's pending new tracks."""
@@ -1030,9 +1110,10 @@ class CrateBuilderService:
         if not ids:
             raise CBError("No new tracks pending across any channels. Try "
                           "Scan All first.")
-        self._require_idle_maintenance()
+        self._require_idle_for_download()
         return {"job_id": self._start_job(WATCHLIST_JOB,
-                                          self._watchlist.run_download, ids)}
+                                          self._watchlist.run_download, ids,
+                                          guard=self._require_idle_for_download)}
 
     def watchlist_force_download(self, channel_id):
         """Re-process one channel's whole catalogue, skipping nothing."""
@@ -1040,9 +1121,10 @@ class CrateBuilderService:
         if is_unresolved_channel(row):
             raise CBError("This channel's link isn't resolved yet. Use Fix "
                           "Link on the card first, then Force Download.")
-        self._require_idle_maintenance()
+        self._require_idle_for_download()
         job_id = self._start_job(WATCHLIST_JOB, self._watchlist.run_download,
-                                 [row["id"]], True)
+                                 [row["id"]], True,
+                                 guard=self._require_idle_for_download)
         return {"job_id": job_id}
 
     def watchlist_cancel(self, channel_id):
@@ -1072,10 +1154,18 @@ class CrateBuilderService:
         db.repair_tags sweep may already be saving those same MP3s. Two
         mutagen writes to one file is a truncated track, not a lost update —
         so the two are made exclusive here and, for the reverse order, at
-        `claim_tag_writes`."""
+        `claim_tag_writes`.
+
+        And it is refused while ANOTHER genre move's retag is still sweeping,
+        for the third time the same argument: A→B followed by B→C before the
+        first sweep ends is two `genrefix` writers on one channel's files.
+        `claim_tag_writes` refuses that too, atomically; this is the half that
+        tells the user why instead of silently skipping their tags."""
         row = self._watchlist_row(channel_id)
         picked = (genre or "").strip()
         if picked and picked != (row.get("genre") or CrateLayout.NO_GENRE_VALUE):
+            if self._retags:
+                raise CBError(RETAG_BLOCKS_GENRE_MOVE)
             if self._job_running("batch") or self._job_running(WATCHLIST_JOB):
                 raise CBError("A download is running. The channel's folder "
                               "can't be moved to another genre until it "
@@ -1525,12 +1615,20 @@ class CrateBuilderService:
     _MAINTENANCE_NEEDS_IDLE = ("db.rebuild", "db.dedupe", "db.fetch_artwork")
 
     def _require_idle_library(self, task):
+        """Unlocked like the other refusals — see the note above
+        `_refuse_while_retagging`. Serves both `maintenance_preview` (where
+        there is no slot to claim) and `_maintenance_guard`."""
         if task not in self._MAINTENANCE_NEEDS_IDLE:
             return
-        if self._job_running("batch") or self._job_running(WATCHLIST_JOB):
-            raise CBError("A download is running. This rewrites the downloads "
-                          "table, so it has to wait — cancel the run or let it "
-                          "finish, then try again.")
+        if "batch" in self._jobs or WATCHLIST_JOB in self._jobs:
+            raise CBError(DOWNLOAD_BLOCKS_LIBRARY)
+
+    def _maintenance_guard(self, task):
+        """`_start_job`'s guard for a maintenance run: both of the task's
+        cross-category checks, made atomic with claiming the slot."""
+        self._require_idle_library(task)
+        if task == "db.repair_tags":
+            self._refuse_while_retagging()
 
     def maintenance_preview(self, task):
         """The counts a confirm modal quotes, or the reason there is nothing
@@ -1545,9 +1643,11 @@ class CrateBuilderService:
         the user as the answer to their click; `_start_job`'s worker reports a
         CBError raised a moment later as a crash instead.
 
-        db.repair_tags carries one extra guard, and it has to be checked while
-        the job slot is being claimed rather than before: a Watch List retag
-        starting in the gap would put two threads on the same MP3."""
+        Every one of those checks is repeated as `_start_job`'s guard, and
+        that repetition is the point: the preview between them is a DB and
+        filesystem pass, so a download starting while it runs would pass its
+        own idle check (a different job category) and both would hold a slot.
+        The pre-flight is for the message; the guard is what makes it true."""
         runners = {
             "db.rebuild": self._maintenance.run_rebuild,
             "db.dedupe": self._maintenance.run_dedupe,
@@ -1558,12 +1658,12 @@ class CrateBuilderService:
         if runner is None:
             raise CBError(f"Unknown maintenance job: {task!r}")
         self._require_idle_library(task)
+        if task == "db.repair_tags":
+            self._refuse_while_retagging()
         self._maintenance.preview(task)
-        guard = (self._refuse_while_retagging
-                 if task == "db.repair_tags" else None)
         job_id = self._start_job(MAINTENANCE_JOB, runner,
                                  title=self._maintenance.title_for(task),
-                                 guard=guard)
+                                 guard=lambda: self._maintenance_guard(task))
         return {"job_id": job_id, "task": task}
 
     def maintenance_cancel(self):
@@ -1612,15 +1712,24 @@ class CrateBuilderService:
 
         *value* arrives in the contract's display form; the binding's set()
         translates it to what Settings actually stores before writing.
+
+        The download-policy keys are frozen for the length of a run — see
+        `_refuse_frozen_setting`.
         """
         if not key:
             raise CBError("No setting was named.")
+        self._refuse_frozen_setting(key)
         flag = REMOTE_SETTINGS_KEYS.get(key)
         if flag is not None:
             if self.transport != LOCAL:
                 raise CBError(REMOTE_SETTING_REFUSAL)
-            return {"key": key,
-                    "value": self.remote_state.set_flag(flag, bool(value))}
+            stored = self.remote_state.set_flag(flag, bool(value))
+            if flag == "enabled" and not stored:
+                # set_flag has just closed every live socket and dropped the
+                # control lock with them; the host's own Remote Access card is
+                # still drawing whoever held it.
+                self.emit("control.holder", {})
+            return {"key": key, "value": stored}
         get, set_ = _binding(key)
         if key == "run_at_startup":
             return self._set_run_at_startup(value, get)
@@ -1635,6 +1744,31 @@ class CrateBuilderService:
         except (TypeError, ValueError) as exc:
             raise CBError(str(exc))
         return {"key": key, "value": get(self._settings)}
+
+    def _refuse_frozen_setting(self, key):
+        """The server-side half of the tkinter app's `_set_download_lock`.
+
+        Both frontends re-read the download policy for EVERY track — that is
+        deliberate, and it is only safe because the monolith disables the
+        widgets behind those keys for the length of a run. The web stack ported
+        the re-read and not the freeze, so a save-directory change mid-batch
+        scattered one run across two crate roots and a bitrate change landed on
+        the very next track. Refused rather than queued: a setting the user
+        cannot see take effect is worse than one they are told to wait for.
+
+        Only the keys `DOWNLOAD_LOCKED_SETTINGS` names, and only while a
+        download job holds a slot — everything else stays settable mid-run,
+        exactly as it does in the tkinter window.
+        """
+        what = DOWNLOAD_LOCKED_SETTINGS.get(key)
+        if what is None:
+            return
+        if self._job_running("batch") or self._job_running(WATCHLIST_JOB):
+            raise CBError(
+                f"A download is running, so {what} is frozen until it "
+                f"finishes. Every track re-reads these settings, so a change "
+                f"now would land part-way through the run — cancel the "
+                f"download, or wait for it to finish.")
 
     def _set_run_at_startup(self, value, get):
         """Toggle the Windows Run-at-login registry entry, then persist.
@@ -1813,7 +1947,7 @@ class CrateBuilderService:
             if not any(r.get("state") != "skipped" for r in rows):
                 raise CBError("Add a link to the queue before starting a "
                               "download.")
-        self._require_idle_maintenance()
+        self._require_idle_for_download()
         runner = BatchRunner(
             self._settings, self._db_for_write(), self.emit,
             log_line=self.log_line, counts=self.counts,
@@ -1821,7 +1955,8 @@ class CrateBuilderService:
         previous = self._batch_runner
         self._batch_runner = runner
         try:
-            job_id = self._start_job("batch", runner.run, rows)
+            job_id = self._start_job("batch", runner.run, rows,
+                                     guard=self._require_idle_for_download)
         except CBError:
             self._batch_runner = previous
             raise

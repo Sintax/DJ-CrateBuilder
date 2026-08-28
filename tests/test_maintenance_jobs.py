@@ -7,10 +7,12 @@ or Music folder, least of all the two jobs that clear and rewrite rows.
 import os
 import re
 import threading
+import time
 
 import pytest
 
 from cratebuilder import maintenance
+from cratebuilder import service as cb_service
 from cratebuilder.db import DownloadsDatabase
 from cratebuilder.maintenance import (TASK_DEDUPE, TASK_FETCH_ARTWORK,
                                       TASK_REBUILD, TASK_REPAIR_TAGS,
@@ -857,6 +859,193 @@ def test_a_watchlist_scan_is_still_allowed_during_maintenance(service, db_path,
         service.watchlist_scan_all()
     finally:
         gate.set()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# F1 — the cross-category exclusion is ATOMIC, not check-then-act
+# ══════════════════════════════════════════════════════════════════════════════
+# Both starters check the OTHER category and then claim their OWN slot, so
+# `_start_job`'s same-category refusal never fires for them. Two clients — the
+# local window and a paired phone, which the design says are two independent
+# callers — could pass each other's gates in the window between the check and
+# the claim, and both run. The checks are now repeated as `_start_job`'s
+# `guard`, which runs under the lock that claims the slot.
+
+
+class _SlowPreview:
+    """A maintenance stand-in whose preview takes long enough to make the
+    check-then-act window observable. It stands in for ordinary scheduling
+    jitter between two clients — the real preview is a DB and filesystem pass."""
+
+    def __init__(self, started, delay=0.3):
+        self._started = started
+        self._delay = delay
+
+    def preview(self, task):
+        time.sleep(self._delay)
+        return {"task": task}
+
+    def title_for(self, task):
+        return task
+
+    def _run(self):
+        self._started.set()
+        time.sleep(1.0)
+
+    run_rebuild = run_dedupe = run_repair_tags = run_fetch_artwork = _run
+
+
+def _race(first, second, gap=0.1):
+    """Run *first*, then *second* a beat later, on two threads. Returns each
+    one's answer — a dict when it started, a CBError when it was refused."""
+    out = {}
+
+    def call(name, fn, delay):
+        time.sleep(delay)
+        try:
+            out[name] = fn()
+        except CBError as exc:
+            out[name] = exc
+
+    threads = [threading.Thread(target=call, args=("first", first, 0.0)),
+               threading.Thread(target=call, args=("second", second, gap))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return out
+
+
+def test_a_download_racing_a_maintenance_start_cannot_both_win(service,
+                                                              monkeypatch):
+    """The executed reproduction, as a test: with the maintenance preview slow
+    enough to be raced, the two starts previously BOTH returned a job id and
+    both held their slots — a rebuild's clear_all_downloads() running while a
+    download writes rows."""
+    service._maintenance_ops = _SlowPreview(threading.Event())
+    monkeypatch.setattr(cb_service, "BatchRunner",
+                        lambda *a, **k: _HoldingRunner())
+    service.batch_add("https://www.youtube.com/watch?v=abcdefghijk")
+
+    out = _race(lambda: service.maintenance_start("db.rebuild"),
+                service.download_start)
+
+    started = [name for name, result in out.items()
+               if not isinstance(result, CBError)]
+    assert len(started) == 1, f"exactly one may start, got {out}"
+    assert not (service._job_running("batch")
+                and service._job_running("maintenance")), out
+    refused = next(r for r in out.values() if isinstance(r, CBError))
+    assert str(refused), "the loser is told why, not left silent"
+
+
+class _HoldingRunner:
+    """A BatchRunner stand-in that holds the batch slot without any network."""
+
+    def __init__(self):
+        self.done = threading.Event()
+
+    def run(self, rows):
+        self.done.wait(1.0)
+
+    def cancel(self):
+        self.done.set()
+
+
+def test_a_maintenance_job_cannot_slip_in_while_a_download_claims_its_slot(
+        service, monkeypatch):
+    """The other direction of the same race: the download wins, and the
+    maintenance start is refused by the guard rather than by luck."""
+    service._maintenance_ops = _SlowPreview(threading.Event())
+    monkeypatch.setattr(cb_service, "BatchRunner",
+                        lambda *a, **k: _HoldingRunner())
+    service.batch_add("https://www.youtube.com/watch?v=abcdefghijk")
+
+    out = _race(service.download_start,
+                lambda: service.maintenance_start("db.rebuild"), gap=0.0)
+    started = [name for name, r in out.items() if not isinstance(r, CBError)]
+    assert len(started) == 1, f"exactly one may start, got {out}"
+
+
+def test_the_guard_runs_under_the_slot_lock(service):
+    """Structural: the pre-flight alone is what made the race possible, so the
+    same check has to be handed to _start_job as its guard."""
+    import inspect
+    source = inspect.getsource(cb_service.CrateBuilderService.download_start)
+    assert "guard=self._require_idle_for_download" in source
+    source = inspect.getsource(cb_service.CrateBuilderService.maintenance_start)
+    assert "guard=lambda: self._maintenance_guard(task)" in source
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# F2 — the tag-write exclusion covers retag↔retag and retag↔download too
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_a_second_genre_move_is_refused_while_a_retag_is_sweeping(service,
+                                                                  db_path,
+                                                                  crate):
+    """A→B then B→C before the first sweep ends would put two
+    genrefix.repair_track writers on one channel's MP3s."""
+    cid = _watched_channel(DownloadsDatabase(db_path), crate)
+    assert service.claim_tag_writes() is True
+    try:
+        with pytest.raises(CBError, match="still rewriting"):
+            service.watchlist_edit(cid, genre="House")
+    finally:
+        service.release_tag_writes()
+    # Released, the same edit goes through as far as the move itself.
+    service.watchlist_edit(cid, url="https://www.youtube.com/@moved")
+
+
+def test_a_second_retag_claim_is_refused_atomically(service):
+    """The half that cannot be raced: the check and the claim share one hold
+    of the lock, so two moves arriving together cannot both start sweeping."""
+    assert service.claim_tag_writes() is True
+    try:
+        assert service.claim_tag_writes() is False
+    finally:
+        service.release_tag_writes()
+    assert service.claim_tag_writes() is True
+    service.release_tag_writes()
+
+
+def test_a_batch_download_is_refused_while_a_retag_is_sweeping(service):
+    """A download landing new files into the just-moved folder tags them
+    while genrefix is still walking it — two ID3.save() calls on one file."""
+    service.batch_add("https://www.youtube.com/watch?v=abcdefghijk")
+    assert service.claim_tag_writes() is True
+    try:
+        with pytest.raises(CBError, match="genre tags right now"):
+            service.call("download.start")
+    finally:
+        service.release_tag_writes()
+
+
+def test_a_watchlist_download_is_refused_while_a_retag_is_sweeping(service,
+                                                                   db_path,
+                                                                   crate):
+    cid = _watched_channel(DownloadsDatabase(db_path), crate)
+    assert service.claim_tag_writes() is True
+    try:
+        for call in (lambda: service.watchlist_download_new(cid),
+                     lambda: service.watchlist_force_download(cid),
+                     service.watchlist_download_all_new):
+            with pytest.raises(CBError):
+                call()
+    finally:
+        service.release_tag_writes()
+
+
+def test_a_watchlist_scan_is_still_allowed_while_a_retag_sweeps(service,
+                                                                db_path, crate):
+    """The refusal is about tag WRITES. A scan writes no file at all, and
+    gating it would stop the scheduler for the length of a sweep."""
+    _watched_channel(DownloadsDatabase(db_path), crate)
+    assert service.claim_tag_writes() is True
+    try:
+        service.watchlist_scan_all()
+    finally:
+        service.release_tag_writes()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

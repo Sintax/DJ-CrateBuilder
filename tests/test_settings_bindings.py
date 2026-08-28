@@ -377,3 +377,156 @@ def test_unknown_contract_key_raises_cberror_not_keyerror(service):
         service.settings_set("totally_made_up", 1)
     with pytest.raises(CBError):
         service.settings_get("totally_made_up")
+
+
+# ── F3: the download policy freezes for the length of a run ─────────────────
+# The tkinter app disables these widgets while tracks download
+# (`_set_download_lock`); both frontends re-read the policy for EVERY track, so
+# without the freeze a change lands part-way through a run the user believes is
+# pinned — and a base_dir change scatters one batch across two crate roots.
+
+@pytest.fixture
+def running(service):
+    """A held job slot in *category*, released when the test ends."""
+    import threading
+
+    gates = []
+
+    def _hold(category):
+        gate = threading.Event()
+        gates.append(gate)
+        service._start_job(category, gate.wait)
+        return gate
+
+    yield _hold
+    for gate in gates:
+        gate.set()
+
+
+@pytest.mark.parametrize("category", ["batch", "watchlist"])
+@pytest.mark.parametrize("key,value", [
+    ("skip_existing", False),
+    ("skip_mode", "In Folder Only"),
+    ("bitrate_quality", "320 kbps"),
+    ("bitrate_auto_upgrade", True),
+    ("no_conversion", True),
+    ("cover_art_mode", "On ~ Keep original aspect"),
+    ("limit_enabled", False),
+    ("limit_minutes", 42),
+])
+def test_download_policy_keys_are_frozen_mid_run(service, settings, running,
+                                                 category, key, value):
+    before = service.settings_get(key)["value"]
+    running(category)
+    with pytest.raises(CBError, match="frozen until it finishes"):
+        service.settings_set(key, value)
+    assert service.settings_get(key)["value"] == before, "nothing was written"
+
+
+def test_base_dir_is_frozen_mid_run(service, settings, running, tmp_path):
+    """The worst of them: RowResolver reads base_dir per row, so a change
+    mid-batch splits one run's output across two crate roots."""
+    before = settings.get("base_dir")
+    running("batch")
+    with pytest.raises(CBError, match="frozen until it finishes"):
+        service.settings_set("base_dir", str(tmp_path / "elsewhere"))
+    assert settings.get("base_dir") == before
+
+
+def test_a_watchlist_run_freezes_the_same_keys(service, running):
+    """`_set_download_lock` covers a Watch List batch too, so the web half
+    cannot check only the Main-tab category."""
+    running("watchlist")
+    with pytest.raises(CBError, match="frozen until it finishes"):
+        service.settings_set("bitrate_quality", "320 kbps")
+
+
+def test_settings_outside_the_lock_stay_writable_mid_run(service, running):
+    """The freeze is the monolith's list, not a blanket ban: adding genres and
+    changing anything a running track does not read stays allowed."""
+    running("batch")
+    assert service.settings_set("dupe_check_enabled", False)["value"] is False
+    assert service.settings_set("auto_add_to_watchlist", False)["value"] is False
+    assert service.settings_set("geo_bypass", True)["value"] is True
+
+
+def test_the_frozen_list_matches_the_tkinter_lock():
+    """The monolith's widget list is the specification. If a widget is added
+    to `_set_download_lock`, this is what says the web half went with it."""
+    import os
+    import re
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    source = open(os.path.join(root, "DJ-CrateBuilder_v1.3.py"),
+                  encoding="utf-8").read()
+    body = source.split("def _set_download_lock", 1)[1].split("def _cancel", 1)[0]
+    widgets = set(re.findall(r'"(_[a-z0-9_]+)"', body))
+    # The widget -> contract-key map the service's constant is built from.
+    expected = {
+        "_skip_existing_cb": "skip_existing",
+        "_skip_mode_combo": "skip_mode",
+        "_bitrate_combo": "bitrate_quality",
+        "_bitrate_upgrade_cb": "bitrate_auto_upgrade",
+        "_no_conv_cb": "no_conversion",
+        "_cover_art_combo": "cover_art_mode",
+        "_limit_enable_cb": "limit_enabled",
+        "_limit_slider": "limit_minutes",
+        "_limit_minus_btn": "limit_minutes",
+        "_limit_plus_btn": "limit_minutes",
+        "_settings_dir_entry": "base_dir",
+        "_settings_browse_btn": "base_dir",
+        # Server-gated elsewhere (`_require_idle_library`) or web-less.
+        "_rebuild_db_btn": None, "_fetch_art_btn": None,
+        "_dedupe_db_btn": None, "_update_btn": None,
+    }
+    assert widgets == set(expected), (
+        "the tkinter download lock changed — update DOWNLOAD_LOCKED_SETTINGS")
+    assert set(cb_service.DOWNLOAD_LOCKED_SETTINGS) == {
+        key for key in expected.values() if key}
+
+
+# ── F3, the UI half: the host's refusal reaches the user verbatim ───────────
+# The Settings screen already renders CBError messages; this is the check that
+# it does, rather than swallowing the freeze behind a generic "Could not save".
+
+def test_a_refused_settings_save_shows_the_hosts_own_words(tmp_path):
+    import json
+    import os
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "web", "app.js"), encoding="utf-8") as fh:
+        app_js = fh.read()
+    start = app_js.index("  async function save(key, value, el)")
+    save_fn = app_js[start:app_js.index("  /* Controls the design draws", start)]
+
+    harness = """
+const toasts = [];
+function toast(text, isError) { toasts.push({ text, isError: !!isError }); }
+function applySettingsDependencies() {}
+const state = { settings: { bitrate_quality: '192 kbps' } };
+const REFUSAL = 'A download is running, so the output quality is frozen '
+  + 'until it finishes.';
+const cbApi = { call: async () => {
+  const err = new Error(REFUSAL);
+  err.userFacing = true;
+  throw err;
+} };
+%(save)s
+const el = { type: 'select-one' };
+save('bitrate_quality', '320 kbps', el).then(() => {
+  console.log(JSON.stringify({ toasts, refusal: REFUSAL,
+                               stored: state.settings.bitrate_quality }));
+});
+""" % {"save": save_fn}
+    script = tmp_path / "settings_save.mjs"
+    script.write_text(harness, encoding="utf-8")
+    out = subprocess.run([node, str(script)], capture_output=True, text=True,
+                         encoding="utf-8", check=True).stdout
+    result = json.loads(out)
+    assert result["toasts"] == [{"text": result["refusal"], "isError": True}]
+    assert result["stored"] == "192 kbps", "a refused save changes nothing"
