@@ -203,6 +203,16 @@ body { overflow: hidden; }
 .cb-help { display: inline-flex; }
 .cb-tt-host { cursor: help; }
 
+/* The disabled-reason node aria-describedby points at (app.js describeReason).
+   position:absolute is load-bearing, not decoration: it takes the node out of
+   flow, so it is not a flex item and cannot add a `gap` to the row its control
+   sits in. */
+.cb-sr {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  border: 0; overflow: hidden; white-space: nowrap;
+  clip: rect(0 0 0 0); clip-path: inset(50%);
+}
+
 /* Toast */
 .cb-toast {
   position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);

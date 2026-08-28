@@ -30,7 +30,7 @@
   /* ── tooltips ───────────────────────────────────────────────────────────
      theme.css styles a hover-only mockup; the contract requires focus,
      Escape and aria-describedby, so the live behaviour is driven here. */
-  const tip = { el: null, timer: null, host: null };
+  const tip = { el: null, timer: null, host: null, described: null };
 
   function showTip(host, text) {
     if (!text) return;
@@ -51,6 +51,10 @@
     el.style.left = Math.max(10, left) + 'px';
     el.style.top = Math.max(10, top) + 'px';
 
+    /* A disabled control already points aria-describedby at its own reason
+       node (see describeReason); the live bubble borrows the attribute while
+       it is up and hands it back, rather than silently unwiring it. */
+    tip.described = host.getAttribute('aria-describedby');
     host.setAttribute('aria-describedby', el.id);
     tip.el = el;
     tip.host = host;
@@ -58,9 +62,24 @@
 
   function hideTip() {
     if (tip.el) tip.el.remove();
-    if (tip.host) tip.host.removeAttribute('aria-describedby');
+    if (tip.host) {
+      if (tip.described) tip.host.setAttribute('aria-describedby', tip.described);
+      else tip.host.removeAttribute('aria-describedby');
+    }
     tip.el = null;
     tip.host = null;
+    tip.described = null;
+  }
+
+  /* The bubble is a snapshot of the text at the moment it opened, and a
+     control's reason can change underneath a pointer that never moved — a
+     batch starts, Cancel is re-enabled, and the bubble would go on saying "No
+     download is running". Whoever rewrites the text says so here. */
+  function refreshTip(host) {
+    if (!tip.el || tip.host !== host) return;
+    const text = tipText(host);
+    if (text) tip.el.textContent = text;
+    else hideTip();
   }
 
   function tipText(host) {
@@ -80,15 +99,44 @@
      is deliberately inert, stays tooltip-free.)
 
      Focus/blur stay per-element in bindTips: a disabled control cannot be
-     focused in the first place, so there is nothing there for them to miss. */
-  let tipUnder = null;
+     focused in the first place, so there is nothing there for them to miss —
+     what covers a disabled control for a screen reader is describeReason's
+     aria-describedby node, not this. */
+  let tipUnder = null;      // the carrier the last hit test found
+  let tipAt = null;         // where that hit test was taken, [x, y]
+  let tipPending = null;    // the newest coordinates awaiting a frame
+  let tipFrame = 0;
+
+  /* How far the pointer must travel before the answer could plausibly have
+     changed. Controls are at least 26px tall, so a few pixels cannot cross
+     from one carrier to another. */
+  const TIP_SLOP = 4;
 
   function tipHostAt(x, y) {
     const el = document.elementFromPoint(x, y);
     return el ? el.closest('[data-tt],[data-tt-text]') : null;
   }
 
+  /* Everything that invalidates the last hit test rather than replacing it:
+     the page scrolled under a still pointer, the pointer left the window, a
+     click landed, the screen changed. Clearing the COORDINATES as well as the
+     carrier is the point — leaving them behind would let the slop guard below
+     early-out at the same position and never re-test. */
+  function tipForget() {
+    tipUnder = null;
+    tipAt = null;
+    clearTimeout(tip.timer);
+  }
+
   function tipTrack(x, y) {
+    /* Two guards before the hit test, in order of cost. elementFromPoint
+       forces a style/layout flush, and this runs at pointer-event rate over a
+       DOM that can be 200 table rows while progress bars are being written —
+       a read-after-write thrash pattern if it is not held down. A pointer
+       resting on a control costs nothing at all. */
+    if (tipAt && Math.abs(x - tipAt[0]) < TIP_SLOP
+               && Math.abs(y - tipAt[1]) < TIP_SLOP) return;
+    tipAt = [x, y];
     const host = tipHostAt(x, y);
     if (host === tipUnder) return;
     tipUnder = host;
@@ -100,21 +148,28 @@
     }, 350);
   }
 
+  /* Coalesced to one hit test per frame: pointermove fires far faster than
+     the page repaints, and the answer cannot change between two frames. */
   document.addEventListener('pointermove', (e) => {
     if (e.pointerType === 'touch') return;      // touch is a long-press, not a hover
-    tipTrack(e.clientX, e.clientY);
+    tipPending = [e.clientX, e.clientY];
+    if (tipFrame) return;
+    tipFrame = requestAnimationFrame(() => {
+      tipFrame = 0;
+      const at = tipPending;
+      tipPending = null;
+      if (at) tipTrack(at[0], at[1]);
+    });
   }, true);
   /* Leaving the window is not "moved to another control" — nothing else
      reports it, so the last tracked host would otherwise stay armed. */
   document.addEventListener('pointerout', (e) => {
     if (e.relatedTarget) return;
-    tipUnder = null;
-    clearTimeout(tip.timer);
+    tipForget();
     hideTip();
   }, true);
   document.addEventListener('pointerdown', () => {
-    tipUnder = null;
-    clearTimeout(tip.timer);
+    tipForget();
     hideTip();
   }, true);
 
@@ -132,7 +187,11 @@
     hideTip();
     closeNotifications();
   });
-  addEventListener('scroll', hideTip, true);
+  /* Scrolling moves the page under a pointer that never moved, so the last
+     hit test is answering about coordinates that now hold something else —
+     and a tracker left holding the control the cursor is still resting on
+     goes mute until the pointer leaves it and comes back. */
+  addEventListener('scroll', () => { tipForget(); hideTip(); }, true);
 
   /* ── toast ─────────────────────────────────────────────────────────────── */
   let toastTimer = null;
@@ -217,6 +276,11 @@
     if (enteringKind) logOpen(enteringKind);
     if (name === 'database' && previous !== 'database') dbOpen();
     if (name === 'about') aboutOpen();
+    /* Every other screen repaints on entry; the Overview aggregates all of
+       them, so it is the one that goes stale fastest — a setting changed on
+       Settings, or a batch paused on Downloads, has to be on it when you
+       arrive rather than at the next snapshot. */
+    if (name === 'overview' && state) renderOverview();
     if (name !== 'overview') closeNotifications();
   }
 
@@ -864,9 +928,7 @@
       `new tracks across ${num(channels)} channel${channels === 1 ? '' : 's'}`;
     $('#ov-dl-all').textContent = `⬇ Download All New (${num(pending)})`;
     gateWrite($('#ov-dl-all'),
-      wl.running ? WL_BUSY_REASON
-        : (pending ? '' : 'No new tracks pending across any channels. Run ' +
-                          '🔍 Scan for new first.'),
+      wl.running ? WL_BUSY_REASON : (pending ? '' : WL_NOTHING_PENDING),
       'wl.download_all_new');
     const interval = (state.settings || {}).auto_dl_interval;
     $('#ov-auto').textContent = !interval || interval === 'Off'
@@ -908,6 +970,39 @@
      split on: the header tag, where Pause/Cancel live, whether the queue rows
      show reorder controls or run states, and the progress card's opacity. */
 
+  /* A disabled control's reason, wired to the control with aria-describedby.
+     The pointer tracker is the only way to READ it — a disabled form control
+     cannot be focused — but a screen reader announces a described-by node
+     whether or not the control can take focus, which is exactly the half a
+     pointer-only affordance leaves out.
+
+     Native `disabled` stays: the desktop app disables the same controls, and
+     aria-disabled + tabindex="0" would put dead stops in the tab order that
+     the tkinter UI does not have. The node sits next to the control (so it is
+     discarded with it on a re-render) and is absolutely positioned by
+     app.css's .cb-sr, so it is not a flex item and adds no gap to its row. */
+  let reasonSeq = 0;
+
+  function describeReason(el, reason) {
+    let node = el.__whyNode;
+    if (!reason) {
+      if (node) { node.remove(); el.__whyNode = null; }
+      el.removeAttribute('aria-describedby');
+      return;
+    }
+    if (!node) {
+      node = document.createElement('span');
+      node.className = 'cb-sr';
+      node.id = 'cb-why-' + (reasonSeq += 1);
+      el.__whyNode = node;
+    }
+    node.textContent = reason;
+    // Re-inserting an attached node MOVES it, which is what keeps the pair
+    // together when a control is re-parented (placeBatchControls does that).
+    el.insertAdjacentElement('afterend', node);
+    el.setAttribute('aria-describedby', node.id);
+  }
+
   function setDisabled(el, disabled, opts) {
     opts = opts || {};
     el.disabled = !!disabled;
@@ -920,6 +1015,10 @@
     } else if (opts.ttText) {
       el.setAttribute('data-tt-text', opts.ttText);
     }
+    describeReason(el, disabled ? (opts.reason || '') : '');
+    // The live bubble may be open on this very control — a batch starting
+    // re-enables Cancel under a pointer that never moved.
+    refreshTip(el);
   }
 
   function placeBatchControls(running) {
@@ -1425,6 +1524,10 @@
   const WL_UNRESOLVED_URL_PREFIX = 'unresolved://';
   const WL_BUSY_REASON = 'A Watch List scan or download is already running — ' +
     'cancel it first, or wait for it to finish.';
+  /* Both Download-All-New buttons — the Watch List's own and the Overview's —
+     close for the same reason, so they say it in the same words. */
+  const WL_NOTHING_PENDING = 'No new tracks pending across any channels. Run ' +
+    '🔍 Scan for new first.';
   /* Cancellation lands between channels — it cannot interrupt a channel
      listing already in flight — so nothing here promises an immediate stop. */
   const WL_CANCEL_ALL_NOTE = 'Cancelling — the channel in flight finishes what ' +
@@ -1677,8 +1780,7 @@
       'wl.check_links');
     wlGate($('#wl-dl-all'),
       blocked || (wl.running ? WL_BUSY_REASON
-        : (pending ? ''
-           : 'No new tracks pending across any channels. Run 🔍 Scan for new first.')),
+        : (pending ? '' : WL_NOTHING_PENDING)),
       'wl.download_all_new');
     wlGate($('#wl-cancel'),
       blocked || (wl.running ? '' : 'No Watch List scan or download is running.'),
@@ -3732,10 +3834,8 @@
       el.dataset.key = entry.key;
       el.dataset.origTt = entry.tooltip || '';
       if (!available) {
-        el.disabled = true;
-        el.setAttribute('data-tt-text',
-          (entry.tooltip && TOOLTIPS[entry.tooltip] ? TOOLTIPS[entry.tooltip] + '\n\n' : '') +
-          NOT_AVAILABLE_REASON);
+        setDisabled(el, true,
+          { reason: tipPlus(entry.tooltip, NOT_AVAILABLE_REASON) });
       } else if (entry.tooltip && TOOLTIPS[entry.tooltip]) {
         el.setAttribute('data-tt', entry.tooltip);
       }
@@ -5023,6 +5123,9 @@
         if (dl.paused) { await call('download.resume'); dl.paused = false; }
         else { await call('download.pause'); dl.paused = true; }
         renderDownloadsHeader();
+        // Two surfaces, one flag: pausing from either has to move both labels,
+        // or the other one reads "Pause" on a batch that is already held.
+        renderOverviewRunning();
       } catch (_) { /* call() already toasted the reason */ }
     });
 
@@ -5047,10 +5150,7 @@
     ].forEach(([sel, why]) => {
       const el = $(sel);
       if (!el) return;
-      el.disabled = true;
-      const existing = el.getAttribute('data-tt');
-      const base = existing && TOOLTIPS[existing] ? TOOLTIPS[existing] + '\n\n' : '';
-      el.setAttribute('data-tt-text', base + why);
+      setDisabled(el, true, { reason: tipPlus(el.getAttribute('data-tt'), why) });
     });
   }
 
