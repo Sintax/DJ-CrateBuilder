@@ -94,7 +94,10 @@
           emit('auth.required', { reason: 'unpaired' });
           return this.transport;
         }
-        this._openSocket();
+        /* connect() runs again after pairing and after every Retry, and both
+           of those have already opened the socket — reopening here would throw
+           away a live connection to build the same one. */
+        if (!socket) this._openSocket();
       }
       emit('host.status', { online: true, transport: this.transport });
       return this.transport;
@@ -197,6 +200,19 @@
       const active = currentToken();
       if (!active) return;
       clearTimeout(retryTimer);
+      retryTimer = null;
+      /* One socket per page, ever. Two paths open one each — pair() then
+         boot()'s connect(), and Retry then boot() again — and a surviving
+         socket is not harmless: it subscribes on the host independently, so
+         every progress frame and log line arrives (and is rendered) once per
+         leaked socket. Detach onclose first, or closing this one schedules a
+         reconnect for a socket we are replacing. */
+      if (socket) {
+        socket.onclose = null;
+        socket.onmessage = null;
+        try { socket.close(); } catch (_) { /* already closing */ }
+        socket = null;
+      }
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       /* The token rides in the query string here and nowhere else: the browser
          WebSocket API cannot set a request header, so this is the only way to
@@ -214,14 +230,19 @@
           emit(msg.type, msg.payload);
         } catch (_) { /* ignore malformed frames */ }
       };
+      const mine = socket;
       socket.onclose = (ev) => {
+        if (socket !== mine) return;  // superseded; its replacement owns the retry
         socket = null;
         if (ev && ev.code === 4401) {
           this.forgetPairing();
           emit('auth.required', { reason: 'revoked' });
           return;                     // no point retrying with a dead token
         }
+        /* 4403 is "the host switched remote access off" — the token is still
+           good, so keep it and keep trying rather than demanding a new code. */
         emit('host.status', { online: false, transport: 'remote' });
+        clearTimeout(retryTimer);
         retryTimer = setTimeout(() => this._openSocket(), 3000);
       };
     },
