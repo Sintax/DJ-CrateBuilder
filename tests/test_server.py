@@ -743,18 +743,123 @@ def test_address_literals_and_localhost_are_accepted(client, state):
 
 
 def test_the_socket_refuses_a_cross_origin_upgrade(client, state):
-    from cratebuilder.server import origin_matches_host
+    from cratebuilder.server import origin_is_allowed
 
-    assert origin_matches_host(None, "127.0.0.1:8770") is True   # non-browser
-    assert origin_matches_host("http://127.0.0.1:8770", "127.0.0.1:8770") is True
-    assert origin_matches_host("https://evil.test", "127.0.0.1:8770") is False
+    assert origin_is_allowed(None, "127.0.0.1:8770", set()) is True  # non-browser
+    assert origin_is_allowed("http://127.0.0.1:8770", "127.0.0.1:8770",
+                             set()) is True
+    assert origin_is_allowed("https://evil.test", "127.0.0.1:8770",
+                             set()) is False
+    # An address literal is not blanket-accepted here, unlike in a Host header:
+    # a page served from the attacker's own IP would otherwise pass.
+    assert origin_is_allowed("http://10.1.2.3", "127.0.0.1:8770", set()) is False
 
     token = pair(client, state)
     with pytest.raises(WebSocketDisconnect) as exc:
         with client.websocket_connect(f"/ws?token={token}",
                                       headers={"Origin": "https://evil.test"}) as ws:
             ws.receive_json()
-    assert exc.value.code == 4401
+    # 4421, NOT 4401 — the token is good and the deployment is wrong, so the
+    # client must keep it rather than read this as revocation.
+    assert exc.value.code == 4421
+
+
+# ── N1: a proxied or tunnelled deployment names its public host ─────────────
+
+PROXY_NAME = "cratebuilder.example.com"
+
+
+def test_a_forwarded_host_is_refused_until_it_is_configured(client, state):
+    """The shipped allow-list is addresses, localhost and this machine's name —
+    which is every reverse-proxy and Tailscale deployment refused, since the
+    browser sends the PUBLIC name. Naming it is the user's decision, and that
+    is the whole difference between it and an attacker-chosen domain."""
+    token = pair(client, state)
+    before = client.post("/rpc", json={"method": "state.snapshot"},
+                         headers={**auth(token), "Host": PROXY_NAME})
+    assert before.status_code == 421
+
+    assert state.add_extra_hosts([PROXY_NAME]) == [PROXY_NAME]
+
+    # Every route, not just /rpc — the bundle and pairing are just as broken
+    # by a 421, and they are what a new device reaches first.
+    after = client.post("/rpc", json={"method": "state.snapshot"},
+                        headers={**auth(token), "Host": PROXY_NAME})
+    assert after.status_code == 200
+    assert after.json()["ok"] is True
+    assert client.get("/pair/info", headers={"Host": PROXY_NAME}).status_code == 200
+    assert client.get("/", headers={"Host": PROXY_NAME}).status_code == 200
+    assert client.get("/logs/activity",
+                      headers={**auth(token), "Host": PROXY_NAME}).status_code in (200, 404)
+
+
+def test_a_configured_host_takes_effect_without_a_restart(client, state):
+    """Read per request, not captured at create_app: adding a name has to work
+    on the mount that is already running, the way the enabled flag does."""
+    token = pair(client, state)
+    assert client.post("/rpc", json={"method": "state.snapshot"},
+                       headers={**auth(token), "Host": "booth.tailnet.ts.net"}
+                       ).status_code == 421
+    state.add_extra_hosts(["booth.tailnet.ts.net"])
+    assert client.post("/rpc", json={"method": "state.snapshot"},
+                       headers={**auth(token), "Host": "booth.tailnet.ts.net"}
+                       ).status_code == 200
+    state.remove_extra_hosts(["booth.tailnet.ts.net"])
+    assert client.post("/rpc", json={"method": "state.snapshot"},
+                       headers={**auth(token), "Host": "booth.tailnet.ts.net"}
+                       ).status_code == 421
+
+
+def test_a_configured_host_also_answers_for_the_socket_origin(client, state):
+    """The proxy that rewrites Host to the upstream: the browser still sends
+    its real Origin, so same-origin can never hold however right the setup is."""
+    token = pair(client, state)
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(
+                f"/ws?token={token}",
+                headers={"Origin": f"https://{PROXY_NAME}"}) as ws:
+            ws.receive_json()
+    assert exc.value.code == 4421
+
+    state.add_extra_hosts([PROXY_NAME])
+    with client.websocket_connect(
+            f"/ws?token={token}",
+            headers={"Origin": f"https://{PROXY_NAME}"}) as ws:
+        assert ws.receive_json()["type"] == "host.status"
+
+
+def test_configured_hosts_survive_a_reload_and_do_not_duplicate(tmp_path, clock):
+    path = str(tmp_path / "cratebuilder_remote.json")
+    first = RemoteState(path, now=clock)
+    # Typed the way a user would, scheme and port and all.
+    first.add_extra_hosts(["https://CB.Example.com:443/", "cb.example.com"])
+    assert first.extra_hosts() == ["cb.example.com"]
+    first.add_extra_hosts(["booth.lan"])
+    assert RemoteState(path, now=clock).extra_hosts() == ["cb.example.com",
+                                                          "booth.lan"]
+
+
+def test_an_unnamed_domain_is_still_refused_once_another_is_configured(client, state):
+    """Adding one name must not open the door to every name."""
+    token = pair(client, state)
+    state.add_extra_hosts([PROXY_NAME])
+    assert client.post("/rpc", json={"method": "state.snapshot"},
+                       headers={**auth(token), "Host": "evil.test"}
+                       ).status_code == 421
+
+
+def test_both_entry_points_expose_host_allow():
+    """A configurable allow-list is only a fix if the user can reach it."""
+    import inspect
+
+    import web_server
+    import web_window
+
+    assert "--host-allow" in inspect.getsource(web_server)
+    assert "--host-allow" in inspect.getsource(web_window)
+    assert web_window.host_allow_args(
+        ["web_window.py", "--host-allow", "a.test", "--lan",
+         "--host-allow=b.test"]) == ["a.test", "b.test"]
 
 
 # ── S8: the paired-device roster is the local window's to know ───────────────

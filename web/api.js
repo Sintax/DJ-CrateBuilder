@@ -16,6 +16,19 @@
   const TOKEN_KEY = 'cb_device_token';
   const NAME_KEY = 'cb_device_name';
 
+  /* The two close codes that are NOT authentication failures. A socket closed
+     for either reason keeps its token; only 4401 drops one. The text mirrors
+     what the host puts in the matching HTTP body, since the socket close frame
+     carries no body of its own. */
+  const DISABLED_REASON =
+    'Remote access is switched off on this host. Turn on “Allow remote ' +
+    'control over the internet” in Settings ▸ Remote Access on the host ' +
+    'machine to reach it from another device.';
+  const BAD_ORIGIN_REASON =
+    'This page’s origin is not one the host answers to. If you are ' +
+    'reaching it through a proxy or a tunnel, start the host with ' +
+    '--host-allow <name> naming the public address.';
+
   function stored(key) {
     try { return localStorage.getItem(key) || ''; } catch (_) { return ''; }
   }
@@ -182,7 +195,17 @@
         throw fail('This device is no longer paired with the host.',
                    { needsPairing: true });
       }
-      if (!res.ok) throw fail('The host is unreachable.');
+      if (!res.ok) {
+        /* The host answered, and said why. A 403 carries the "remote access is
+           switched off" reason and a 421 the "not a name I answer to" one —
+           collapsing either into "unreachable" sends the user to look at their
+           network when the host is right there telling them what to change. */
+        let detail = '';
+        try { detail = (await res.json()).detail || ''; } catch (_) { detail = ''; }
+        if (detail) emit('host.status', { online: false, transport: 'remote',
+                                          reason: detail });
+        throw fail(detail || 'The host is unreachable.');
+      }
       return unwrap(await res.json());
     },
 
@@ -234,14 +257,30 @@
       socket.onclose = (ev) => {
         if (socket !== mine) return;  // superseded; its replacement owns the retry
         socket = null;
-        if (ev && ev.code === 4401) {
+        const code = ev && ev.code;
+        if (code === 4401) {
+          /* The only code that means "your token is no good". Everything else
+             below keeps it — a client that treats a deployment problem as
+             revocation throws away a perfectly valid token and sends the user
+             to a pairing screen that cannot fix anything. */
           this.forgetPairing();
           emit('auth.required', { reason: 'revoked' });
           return;                     // no point retrying with a dead token
         }
+        if (code === 4421) {
+          /* This page's origin is not one the host answers to — a proxy or
+             tunnel whose public name has not been named with --host-allow.
+             Retrying cannot change the answer, so say so and stop; the offline
+             bar's Retry is still there if the host is reconfigured. */
+          emit('host.status', { online: false, transport: 'remote',
+                                reason: BAD_ORIGIN_REASON, retrying: false });
+          return;
+        }
         /* 4403 is "the host switched remote access off" — the token is still
            good, so keep it and keep trying rather than demanding a new code. */
-        emit('host.status', { online: false, transport: 'remote' });
+        emit('host.status', {
+          online: false, transport: 'remote', retrying: true,
+          reason: code === 4403 ? DISABLED_REASON : '' });
         clearTimeout(retryTimer);
         retryTimer = setTimeout(() => this._openSocket(), 3000);
       };

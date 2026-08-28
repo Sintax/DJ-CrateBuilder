@@ -47,6 +47,31 @@ DEFAULTS = {
     "read_only": False,
 }
 
+# Extra names this host answers to, beyond address literals, localhost and the
+# machine's own hostname. Empty by default and only ever written by an explicit
+# `--host-allow`: it is the seam that makes the documented reverse-proxy
+# deployment work (Caddy, a Cloudflare Tunnel, a Tailscale MagicDNS name) while
+# an arbitrary attacker-chosen domain still fails the DNS-rebinding check.
+EXTRA_HOSTS_KEY = "extra_hosts"
+MAX_EXTRA_HOSTS = 32
+
+
+def normalise_host(name):
+    """One host name, lowercased and stripped of scheme, port and path.
+
+    The user types what they see — `https://cb.example.com/`, `cb.example.com:443`
+    — and all of it has to land as the bare name a Host header carries.
+    """
+    raw = str(name or "").strip().lower()
+    if "//" in raw:
+        raw = raw.split("//", 1)[1]
+    raw = raw.split("/", 1)[0].strip()
+    if raw.startswith("["):                      # [::1]:8770
+        return raw[1:].split("]", 1)[0]
+    if raw.count(":") == 1:
+        raw = raw.split(":", 1)[0]
+    return raw
+
 # Methods a remote client may call while it is read-only — because the host is
 # in read-only mode, or because another device holds the control lock. The rule
 # is "does it mutate state or launch work on the host": everything here answers
@@ -222,12 +247,19 @@ class RemoteState:
                 "last_seen": int(row.get("last_seen") or 0),
             })
         out["devices"] = devices
+        names = []
+        for name in data.get(EXTRA_HOSTS_KEY) or []:
+            clean = normalise_host(name)
+            if clean and clean not in names:
+                names.append(clean)
+        out[EXTRA_HOSTS_KEY] = names[:MAX_EXTRA_HOSTS]
         return out
 
     def _save(self):
         """Write the file atomically — a half-written token store would lock
         every paired device out at once."""
         payload = {key: bool(self._data.get(key)) for key in FLAG_KEYS}
+        payload[EXTRA_HOSTS_KEY] = list(self._data.get(EXTRA_HOSTS_KEY) or [])
         payload["devices"] = [dict(row) for row in self._data["devices"]]
         folder = os.path.dirname(self._path)
         if folder:
@@ -268,6 +300,50 @@ class RemoteState:
             self._data[key] = bool(value)
             self._save()
             return bool(self._data[key])
+
+    # ── extra host names ─────────────────────────────────────────────────────
+
+    def extra_hosts(self):
+        """The names this host answers to beyond the built-in ones."""
+        with self._lock:
+            return list(self._data.get(EXTRA_HOSTS_KEY) or [])
+
+    def add_extra_hosts(self, names):
+        """Merge names into the allow-list, persist, and return the new list.
+
+        Additive and idempotent: `--host-allow` is how a proxied deployment is
+        configured once and then just works, so passing the same name twice —
+        or on every launch — must not accumulate duplicates or drop what is
+        already there.
+        """
+        wanted = [normalise_host(n) for n in (names or [])]
+        wanted = [n for n in wanted if n]
+        if not wanted:
+            return self.extra_hosts()
+        with self._lock:
+            current = list(self._data.get(EXTRA_HOSTS_KEY) or [])
+            added = []
+            for name in wanted:
+                # Deduped against the batch as well as the store: two spellings
+                # of one name normalise to the same string, and `--host-allow`
+                # is the kind of flag people paste twice.
+                if name not in current and name not in added:
+                    added.append(name)
+            if not added:
+                return list(current)
+            self._data[EXTRA_HOSTS_KEY] = (current + added)[:MAX_EXTRA_HOSTS]
+            self._save()
+            return list(self._data[EXTRA_HOSTS_KEY])
+
+    def remove_extra_hosts(self, names):
+        wanted = {normalise_host(n) for n in (names or []) if normalise_host(n)}
+        with self._lock:
+            current = list(self._data.get(EXTRA_HOSTS_KEY) or [])
+            kept = [n for n in current if n not in wanted]
+            if len(kept) != len(current):
+                self._data[EXTRA_HOSTS_KEY] = kept
+                self._save()
+            return list(kept)
 
     # ── devices ──────────────────────────────────────────────────────────────
 
