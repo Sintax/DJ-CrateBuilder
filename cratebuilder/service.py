@@ -34,6 +34,13 @@ REMOTE = "remote"
 # scan and a download can never fight over the same channel folder.
 WATCHLIST_JOB = "watchlist"
 
+# The one event that means "this job category is free again". Emitted by
+# _start_job AFTER the slot is released, which is what separates it from the
+# runs' own terminal events (`batch.finished`, the closing DONE scan line) —
+# those are emitted from inside the run, while the slot is still held. A
+# frontend refreshes its state on this; the others are display only.
+JOB_FINISHED = "job.finished"
+
 # Method prefixes the remote transport must refuse server-side. The design's
 # rule is that a browser elsewhere can never replace the binary it is talking
 # to, and that only the host may see the host's filesystem — so this is checked
@@ -411,7 +418,16 @@ class CrateBuilderService:
             return category in self._jobs
 
     def _start_job(self, category, target, *args):
-        """Run `target` on a daemon thread; refuse a second job per category."""
+        """Run `target` on a daemon thread; refuse a second job per category.
+
+        The run's own terminal events (`batch.finished`, the closing `DONE`
+        scan line) are emitted from inside *target*, while this category is
+        still in `self._jobs` — so a client that reacts to one by asking for a
+        snapshot can be told the job is still running and re-arm a run that has
+        already ended. `job.finished` is emitted after the slot is released
+        precisely so that answer cannot come back stale: it, not the display
+        events, is what a frontend resyncs on.
+        """
         with self._lock:
             if category in self._jobs:
                 raise CBError(f"A {category} job is already running.")
@@ -424,6 +440,7 @@ class CrateBuilderService:
             finally:
                 with self._lock:
                     self._jobs.pop(category, None)
+                self.emit(JOB_FINISHED, {"job": category})
 
         threading.Thread(target=run, daemon=True).start()
         return job_id
@@ -480,6 +497,8 @@ class CrateBuilderService:
                 _channel_id(p), p.get("url"), p.get("genre")),
             "watchlist.remove":
                 lambda p: self.watchlist_remove(_channel_id(p)),
+            "watchlist.details":
+                lambda p: self.watchlist_details(_channel_id(p)),
             "watchlist.forget_unavailable":
                 lambda p: self.watchlist_forget_unavailable(_channel_id(p)),
             "watchlist.resolve_candidates":
@@ -729,6 +748,12 @@ class CrateBuilderService:
     def watchlist_remove(self, channel_id):
         row = self._watchlist_row(channel_id)
         return self._watchlist.remove(row["id"])
+
+    def watchlist_details(self, channel_id):
+        """One channel's folder, movable-track count and unavailable-track
+        count — the Edit dialog's lazy reads, in a single round trip."""
+        row = self._watchlist_row(channel_id)
+        return self._watchlist.details(row["id"])
 
     def watchlist_forget_unavailable(self, channel_id):
         row = self._watchlist_row(channel_id)
