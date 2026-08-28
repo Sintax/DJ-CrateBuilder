@@ -272,14 +272,17 @@
     const text = document.createElement('span');
     text.innerHTML = 'Host offline — showing the last state received ' +
       '<span class="cb-mono" id="cb-offline-at"></span>';
+    /* What "offline" means is the registry's to say — remote.host_status is
+       written for exactly this state. */
+    text.setAttribute('data-tt', 'remote.host_status');
+    text.tabIndex = 0;
     const retry = document.createElement('button');
     retry.className = 'cb-btn cb-btn--sm';
     retry.id = 'cb-offline-retry';
     retry.textContent = 'Retry';
     retry.setAttribute('data-tt-text',
       'Try the host again now instead of waiting for the next automatic ' +
-      'reconnect. Nothing you pressed while offline was queued — the host is ' +
-      'the only source of truth for what actually ran.');
+      'reconnect. Nothing you pressed while offline was queued.');
     retry.addEventListener('click', async () => {
       retry.disabled = true;
       retry.textContent = 'Retrying…';
@@ -3984,12 +3987,18 @@
       }
 
       function paint(cfg) {
+        /* The roster is local-only — who else the user has let in is not a
+           fact about a remote caller's own connection, so the host sends a
+           count there and the names here. */
         const devices = (cfg && cfg.devices) || [];
-        list.textContent = devices.length
-          ? `${devices.length} — ` + devices.map((d) =>
-              `${d.name} (${d.paired_at ? fmtDate(d.paired_at) : 'unknown'})`).join(' · ')
-          : 'none paired yet';
-        setDisabled(revoke, !local || !devices.length,
+        const count = cfg && cfg.device_count != null
+          ? cfg.device_count : devices.length;
+        list.textContent = !count ? 'none paired yet'
+          : devices.length
+            ? `${count} — ` + devices.map((d) =>
+                `${d.name} (${d.paired_at ? fmtDate(d.paired_at) : 'unknown'})`).join(' · ')
+            : `${count} device${count === 1 ? '' : 's'}`;
+        setDisabled(revoke, !local || !count,
           { reason: !local ? remoteReason
               : 'No devices are paired, so there is nothing to revoke.',
             ttKey: 'remote.revoke_all' });

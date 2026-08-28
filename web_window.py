@@ -7,7 +7,9 @@ Runs the same bundle a remote browser gets, bound to the local transport — so
 When remote access is switched on in Settings ▸ Remote Access, the same
 process also serves the remote mount on a background thread — one
 `CrateBuilderService`, one job registry, one event bus, two transports. It is
-never started otherwise, and nothing here ever switches the setting on.
+never started otherwise, and nothing here ever switches the setting on. That
+thread binds 127.0.0.1 unless `--lan` is passed as well, exactly as
+`web_server.py` does.
 """
 
 import json
@@ -69,25 +71,35 @@ def start_push_bridge(window, service):
     window.events.closing += lambda: unsubscribe()
 
 
-def start_remote_mount(service, port=REMOTE_PORT):
+def start_remote_mount(service, port=REMOTE_PORT, lan=False):
     """Serve the remote transport from this process, on a daemon thread.
 
-    Only ever called when the user has turned remote access on, which is also
-    what makes binding off-loopback legitimate: the toggle IS the consent. The
-    thread is a daemon so closing the window still ends the process.
+    Binds through `server.bind_host`, the same rule `web_server.py` uses:
+    loopback unless `--lan` is given AND remote access is switched on. The
+    toggle alone is consent, not intent — a desktop window is not a reason to
+    put a control surface on the LAN without being asked. Returns None when
+    `--lan` was asked for and the toggle says no.
+
+    The thread is a daemon so closing the window still ends the process.
     """
     import uvicorn                    # deferred: the window works without it
 
-    from cratebuilder.server import create_app
+    from cratebuilder.server import bind_host, create_app, uvicorn_kwargs
 
     state = service.remote_state
+    host = bind_host(state, lan=lan)
+    if host is None:
+        print("Remote mount: --lan needs 'Allow remote control over the "
+              "internet' switched on first.", file=sys.stderr)
+        return None
     app = create_app(service, state)
-    server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=port,
-                                           log_level="warning"))
+    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port,
+                                           log_level="warning",
+                                           **uvicorn_kwargs()))
     thread = threading.Thread(target=server.run, daemon=True,
                               name="cratebuilder-remote")
     thread.start()
-    print(f"Remote mount listening on http://0.0.0.0:{port}/ "
+    print(f"Remote mount listening on http://{host}:{port}/ "
           f"({state.device_count()} paired device(s))")
     return server
 
@@ -106,7 +118,7 @@ def main():
     service = CrateBuilderService(transport=LOCAL)
     if service.remote_state.get_flag("enabled"):
         try:
-            start_remote_mount(service)
+            start_remote_mount(service, lan="--lan" in sys.argv)
         except Exception as exc:                     # never block the window
             print(f"Remote mount could not start: {exc}", file=sys.stderr)
     webview.settings["ALLOW_DOWNLOADS"] = True       # Export CSV, log downloads

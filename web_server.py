@@ -17,17 +17,26 @@ import sys
 import uvicorn
 
 from cratebuilder.remoteauth import REMOTE_FILE_NAME
-from cratebuilder.server import create_app
+from cratebuilder.server import bind_host, create_app, uvicorn_kwargs
 from cratebuilder.service import (ACTIVITY_LOG, DB_NAME, DEBUG_LOG, REMOTE,
                                   CrateBuilderService, app_dir)
 from cratebuilder.settings import Settings
 
 DEFAULT_PORT = 8770
 
+# Console copy stays inside cp1252: a Windows terminal at the default code page
+# raises UnicodeEncodeError on print(), which would take the whole process down
+# at startup. The pretty typography lives in the messages that travel as JSON
+# (remoteauth.DISABLED_REASON), which are UTF-8 all the way to the browser.
 LAN_REFUSED = (
     "Remote access is switched off, so --lan has nothing to bind.\n"
-    "Turn on 'Allow remote control over the internet' in Settings ▸ Remote "
+    "Turn on 'Allow remote control over the internet' in Settings > Remote "
     "Access on the host, then start this again.")
+
+DISABLED_NOTE = (
+    "  NOTE         : remote access is OFF - every route refuses until\n"
+    "                 'Allow remote control over the internet' is switched on\n"
+    "                 in Settings > Remote Access on the host.")
 
 
 def build_service(data_dir=None):
@@ -85,11 +94,9 @@ def main(argv=None):
     service = build_service(args.data_dir)
     state = service.remote_state
 
-    host = "127.0.0.1"
-    if args.lan:
-        if not state.get_flag("enabled"):
-            sys.exit(LAN_REFUSED)
-        host = "0.0.0.0"
+    host = bind_host(state, lan=args.lan)
+    if host is None:
+        sys.exit(LAN_REFUSED)
 
     app = create_app(service, state)
     where = args.data_dir or app_dir()
@@ -98,9 +105,11 @@ def main(argv=None):
     print(f"  token store  : {os.path.join(where, REMOTE_FILE_NAME)}")
     print(f"  paired       : {state.device_count()} device(s)")
     print(f"  read-only    : {'on' if state.get_flag('read_only') else 'off'}")
+    if not state.get_flag("enabled"):
+        print(DISABLED_NOTE)
     announce_pairing(state, host, args.port, force=args.pair)
     uvicorn.Server(uvicorn.Config(app, host=host, port=args.port,
-                                  log_level="info")).run()
+                                  log_level="info", **uvicorn_kwargs())).run()
 
 
 if __name__ == "__main__":

@@ -20,10 +20,17 @@ PAIRING_CODE_DIGITS = 6
 PAIR_ATTEMPT_LIMIT = 5
 PAIR_ATTEMPT_WINDOW = 300
 
-# A device that holds the control lock but has gone quiet for this long can be
-# displaced by another client asking for it — a phone that walked out of range
-# must not hold the host hostage until the process restarts.
+# A device that holds the control lock, has gone quiet for this long AND has no
+# event socket open can be displaced by another client asking for it — a phone
+# that walked out of range must not hold the host hostage until the process
+# restarts. A holder with a live socket is never displaced by time alone: it is
+# watching, which is exactly what a device driving a long batch is doing.
 CONTROL_IDLE_SECONDS = 120
+
+# Past this many distinct client keys, the attempt log is swept of everything
+# whose window has closed. Bounded either way — the sweep is O(keys) and keys
+# only accumulate between sweeps.
+ATTEMPT_KEY_SWEEP_AT = 64
 
 # How long a last_seen touch may sit in memory before it is written out. Every
 # authenticated request updates it, and rewriting a JSON file per request would
@@ -91,6 +98,13 @@ READ_ONLY_REASON = (
 
 UNPAIRED_REASON = "Pair this device to reach the host."
 
+# `remote_enabled` is a live gate, not a startup-time bind decision: switching
+# it off has to shut remote clients out of a host that is already listening.
+DISABLED_REASON = (
+    "Remote access is switched off on this host. Turn on “Allow remote "
+    "control over the internet” in Settings ▸ Remote Access on the "
+    "host machine to reach it from another device.")
+
 RATE_LIMITED_REASON = (
     "Too many pairing attempts from this device. Wait five minutes and try "
     "again with a fresh code from the host.")
@@ -142,6 +156,14 @@ class RemoteState:
 
     *now* is injectable so the five-minute code TTL and the rate-limit window
     can be tested without sleeping.
+
+    ONE instance per app dir. `singleton.py` already makes that true for the
+    app (one host process, one database writer) and the desktop window hosts
+    the server thread in-process rather than beside it, so the two mounts share
+    this object. Two instances over one file would each hold their own copy and
+    the last writer would win; `_maybe_flush` refuses to write over a file that
+    changed underneath it, which stops the worst of it (a revoke undone by the
+    other process's next `last_seen` touch), but the invariant is one instance.
     """
 
     def __init__(self, path, now=time.time):
@@ -151,14 +173,26 @@ class RemoteState:
         self._data = self._load()
         self._code = None            # {"code", "expires_at"} — memory only
         self._attempts = {}          # client address -> [attempt timestamps]
-        self._control = None         # {"device_id", "name", "seen", "live"}
+        self._control = None         # {"device_id", "name", "seen"}
+        # device id -> {connection key: close callback}. Live event sockets,
+        # which is what makes "this device is still here" answerable — see
+        # register_connection.
+        self._connections = {}
+        self._conn_seq = 0
         self._last_flush = 0.0
+        self._saved_mtime = self._mtime()
 
     # ── persistence ──────────────────────────────────────────────────────────
 
     @property
     def path(self):
         return self._path
+
+    def _mtime(self):
+        try:
+            return os.path.getmtime(self._path)
+        except OSError:
+            return None
 
     def _load(self):
         data = {}
@@ -213,6 +247,7 @@ class RemoteState:
                 pass
             raise
         self._last_flush = self._now()
+        self._saved_mtime = self._mtime()
 
     # ── flags ────────────────────────────────────────────────────────────────
 
@@ -267,8 +302,17 @@ class RemoteState:
         return None
 
     def _maybe_flush(self):
-        """Persist a last_seen touch at most once a minute (lock held)."""
+        """Persist a last_seen touch at most once a minute (lock held).
+
+        Skipped entirely when the file has changed under us. A `last_seen`
+        touch is a nicety; rewriting the whole payload over another process's
+        revoke is not, and this is the only writer cheap enough to fire on an
+        ordinary request.
+        """
         if self._now() - self._last_flush < LAST_SEEN_FLUSH_SECONDS:
+            return
+        if self._saved_mtime is not None and self._mtime() != self._saved_mtime:
+            self._last_flush = self._now()
             return
         try:
             self._save()
@@ -277,26 +321,93 @@ class RemoteState:
 
     def revoke(self, target):
         """Drop one device by id (or by token_hash), or every device for
-        "all". Returns how many rows went."""
+        "all". Returns how many rows went.
+
+        Revocation is the user's only remedy for a lost or stolen device, so it
+        has to reach the connections that device already has open — a token
+        checked once at handshake and never again would leave the host pushing
+        every track title, path and debug line to a revoked browser until the
+        process restarted. Each open socket registers a close callback (see
+        register_connection); the ones belonging to a dropped device are called
+        here, OUTSIDE the state lock, since they hop to an event loop.
+        """
         wanted = str(target or "").strip()
         if not wanted:
             return 0
+        closers = []
         with self._lock:
-            before = len(self._data["devices"])
-            if wanted == "all":
-                self._data["devices"] = []
-            else:
-                self._data["devices"] = [
-                    row for row in self._data["devices"]
-                    if row["id"] != wanted and not _matches(wanted, row["token_hash"])]
-            removed = before - len(self._data["devices"])
-            if removed:
-                holder = self._control
-                if holder and (wanted == "all"
-                               or holder["device_id"] == wanted):
+            keep, dropped = [], []
+            for row in self._data["devices"]:
+                if (wanted == "all" or row["id"] == wanted
+                        or _matches(wanted, row["token_hash"])):
+                    dropped.append(row)
+                else:
+                    keep.append(row)
+            if not dropped:
+                return 0
+            self._data["devices"] = keep
+            for row in dropped:
+                closers.extend(cb for cb in
+                               self._connections.pop(row["id"], {}).values() if cb)
+                if (self._control is not None
+                        and self._control["device_id"] == row["id"]):
                     self._control = None
-                self._save()
-            return removed
+            self._save()
+        for close in closers:
+            try:
+                close()
+            except Exception:
+                pass            # a socket already gone is not a failed revoke
+        return len(dropped)
+
+    # ── live connections ─────────────────────────────────────────────────────
+    # Who is actually here, kept apart from who holds the lock. Keeping them in
+    # one dict was the bug: `mark_connected` returned early whenever the caller
+    # was not the current holder, and a browser opens its socket BEFORE it
+    # claims control — so the holder's liveness was never recorded, and the
+    # 120-second idle window displaced a device that was sitting there watching.
+
+    def register_connection(self, device_id, on_revoke=None):
+        """Record one open event socket. Returns the key to unregister with.
+
+        *on_revoke* is called (from `revoke`, on whatever thread revoked) when
+        this device's access is withdrawn and the socket must be closed.
+        """
+        with self._lock:
+            self._conn_seq += 1
+            key = self._conn_seq
+            self._connections.setdefault(device_id, {})[key] = on_revoke
+            if self._control is not None and self._control["device_id"] == device_id:
+                self._control["seen"] = self._now()
+            return key
+
+    def unregister_connection(self, device_id, key):
+        """Drop one socket. True when that released the control lock.
+
+        Ref-counted on purpose: a reload opens the new socket before the old
+        one closes, and a second tab is a second socket — neither is the device
+        leaving, and neither may drop the lock out from under it.
+        """
+        with self._lock:
+            conns = self._connections.get(device_id)
+            if conns is not None:
+                conns.pop(key, None)
+                if not conns:
+                    self._connections.pop(device_id, None)
+            if self._connections.get(device_id):
+                return False
+            if self._control is not None and self._control["device_id"] == device_id:
+                self._control = None
+                return True
+            return False
+
+    def is_connected(self, device_id):
+        with self._lock:
+            return bool(self._connections.get(device_id))
+
+    def connection_count(self, device_id):
+        with self._lock:
+            return len(self._connections.get(device_id) or {})
 
     # ── pairing ──────────────────────────────────────────────────────────────
 
@@ -332,6 +443,14 @@ class RemoteState:
         """Refuse a client that has spent its attempt budget (lock held)."""
         key = str(client or "unknown")
         now = self._now()
+        # Keys were only ever pruned when the same key came back, so a host
+        # seeing many addresses accumulated a list per address forever. Sweep
+        # the closed windows once the table is big enough to be worth it.
+        if len(self._attempts) > ATTEMPT_KEY_SWEEP_AT:
+            self._attempts = {
+                k: [t for t in stamps if now - t < PAIR_ATTEMPT_WINDOW]
+                for k, stamps in self._attempts.items()
+                if any(now - t < PAIR_ATTEMPT_WINDOW for t in stamps)}
         recent = [t for t in self._attempts.get(key, ())
                   if now - t < PAIR_ATTEMPT_WINDOW]
         if len(recent) >= PAIR_ATTEMPT_LIMIT:
@@ -398,20 +517,23 @@ class RemoteState:
     def claim_control(self, device_id, name=None):
         """Take the lock, or raise ControlHeld naming who has it.
 
-        A holder that is neither connected nor recently active can be
+        A holder that is neither connected NOR recently active can be
         displaced: a browser closed without a clean socket teardown must not
-        leave the host unusable.
+        leave the host unusable. Liveness is read from the connection registry
+        rather than from a flag on the holder record — the flag could only be
+        set by whoever already held the lock, and a browser opens its event
+        socket before it claims control, so it was never set for a real holder
+        and every holder decayed after two minutes of watching.
         """
         with self._lock:
             holder = self._control
             now = self._now()
             if (holder is not None and holder["device_id"] != device_id
-                    and (holder.get("live")
+                    and (bool(self._connections.get(holder["device_id"]))
                          or now - holder.get("seen", 0) < CONTROL_IDLE_SECONDS)):
                 raise ControlHeld(holder.get("name"))
-            live = holder.get("live", False) if holder else False
             self._control = {"device_id": device_id, "name": name or "Device",
-                             "seen": now, "live": live}
+                             "seen": now}
             return self.control_holder()
 
     def release_control(self, device_id):
@@ -426,21 +548,6 @@ class RemoteState:
         with self._lock:
             if self._control is not None and self._control["device_id"] == device_id:
                 self._control["seen"] = self._now()
-
-    def mark_connected(self, device_id, connected):
-        """Track whether the holder still has an event socket open.
-
-        A clean disconnect frees the lock immediately; the idle window in
-        claim_control covers the unclean ones.
-        """
-        with self._lock:
-            if self._control is None or self._control["device_id"] != device_id:
-                return
-            if connected:
-                self._control["live"] = True
-                self._control["seen"] = self._now()
-            else:
-                self._control = None
 
     # ── authorisation ────────────────────────────────────────────────────────
 

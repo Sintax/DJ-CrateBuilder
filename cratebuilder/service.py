@@ -1545,21 +1545,30 @@ class CrateBuilderService:
     def remote_config(self):
         """The Remote Access card's whole state in one call.
 
-        The live pairing code is included only for the local window. A remote
-        client asking for this must never be handed the code that would let it
-        pair a second device.
+        Two things are for the local window only. The live pairing code,
+        obviously — a remote client handed that could pair a second device.
+        And the paired-device ROSTER: who else the user has let in is not a
+        fact about the caller's own connection, and a read-only session has no
+        business learning the names and dates of every other device. Remote
+        gets the count, which is all its (read-only-with-reason) card renders.
         """
         state = self.remote_state
         out = dict(state.config())
-        out["devices"] = state.devices()
         out["control"] = state.control_holder()
         out["local"] = self.transport == LOCAL
+        out["device_count"] = state.device_count()
         if self.transport == LOCAL:
+            out["devices"] = state.devices()
             out["pairing"] = state.active_code()
+        else:
+            out["devices"] = []
         return out
 
     def remote_devices(self):
-        return {"devices": self.remote_state.devices()}
+        if self.transport != LOCAL:
+            return {"devices": [], "device_count": self.remote_state.device_count()}
+        return {"devices": self.remote_state.devices(),
+                "device_count": self.remote_state.device_count()}
 
     def remote_pair_begin(self):
         """Mint the 6-digit code the desktop window shows. Local only."""

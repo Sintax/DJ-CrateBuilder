@@ -42,7 +42,12 @@ def clock():
 
 @pytest.fixture
 def state(tmp_path, clock):
-    return RemoteState(str(tmp_path / "cratebuilder_remote.json"), now=clock)
+    """Remote access ON — the shipped default is off, which every route now
+    refuses (see the `enabled` live-gate tests), so the tests that are about
+    something else have to switch it on the way the user would."""
+    state = RemoteState(str(tmp_path / "cratebuilder_remote.json"), now=clock)
+    state.set_flag("enabled", True)
+    return state
 
 
 @pytest.fixture
@@ -61,7 +66,11 @@ def client(service, state, tmp_path):
     web = tmp_path / "web"
     web.mkdir()
     (web / "index.html").write_text("<h1>bundle</h1>", encoding="utf-8")
-    return TestClient(create_app(service, state, web_dir=str(web)))
+    # base_url gives every request a Host of 127.0.0.1 rather than TestClient's
+    # default "testserver", so these run against the REAL Host allow-list
+    # instead of an allowance invented for the tests.
+    return TestClient(create_app(service, state, web_dir=str(web)),
+                      base_url="http://127.0.0.1")
 
 
 def pair(client, state, name="Test phone"):
@@ -328,7 +337,7 @@ def test_control_is_released_and_can_then_be_taken(client, state):
     assert taken["result"]["has_control"] is True
 
 
-def test_an_idle_holder_can_be_displaced(state, clock):
+def test_an_idle_holder_with_no_socket_can_be_displaced(state, clock):
     state.claim_control("dev-1", "Gone phone")
     with pytest.raises(remoteauth.ControlHeld):
         state.claim_control("dev-2", "Booth")
@@ -337,11 +346,56 @@ def test_an_idle_holder_can_be_displaced(state, clock):
 
 
 def test_a_live_holder_cannot_be_displaced_by_going_quiet(state, clock):
+    """In the REAL order: a browser opens its event socket first, THEN claims
+    control. The old test did it the other way round, which is the only order
+    in which the liveness flag was ever set — so it passed while every actual
+    holder decayed after two minutes of watching a batch."""
+    state.register_connection("dev-1", None)
     state.claim_control("dev-1", "Desk")
-    state.mark_connected("dev-1", True)
     clock.advance(remoteauth.CONTROL_IDLE_SECONDS * 4)
     with pytest.raises(remoteauth.ControlHeld):
         state.claim_control("dev-2", "Booth")
+
+
+def test_a_holder_whose_socket_closes_loses_the_lock(state, clock):
+    key = state.register_connection("dev-1", None)
+    state.claim_control("dev-1", "Desk")
+    assert state.unregister_connection("dev-1", key) is True
+    assert state.control_holder() is None
+
+
+def test_a_second_socket_closing_does_not_release_the_lock(state, clock):
+    """A reload opens the new socket before the old one closes, and a second
+    tab is a second socket — neither is the device leaving."""
+    first = state.register_connection("dev-1", None)
+    state.claim_control("dev-1", "Desk")
+    second = state.register_connection("dev-1", None)
+    assert state.unregister_connection("dev-1", second) is False
+    assert state.control_holder()["device_id"] == "dev-1"
+    assert state.connection_count("dev-1") == 1
+    # …and it is still held against a rival while that first socket is open.
+    clock.advance(remoteauth.CONTROL_IDLE_SECONDS * 4)
+    with pytest.raises(remoteauth.ControlHeld):
+        state.claim_control("dev-2", "Booth")
+    assert state.unregister_connection("dev-1", first) is True
+    assert state.control_holder() is None
+
+
+def test_a_holder_keeps_the_lock_across_a_page_reload(client, state):
+    """The reload sequence through the real routes: socket 1 open, claim, then
+    socket 2 opens and socket 1 closes. The lock must not move."""
+    token = pair(client, state, "Reloading phone")
+    with client.websocket_connect(f"/ws?token={token}") as first:
+        first.receive_json()
+        client.post("/rpc", json={"method": "remote.claim_control"},
+                    headers=auth(token))
+        assert state.control_holder()["name"] == "Reloading phone"
+        with client.websocket_connect(f"/ws?token={token}") as second:
+            second.receive_json()
+            assert state.connection_count(state.devices()[0]["id"]) == 2
+        # The second socket closed; the first is still open.
+        assert state.control_holder()["name"] == "Reloading phone"
+    assert state.control_holder() is None
 
 
 # ── transport gating ─────────────────────────────────────────────────────────
@@ -359,12 +413,16 @@ def test_updater_and_filesystem_are_refused_through_rpc(client, state):
 def test_remote_settings_cannot_be_changed_from_a_remote_client(client, state):
     token = pair(client, state)
     client.post("/rpc", json={"method": "remote.claim_control"}, headers=auth(token))
+    # False, not True: the interesting attempt is a remote client switching OFF
+    # the gates that hold it accountable — remote access itself, and the
+    # requirement that the next device present a code.
     for key in ("remote_enabled", "remote_require_pairing", "remote_read_only"):
         body = client.post("/rpc", json={"method": "settings.set",
-                                         "params": {"key": key, "value": True}},
+                                         "params": {"key": key, "value": False}},
                            headers=auth(token)).json()
         assert body["ok"] is False, key
-    assert state.get_flag("enabled") is False
+    assert state.get_flag("enabled") is True
+    assert state.get_flag("require_pairing") is True
 
 
 def test_pair_begin_and_revoke_are_local_only(client, state, service):
@@ -519,6 +577,207 @@ def test_every_read_method_exists_in_the_dispatch_table(service):
     handled = set(service._methods())
     server_side = {"remote.session"}
     assert remoteauth.READ_METHODS - handled == server_side
+
+
+# ── S1: the rate limiter's key cannot be chosen by the caller ────────────────
+
+def test_uvicorn_is_configured_not_to_trust_proxy_headers():
+    """uvicorn defaults to proxy_headers=True trusting 127.0.0.1, which
+    replaces request.client.host with X-Forwarded-For for every request from
+    loopback — i.e. exactly the deployment this app documents (behind Caddy or
+    a tunnel). That turns the pairing limiter's key into an attacker-chosen
+    string, and a 6-digit code into something brute-forceable inside its TTL."""
+    from cratebuilder.server import uvicorn_kwargs
+
+    kwargs = uvicorn_kwargs()
+    assert kwargs["proxy_headers"] is False
+    assert not kwargs["forwarded_allow_ips"]
+
+
+def test_both_entry_points_pass_the_hardened_uvicorn_settings():
+    """A one-line default is only a fix while both call sites use it."""
+    import inspect
+
+    import web_server
+    import web_window
+
+    for module in (web_server, web_window):
+        source = inspect.getsource(module)
+        assert "uvicorn.Config(" in source
+        assert "**uvicorn_kwargs()" in source, module.__name__
+
+
+def test_a_rotating_forwarded_for_cannot_buy_extra_pairing_attempts(client, state):
+    """The reviewer's reproduction, in-process: 20 wrong codes, each with a
+    different X-Forwarded-For. The budget is the socket peer's, so the header
+    buys nothing and the limit still trips."""
+    state.begin_pairing()
+    statuses = []
+    for n in range(20):
+        res = client.post("/pair", json={"code": "999999"},
+                          headers={"X-Forwarded-For": f"10.9.0.{n}"})
+        statuses.append(res.status_code)
+    assert statuses[:PAIR_ATTEMPT_LIMIT] == [400] * PAIR_ATTEMPT_LIMIT
+    assert set(statuses[PAIR_ATTEMPT_LIMIT:]) == {429}
+
+
+def test_the_attempt_log_does_not_grow_without_bound(state, clock):
+    for n in range(remoteauth.ATTEMPT_KEY_SWEEP_AT * 2):
+        with pytest.raises(PairingRefused):
+            state.claim("999999", client=f"10.0.{n // 256}.{n % 256}")
+    clock.advance(remoteauth.PAIR_ATTEMPT_WINDOW + 1)
+    with pytest.raises(PairingRefused):
+        state.claim("999999", client="10.9.9.9")
+    assert len(state._attempts) <= remoteauth.ATTEMPT_KEY_SWEEP_AT + 1
+
+
+# ── S2: revoking cuts the device's live event socket ─────────────────────────
+
+def test_revoking_a_device_closes_its_open_event_socket(client, state, service):
+    """Revocation is the user's only remedy for a lost device. Without this it
+    stops /rpc but leaves the host pushing every track title, path and debug
+    line to the revoked browser until the process restarts."""
+    token = pair(client, state, "Stolen phone")
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(f"/ws?token={token}") as ws:
+            assert ws.receive_json()["type"] == "host.status"
+            assert state.revoke("all") == 1
+            service.emit("notification", {"level": "info", "title": "SECRET",
+                                          "body": "C:/Music/x"})
+            # Whatever arrives next, it is the close — never the notification.
+            frame = ws.receive_json()
+            assert frame["type"] != "notification", frame
+    assert exc.value.code == 4401
+    assert client.post("/rpc", json={"method": "state.snapshot"},
+                       headers=auth(token)).status_code == 401
+
+
+def test_revoking_one_device_leaves_the_others_streaming(client, state, service):
+    keep = pair(client, state, "Booth")
+    drop = pair(client, state, "Stolen")
+    dropped_id = [d["id"] for d in state.devices() if d["name"] == "Stolen"][0]
+    with client.websocket_connect(f"/ws?token={keep}") as ws:
+        ws.receive_json()
+        assert state.revoke(dropped_id) == 1
+        service.emit("notification", {"title": "Batch", "body": "done"})
+        assert ws.receive_json()["type"] == "notification"
+    assert client.post("/rpc", json={"method": "state.snapshot"},
+                       headers=auth(keep)).status_code == 200
+    assert client.post("/rpc", json={"method": "state.snapshot"},
+                       headers=auth(drop)).status_code == 401
+
+
+# ── S3/S4: `remote enabled` is a live gate, and the bind rule is shared ──────
+
+def test_every_remote_route_refuses_while_remote_access_is_off(client, state):
+    token = pair(client, state)
+    state.set_flag("enabled", False)
+    rpc = client.post("/rpc", json={"method": "state.snapshot"}, headers=auth(token))
+    assert rpc.status_code == 403
+    assert rpc.json()["detail"] == remoteauth.DISABLED_REASON
+    assert client.get("/logs/activity", headers=auth(token)).status_code == 403
+    assert client.get("/pair/info").status_code == 403
+    assert client.post("/pair", json={"code": "123456"}).status_code == 403
+
+
+def test_a_disabled_host_will_not_mint_a_token(client, state):
+    code = state.begin_pairing()["code"]
+    state.set_flag("enabled", False)
+    assert client.post("/pair", json={"code": code}).status_code == 403
+    assert state.device_count() == 0
+
+
+def test_turning_remote_access_off_cuts_a_running_mount(client, state):
+    """The toggle is a live control, not a startup-time bind decision — the 3j
+    card reads as a kill switch and this is what makes it one."""
+    token = pair(client, state)
+    assert client.post("/rpc", json={"method": "state.snapshot"},
+                       headers=auth(token)).status_code == 200
+    state.set_flag("enabled", False)
+    assert client.post("/rpc", json={"method": "state.snapshot"},
+                       headers=auth(token)).status_code == 403
+    state.set_flag("enabled", True)
+    assert client.post("/rpc", json={"method": "state.snapshot"},
+                       headers=auth(token)).status_code == 200
+
+
+def test_a_disabled_host_closes_the_socket_without_dropping_the_token(client, state):
+    token = pair(client, state)
+    state.set_flag("enabled", False)
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(f"/ws?token={token}") as ws:
+            ws.receive_json()
+    # 4403, not 4401: the token is still good, so the browser keeps it and
+    # keeps retrying rather than demanding a fresh pairing code.
+    assert exc.value.code == 4403
+    assert state.device_count() == 1
+
+
+def test_the_bind_rule_needs_both_consent_and_intent(state):
+    from cratebuilder.server import ANY_INTERFACE, LOOPBACK, bind_host
+
+    state.set_flag("enabled", False)
+    assert bind_host(state, lan=False) == LOOPBACK
+    assert bind_host(state, lan=True) is None      # refused: no consent
+    state.set_flag("enabled", True)
+    assert bind_host(state, lan=False) == LOOPBACK  # consent alone is not intent
+    assert bind_host(state, lan=True) == ANY_INTERFACE
+
+
+# ── S5: Host / Origin ────────────────────────────────────────────────────────
+
+def test_a_rebinding_host_header_is_refused(client, state):
+    token = pair(client, state)
+    res = client.post("/rpc", json={"method": "state.snapshot"},
+                      headers={**auth(token), "Host": "cratebuilder.evil.test"})
+    assert res.status_code == 421
+    assert res.json()["detail"] == remoteauth_bad_host()
+
+
+def test_address_literals_and_localhost_are_accepted(client, state):
+    token = pair(client, state)
+    for host in ("127.0.0.1", "127.0.0.1:8770", "localhost:8770", "192.168.1.9"):
+        res = client.post("/rpc", json={"method": "state.snapshot"},
+                          headers={**auth(token), "Host": host})
+        assert res.status_code == 200, host
+
+
+def test_the_socket_refuses_a_cross_origin_upgrade(client, state):
+    from cratebuilder.server import origin_matches_host
+
+    assert origin_matches_host(None, "127.0.0.1:8770") is True   # non-browser
+    assert origin_matches_host("http://127.0.0.1:8770", "127.0.0.1:8770") is True
+    assert origin_matches_host("https://evil.test", "127.0.0.1:8770") is False
+
+    token = pair(client, state)
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(f"/ws?token={token}",
+                                      headers={"Origin": "https://evil.test"}) as ws:
+            ws.receive_json()
+    assert exc.value.code == 4401
+
+
+# ── S8: the paired-device roster is the local window's to know ───────────────
+
+def test_a_remote_client_gets_the_device_count_not_the_roster(client, state, service):
+    pair(client, state, "Booth iPad")
+    token = pair(client, state, "Studio phone")
+    body = client.post("/rpc", json={"method": "remote.config"},
+                       headers=auth(token)).json()
+    assert body["ok"] is True
+    assert body["result"]["devices"] == []
+    assert body["result"]["device_count"] == 2
+    listed = client.post("/rpc", json={"method": "remote.devices"},
+                         headers=auth(token)).json()["result"]
+    assert listed["devices"] == []
+    # The local window still gets the names it renders on the 3j card.
+    assert {d["name"] for d in service.call("remote.config")["devices"]} == {
+        "Booth iPad", "Studio phone"}
+
+
+def remoteauth_bad_host():
+    from cratebuilder.server import BAD_HOST_REASON
+    return BAD_HOST_REASON
 
 
 def test_no_write_method_slipped_into_the_read_allow_list():
