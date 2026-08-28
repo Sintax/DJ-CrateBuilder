@@ -96,6 +96,7 @@ TOOLTIPS = {
     'settings.geo_bypass': 'Bypass geographic IP-based restrictions using a fake X-Forwarded-For header',
     'settings.limiter': 'Skip any file whose duration exceeds the limit below. Uncheck to allow files of any length.',
     'settings.log_limit': "Caps the size of the Activity Log and Debug Log (each file separately). When a log grows past this size, the oldest lines at the top are removed to make room for the newest — so the file keeps the most recent activity and never grows without bound. 'Unlimited' disables trimming.",
+    'settings.maintenance_cancel': 'Stop after the current track. Tags already written are kept.',
     'settings.minimize_to_tray': 'Keeps Watch-List scheduler running in the background',
     'settings.no_conversion': 'When enabled, files are saved in their original format and bitrate without conversion to MP3. YouTube typically serves .webm (Opus) or .m4a (AAC); SoundCloud serves .mp3 or .webm. Your folder will contain a mix of extensions.',
     'settings.open_folder': 'Open this folder in your file explorer',
