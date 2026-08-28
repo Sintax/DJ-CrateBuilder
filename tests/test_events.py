@@ -212,7 +212,8 @@ def test_finished_job_frees_the_category(service):
 
 def test_snapshot_running_reflects_the_job_registry(service):
     assert service.snapshot()["running"] == {
-        "batch": False, "watchlist": False, "maintenance": False}
+        "batch": False, "watchlist": False, "maintenance": False,
+        "maintenance_task": None}
     release = threading.Event()
     started = threading.Event()
 
@@ -223,5 +224,6 @@ def test_snapshot_running_reflects_the_job_registry(service):
     service._start_job("watchlist", target)
     assert started.wait(2)
     assert service.snapshot()["running"] == {
-        "batch": False, "watchlist": True, "maintenance": False}
+        "batch": False, "watchlist": True, "maintenance": False,
+        "maintenance_task": None}
     release.set()

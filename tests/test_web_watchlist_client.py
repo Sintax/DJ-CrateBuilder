@@ -269,6 +269,8 @@ def test_download_all_new_carries_the_live_count_and_closes_at_zero(app_js, tmp_
 _EVENTS_HARNESS = """
 const dl = { running: false, paused: false, rows: {}, current: null, overall: null };
 const wl = { running: false, cards: [], current: null, overall: null };
+const mt = { running: false, task: null, current: null, overall: null,
+             note: null, view: null };
 let state = { counts: {} };
 const calls = [];
 const handlers = {};
@@ -278,6 +280,8 @@ function refresh() { calls.push('refresh'); return Promise.resolve(); }
 function toast() {}
 function isBatchProgress(p) { return !p || !p.job || p.job === 'batch'; }
 function wlPaintProgress() {}
+function maintPaint() {}
+function maintSettle() { mt.running = false; calls.push('settle'); }
 function wlApplyCard() {}
 function wlLogAppend(e) { calls.push('log:' + (e.text || '')); }
 function renderCurrent() {}
@@ -318,8 +322,14 @@ handlers['job.finished']({ job: 'batch' });
 out.batchCleared = !dl.running;
 out.refreshesAfterBatch = calls.filter((c) => c === 'refresh').length;
 
-// A category this screen knows nothing about must not trigger a resync.
+// The maintenance category settles its own dialog and resyncs like the rest.
+mt.running = true;
 handlers['job.finished']({ job: 'maintenance' });
+out.maintenanceSettled = calls.includes('settle') && !mt.running;
+out.refreshesAfterMaintenance = calls.filter((c) => c === 'refresh').length;
+
+// A category this screen knows nothing about must not trigger a resync.
+handlers['job.finished']({ job: 'gardening' });
 handlers['job.finished']({});
 out.refreshesAfterUnknown = calls.filter((c) => c === 'refresh').length;
 console.log(JSON.stringify(out));
@@ -343,14 +353,19 @@ def test_only_job_finished_resyncs_state(app_js, tmp_path):
     assert r["refreshesAfterWatchlist"] == 1
     assert r["batchCleared"] is True
     assert r["refreshesAfterBatch"] == 2
-    assert r["refreshesAfterUnknown"] == 2
+    assert r["maintenanceSettled"] is True
+    assert r["refreshesAfterMaintenance"] == 3
+    assert r["refreshesAfterUnknown"] == 3
 
 
 _REFRESH_HARNESS = """
 const dl = { running: false };
 const wl = { running: false, cards: [], current: null, overall: null };
+const mt = { running: false, task: null };
 let state = null;
-let snapshot = { running: { batch: true, watchlist: true }, watchlist: [{ id: 1 }],
+let snapshot = { running: { batch: true, watchlist: true, maintenance: true,
+                           maintenance_task: 'db.rebuild' },
+                 watchlist: [{ id: 1 }],
                  counts: {}, genres: [], settings: {}, host: {}, library: {} };
 async function call() { return JSON.parse(JSON.stringify(snapshot)); }
 function renderShell() {}
@@ -365,11 +380,13 @@ const document = {};
 
 const out = {};
 await refresh();
-out.armedFromSnapshot = [dl.running, wl.running];
+out.armedFromSnapshot = [dl.running, wl.running, mt.running];
+out.taskFromSnapshot = mt.task;
 out.cardsFromSnapshot = wl.cards.length;
-snapshot.running = { batch: false, watchlist: false };
+snapshot.running = { batch: false, watchlist: false, maintenance: false };
 await refresh();
-out.clearedFromSnapshot = [dl.running, wl.running];
+out.clearedFromSnapshot = [dl.running, wl.running, mt.running];
+out.taskCleared = mt.task;
 console.log(JSON.stringify(out));
 """
 
@@ -383,8 +400,11 @@ def test_refresh_takes_the_snapshot_at_face_value(app_js, tmp_path):
                           "  // A Main-tab batch and a Watch List download"),
     }
     r = _run_node(tmp_path, "wlrefresh.mjs", source)
-    assert r == {"armedFromSnapshot": [True, True], "cardsFromSnapshot": 1,
-                 "clearedFromSnapshot": [False, False]}
+    assert r == {"armedFromSnapshot": [True, True, True],
+                 "taskFromSnapshot": "db.rebuild",
+                 "cardsFromSnapshot": 1,
+                 "clearedFromSnapshot": [False, False, False],
+                 "taskCleared": None}
 
 
 # ── Smart-Edit hands over, it does not stack ─────────────────────────────────

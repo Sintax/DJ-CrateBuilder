@@ -3166,6 +3166,273 @@
     return b;
   }
 
+  /* ── database maintenance (3m long-job shell) ─────────────────────────────
+     The four Settings ▸ Downloads Database actions. Each is a confirm modal
+     quoting the registry tooltip and the count the host just measured, then
+     one long-job dialog — the design's 3m shell — driven entirely by the
+     host's own events: `progress.overall`/`progress.current` stamped
+     job:"maintenance" while it runs, and `job.finished` to settle it. The
+     jobs' own summaries arrive as `notification`, never read as a state
+     signal. */
+
+  const mt = {
+    running: false,   // a maintenance job holds the host's slot
+    task: null,       // which one, while we know
+    overall: null,    // last progress.overall stamped job:"maintenance"
+    current: null,    // last progress.current stamped job:"maintenance"
+    note: null,       // the run's closing notification, once it lands
+    view: null,       // the open long-job dialog's handles, or null
+  };
+
+  /* Everything that differs between the four jobs, in one table: the button,
+     the confirm copy (registry tooltip + the monolith's own consequence
+     wording, with the host's counts substituted), what the bar counts, and
+     whether the run can skip an item. */
+  const MAINT_TASKS = {
+    'db.rebuild': {
+      label: '🔄 Rebuild Database from Files',
+      title: '🔄 Rebuild Database',
+      tt: 'settings.rebuild_db',
+      run: 'Rebuild Database',
+      unit: 'channel folder',
+      tally: (o) => (o && o.found != null ? `${num(o.found)} found` : ''),
+      confirm: (p) => [
+        `The downloads table is cleared and rebuilt from the audio files in ` +
+        `your library folders. The ${num(p.rows || 0)} row` +
+        `${p.rows === 1 ? '' : 's'} it holds now ` +
+        `${p.rows === 1 ? 'is' : 'are'} replaced by what is actually on disk.`,
+        'Cover art already on disk is reused, never re-downloaded. Your audio ' +
+        'files are not touched. This cannot be undone.',
+      ],
+    },
+    'db.dedupe': {
+      label: '🧹 Remove Duplicates',
+      title: '🧹 Remove Duplicates',
+      tt: 'settings.dedupe_db',
+      run: 'Remove Duplicates',
+      unit: 'step',
+      tally: () => '',
+      confirm: (p) => [
+        `${num(p.extra)} redundant row${p.extra === 1 ? '' : 's'} across ` +
+        `${num(p.files)} file${p.files === 1 ? '' : 's'} will be merged down ` +
+        'to one row each.',
+        'Your audio files, cover art and Watch List are not touched — only ' +
+        'the duplicate database rows. Anything the removed rows knew (video ' +
+        'id, upload date, cover art) is kept on the row that remains. This ' +
+        'cannot be undone.',
+      ],
+    },
+    'db.repair_tags': {
+      label: '🏷 Repair Track Tags',
+      title: '🏷 Repair Track Tags',
+      tt: 'settings.repair_tags',
+      run: 'Repair Tags',
+      unit: 'track',
+      tally: (o) => (o && o.genres != null
+        ? `${num(o.genres)} genres • ${num(o.filled || 0)} filled in` : ''),
+      confirm: (p) => [
+        `Repair the tags on ${num(p.total)} track${p.total === 1 ? '' : 's'}?`,
+        `Genre is set to match the folder each track is filed under — a genre ` +
+        `tag you set by hand that disagrees with the folder is overwritten, ` +
+        `and tracks under '${p.no_genre_dir || '_No Genre'}' have theirs ` +
+        `cleared.`,
+        'Title, Encoded-by and the source URL are only filled in where a ' +
+        'track is missing them, so anything you edited by hand is left alone. ' +
+        'Audio is never re-encoded — only the tag is rewritten.',
+      ],
+    },
+    'db.fetch_artwork': {
+      label: '🖼 Fetch Missing Artwork',
+      title: '🖼 Fetch Missing Artwork',
+      tt: 'settings.fetch_artwork',
+      run: 'Fetch Artwork',
+      unit: 'track',
+      skip: true,
+      tally: (o) => (o && o.embedded != null ? `${num(o.embedded)} embedded` : ''),
+      confirm: (p) => [
+        `${num(p.total)} track${p.total === 1 ? '' : 's'} ` +
+        `${p.total === 1 ? 'has' : 'have'} no cover art.`,
+        'Artwork will be downloaded where available and embedded into each ' +
+        'file. This can take a while for a large library, and you can cancel ' +
+        'at any point — tracks already done are kept.',
+      ],
+    },
+  };
+
+  const MAINT_BUSY_REASON =
+    'A database maintenance job is running. Only one runs at a time — wait ' +
+    'for it to finish, or cancel it from its progress window.';
+  const MAINT_CANCEL_TT =
+    'Stop after the item being worked on right now. Everything already ' +
+    'written is kept.';
+  const MAINT_SKIP_TT =
+    'Give up on the track being fetched right now and move straight on to ' +
+    'the next one. Only this track is skipped.';
+
+  /* Step one: ask the host what this job would do, and show it before
+     anything runs. A refusal (nothing to de-dup, cover art switched off, no
+     audio under the crate root) comes back from the same call and is the
+     reason the user sees instead of a dialog. */
+  async function maintConfirm(task) {
+    const spec = MAINT_TASKS[task];
+    let preview;
+    try {
+      preview = await call('db.maintenance_preview', { task });
+    } catch (_) { return; }   // call() already toasted the reason
+    openModal({
+      title: spec.title,
+      width: 520,
+      body(body) {
+        spec.confirm(preview).forEach((line) => body.appendChild(modalNote(line)));
+        const help = modalNote(TOOLTIPS[spec.tt] || '');
+        help.style.borderTop = '1px solid var(--cb-line-soft)';
+        help.style.paddingTop = '10px';
+        help.style.fontSize = '11.5px';
+        body.appendChild(help);
+      },
+      foot(foot, api) {
+        const go = modalButton(spec.run, 'cb-btn--warn', async () => {
+          api.busy(true);
+          try {
+            await call(task);
+          } catch (_) {
+            api.busy(false);
+            return;             // call() already toasted the reason
+          }
+          maintBegin(task);
+        }, spec.tt);
+        const later = modalButton('Not now', 'cb-btn--quiet', api.close);
+        later.style.marginLeft = 'auto';
+        foot.append(go, later);
+      },
+    });
+  }
+
+  /* Step two: the run is ours until the host says the slot is free. */
+  function maintBegin(task) {
+    mt.running = true;
+    mt.task = task;
+    mt.overall = null;
+    mt.current = null;
+    mt.note = null;
+    maintOpenProgress(task);
+    renderSettings();
+  }
+
+  function maintOpenProgress(task) {
+    const spec = MAINT_TASKS[task];
+    const refs = {};
+    openModal({
+      title: spec.title,
+      tag: { text: 'Running', cls: 'cb-tag--fill' },
+      width: 520,
+      onClose() { mt.view = null; },
+      body(body) {
+        const line = document.createElement('div');
+        line.className = 'cb-row';
+        line.style.cssText = 'gap:8px;align-items:baseline';
+        refs.kick = document.createElement('span');
+        refs.kick.className = 'cb-kick';
+        refs.kick.textContent = 'Current';
+        const kick = refs.kick;
+        refs.item = document.createElement('span');
+        refs.item.className = 'cb-maint__item';
+        refs.item.textContent = 'Starting…';
+        line.append(kick, refs.item);
+
+        const bar = document.createElement('div');
+        bar.className = 'cb-bar';
+        refs.fill = document.createElement('div');
+        refs.fill.className = 'cb-bar__fill';
+        refs.fill.style.width = '0%';
+        bar.appendChild(refs.fill);
+
+        const counts = document.createElement('div');
+        counts.className = 'cb-row';
+        counts.style.gap = '8px';
+        refs.counts = document.createElement('span');
+        refs.counts.className = 'cb-mut cb-mono cb-maint__counts';
+        refs.tally = document.createElement('span');
+        refs.tally.className = 'cb-mono cb-maint__tally';
+        counts.append(refs.counts, refs.tally);
+
+        const wrap = document.createElement('div');
+        wrap.append(line, bar);
+        body.append(wrap, counts);
+      },
+      foot(foot, api) {
+        refs.note = modalNote('Closing this window leaves the job running.');
+        foot.appendChild(refs.note);
+        if (spec.skip) {
+          refs.skip = modalButton('Skip track', 'cb-btn--quiet',
+            () => call('db.maintenance_skip').catch(() => {}));
+          refs.skip.setAttribute('data-tt-text', MAINT_SKIP_TT);
+          refs.skip.style.marginLeft = 'auto';
+          foot.appendChild(refs.skip);
+        }
+        refs.cancel = modalButton('Cancel', 'cb-btn--warn',
+          () => call('db.maintenance_cancel').catch(() => {}));
+        refs.cancel.setAttribute('data-tt-text', MAINT_CANCEL_TT);
+        if (!spec.skip) refs.cancel.style.marginLeft = 'auto';
+        refs.close = modalButton('Close', 'cb-btn--quiet', api.close);
+        refs.close.hidden = true;
+        foot.append(refs.cancel, refs.close);
+      },
+    });
+    mt.view = { task, refs, modal: $('.cb-modal') };
+    maintPaint();
+  }
+
+  function maintPaint() {
+    if (!mt.view) return;
+    const spec = MAINT_TASKS[mt.view.task] || {};
+    const { refs } = mt.view;
+    const o = mt.overall;
+    const percent = o && o.percent != null ? Math.max(0, Math.min(100, o.percent)) : 0;
+    refs.fill.style.width = percent + '%';
+    if (mt.note) {
+      refs.item.textContent = mt.note.body || 'Finished.';
+    } else if (mt.current && mt.current.title) {
+      refs.item.textContent = mt.current.title +
+        (mt.current.note ? ` — ${mt.current.note}` : '');
+    }
+    const unit = spec.unit || 'item';
+    refs.counts.textContent = o
+      ? `${num(o.done)} of ${num(o.total)} ${unit}${o.total === 1 ? '' : 's'}`
+      : 'Starting…';
+    refs.tally.textContent = (spec.tally && spec.tally(o)) || '';
+  }
+
+  /* The host released the slot. Settle the dialog in place rather than
+     yanking it away mid-read: the bar completes, the summary the run
+     published takes over the current-item line, and the only control left is
+     Close. */
+  function maintSettle() {
+    mt.running = false;
+    mt.task = null;
+    if (!mt.view) return;
+    const { refs, modal } = mt.view;
+    const cancelled = !!(mt.note && /^Cancelled/.test(mt.note.body || ''));
+    const tag = modal && modal.querySelector('.cb-tag');
+    if (tag) {
+      tag.textContent = cancelled ? 'Cancelled' : 'Finished';
+      tag.className = 'cb-tag ' + (cancelled ? 'cb-tag--grey' : 'cb-tag--ok');
+    }
+    refs.fill.style.width = '100%';
+    // The line stops being a track name and becomes the run's whole summary:
+    // it has to wrap instead of truncating, and "Current" no longer describes
+    // what it holds.
+    refs.kick.textContent = cancelled ? 'Stopped' : 'Result';
+    refs.item.classList.add('is-summary');
+    if (refs.skip) refs.skip.hidden = true;
+    refs.cancel.hidden = true;
+    refs.close.hidden = false;
+    refs.close.style.marginLeft = 'auto';
+    refs.note.textContent = '';
+    maintPaint();
+    refs.close.focus();
+  }
+
   const SECTION_EXTRAS = {
     'Default Save Directory': (card) => {
       const row = card.querySelector('[data-key="base_dir"]')?.closest('.cb-set-row');
@@ -3238,13 +3505,32 @@
       openDb.textContent = '🗂 Open Database';
       openDb.addEventListener('click', () => show('database'));
       row.appendChild(openDb);
-      const maintReason = "Not wired up yet — maintenance jobs arrive with the " +
-                          "web frontend's job runner.";
-      row.append(
-        stubButton('🔄 Rebuild Database from Files', 'cb-btn--warn', 'settings.rebuild_db', maintReason),
-        stubButton('🧹 Remove Duplicates', 'cb-btn--warn', 'settings.dedupe_db', maintReason),
-        stubButton('🖼 Fetch Missing Artwork', 'cb-btn--warn', 'settings.fetch_artwork', maintReason),
-        stubButton('🏷 Repair Track Tags', 'cb-btn--warn', 'settings.repair_tags', maintReason));
+      Object.keys(MAINT_TASKS).forEach((task) => {
+        const spec = MAINT_TASKS[task];
+        const b = document.createElement('button');
+        b.className = 'cb-btn cb-btn--warn cb-btn--sm';
+        b.textContent = spec.label;
+        b.addEventListener('click', () => maintConfirm(task));
+        setDisabled(b, mt.running,
+          { reason: MAINT_BUSY_REASON, ttKey: spec.tt });
+        row.appendChild(b);
+      });
+      // While a job holds the slot the four ways in are shut, so this is the
+      // only way back to a dialog the user closed — including after a page
+      // reload, since the snapshot is what says a job is running.
+      if (mt.running) {
+        const back = document.createElement('button');
+        back.className = 'cb-btn cb-btn--sm';
+        back.textContent = '⏳ Show progress';
+        back.addEventListener('click', () => {
+          if (!mt.view && MAINT_TASKS[mt.task]) maintOpenProgress(mt.task);
+        });
+        setDisabled(back, !MAINT_TASKS[mt.task], {
+          reason: 'The host has not said which job is running.',
+          ttText: 'Reopen the progress window for the job running now.',
+        });
+        row.appendChild(back);
+      }
       card.appendChild(row);
     },
 
@@ -3423,6 +3709,8 @@
     // progress event to reveal it.
     dl.running = !!(state.running && state.running.batch);
     wl.running = !!(state.running && state.running.watchlist);
+    mt.running = !!(state.running && state.running.maintenance);
+    mt.task = (state.running && state.running.maintenance_task) || null;
     wl.cards = state.watchlist || [];
     renderShell();
     renderOverview();
@@ -3444,6 +3732,7 @@
   function subscribeDownloadEvents() {
     cbApi.on('progress.current', (p) => {
       if (p && p.job === 'watchlist') { wl.current = p; wlPaintProgress(); return; }
+      if (p && p.job === 'maintenance') { mt.current = p; maintPaint(); return; }
       if (!dl.running || !isBatchProgress(p)) return;
       dl.current = p;
       renderCurrent();
@@ -3451,6 +3740,7 @@
     });
     cbApi.on('progress.overall', (p) => {
       if (p && p.job === 'watchlist') { wl.overall = p; wlPaintProgress(); return; }
+      if (p && p.job === 'maintenance') { mt.overall = p; maintPaint(); return; }
       if (!dl.running || !isBatchProgress(p)) return;
       dl.overall = p;
       renderOverall();
@@ -3497,10 +3787,24 @@
         wl.running = false;
         wl.current = null;
         wl.overall = null;
+      } else if (job === 'maintenance') {
+        maintSettle();
       } else {
         return;
       }
       refresh();
+    });
+    /* A run's closing summary. Display only, and never a state signal — the
+       modal is settled by job.finished above, which is what the host emits
+       once the slot is actually free. Toasted only when nobody is watching
+       the dialog it would otherwise be shown in twice. */
+    cbApi.on('notification', (n) => {
+      if (!n) return;
+      if (n.job === 'maintenance') {
+        mt.note = n;
+        if (mt.view) { maintPaint(); return; }
+      }
+      toast(`${n.title} — ${n.body}`, n.level === 'error');
     });
     cbApi.on('state.patch', (p) => {
       if (!state || !p || !p.counts) return;

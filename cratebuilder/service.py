@@ -34,6 +34,11 @@ REMOTE = "remote"
 # scan and a download can never fight over the same channel folder.
 WATCHLIST_JOB = "watchlist"
 
+# The job registry's category for every database maintenance run — rebuild,
+# de-dup, tag repair and artwork backfill share one slot, so two of them can
+# never be writing the downloads table at the same time.
+MAINTENANCE_JOB = "maintenance"
+
 # The one event that means "this job category is free again". Emitted by
 # _start_job AFTER the slot is released, which is what separates it from the
 # runs' own terminal events (`batch.finished`, the closing DONE scan line) —
@@ -400,6 +405,7 @@ class CrateBuilderService:
         self._jobs = {}
         self._batch_runner = None
         self._watchlist_ops = None
+        self._maintenance_ops = None
         # The durable channel-link store lives beside the database, so a test
         # pointing db_path at a tmp dir never writes the developer's real one.
         self._links_path = os.path.join(
@@ -515,6 +521,15 @@ class CrateBuilderService:
             "db.export_csv": lambda p: self.db_export_csv(
                 p.get("table"), p.get("filters") or {}, p.get("sort") or {}),
             "db.artwork_preview": lambda p: self.db_artwork_preview(p.get("id")),
+            "db.maintenance_preview":
+                lambda p: self.maintenance_preview(p.get("task")),
+            "db.rebuild": lambda p: self.maintenance_start("db.rebuild"),
+            "db.dedupe": lambda p: self.maintenance_start("db.dedupe"),
+            "db.repair_tags": lambda p: self.maintenance_start("db.repair_tags"),
+            "db.fetch_artwork":
+                lambda p: self.maintenance_start("db.fetch_artwork"),
+            "db.maintenance_cancel": lambda p: self.maintenance_cancel(),
+            "db.maintenance_skip": lambda p: self.maintenance_skip(),
             "fs.pick_folder": lambda p: self.pick_folder(),
             "fs.reveal": lambda p: self.fs_reveal(p.get("path"),
                                                   p.get("mode", "folder")),
@@ -545,7 +560,14 @@ class CrateBuilderService:
             "watchlist": self.watchlist_list(),
             "running": {"batch": self._job_running("batch"),
                         "watchlist": self._job_running(WATCHLIST_JOB),
-                        "maintenance": self._job_running("maintenance")},
+                        "maintenance": self._job_running(MAINTENANCE_JOB),
+                        # Which of the four, so a frontend that reloaded mid
+                        # run can reopen the right progress dialog. Read off
+                        # the ops object only if one has ever been built —
+                        # asking for it would construct one for nothing.
+                        "maintenance_task": (
+                            self._maintenance_ops.task
+                            if self._maintenance_ops is not None else None)},
             "settings": self.settings_all(),
             "settings_path": self._settings.path,
             "platform": sys.platform,
@@ -1148,6 +1170,81 @@ class CrateBuilderService:
         encoded = base64.b64encode(data).decode("ascii")
         return {"data_url": f"data:{mime};base64,{encoded}", "note": note,
                 "width": width, "height": height, "size": len(data)}
+
+    # ── database maintenance ──────────────────────────────────────────────────
+    # Dispatch only: cratebuilder.maintenance owns every sequence. What lives
+    # here is what the transport layer owns — refusing a run that would fight
+    # a download for the downloads table, and handing the run to the job
+    # registry so the frontend hears `job.finished` when the slot is free.
+
+    @property
+    def _maintenance(self):
+        """The maintenance operations, built on first use.
+
+        Imported here rather than at module scope for the same reason
+        watchrun is: maintenance imports CBError and MAINTENANCE_JOB from this
+        module, and deferring keeps the dependency one-way."""
+        if self._maintenance_ops is None:
+            from cratebuilder.maintenance import MaintenanceOps
+            self._maintenance_ops = MaintenanceOps(
+                self._settings, self._db_for_write, self.emit,
+                log_line=self.log_line, counts=self.counts,
+                flush=self._emit.flush)
+        return self._maintenance_ops
+
+    # Rebuild, de-dup and the artwork backfill all write the downloads table
+    # the moment a download is also writing it, so the tkinter app disables
+    # their three buttons for the length of a run (_set_download_lock, which
+    # covers a Watch List batch too) — and the rebuild's clear/backfill would
+    # silently swallow a concurrent backfill's writes besides. Repair Track
+    # Tags is deliberately absent from that list: it only rewrites tags inside
+    # files and never touches a row, so the monolith leaves it available mid
+    # download and so does this.
+    _MAINTENANCE_NEEDS_IDLE = ("db.rebuild", "db.dedupe", "db.fetch_artwork")
+
+    def _require_idle_library(self, task):
+        if task not in self._MAINTENANCE_NEEDS_IDLE:
+            return
+        if self._job_running("batch") or self._job_running(WATCHLIST_JOB):
+            raise CBError("A download is running. This rewrites the downloads "
+                          "table, so it has to wait — cancel the run or let it "
+                          "finish, then try again.")
+
+    def maintenance_preview(self, task):
+        """The counts a confirm modal quotes, or the reason there is nothing
+        to confirm. Never starts anything."""
+        self._require_idle_library(task)
+        return self._maintenance.preview(task)
+
+    def maintenance_start(self, task):
+        """Run one maintenance job on the maintenance job thread.
+
+        The preflight runs HERE, on the calling thread, so a refusal reaches
+        the user as the answer to their click; `_start_job`'s worker would
+        swallow the same CBError raised a moment later."""
+        runners = {
+            "db.rebuild": self._maintenance.run_rebuild,
+            "db.dedupe": self._maintenance.run_dedupe,
+            "db.repair_tags": self._maintenance.run_repair_tags,
+            "db.fetch_artwork": self._maintenance.run_fetch_artwork,
+        }
+        runner = runners.get(task)
+        if runner is None:
+            raise CBError(f"Unknown maintenance job: {task!r}")
+        self._require_idle_library(task)
+        self._maintenance.preview(task)
+        return {"job_id": self._start_job(MAINTENANCE_JOB, runner),
+                "task": task}
+
+    def maintenance_cancel(self):
+        """Stop the running job after the item in flight. Safe to call when
+        nothing is running — cancelling never destroys anything, so a click
+        that races the job's own ending must not answer with an error."""
+        return self._maintenance.cancel()
+
+    def maintenance_skip(self):
+        """Abandon the track the artwork backfill is fetching right now."""
+        return self._maintenance.skip()
 
     # ── settings ──────────────────────────────────────────────────────────────
 
