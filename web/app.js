@@ -5086,21 +5086,27 @@
         if (result.notes) body.appendChild(modalNote(result.notes));
         body.appendChild(aboutAvWarningNode());
       },
-      foot(foot, api) {
+      foot(foot) {
         const go = modalButton('Download and install', 'cb-btn--warn',
           async () => {
-            api.busy(true);
-            let applied;
+            /* Opened BEFORE the call, not after it resolves: _start_job
+               starts the worker thread as soon as update.apply is invoked
+               server-side, so a fast link can have update.progress and even
+               update.restarting land before this promise settles. Opening
+               the confirm modal's replacement first (openModal closes
+               whatever's open) means aboutUpdate.view already exists to
+               catch them instead of dropping them on the floor. */
+            aboutBeginApply();
             try {
-              applied = await call('update.apply');
+              await call('update.apply');
             } catch (_) {
-              api.busy(false);
-              return;               // call() already toasted the reason
+              // call() already toasted the reason.
+              aboutUpdate.view = null;
+              closeModal();
             }
-            api.close();
-            aboutBeginApply(applied);
           }, 'about.update_now');
-        const later = modalButton('Not now', 'cb-btn--quiet', api.close);
+        const later = modalButton('Not now', 'cb-btn--quiet',
+          () => closeModal());
         later.style.marginLeft = 'auto';
         foot.append(go, later);
       },
@@ -5108,15 +5114,18 @@
   }
 
   /* Step two: the progress modal, painted from update.progress until
-     update.restarting says the window is about to close on its own. */
-  function aboutBeginApply(applied) {
+     update.restarting says the window is about to close on its own, or
+     settled as failed by job.finished (subscribeUpdateEvents, below). */
+  function aboutBeginApply() {
     const refs = {};
-    const build = applied && applied.build;
     openModal({
-      title: build ? `Updating to build ${build}` : 'Updating DJ-CrateBuilder',
+      title: 'Updating DJ-CrateBuilder',
       width: 460,
       onClose() { if (aboutUpdate.view === refs) aboutUpdate.view = null; },
       body(body) {
+        // Left at this until the first real update.progress payload —
+        // never seeded with a fake one, which would claim a % and a done_mb
+        // that don't exist yet.
         refs.status = modalNote('Starting download…');
         const bar = document.createElement('div');
         bar.className = 'cb-bar';
@@ -5127,13 +5136,13 @@
         body.append(refs.status, bar);
       },
       foot(foot) {
-        foot.appendChild(modalNote(
+        refs.note = modalNote(
           'Closing this window does not stop the update — the app will '
-          + 'restart on its own to finish it.'));
+          + 'restart on its own to finish it.');
+        foot.appendChild(refs.note);
       },
     });
     aboutUpdate.view = refs;
-    aboutPaintApplyProgress({ phase: 'download', pct: 0 });
   }
 
   function aboutPaintApplyProgress(p) {
@@ -5159,6 +5168,28 @@
     refs.status.textContent = build
       ? `Restarting to finish the update to build ${build}…`
       : 'Restarting to finish the update…';
+  }
+
+  /* job.finished for the update job category: the only reliable "it's over"
+     signal (see the job.finished handler's own comment on why every job
+     category resyncs there and not off its own terminal event). ok=true
+     with no update.restarting yet is theoretically reachable (the handoff
+     succeeded but this event beat the restart) and is left alone — the
+     window is about to close on its own either way. ok=false means the
+     worker raised (checksum mismatch, a download error, ...): the modal is
+     otherwise stuck wherever the last update.progress left it, claiming a
+     restart that is not coming, so this corrects both. */
+  function aboutSettleApply(payload) {
+    const refs = aboutUpdate.view;
+    if (!refs) return;
+    if (payload && payload.ok === false) {
+      refs.status.textContent =
+        'The update failed to install — still on the current build. See '
+        + 'the notification for details.';
+      if (refs.note) {
+        refs.note.textContent = 'You can close this window and try again.';
+      }
+    }
   }
 
   function renderAboutUpdates(host) {
@@ -5200,8 +5231,13 @@
         : { ttKey: 'about.check_updates' });
       checkBtn.addEventListener('click', aboutCheckUpdates);
 
+      // Gated on the CHECK result's can_self_update (also what
+      // update.available carries), never on update.status's — that field
+      // defaults true when status hasn't loaded, and the point of gating is
+      // that the button must not light up on a source install just because
+      // update.status happened to fail while update.check succeeded.
       const available = !!(result && result.available);
-      const canSelf = status ? !!status.can_self_update : true;
+      const canSelf = !!(result && result.can_self_update);
       if (available && canSelf && !running) {
         setDisabled(updateBtn, false, { ttKey: 'about.update_now' });
         updateBtn.addEventListener('click', aboutConfirmUpdate);
@@ -5209,7 +5245,7 @@
         let reason = TOOLTIPS['about.update_now'] || '';
         if (running) {
           reason = 'An update is already installing.';
-        } else if (status && !status.can_self_update) {
+        } else if (result && !result.can_self_update) {
           reason = "You're running from source. Update with git (pull the "
             + 'latest) instead of the in-app updater.';
         } else if (!available) {
@@ -5531,6 +5567,10 @@
         wl.overall = null;
       } else if (job === 'maintenance') {
         maintSettle(p);
+      } else if (job === 'update') {
+        aboutSettleApply(p);
+        return;      // the app is restarting (or already failed); nothing
+                     // else on this page needs a resync for it.
       } else {
         return;
       }

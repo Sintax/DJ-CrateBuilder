@@ -42,15 +42,33 @@ Porting that flow was explicitly out of scope for this pass.
 ### Cross-job exclusion, both directions
 
 An update swaps every file under the app and restarts it, so a batch/watchlist
-download or a maintenance run mid-flight is the same failure the monolith's own
-`_launch_updater_and_quit` polls around before quitting. Rather than port the poll,
-`update.apply` simply refuses to start unless batch, watchlist, and maintenance are
-ALL idle and no genre-move retag is sweeping (`_require_idle_for_update`, checked both
-as a synchronous pre-flight and as `_start_job`'s atomic guard — the same two-checks
-pattern `maintenance_start` already uses). The reverse direction is new:
-`_require_idle_for_download` and `_require_idle_library` now also refuse while
-`UPDATE_JOB` holds the slot, so a download or a maintenance run can't start once an
-update is installing either.
+download, a maintenance run, or a genre-move tag rewrite mid-flight is the same
+failure the monolith's own `_launch_updater_and_quit` polls around before quitting.
+Rather than port the poll, `update.apply` simply refuses to start unless batch,
+watchlist, and maintenance are ALL idle and no genre-move retag is sweeping
+(`_require_idle_for_update`, checked both as a synchronous pre-flight and as
+`_start_job`'s atomic guard — the same two-checks pattern `maintenance_start` already
+uses).
+
+The reverse direction touches every entry point that claims one of those slots, not
+only the two obvious ones:
+
+- `_require_idle_for_download` (batch and Watch List downloads) and
+  `_require_idle_library` (maintenance — including `db.repair_tags`, which is
+  otherwise deliberately excluded from the download-table-collision set
+  `_MAINTENANCE_NEEDS_IDLE` names, but not from this one: it saves ID3 frames in
+  place with mutagen the same way a retag does) now refuse while `UPDATE_JOB` holds
+  the slot.
+- `claim_tag_writes` — the Watch List genre-move retag's own claim, which holds no
+  job-registry slot at all (`_retags` is a plain counter) — refuses the same way,
+  under the same lock as the check.
+- `watchlist_scan`/`watchlist_scan_all` gained a guard they never had before this
+  pass: a scan shares `WATCHLIST_JOB` with a download, which only excludes another
+  same-category claim, not a different category like `UPDATE_JOB`.
+
+So a download, a maintenance run, a tag-repair sweep, a genre-move retag, or a
+Watch List scan — every path that writes into the app's files, the downloads table,
+or a track's ID3 frames — is refused for as long as `UPDATE_JOB` holds its slot.
 
 ### FFmpeg piggyback stays tkinter-only
 
@@ -61,20 +79,29 @@ block. The installer and desktop app already keep FFmpeg current for every user 
 web frontend also serves (LOCAL transport implies one install, one FFmpeg), so there
 is nothing for the web path to duplicate.
 
-### The auto-check timer is LOCAL-only, and never injects a clock
+### The auto-check timer is LOCAL-only, explicitly armed, and never injects a clock
 
-A `threading.Timer`, armed from `interval_label_to_seconds(update_check_interval)` at
-service construction and re-armed after every fire and every `update.set_interval`.
-Never armed when the service is built with `transport=REMOTE` — a browser elsewhere
-must not make the host poll GitHub on its behalf, matching `update.*`'s `LOCAL_ONLY`
-gate. Per ADR 0001, no clock abstraction is injected; a test wanting a fast fire uses
-a short interval (or calls `_update_timer_fire()` directly, as most of this pass's
-tests do). A fire that lands while any job is running is skipped but still re-arms —
-installing mid-scan is exactly the failure this whole design avoids, and the next tick
-offers the update again once things are quiet. A fire never downloads on its own; it
-only emits `update.available` (and an info-level `notification`) for the About screen
-to act on, exactly like the monolith's silent check with the window hidden. The timer
-is cancelled in the new `CrateBuilderService.close()`, called from `web_window.py`'s
+A `threading.Timer`, armed from `interval_label_to_seconds(update_check_interval)` and
+re-armed after every fire and every `update.set_interval`. Arming is NOT a constructor
+side effect — `CrateBuilderService.__init__` never starts it. `start_update_timer()` is
+a separate call `web_window.py` makes right after building the service, the same way
+`start_remote_mount()` already is: a service built for one snapshot or one test (which
+is most services this codebase constructs) never pays for a background Timer just from
+being built. `start_update_timer()`/`_arm_update_timer()` are also no-ops once
+`_default_transport` is `REMOTE` — a browser elsewhere must not make the host poll
+GitHub on its behalf, matching `update.*`'s `LOCAL_ONLY` gate — and once `close()` has
+run (`_closed`, checked inside the same locked section `_arm_update_timer` uses, so a
+fire already past its own lock hold when `close()` lands can't resurrect a timer
+afterwards).
+
+Per ADR 0001, no clock abstraction is injected; a test wanting a fast fire uses a short
+interval (or calls `_update_timer_fire()` directly, as most of this pass's tests do). A
+fire that lands while any job is running is skipped but still re-arms — installing
+mid-scan is exactly the failure this whole design avoids, and the next tick offers the
+update again once things are quiet. A fire never downloads on its own; it only emits
+`update.available` (and an info-level `notification`) for the About screen to act on,
+exactly like the monolith's silent check with the window hidden. The timer is
+cancelled in `CrateBuilderService.close()`, called from `web_window.py`'s
 `window.events.closing`.
 
 ### AV warning first
@@ -96,6 +123,24 @@ before returning. `web_window.py` sets it to `window.destroy`, which makes
 PID before swapping files, same as the monolith's `_launch_updater_and_quit`. The
 worker runs on its own thread, so `on_update_restart` is invoked off the UI thread;
 `window.destroy()` is safe to call there because pywebview marshals it.
+
+The worker's own failure-purge only covers the part before that handoff. Once
+`Popen` has returned successfully, `<workspace>/staged` belongs to the separate
+updater process — which is already waiting on this PID to exit — not to this
+process's error handling; nothing after the `Popen` call runs inside the
+purge-guarded `try`. `on_update_restart` is called outside it and any exception
+from it is swallowed (the app is exiting either way, and the update itself already
+succeeded), so `job.finished` still reports `ok=True` for a handoff that landed.
+
+### Two smaller hardenings
+
+`update.check`/`update.apply` treat an unparseable or missing monolith source (no
+`UPDATE_MANIFEST_URL` to read, so nothing to fetch) as data, not a crash: the check
+reports its normal "unreachable" shape and apply raises a `CBError` — never a bare
+`TypeError` out of the RPC. `update.progress` is coalesced (`cratebuilder/events.py`'s
+`DEFAULT_COALESCED_TYPES`) alongside `progress.current`/`progress.overall`, matching
+what "emit freely from the progress callback" always assumed: `download()` calls its
+callback once per 64 KB block, and a nightly-sized payload is hundreds of those.
 
 ## What did not change
 
