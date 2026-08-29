@@ -27,7 +27,7 @@ from cratebuilder.remoteauth import REMOTE_FILE_NAME, RemoteState
 from cratebuilder.settings import Settings
 from cratebuilder.sidecar import is_unresolved_channel
 
-MAIN_SCRIPT = "DJ-CrateBuilder_v1.3.py"
+MAIN_SCRIPT = "DJ-CrateBuilder_v2.0.py"
 DB_NAME = "cratebuilder.db"
 ACTIVITY_LOG = "activity.log"
 DEBUG_LOG = "debug.log"
@@ -183,7 +183,7 @@ UPDATE_BLOCKS_SCAN = (
     "Watch List scan has to wait — try again once the update completes.")
 
 # The settings the tkinter app freezes for the length of a run
-# (`_set_download_lock`, DJ-CrateBuilder_v1.3.py:9994), mapped from the widgets
+# (`_set_download_lock`, DJ-CrateBuilder_v2.0.py:9994), mapped from the widgets
 # it disables to the contract keys that drive them:
 #
 #   _skip_existing_cb → skip_existing        _skip_mode_combo  → skip_mode
@@ -217,7 +217,7 @@ _VERSION_RE = re.compile(r'^APP_VERSION\s*=\s*"([^"]+)"', re.M)
 _BUILD_RE = re.compile(r"^APP_BUILD\s*=\s*(\d+)", re.M)
 
 # The auto-check dropdown's choices, read verbatim from the monolith's own
-# UPDATE_CHECK_OPTIONS (DJ-CrateBuilder_v1.3.py:474) rather than reparsed from
+# UPDATE_CHECK_OPTIONS (DJ-CrateBuilder_v2.0.py:474) rather than reparsed from
 # source: it is a plain list literal assigned once, with no per-release drift
 # to guard against the way APP_BUILD has. There is no "Off" state — the
 # monolith's list never offers one for this dropdown (unlike the download
@@ -392,7 +392,7 @@ def _sleep_preset_from_display(value):
 # unconditionally rewrites a stored cover_art_mode == "off" back to
 # DEFAULT_COVER_ART_MODE, on the theory that "off" is a pre-checkbox legacy
 # value, not a live user choice — see _migrate's docstring and
-# DJ-CrateBuilder_v1.3.py's own _COVER_ART_FORMAT_MODES, which excludes
+# DJ-CrateBuilder_v2.0.py's own _COVER_ART_FORMAT_MODES, which excludes
 # "off" from its dropdown for the same reason. Writing the literal "off"
 # here would look fine in-session and silently revert on the next load, so
 # this binding writes cover_art_enabled instead and never writes "off".
@@ -407,7 +407,7 @@ _COVER_ART_MODE_FROM_DISPLAY = {display: stored
 def _cover_art_mode_get(settings):
     """"Off" whenever cover art is disabled, regardless of what the
     formatting key happens to hold — cover_art_enabled is the single source
-    of truth for "off", matching DJ-CrateBuilder_v1.3.py's
+    of truth for "off", matching DJ-CrateBuilder_v2.0.py's
     _cover_art_mode_value()."""
     if not settings.get("cover_art_enabled"):
         return "Off"
@@ -431,7 +431,7 @@ def _cover_art_mode_set(settings, display):
     settings.update({"cover_art_enabled": True, "cover_art_mode": mode})
 
 
-# cookie_method stores "Browser" (see DJ-CrateBuilder_v1.3.py's
+# cookie_method stores "Browser" (see DJ-CrateBuilder_v2.0.py's
 # _cookie_method_combo), but the contract's option reads "Browser Profile".
 _COOKIE_METHOD_TO_DISPLAY = {"Browser": "Browser Profile", "Cookie File": "Cookie File"}
 _COOKIE_METHOD_FROM_DISPLAY = {display: stored
@@ -472,7 +472,7 @@ def _validate_base_dir(path):
 
     Rejects a blank path, a path that already exists as a file, and a path
     that cannot be created (e.g. a drive that doesn't exist) — the same
-    guarantees DJ-CrateBuilder_v1.3.py's _save_settings gets from
+    guarantees DJ-CrateBuilder_v2.0.py's _save_settings gets from
     filedialog.askdirectory plus os.makedirs, which a typed path bypasses.
     """
     raw = (path or "").strip()
@@ -1477,7 +1477,7 @@ class CrateBuilderService:
             return False, "Folder empty — nothing to clean."
         return True, ""
 
-    # The monolith's UNRESOLVED_URL_PREFIX (DJ-CrateBuilder_v1.3.py) and
+    # The monolith's UNRESOLVED_URL_PREFIX (DJ-CrateBuilder_v2.0.py) and
     # cratebuilder.db's private _UNRESOLVED_URL_PREFIX — a duplicate literal,
     # not an import, same "monolith depends on cratebuilder, never the
     # reverse" reasoning db.py already applies to its own copy. Needed here,
@@ -1919,7 +1919,7 @@ class CrateBuilderService:
 
         Local transport only — it edits the host's own registry, which a
         remote browser has no business reaching. Stricter than
-        _on_run_at_startup_toggle in DJ-CrateBuilder_v1.3.py, which only
+        _on_run_at_startup_toggle in DJ-CrateBuilder_v2.0.py, which only
         refuses to persist a failed *enable* (a failed disable is still
         saved as False there regardless of the registry's actual state):
         here, any set_startup() failure — enable or disable — is refused

@@ -62,7 +62,7 @@ from cratebuilder.settings import (
 # Version & About — edit these values to update the app info
 # ══════════════════════════════════════════════════════════════════════════════
 APP_NAME    = "DJ-CrateBuilder"
-APP_VERSION = "1.3"
+APP_VERSION = "2.0"
 # Nightly build number. The display version stays pinned at APP_VERSION; only
 # this integer increments for small in-place updates. Bump it for every build
 # you publish to the nightly channel. Publish with: python scripts/release.py

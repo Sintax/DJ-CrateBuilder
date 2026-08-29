@@ -231,7 +231,7 @@ Events (host → client):
 ## 4. Tooltips
 
 Every button, checkbox and dropdown in the design has one. The copy is lifted verbatim
-from the `Tooltip(...)` and `_settings_help(...)` calls in `DJ-CrateBuilder_v1.3.py` —
+from the `Tooltip(...)` and `_settings_help(...)` calls in `DJ-CrateBuilder_v2.0.py` —
 `ui-contract.json` carries the registry with the source line for each.
 
 **Do this: make one registry, shared.** Move the strings into
@@ -388,7 +388,7 @@ Non-negotiable once this is reachable over the internet:
 | `cratebuilder/ui_strings.py` | **new** — the shared tooltip/label registry |
 | `cratebuilder/server.py` | **new** — FastAPI app, WebSocket, pairing, tokens |
 | `web/` | **new** — the bundle: `index.html`, `theme.css`, `api.js`, screens |
-| `DJ-CrateBuilder_v1.3.py` | tooltips read from `ui_strings`; long actions delegate to `service`; no other change in phases 1–3 |
+| `DJ-CrateBuilder_v2.0.py` | tooltips read from `ui_strings`; long actions delegate to `service`; no other change in phases 1–3 |
 | `cratebuilder/db.py` | add paged/grouped query helpers; schema untouched |
 | `cratebuilder/settings.py` | expose a validated `set(key, value)` used by both UIs |
 | `DJ-CrateBuilder.spec` | bundle `web/`, add pywebview + uvicorn hidden imports |

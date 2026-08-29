@@ -14,7 +14,7 @@ from cratebuilder.service import (LOCAL, REMOTE, CBError, CrateBuilderService,
                                   about_info)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MONOLITH = os.path.join(ROOT, "DJ-CrateBuilder_v1.3.py")
+MONOLITH = os.path.join(ROOT, "DJ-CrateBuilder_v2.0.py")
 CONTRACT = os.path.join(ROOT, "UI-design", "ui-contract.json")
 
 

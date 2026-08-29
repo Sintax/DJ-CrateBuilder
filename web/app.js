@@ -2930,7 +2930,7 @@
       persistOrder() { dbColStorageSet(this.orderKey, this.order); },
     };
   }
-  /* Port of DatabaseViewerWindow._reorder_columns (DJ-CrateBuilder_v1.3.py):
+  /* Port of DatabaseViewerWindow._reorder_columns (DJ-CrateBuilder_v2.0.py):
      the target index is read from the ORIGINAL order before src is removed —
      reading it after the removal shifts a rightward drag one column short. */
   function dbReorderColumns(order, srcId, tgtId) {

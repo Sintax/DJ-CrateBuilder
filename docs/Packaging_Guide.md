@@ -38,14 +38,14 @@ pip install pyinstaller -r requirements.txt
 
 ## Step 1 — Build the EXE
 
-From the folder containing `DJ-CrateBuilder_v1.3.py`:
+From the folder containing `DJ-CrateBuilder_v2.0.py`:
 
 ```bash
 pyinstaller --noconfirm --clean --name "DJ-CrateBuilder" --windowed --onedir --icon "icon.ico" ^
   --collect-submodules cratebuilder ^
   --hidden-import pystray._win32 --hidden-import PIL.ImageDraw ^
   --hidden-import send2trash ^
-  DJ-CrateBuilder_v1.3.py
+  DJ-CrateBuilder_v2.0.py
 ```
 
 Output: `dist\DJ-CrateBuilder\`
@@ -106,13 +106,13 @@ Run one short YouTube download to confirm yt-dlp + FFmpeg work.
 4. Confirm the `[Files]` Source path points to your `dist\DJ-CrateBuilder\` folder
 5. Ctrl+F9 to compile
 
-Output: `releases\Build_Output\DJ-CrateBuilder_v1.3_Setup_Windows.exe`
+Output: `releases\Build_Output\DJ-CrateBuilder_v2.0_Setup_Windows.exe`
 
 `OutputDir` in the `.iss` is relative to the script's own folder (`docs\`), so
 `..\releases\Build_Output` lands at the repo root.
 
 The installer attached to the GitHub release carries the build number as well —
-`DJ-CrateBuilder_v1.3.<N>_Setup_Windows.exe`, where `<N>` is `APP_BUILD`. That
+`DJ-CrateBuilder_v2.0.<N>_Setup_Windows.exe`, where `<N>` is `APP_BUILD`. That
 suffix is added when the release is cut, not by the `.iss` script, so a build
 from source uses the plain name above.
 
@@ -160,7 +160,7 @@ python scripts/release.py
 
 It will prompt for one line of release notes, then do **everything**:
 
-1. Auto-increment `APP_BUILD` in `DJ-CrateBuilder_v1.3.py` (so the `.exe` reports
+1. Auto-increment `APP_BUILD` in `DJ-CrateBuilder_v2.0.py` (so the `.exe` reports
    the new build — no manual edit).
 2. Build the app + `updater.exe` + bundle FFmpeg (Steps 1, 1b, 2).
 3. Work out the **smallest payload**: it hashes every file in the build and zips
@@ -219,7 +219,7 @@ at install time.
 
 ```
 /opt/dj-cratebuilder/
-├── DJ-CrateBuilder_v1.3.py
+├── DJ-CrateBuilder_v2.0.py
 ├── cratebuilder/                     # the package the .py imports
 ├── requirements.txt
 └── venv/                             # created by postinst, not shipped
@@ -356,7 +356,7 @@ The **debug log** is new — it captures yt-dlp options, cookie config, and full
 
 # RELEASE CHECKLIST
 
-- [ ] `APP_VERSION = "1.3"` in `DJ-CrateBuilder_v1.3.py`
+- [ ] `APP_VERSION = "1.3"` in `DJ-CrateBuilder_v2.0.py`
 - [ ] `pytest -q` passes (`requirements-dev.txt` installed)
 - [ ] (Nightly) `python scripts/release.py` run — it auto-bumps `APP_BUILD`, builds,
       publishes the delta, and pushes `update.json`. About-tab "Check for

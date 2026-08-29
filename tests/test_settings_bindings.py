@@ -99,7 +99,7 @@ def test_auto_dl_interval_survives_a_reload(cfg_path, db_path):
 
 
 def test_auto_dl_interval_out_of_contract_value_survives_a_reload(cfg_path, db_path):
-    # DJ-CrateBuilder_v1.3.py's AUTO_DOWNLOAD_OPTIONS has "3 days" and "1 week",
+    # DJ-CrateBuilder_v2.0.py's AUTO_DOWNLOAD_OPTIONS has "3 days" and "1 week",
     # which SETTINGS_KEYS' options list (Finding 2) doesn't. The binding is
     # identity, so nothing here should touch or reject the value — it must
     # come back byte-for-byte after a reload, same as any contract-listed one.
@@ -457,7 +457,7 @@ def test_the_frozen_list_matches_the_tkinter_lock():
     import re
 
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    source = open(os.path.join(root, "DJ-CrateBuilder_v1.3.py"),
+    source = open(os.path.join(root, "DJ-CrateBuilder_v2.0.py"),
                   encoding="utf-8").read()
     body = source.split("def _set_download_lock", 1)[1].split("def _cancel", 1)[0]
     widgets = set(re.findall(r'"(_[a-z0-9_]+)"', body))

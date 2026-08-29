@@ -107,7 +107,7 @@ The fastest way to get running on Windows. Right-click `install-windows.bat` and
 git clone https://github.com/Sintax/DJ-CrateBuilder.git
 cd DJ-CrateBuilder
 pip install -r requirements.txt
-python DJ-CrateBuilder_v1.3.py
+python DJ-CrateBuilder_v2.0.py
 ```
 ## 
 
@@ -328,7 +328,7 @@ pyinstaller --noconfirm --clean --name "DJ-CrateBuilder" --windowed --onedir ^
   --collect-submodules cratebuilder ^
   --hidden-import pystray._win32 --hidden-import PIL.ImageDraw ^
   --hidden-import send2trash ^
-  DJ-CrateBuilder_v1.3.py
+  DJ-CrateBuilder_v2.0.py
 ```
 
 The `--collect-submodules`/`--hidden-import` flags bundle the local `cratebuilder/`

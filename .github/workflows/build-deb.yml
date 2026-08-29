@@ -38,7 +38,7 @@ jobs:
           PYEOF
           # Redirect bytecode to a writable dir: /opt is root-owned and this
           # step runs unprivileged (the app itself just skips caching there).
-          PYTHONPYCACHEPREFIX="$(mktemp -d)" /opt/dj-cratebuilder/venv/bin/python -m py_compile /opt/dj-cratebuilder/DJ-CrateBuilder_v1.3.py
+          PYTHONPYCACHEPREFIX="$(mktemp -d)" /opt/dj-cratebuilder/venv/bin/python -m py_compile /opt/dj-cratebuilder/DJ-CrateBuilder_v2.0.py
           echo "Smoke test passed"
 
       - name: Publish to the linux-v1.3 release
@@ -63,7 +63,7 @@ jobs:
           # Windows update.json). Uploaded after the .deb so its URL resolves.
           DEB_PATH="$(ls dist/deb/*.deb | head -n1)"
           DEB_NAME="$(basename "$DEB_PATH")"
-          BUILD="$(grep -oP '^APP_BUILD\s*=\s*\K[0-9]+' DJ-CrateBuilder_v1.3.py)"
+          BUILD="$(grep -oP '^APP_BUILD\s*=\s*\K[0-9]+' DJ-CrateBuilder_v2.0.py)"
           SHA="$(sha256sum "$DEB_PATH" | awk '{print $1}')"
           URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${DEB_NAME}"
           cat > update-linux.json << JSONEOF

@@ -23,7 +23,7 @@ from cratebuilder import service as cb_service
 from cratebuilder import startup as cb_startup
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_MAIN = os.path.join(_ROOT, "DJ-CrateBuilder_v1.3.py")
+_MAIN = os.path.join(_ROOT, "DJ-CrateBuilder_v2.0.py")
 
 
 def _load_main():
