@@ -57,15 +57,17 @@ body { overflow: hidden; }
 
 .cb-h { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: -.01em; }
 .cb-pad { padding: 16px 18px; display: flex; flex-direction: column; gap: 13px; }
-/* minmax(0,1fr), not 1fr: a track's default min is min-content, so one long
-   path or URL widens the column and pushes the grid past its container. */
-.cb-grid-2 {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px; align-items: start;
-}
-.cb-grid-2 > * { min-width: 0; }
+/* The settings sections are independent cards whose heights have nothing to do
+   with one another, and a grid row is only ever as short as its tallest card —
+   the shortfall showed as up to 146px of dead space beside a card, and a whole
+   empty slot at the end. Columns instead: each card starts where the one above
+   it ended, and the balancer keeps the two columns level. break-inside stops a
+   card being split down the middle at a column boundary. */
+.cb-grid-2 { column-count: 2; column-gap: 16px; }
+.cb-grid-2 > * { min-width: 0; break-inside: avoid; margin-bottom: 16px; }
 .cb-card { overflow-wrap: anywhere; }
-.cb-span-2 { grid-column: span 2; }
+/* Full-width sections interrupt the flow rather than claiming two tracks. */
+.cb-span-2 { column-span: all; }
 .cb-cards { display: flex; flex-direction: column; gap: 10px; }
 .cb-big { font-size: 30px; font-weight: 500; color: var(--cb-accent); line-height: 1; }
 
@@ -457,9 +459,8 @@ input[type="radio"].cb-cbx {
    designed to reflow below it. Collapse to one column rather than clip a card
    off the edge — degrading is not the same as supporting a mobile breakpoint. */
 @media (max-width: 1099px) {
-  .cb-grid-2 { grid-template-columns: minmax(0, 1fr); }
+  .cb-grid-2 { column-count: 1; }
   .cb-grid-ov, .cb-grid-3 { grid-template-columns: minmax(0, 1fr); }
-  .cb-span-2 { grid-column: auto; }
   .cb-screen { max-width: none; }
 }
 
