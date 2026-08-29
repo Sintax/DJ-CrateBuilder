@@ -10,6 +10,12 @@ process also serves the remote mount on a background thread — one
 never started otherwise, and nothing here ever switches the setting on. That
 thread binds 127.0.0.1 unless `--lan` is passed as well, exactly as
 `web_server.py` does.
+
+The entry block below carries the same frozen-exe duties as
+DJ-CrateBuilder_v2.0.py's own `__main__`: answering a `--scan-worker`
+relaunch before anything else runs, the single-instance lock (sharing
+SINGLE_INSTANCE_PORT with the tkinter app — both own the same database), the
+leftover update-workspace purge, and the startup `chdir`.
 """
 
 import json
@@ -20,7 +26,11 @@ import threading
 import bottle
 import webview
 
+from cratebuilder import updater_core as ucore
+from cratebuilder import util
 from cratebuilder.service import LOCAL, CBError, CrateBuilderService
+from cratebuilder.singleton import (SINGLE_INSTANCE_PORT, acquire_single_instance,
+                                    listen_for_show_requests, request_show)
 
 REMOTE_PORT = 8770
 
@@ -157,10 +167,77 @@ def start_remote_mount(service, port=REMOTE_PORT, lan=False, host_allow=None):
     return server
 
 
+def run_scan_worker_if_requested(argv=None):
+    """Detect `--scan-worker` and, if present, answer the scanproc protocol
+    and exit — before anything else runs.
+
+    Handled ahead of everything in the entry block, mirroring the monolith:
+    a scan worker (the frozen exe relaunched by cratebuilder.scanproc for
+    an isolated channel listing) must never create a window, bind the
+    single-instance port, or arm the update timer. The scanproc import is
+    deferred to keep that cost off a launch that isn't a worker at all.
+    Returns without exiting when the flag is absent, so main() can proceed
+    as an ordinary launch.
+    """
+    if "--scan-worker" not in (sys.argv if argv is None else argv):
+        return
+    from cratebuilder import scanproc as cb_scanproc
+    sys.exit(cb_scanproc.worker_main())
+
+
+def acquire_or_hand_off(port=SINGLE_INSTANCE_PORT):
+    """Claim the single-instance lock, or hand off to the instance that
+    already holds it and exit.
+
+    Shares SINGLE_INSTANCE_PORT with the tkinter app deliberately — both
+    own the same database and must never run together. Returns the bound
+    lock socket on success; the caller must keep a reference to it for the
+    whole process lifetime, or it is garbage-collected and the lock silently
+    released.
+    """
+    lock = acquire_single_instance(port)
+    if lock is None:
+        request_show(port)
+        sys.exit(0)
+    return lock
+
+
+def restore_window(window):
+    """Bring *window* back from the tray/taskbar on a second launch's
+    request. pywebview marshals restore()/show() safely from a thread that
+    isn't the UI thread — this is called from the single-instance listener's
+    own thread — but a race with the window already closing must not take
+    that listener thread down with it."""
+    try:
+        window.restore()
+        window.show()
+    except Exception:
+        pass
+
+
+def prepare_runtime_workspace():
+    """Once-per-launch startup housekeeping, done before the window opens.
+
+    Purges any leftover update workspace from a prior update (the apply
+    path deliberately leaves it for the updater; see docs/specs/
+    2026-08-29-webui-local-updater-design.md), then normalises the working
+    directory — a Run-key startup launch begins in C:\\Windows\\System32,
+    which poisons CPython's last-resort temp-dir fallback.
+    """
+    ucore.purge_dir(ucore.default_workspace())
+    try:
+        os.chdir(util.runtime_data_dir())
+    except OSError:
+        pass
+
+
 def main():
     index = os.path.join(WEB_DIR, "index.html")
     if not os.path.isfile(index):
         sys.exit(f"web bundle missing: {index}")
+
+    lock = acquire_or_hand_off()
+    prepare_runtime_workspace()
 
     screen = ""
     if "--screen" in sys.argv:
@@ -195,10 +272,12 @@ def main():
     # PID before swapping files).
     service.on_update_restart = window.destroy
     window.events.closing += service.close
+    listen_for_show_requests(lock, lambda: restore_window(window))
     # private_mode=False keeps localStorage across restarts, so the database
     # viewer's column widths and order can live client-side.
     webview.start(lambda: start_push_bridge(window, service), private_mode=False)
 
 
 if __name__ == "__main__":
+    run_scan_worker_if_requested()
     main()
