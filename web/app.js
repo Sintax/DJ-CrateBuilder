@@ -3927,6 +3927,15 @@
     return wrap;
   }
 
+  /* Keys design 3j draws two to a line instead of one per row. Stacked, each of
+     the throttle controls strands its label against one edge of the card and its
+     control against the other, and the four extra rows are what push Download
+     Behavior over the height where the grid gives a section its own column. */
+  const INLINE_GROUPS = [
+    ['sleep_mode', 'sleep_preset'],
+    ['sleep_min', 'sleep_max'],
+  ];
+
   /* Design 3j draws the Max Length control as a slider with −/+ steppers and
      a mono readout rather than a bare number field. */
   function limiterRow(entry, value, available, mark) {
@@ -4719,7 +4728,6 @@
     sections.forEach((sec) => {
       const card = document.createElement('div');
       card.className = 'cb-card cb-set-card';
-      if (sec.items.length > 6 || sec.name === 'Remote Access') card.classList.add('cb-span-2');
 
       const head = document.createElement('div');
       head.className = 'cb-row';
@@ -4740,11 +4748,42 @@
       }
       card.appendChild(head);
 
-      sec.items.forEach((entry) => {
+      const build = (entry) => {
         const available = Object.prototype.hasOwnProperty.call(state.settings, entry.key);
         if (!available) missing += 1;
-        card.appendChild(control(entry, state.settings[entry.key], available));
-      });
+        return control(entry, state.settings[entry.key], available);
+      };
+
+      /* Rows, not contract keys, decide the span below: a paired group is one
+         row however many keys it carries. */
+      const queue = sec.items.slice();
+      let rows = 0;
+      while (queue.length) {
+        const entry = queue.shift();
+        const group = INLINE_GROUPS.find((keys) => keys[0] === entry.key);
+        if (!group) {
+          card.appendChild(build(entry));
+          rows += 1;
+          continue;
+        }
+        const members = [entry];
+        group.slice(1).forEach((key) => {
+          const at = queue.findIndex((e) => e.key === key);
+          if (at >= 0) members.push(queue.splice(at, 1)[0]);
+        });
+        const line = document.createElement('div');
+        line.className = 'cb-set-group';
+        members.forEach((member) => {
+          const wrap = build(member);
+          const inner = wrap.querySelector('.cb-set-row') || wrap.firstElementChild;
+          inner.classList.add('cb-set-row--inline');
+          line.appendChild(inner);
+        });
+        card.appendChild(line);
+        rows += 1;
+      }
+      if (rows > 6 || sec.name === 'Remote Access') card.classList.add('cb-span-2');
+
       if (SECTION_EXTRAS[sec.name]) SECTION_EXTRAS[sec.name](card);
       grid.appendChild(card);
     });
