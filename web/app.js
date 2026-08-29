@@ -2948,7 +2948,6 @@
       const def = colset.byId[id];
       if (!def) return;
       const th = document.createElement('th');
-      th.style.position = 'relative';
       th.style.width = colset.widths[id] + 'px';
       th.style.textAlign = def.align === 'e' ? 'right' : def.align === 'center' ? 'center' : 'left';
       const label = document.createElement('span');
