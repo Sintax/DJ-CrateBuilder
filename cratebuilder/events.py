@@ -3,7 +3,8 @@
 import threading
 import time
 
-DEFAULT_COALESCED_TYPES = ("progress.current", "progress.overall")
+DEFAULT_COALESCED_TYPES = ("progress.current", "progress.overall",
+                          "update.progress")
 DEFAULT_INTERVAL = 0.25
 
 _MISSING = object()

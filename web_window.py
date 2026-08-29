@@ -169,6 +169,9 @@ def main():
             screen = "#" + sys.argv[pos]
 
     service = CrateBuilderService(transport=LOCAL)
+    # Explicit, like start_remote_mount() below — a constructed service does
+    # not arm its own auto-check timer (cratebuilder/service.py's __init__).
+    service.start_update_timer()
     if service.remote_state.get_flag("enabled"):
         try:
             start_remote_mount(service, lan="--lan" in sys.argv,

@@ -178,6 +178,10 @@ UPDATE_NEEDS_IDLE_JOBS = (
     "an update restarts the app, which would cut that off mid-way — wait "
     "for it to finish, or cancel it, then try again.")
 
+UPDATE_BLOCKS_SCAN = (
+    "An update is installing. The app will restart to finish it, so a "
+    "Watch List scan has to wait — try again once the update completes.")
+
 # The settings the tkinter app freezes for the length of a run
 # (`_set_download_lock`, DJ-CrateBuilder_v1.3.py:9994), mapped from the widgets
 # it disables to the contract keys that drive them:
@@ -227,12 +231,26 @@ UPDATE_CHECK_OPTIONS = ["1 hour", "3 hours", "6 hours", "12 hours", "1 day"]
 # a line-anchored regex.
 _MANIFEST_URL_NAMES = ("UPDATE_MANIFEST_URL", "UPDATE_MANIFEST_URL_LINUX")
 
+# Keyed by path -> (stat signature, {name: url}), exactly like _ABOUT_CACHE
+# below — a 13k-line ast.parse on every check/apply/hourly timer fire is the
+# same avoidable cost about_info() already solved once.
+_MANIFEST_URL_CACHE = {}
+
 
 def _manifest_urls(script_path=None):
     """{'UPDATE_MANIFEST_URL': ..., 'UPDATE_MANIFEST_URL_LINUX': ...} read
     from the monolith's own module-level assignments, or {} if the file
     can't be read or parsed."""
     path = script_path or os.path.join(repo_root(), MAIN_SCRIPT)
+    try:
+        stamp = os.stat(path)
+        signature = (stamp.st_mtime_ns, stamp.st_size)
+    except OSError:
+        signature = None
+    cached = _MANIFEST_URL_CACHE.get(path)
+    if signature is not None and cached and cached[0] == signature:
+        return dict(cached[1])
+
     try:
         with open(path, "r", encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
@@ -249,6 +267,8 @@ def _manifest_urls(script_path=None):
                     found[name] = ast.literal_eval(node.value)
                 except (ValueError, TypeError):
                     pass
+    if signature is not None:
+        _MANIFEST_URL_CACHE[path] = (signature, dict(found))
     return found
 
 # The About screen's own copy. The avatar is the bundle's, at the 44x44 the
@@ -704,8 +724,15 @@ class CrateBuilderService:
         self.on_update_restart = None
         self._update_timer = None
         self._next_update_check_ts = None
+        self._closed = False
         self.reset_stale_watchlist_rows()
-        self._arm_update_timer()
+        # The auto-check timer is armed explicitly via start_update_timer(),
+        # not as a constructor side effect — the same reason
+        # start_remote_mount() is a separate call rather than something the
+        # constructor does on its own. A service built for one snapshot or
+        # one test (every test, most tooling) must not leak a daemon Timer
+        # just from being constructed; the local window calls
+        # start_update_timer() itself, right after building the service.
 
     # ── events / jobs ─────────────────────────────────────────────────────────
 
@@ -799,9 +826,15 @@ class CrateBuilderService:
         pre-flight in `watchlist_edit` is what the user normally sees; this is
         the half that cannot be raced, because the check and the claim share
         one hold of the lock.
+
+        Also refused while an update is installing: a retag moves the
+        channel folder on disk and rewrites its MP3s' ID3 frames in place —
+        exactly the write an update's file-swap-and-restart must not land
+        on top of. See UPDATE_JOB.
         """
         with self._lock:
-            if MAINTENANCE_JOB in self._jobs or self._retags:
+            if (UPDATE_JOB in self._jobs or MAINTENANCE_JOB in self._jobs
+                    or self._retags):
                 return False
             self._retags += 1
             return True
@@ -851,6 +884,17 @@ class CrateBuilderService:
             raise CBError(MAINTENANCE_BLOCKS_DOWNLOAD)
         if self._retags:
             raise CBError(RETAG_BLOCKS_DOWNLOAD)
+
+    def _require_idle_for_scan(self):
+        """Refuse a Watch List scan while an update is installing.
+
+        A scan claims WATCHLIST_JOB, the same category a download uses, but
+        that only excludes another scan/download — a different category
+        (UPDATE_JOB) is not refused by `_start_job` on its own. An update
+        restarts the app mid-run, which a scan subprocess mid-listing would
+        not survive any better than a download would."""
+        if UPDATE_JOB in self._jobs:
+            raise CBError(UPDATE_BLOCKS_SCAN)
 
     # ── dispatch ──────────────────────────────────────────────────────────────
 
@@ -1153,17 +1197,21 @@ class CrateBuilderService:
     def watchlist_scan(self, channel_id):
         """Scan one channel for new uploads."""
         row = self._watchlist_row(channel_id)
+        self._require_idle_for_scan()
         return {"job_id": self._start_job(WATCHLIST_JOB,
                                           self._watchlist.run_scan,
-                                          [row["id"]])}
+                                          [row["id"]],
+                                          guard=self._require_idle_for_scan)}
 
     def watchlist_scan_all(self):
         """Scan every watched channel, in list order."""
         ids = [row["id"] for row in self._watchlist_rows()]
         if not ids:
             raise CBError("No channels to scan.")
+        self._require_idle_for_scan()
         return {"job_id": self._start_job(WATCHLIST_JOB,
-                                          self._watchlist.run_scan, ids)}
+                                          self._watchlist.run_scan, ids,
+                                          guard=self._require_idle_for_scan)}
 
     def watchlist_download_new(self, channel_id):
         """Download one channel's pending new tracks.
@@ -1700,11 +1748,22 @@ class CrateBuilderService:
     def _require_idle_library(self, task):
         """Unlocked like the other refusals — see the note above
         `_refuse_while_retagging`. Serves both `maintenance_preview` (where
-        there is no slot to claim) and `_maintenance_guard`."""
-        if task not in self._MAINTENANCE_NEEDS_IDLE:
-            return
+        there is no slot to claim) and `_maintenance_guard`.
+
+        The UPDATE_JOB check applies to EVERY maintenance task, including
+        db.repair_tags — which is otherwise deliberately excluded from
+        `_MAINTENANCE_NEEDS_IDLE` (it only rewrites tags inside files, not a
+        download-vs-rebuild collision on the downloads table). An update
+        still can't tolerate it: a repair sweep saves ID3 frames in place
+        with mutagen the same way a retag does, and an update's
+        restart-mid-write is exactly the corruption that write must never
+        race. So this check runs BEFORE the _MAINTENANCE_NEEDS_IDLE early
+        return, not after it.
+        """
         if UPDATE_JOB in self._jobs:
             raise CBError(UPDATE_BLOCKS_LIBRARY)
+        if task not in self._MAINTENANCE_NEEDS_IDLE:
+            return
         if "batch" in self._jobs or WATCHLIST_JOB in self._jobs:
             raise CBError(DOWNLOAD_BLOCKS_LIBRARY)
 
@@ -2417,9 +2476,12 @@ class CrateBuilderService:
 
         `last_update_check` is persisted here on every call, matching the
         monolith's `_check_updates_worker` (manual or automatic, a check is a
-        check).
+        check). An unparseable/missing monolith source (no `_update_manifest_url()`
+        to fetch) reports the same "unreachable" shape rather than raising —
+        this method's whole contract is that it never throws.
         """
-        manifest = ucore.fetch_manifest(self._update_manifest_url())
+        url = self._update_manifest_url()
+        manifest = ucore.fetch_manifest(url) if url else None
         try:
             self._settings.set("last_update_check", time.time())
         except Exception:
@@ -2440,9 +2502,13 @@ class CrateBuilderService:
         result["valid"] = ok
         if not ok:
             return result
+        # latest_build is reported whenever the manifest is reachable and
+        # valid, current build or not — the About screen's status line wants
+        # to say what build is live even when it isn't newer. notes stays
+        # available-only: there is nothing to show notes FOR otherwise.
+        result["latest_build"] = int(manifest["build"])
         result["available"] = ucore.is_update_available(manifest, current)
         if result["available"]:
-            result["latest_build"] = int(manifest["build"])
             result["notes"] = str(manifest.get("notes", "")).strip() or None
         return result
 
@@ -2463,7 +2529,11 @@ class CrateBuilderService:
         is fetched here, and the build/url/sha256 the worker acts on come
         from that fetch alone.
         """
-        manifest = ucore.fetch_manifest(self._update_manifest_url())
+        url = self._update_manifest_url()
+        if not url:
+            raise CBError("Couldn't determine the update server address — "
+                          "the app's own source could not be read.")
+        manifest = ucore.fetch_manifest(url)
         try:
             self._settings.set("last_update_check", time.time())
         except Exception:
@@ -2502,6 +2572,14 @@ class CrateBuilderService:
             ws = ucore.default_workspace()
             ucore.purge_dir(ws)
             os.makedirs(ws, exist_ok=True)
+            # This try only covers the part where a failure means "nothing
+            # usable happened yet" — download, verify, stage, and the Popen
+            # call itself. The moment Popen returns successfully, the staged
+            # payload belongs to the separate updater process, which is
+            # already waiting on this PID to exit: purging `ws` past that
+            # point would delete the very files it's about to copy, even
+            # though the update itself succeeded. Nothing after the handoff
+            # boundary runs inside this try.
             try:
                 zip_path = os.path.join(ws, f"build-{build}.zip")
 
@@ -2525,6 +2603,11 @@ class CrateBuilderService:
                 ucore.purge_dir(staged)
                 ucore.extract_zip(zip_path, staged)
 
+                # update.progress is coalesced (cratebuilder/events.py); flush
+                # its last pending frame so it can never arrive after the
+                # events that supersede it — the same reason MaintenanceOps
+                # flushes before its own terminal notification.
+                self._emit.flush()
                 self.emit("update.restarting", {"build": build})
                 app_dir = ucore.install_dir()
                 cmd = ucore.launch_updater_command(
@@ -2535,13 +2618,25 @@ class CrateBuilderService:
                     flags = 0x00000008 | 0x00000200  # DETACHED | NEW_PROCESS_GROUP
                 subprocess.Popen(cmd, close_fds=True, creationflags=flags,
                                  cwd=app_dir)
-                if self.on_update_restart is not None:
-                    self.on_update_restart()
             except Exception:
-                # Never leave a half-downloaded/half-staged workspace behind —
-                # the next attempt (or the next auto-check) starts clean.
+                # Flush first so the last progress frame lands before the
+                # error notification/job.finished that supersede it, then
+                # purge — never leave a half-downloaded/half-staged workspace
+                # behind. Only reachable while nothing has been handed off
+                # yet.
+                self._emit.flush()
                 ucore.purge_dir(ws)
                 raise
+
+            # The handoff succeeded: the update itself is done from this
+            # process's point of view, so job.finished must say ok=True even
+            # if the restart callback below misbehaves — the app is about to
+            # exit either way, and there is no user-facing failure to report.
+            if self.on_update_restart is not None:
+                try:
+                    self.on_update_restart()
+                except Exception:
+                    pass
 
         job_id = self._start_job(UPDATE_JOB, worker, title="Update",
                                  guard=self._require_idle_for_update)
@@ -2568,6 +2663,18 @@ class CrateBuilderService:
         self._arm_update_timer()
         return self.update_status()
 
+    def start_update_timer(self):
+        """Arm the LOCAL-only auto-check timer. Explicit rather than a
+        constructor side effect — the counterpart of `start_remote_mount()`
+        being its own call rather than something `__init__` does. Callers
+        that only need one snapshot (nearly every test, most tooling) never
+        pay for a background Timer just from building a service; the local
+        window calls this once, right after constructing its own.
+
+        No-ops on REMOTE and once `close()` has run — see `_arm_update_timer`.
+        """
+        self._arm_update_timer()
+
     def _arm_update_timer(self):
         """(Re)arm the silent auto-check timer from the current interval.
 
@@ -2575,10 +2682,17 @@ class CrateBuilderService:
         on its own behalf, matching update.*'s LOCAL_ONLY gate. Per ADR 0001
         this reads the real wall clock rather than an injected one; a test
         wanting a fast fire sets a short interval, not a fake clock.
+
+        Never called by `__init__` — see `start_update_timer`. Guarded by
+        `self._closed` under the same lock so a fire already in flight when
+        `close()` runs (it clears `_update_timer` before re-arming, outside
+        the lock) can't resurrect a timer past that close.
         """
         if self._default_transport != LOCAL:
             return
         with self._lock:
+            if self._closed:
+                return
             if self._update_timer is not None:
                 self._update_timer.cancel()
             secs = util.interval_label_to_seconds(
@@ -2631,8 +2745,13 @@ class CrateBuilderService:
     def close(self):
         """Release the background resources this service holds — chiefly the
         auto-check timer, so a service built for one test or one process
-        shutdown never leaves a daemon Timer armed past its use."""
+        shutdown never leaves a daemon Timer armed past its use.
+
+        `_closed` is set under the same lock `_arm_update_timer` checks, so a
+        fire already past its own lock hold when this runs still can't
+        re-arm afterwards — see `_arm_update_timer`."""
         with self._lock:
+            self._closed = True
             if self._update_timer is not None:
                 self._update_timer.cancel()
                 self._update_timer = None
