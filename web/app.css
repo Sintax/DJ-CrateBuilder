@@ -154,7 +154,10 @@ body { overflow: hidden; }
 .cb-foot-link { color: var(--cb-muted); text-decoration: none; }
 .cb-foot-link:hover { color: var(--cb-line); text-decoration: underline; }
 
-/* Batch queue rows */
+/* Batch queue rows. The floor keeps four rows' worth of the card open before
+   the list has to earn its height — a .cb-qrow measures 42.75px. Past four the
+   list grows as it always did. */
+#dl-rows { min-height: 171px; }
 .cb-qrow {
   display: flex; align-items: center; gap: 10px;
   padding: 8px 0; border-bottom: 1px solid var(--cb-line-row);
@@ -174,6 +177,9 @@ body { overflow: hidden; }
 
 /* Bottom Queue log — the currently-downloading line gets the design's tinted
    row treatment; everything else is plain .cb-log text. */
+/* Six lines at the 19.8px .cb-log line box, on a content-box min-height, so the
+   running queue reads as a list rather than a peephole. */
+#dl-queue { min-height: 119px; }
 .cb-log__now { background: var(--cb-accent-wash); border-radius: 4px; padding: 0 4px; margin: 0 -4px; }
 .cb-log__now .cb-log__title { color: var(--cb-text); font-weight: 500; }
 
