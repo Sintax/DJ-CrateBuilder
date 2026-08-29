@@ -233,6 +233,12 @@ body { overflow: hidden; }
 /* Settings */
 .cb-set-row { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
 .cb-set-row > .cb-lab { flex: 1; min-width: 0; }
+/* A paired line (INLINE_GROUPS). The label giving up flex:1 is the whole point:
+   stretched, two controls end up pinned to opposite edges with the labels
+   stranded beside them, which is what made the section want the full width. */
+.cb-set-group { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
+.cb-set-group > .cb-set-row { flex: 0 1 auto; }
+.cb-set-row--inline > .cb-lab { flex: none; }
 .cb-set-card { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
 
 /* Log viewers (3e/3f) — breadcrumb + full-bleed toolbar/log/stat/path bars.
