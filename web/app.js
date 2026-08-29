@@ -5192,6 +5192,18 @@
     }
   }
 
+  /* Re-fetches update.status and re-renders the About card — the fix for a
+     failed apply otherwise latching Check/Update Now disabled forever (see
+     the job.finished handler's comment). renderAbout() is safe to call
+     whether or not About is the open screen (see the update.available
+     handler, which already does the same). */
+  async function aboutRefreshUpdateStatus() {
+    if (cbApi.transport !== 'local') return;
+    try { aboutUpdate.status = await call('update.status'); }
+    catch (_) { /* call() already toasted the reason */ }
+    renderAbout();
+  }
+
   function renderAboutUpdates(host) {
     host.appendChild(divNode());
     const upHead = document.createElement('div');
@@ -5569,8 +5581,18 @@
         maintSettle(p);
       } else if (job === 'update') {
         aboutSettleApply(p);
-        return;      // the app is restarting (or already failed); nothing
-                     // else on this page needs a resync for it.
+        // update.status.running is what disables Check/Update Now while an
+        // apply is in flight — the only two callers that ever refresh it are
+        // aboutOpen() (which short-circuits once About has already loaded)
+        // and a manual Check for updates. Without re-fetching here, a failed
+        // apply (checksum mismatch, a download error, ...) leaves both
+        // buttons latched disabled with "An update is already installing."
+        // until a full page reload — nothing else on this page ever asks
+        // update.status again. A successful apply re-fetches too; the
+        // restart is already under way by the time it lands, so this is
+        // harmless there.
+        aboutRefreshUpdateStatus();
+        return;
       } else {
         return;
       }
