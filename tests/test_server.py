@@ -1031,3 +1031,32 @@ def test_no_write_method_slipped_into_the_read_allow_list():
               "db.maintenance_preview", "watchlist.resolve_candidates",
               "remote.revoke", "remote.pair_begin", "fs.reveal", "update.apply"}
     assert not (writes & remoteauth.READ_METHODS)
+
+
+def test_the_bundle_is_served_revalidated(client):
+    """A browser must ask the host before reusing the bundle.
+
+    With no Cache-Control a cache may apply heuristic freshness — RFC 9111
+    lets it treat a response as fresh for a fraction of its age — and WebView2
+    does. A build that changes web/ then stays invisible behind the copy the
+    browser already holds, which is how a stale app.js came to run against a
+    current app.js during development.
+    """
+    res = client.get("/index.html")
+    assert res.status_code == 200
+    assert "no-cache" in res.headers.get("cache-control", "")
+
+
+def test_revalidating_the_bundle_still_costs_one_304(client):
+    """no-cache asks the host, it does not re-download.
+
+    The guard against fixing staleness by making every launch re-pull the
+    whole bundle over the LAN: the conditional request has to come back 304,
+    and it has to keep telling the browser to ask again next time.
+    """
+    first = client.get("/index.html")
+    etag = first.headers.get("etag")
+    assert etag, "no validator — a conditional request cannot be cheap"
+    second = client.get("/index.html", headers={"If-None-Match": etag})
+    assert second.status_code == 304
+    assert "no-cache" in second.headers.get("cache-control", "")

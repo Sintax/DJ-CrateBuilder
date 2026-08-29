@@ -180,6 +180,22 @@ def _redact(text):
     return _TOKEN_QUERY_RE.sub(r"\1<redacted>", text)
 
 
+class _RevalidatedFiles(StaticFiles):
+    """StaticFiles that makes a browser ask before reusing the bundle.
+
+    Served with only a validator and no Cache-Control, a response may be held
+    as fresh for a guessed interval, so a device could keep running the screens
+    from the build before this one. no-cache costs a conditional request and
+    still answers 304 — the header goes on that too, or the browser stops
+    asking again next time.
+    """
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers.setdefault("Cache-Control", "no-cache")
+        return response
+
+
 class TokenRedactingFilter(logging.Filter):
     """Replaces any `token=…` in a log record with `token=<redacted>`."""
 
@@ -592,7 +608,8 @@ def create_app(service, remote_state, web_dir=WEB_DIR, allowed_hosts=None):
     # that means anything arrives through /rpc, which does require a token.
 
     if os.path.isdir(web_dir):
-        app.mount("/", StaticFiles(directory=web_dir, html=True), name="web")
+        app.mount("/", _RevalidatedFiles(directory=web_dir, html=True),
+                  name="web")
 
     return app
 

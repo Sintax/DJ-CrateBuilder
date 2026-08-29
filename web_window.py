@@ -17,6 +17,7 @@ import os
 import sys
 import threading
 
+import bottle
 import webview
 
 from cratebuilder.service import LOCAL, CBError, CrateBuilderService
@@ -51,6 +52,37 @@ class JsApi:
             return {"ok": False, "error": str(exc)}
         except Exception as exc:                     # never kill the bridge
             return {"ok": False, "error": f"Unexpected host error: {exc}"}
+
+
+def serve_bundle_revalidated():
+    """Make pywebview's bundle server send the Cache-Control it means to.
+
+    pywebview serves web/ over its own bottle server — on a fixed port, because
+    private_mode is off — and its static route sets no-store on
+    `bottle.response`. It then returns `bottle.static_file(...)`, an
+    HTTPResponse whose own headers replace the ones set there, so the bundle
+    arrives carrying nothing but Last-Modified and ETag. A cache is then free
+    to guess how long that stays fresh, and WebView2 guesses hours: an updated
+    web/ file goes unseen behind the copy the window already has, which is how
+    a nightly could ship new Python against a user's old screens.
+
+    no-cache rather than no-store: the browser still stores the bundle and
+    still gets a 304, it just has to ask first. Returns the installed function
+    so a second call is a no-op instead of another layer of wrapping.
+    """
+    if getattr(bottle.static_file, "_cb_revalidated", False):
+        return bottle.static_file
+
+    original = bottle.static_file
+
+    def static_file(*args, **kwargs):
+        response = original(*args, **kwargs)
+        response.set_header("Cache-Control", "no-cache")
+        return response
+
+    static_file._cb_revalidated = True
+    bottle.static_file = static_file
+    return static_file
 
 
 def start_push_bridge(window, service):
@@ -144,6 +176,7 @@ def main():
         except Exception as exc:                     # never block the window
             print(f"Remote mount could not start: {exc}", file=sys.stderr)
     webview.settings["ALLOW_DOWNLOADS"] = True       # Export CSV, log downloads
+    serve_bundle_revalidated()
     window = webview.create_window(
         WINDOW_TITLE,
         index + screen,
