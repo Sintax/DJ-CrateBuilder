@@ -39,6 +39,7 @@
       <a class="cb-nav"       href="#watchlist" data-screen="watchlist">Watch List<span
            class="cb-nav__count" id="nav-count" hidden>0</span></a>
       <a class="cb-nav"       href="#settings"  data-screen="settings">Settings</a>
+      <a class="cb-nav"       href="#about"     data-screen="about">About</a>
     </nav>
 
     <div class="cb-panel__foot">
@@ -282,9 +283,6 @@
         <span class="cb-mut" style="font-size:12.5px">Every option writes straight to
           <span class="cb-mono" id="cfg-path">the host's config</span></span>
         <span class="cb-mono" style="margin-left:auto;font-size:10.5px;color:var(--cb-ok)">All changes autosave</span>
-        <a class="cb-btn cb-btn--quiet cb-btn--sm" href="#about" id="settings-about"
-           style="text-decoration:none"
-           data-tt-text="The author, the FAQ, and the build this host is running.">About ↗</a>
       </div>
       <div class="cb-grid-2" id="settings-grid"></div>
     </section>
@@ -447,11 +445,10 @@
       </div>
     </section>
 
-    <!-- 3n — About (opened from the panel footer or Settings) -->
+    <!-- 3n — About (a nav destination; also reached from the panel footer) -->
     <section class="cb-screen" id="screen-about">
-      <div class="cb-crumb">
-        <a class="cb-back" href="#settings" data-tt="log.back_to_settings">‹ Settings</a>
-        <span class="cb-mut" style="font-size:12.5px">About</span>
+      <div class="cb-row">
+        <h4 class="cb-h">About</h4>
       </div>
       <div class="cb-card cb-pad" id="about-body"></div>
     </section>

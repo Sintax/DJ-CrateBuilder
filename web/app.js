@@ -246,12 +246,12 @@
   /* The log screens and the database viewer aren't nav items (they open
      from Settings, per the contract's shell.not_in_nav) — while any of them
      is open, Settings stays the highlighted nav entry, per
-     shell.active_item_rule. About (3n) is in the same class: the contract's
-     nav is exactly four items, so About opens from the panel footer's build
-     line and from Settings, carries the same `‹ Settings` breadcrumb the
-     other four do, and leaves Settings highlighted. */
+     shell.active_item_rule. About is the one deliberate departure from the
+     contract's four-item nav: buried as a button on Settings it went unfound,
+     so it is a fifth nav destination that highlights itself. The panel
+     footer's build line still opens it. */
   const NAV_ALIAS = { 'activity-log': 'settings', 'debug-log': 'settings',
-                      'database': 'settings', 'about': 'settings' };
+                      'database': 'settings' };
   const LOG_KIND_BY_SCREEN = { 'activity-log': 'activity', 'debug-log': 'debug' };
   let currentScreen = null;
 
