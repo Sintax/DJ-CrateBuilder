@@ -41,7 +41,7 @@ LINE_LEVELS = (LINE_DEFAULT, LINE_DONE, LINE_HELD, LINE_ERROR)
 # immediately (see WatchlistOps._card_progress).
 CARD_PROGRESS_INTERVAL = 0.5
 
-# Mirrors DJ-CrateBuilder_v1.3.py's MP3DownloaderApp._AUDIO_EXTS: what counts as
+# Mirrors DJ-CrateBuilder_v2.0.py's MP3DownloaderApp._AUDIO_EXTS: what counts as
 # "this channel folder holds real tracks" when deciding whether a genre change
 # has to move files. A duplicate literal rather than an import for the same
 # reason cratebuilder.db keeps its own copy of the unresolved-URL prefix — this
@@ -883,7 +883,7 @@ class WatchlistOps:
         and a channel folder holding audio with no matching downloads rows is a
         perfectly ordinary state — legacy files, a rebuilt database, tracks the
         user dropped in by hand. The monolith treats that zero as a failure
-        (DJ-CrateBuilder_v1.3.py:12573) and rolls the folder back while the
+        (DJ-CrateBuilder_v2.0.py:12573) and rolls the folder back while the
         genre it just committed stands, which is exactly the drift the rollback
         exists to prevent; this does not port that. The write sets
         watchlist.genre in the same transaction as the downloads rewrite, so the
@@ -972,7 +972,7 @@ class WatchlistOps:
         shifts the audio when the tag grows — two of those interleaved on one
         MP3 truncates it. The monolith refuses this exact pair the same way
         (`_watchlist_retag_genre` checks `_tag_repair_active`,
-        DJ-CrateBuilder_v1.3.py:13578), and the move itself has already
+        DJ-CrateBuilder_v2.0.py:13578), and the move itself has already
         committed either way: only the tags are skipped."""
         tag_genre = "" if genre == CrateLayout.NO_GENRE_VALUE else genre
         total = genrefix.count_channel_tracks(folder)

@@ -110,10 +110,10 @@ if %errorlevel% neq 0 (
 
 :: ── Locate the script ─────────────────────────────────────────────────────
 set "SCRIPT_DIR=%~dp0"
-set "RUN_SCRIPT=%SCRIPT_DIR%DJ-CrateBuilder_v1.3.py"
+set "RUN_SCRIPT=%SCRIPT_DIR%DJ-CrateBuilder_v2.0.py"
 
 if not exist "%RUN_SCRIPT%" (
-    echo  [X] Could not find DJ-CrateBuilder_v1.3.py
+    echo  [X] Could not find DJ-CrateBuilder_v2.0.py
     echo      Make sure this batch file is in the DJ-CrateBuilder folder.
     pause
     exit /b 1

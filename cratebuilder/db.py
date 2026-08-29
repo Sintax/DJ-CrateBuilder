@@ -141,7 +141,7 @@ class DownloadsDatabase:
         "artwork_path", "thumbnail_url",
     }
 
-    # The monolith's UNRESOLVED_URL_PREFIX (DJ-CrateBuilder_v1.3.py) — a
+    # The monolith's UNRESOLVED_URL_PREFIX (DJ-CrateBuilder_v2.0.py) — a
     # duplicate literal, not an import, since the monolith depends on
     # cratebuilder and not the other way around. query_watchlist_rows blanks
     # a url carrying this sentinel, matching _wl_display_url.

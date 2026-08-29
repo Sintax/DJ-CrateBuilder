@@ -414,7 +414,7 @@ def apply_update(staged_dir, app_dir, backup_dir, _copyfn=shutil.copy2):
 def launch_updater_command(pid, staged, app_dir, relaunch, backup, log):
     """The argv to hand off to the separate updater process.
 
-    Mirrors the command construction inside DJ-CrateBuilder_v1.3.py's
+    Mirrors the command construction inside DJ-CrateBuilder_v2.0.py's
     `_launch_updater_and_quit`: prefers `updater.exe` beside the running app,
     falling back to driving `updater.py` with the current interpreter for a
     dev/source run. Pure — builds the list, spawns nothing; the caller Popens

@@ -6,7 +6,7 @@ Read this file first, then `HANDOFF.md` for the engineering detail and
 
 ## What this is
 
-DJ-CrateBuilder is a Python/tkinter desktop app (`DJ-CrateBuilder_v1.3.py`) that
+DJ-CrateBuilder is a Python/tkinter desktop app (`DJ-CrateBuilder_v2.0.py`) that
 downloads audio from YouTube and SoundCloud into a genre/channel folder tree. This
 redesign gives it a **browser-based control surface** with the same capabilities:
 add URLs, run and cancel batches, manage the Watch List, read both logs, browse the

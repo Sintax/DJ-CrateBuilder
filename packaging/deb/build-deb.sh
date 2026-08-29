@@ -15,7 +15,7 @@ set -e
 BUILD_OVERRIDE="${1:-}"
 APP_VERSION="1.3"
 PKG_NAME="dj-cratebuilder"
-SCRIPT_NAME="DJ-CrateBuilder_v1.3.py"
+SCRIPT_NAME="DJ-CrateBuilder_v2.0.py"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"

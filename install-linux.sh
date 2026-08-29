@@ -16,11 +16,11 @@
 set -e
 
 APP_NAME="DJ-CrateBuilder"
-APP_VERSION="1.3"
+APP_VERSION="2.0"
 INSTALL_DIR="$HOME/.local/share/DJ-CrateBuilder"
 BIN_LINK="$HOME/.local/bin/dj-cratebuilder"
 DESKTOP_DIR="$HOME/.local/share/applications"
-SCRIPT_NAME="DJ-CrateBuilder_v1.3.py"
+SCRIPT_NAME="DJ-CrateBuilder_v2.0.py"
 REPO_TARBALL="https://github.com/Sintax/DJ-CrateBuilder/archive/refs/heads/main.tar.gz"
 
 echo ""

@@ -272,7 +272,7 @@ class MaintenanceOps:
         clear that follows would then delete that channel's whole history
         while the tracks are still on disk. Any OSError from the walk aborts
         the entire rebuild before the clear, which is what the monolith does by
-        wrapping its whole `_work()` in one try (DJ-CrateBuilder_v1.3.py:14201).
+        wrapping its whole `_work()` in one try (DJ-CrateBuilder_v2.0.py:14201).
         The scan is only trustworthy if all of it succeeded."""
         self._begin(TASK_REBUILD)
         try:
@@ -360,7 +360,7 @@ class MaintenanceOps:
         `os.listdir` is deliberately unguarded — a folder that cannot be
         listed must abort the rebuild, not quietly contribute nothing. The
         per-file `getmtime` failure below IS swallowed, matching the monolith
-        (DJ-CrateBuilder_v1.3.py:14160): one unreadable file is a track this
+        (DJ-CrateBuilder_v2.0.py:14160): one unreadable file is a track this
         rebuild cannot describe, not evidence the scan is untrustworthy."""
         sc = read_channel_sidecar(channel_path) or {}
         channel_name = sc.get("display_name") or os.path.basename(channel_path)
