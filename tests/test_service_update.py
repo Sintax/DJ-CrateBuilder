@@ -349,12 +349,18 @@ def test_apply_happy_path(service, monkeypatch):
     assert finished[-1]["job"] == UPDATE_JOB
 
     # update.progress is coalesced (cratebuilder/events.py's
-    # DEFAULT_COALESCED_TYPES): the first frame sends immediately, the
-    # in-between ones (the second download tick, "verify") are superseded
-    # before the interval elapses, and the worker's own flush() delivers
-    # only the final pending frame ("stage") right before update.restarting.
+    # DEFAULT_COALESCED_TYPES): the first frame sends immediately, and any
+    # in-between ones (the second download tick, "verify") that land inside
+    # the coalescer's 0.25s window are superseded — the worker's own
+    # flush() guarantees the final pending frame ("stage") always arrives
+    # right before update.restarting. How many (if any) middle frames slip
+    # through is a timing detail, not a guarantee this test should assert
+    # exactly: a slow/loaded machine could see fake_download's second tick
+    # or "verify" land as their own events if 250ms elapses first, so only
+    # the two edges — and their order — are checked.
     progress_phases = [p["phase"] for p in waiter.of_type("update.progress")]
-    assert progress_phases == ["download", "stage"]
+    assert progress_phases[0] == "download"
+    assert progress_phases[-1] == "stage"
     assert waiter.of_type("update.restarting") == [{"build": 99}]
     assert restarted == [True]
 
