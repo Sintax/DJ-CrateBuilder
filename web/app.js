@@ -4814,15 +4814,13 @@
 
   const about = { info: null, loading: false, open: {} };
 
-  /* The standing ruling: the updater is a separate effort and is not wired
-     here. Rendered visible and disabled with the reason, like every other
-     control the frontend has not reached — never removed, because the build
-     number beside them is the thing the design put them there for. */
-  const ABOUT_UPDATER_DEFERRED =
-    'Not wired up in the web frontend — the in-app updater is its own effort ' +
-    'and stays with the desktop app for now. Check for updates from the ' +
-    'desktop app\'s About tab; the build number above tells you where this ' +
-    'host is.';
+  /* The updater's own state: the last update.status snapshot (interval,
+     next-check, can_self_update, running), the last update.check result
+     (what the status line and the Update Now gate read), and the live
+     apply — a modal's field refs while a download/verify/stage is running. */
+  const aboutUpdate = {
+    status: null, result: null, checking: false, view: null,
+  };
 
   const ABOUT_UPDATER_NOTE =
     'The updater runs only in the local window on the host machine — a ' +
@@ -4987,47 +4985,8 @@
       host.appendChild(note);
     }
 
-    // ── updates (deferred, per the standing ruling) ────────────────────────
-    host.appendChild(divNode());
-    const upHead = document.createElement('div');
-    upHead.className = 'cb-row';
-    upHead.style.gap = '7px';
-    const upKick = document.createElement('span');
-    upKick.className = 'cb-sect';
-    upKick.textContent = 'Updates';
-    upHead.append(upKick, tagNode('Local session only', 'cb-tag--grey'));
-    const upRow = document.createElement('div');
-    upRow.className = 'cb-row';
-    upRow.style.cssText = 'gap:9px;flex-wrap:wrap';
-    /* Remote adds a second, independent reason — the contract's own copy says
-       it — so both are shown there and only the deferral is shown locally,
-       where "this is a remote session" would simply be untrue. */
-    const remoteHalf = cbApi.transport === 'local' ? null : true;
-    [['⟳ Check for updates', 'about.check_updates'],
-     ['⤓ Update Now', 'about.update_now']].forEach(([label, key]) => {
-      const b = document.createElement('button');
-      b.className = 'cb-btn cb-btn--sm';
-      b.textContent = label;
-      setDisabled(b, true, {
-        reason: (remoteHalf && TOOLTIPS[key] ? TOOLTIPS[key] + '\n\n' : '') +
-                ABOUT_UPDATER_DEFERRED,
-      });
-      upRow.appendChild(b);
-    });
-    const every = document.createElement('select');
-    every.className = 'cb-sel';
-    every.style.width = '150px';
-    every.innerHTML = '<option>Every 24 hours</option>';
-    setDisabled(every, true, {
-      reason: (TOOLTIPS['about.update_interval_readonly'] ||
-               TOOLTIPS['about.update_interval'] || '') +
-              '\n\n' + ABOUT_UPDATER_DEFERRED,
-    });
-    upRow.appendChild(every);
-    const warn = document.createElement('div');
-    warn.className = 'cb-warnbox';
-    warn.textContent = ABOUT_UPDATER_NOTE;
-    host.append(upHead, upRow, warn);
+    // ── updates ───────────────────────────────────────────────────────────
+    renderAboutUpdates(host);
 
     // ── FAQ ───────────────────────────────────────────────────────────────
     host.appendChild(divNode());
@@ -5063,12 +5022,269 @@
     bindTips(host);
   }
 
+  /* ── updates (3n's "local-session-only" controls) ───────────────────────
+     Enabled in the local window; rendered disabled — with the contract's own
+     tooltip plus ABOUT_UPDATER_NOTE as the reason — on a remote session,
+     where update.* is refused server-side regardless of what this renders.
+     The manifest is always fetched host-side (update.check/update.apply);
+     nothing here ever hands the host a build number, URL or checksum. */
+
+  function aboutUpdateStatusLine(result) {
+    if (!result) return '';
+    if (!result.reachable) {
+      return "Couldn't reach the update server. Check your internet "
+        + 'connection and try again.';
+    }
+    if (!result.valid) {
+      return 'The update information looks invalid right now.';
+    }
+    if (!result.available) {
+      return `You're on the latest build (${result.current_build}).`;
+    }
+    return `Update available: build ${result.latest_build} — you're on `
+      + `${result.current_build}.`;
+  }
+
+  async function aboutCheckUpdates() {
+    aboutUpdate.checking = true;
+    renderAbout();
+    try {
+      aboutUpdate.result = await call('update.check');
+      aboutUpdate.status = await call('update.status');
+    } catch (_) { /* call() already toasted the reason */ }
+    aboutUpdate.checking = false;
+    renderAbout();
+  }
+
+  /* The antivirus/false-positive warning has to be seen BEFORE any bytes
+     move — a user-mandated ordering carried over from the desktop app's own
+     update prompt (unsigned build, so SmartScreen and some AV engines flag
+     it; the FAQ entry at "Windows says the installer is unrecognised" is the
+     same explanation this restates for the confirm modal). */
+  function aboutAvWarningNode() {
+    const warn = document.createElement('div');
+    warn.className = 'cb-warnbox';
+    warn.textContent =
+      "DJ-CrateBuilder isn't code-signed, so some antivirus tools may flag "
+      + 'the downloaded build the same way Windows SmartScreen flags a '
+      + 'fresh install — a known false positive, not a sign anything is '
+      + 'wrong. Every update payload is SHA-256 verified against the '
+      + 'manifest on GitHub before anything is written to disk.';
+    return warn;
+  }
+
+  function aboutConfirmUpdate() {
+    const result = aboutUpdate.result;
+    if (!result || !result.available) return;
+    openModal({
+      title: 'Update available',
+      width: 480,
+      body(body) {
+        body.appendChild(modalNote(
+          `Build ${result.latest_build} is available — you're on `
+          + `${result.current_build}.`));
+        if (result.notes) body.appendChild(modalNote(result.notes));
+        body.appendChild(aboutAvWarningNode());
+      },
+      foot(foot, api) {
+        const go = modalButton('Download and install', 'cb-btn--warn',
+          async () => {
+            api.busy(true);
+            let applied;
+            try {
+              applied = await call('update.apply');
+            } catch (_) {
+              api.busy(false);
+              return;               // call() already toasted the reason
+            }
+            api.close();
+            aboutBeginApply(applied);
+          }, 'about.update_now');
+        const later = modalButton('Not now', 'cb-btn--quiet', api.close);
+        later.style.marginLeft = 'auto';
+        foot.append(go, later);
+      },
+    });
+  }
+
+  /* Step two: the progress modal, painted from update.progress until
+     update.restarting says the window is about to close on its own. */
+  function aboutBeginApply(applied) {
+    const refs = {};
+    const build = applied && applied.build;
+    openModal({
+      title: build ? `Updating to build ${build}` : 'Updating DJ-CrateBuilder',
+      width: 460,
+      onClose() { if (aboutUpdate.view === refs) aboutUpdate.view = null; },
+      body(body) {
+        refs.status = modalNote('Starting download…');
+        const bar = document.createElement('div');
+        bar.className = 'cb-bar';
+        refs.fill = document.createElement('div');
+        refs.fill.className = 'cb-bar__fill';
+        refs.fill.style.width = '0%';
+        bar.appendChild(refs.fill);
+        body.append(refs.status, bar);
+      },
+      foot(foot) {
+        foot.appendChild(modalNote(
+          'Closing this window does not stop the update — the app will '
+          + 'restart on its own to finish it.'));
+      },
+    });
+    aboutUpdate.view = refs;
+    aboutPaintApplyProgress({ phase: 'download', pct: 0 });
+  }
+
+  function aboutPaintApplyProgress(p) {
+    const refs = aboutUpdate.view;
+    if (!refs || !p) return;
+    if (p.phase === 'download') {
+      refs.fill.style.width = (p.pct != null ? p.pct : 0) + '%';
+      refs.status.textContent = p.total_mb != null
+        ? `Downloading… ${p.done_mb} / ${p.total_mb} MB`
+        : `Downloading… ${p.done_mb} MB`;
+    } else if (p.phase === 'verify') {
+      refs.status.textContent = 'Verifying download…';
+    } else if (p.phase === 'stage') {
+      refs.fill.style.width = '100%';
+      refs.status.textContent = 'Preparing files…';
+    }
+  }
+
+  function aboutShowRestarting(build) {
+    const refs = aboutUpdate.view;
+    if (!refs) return;
+    refs.fill.style.width = '100%';
+    refs.status.textContent = build
+      ? `Restarting to finish the update to build ${build}…`
+      : 'Restarting to finish the update…';
+  }
+
+  function renderAboutUpdates(host) {
+    host.appendChild(divNode());
+    const upHead = document.createElement('div');
+    upHead.className = 'cb-row';
+    upHead.style.gap = '7px';
+    const upKick = document.createElement('span');
+    upKick.className = 'cb-sect';
+    upKick.textContent = 'Updates';
+    upHead.append(upKick, tagNode('Local session only', 'cb-tag--grey'));
+
+    const upRow = document.createElement('div');
+    upRow.className = 'cb-row';
+    upRow.style.cssText = 'gap:9px;flex-wrap:wrap;align-items:center';
+
+    const isLocal = cbApi.transport === 'local';
+    const status = aboutUpdate.status;
+    const result = aboutUpdate.result;
+
+    const checkBtn = document.createElement('button');
+    checkBtn.className = 'cb-btn cb-btn--sm';
+    checkBtn.textContent = aboutUpdate.checking ? 'Checking…' : '⟳ Check for updates';
+    const updateBtn = document.createElement('button');
+    updateBtn.className = 'cb-btn cb-btn--sm';
+    updateBtn.textContent = '⤓ Update Now';
+
+    if (!isLocal) {
+      const remoteReason = (TOOLTIPS['about.check_updates'] || '') + '\n\n' + ABOUT_UPDATER_NOTE;
+      setDisabled(checkBtn, true, { reason: remoteReason });
+      setDisabled(updateBtn, true, {
+        reason: (TOOLTIPS['about.update_now'] || '') + '\n\n' + ABOUT_UPDATER_NOTE,
+      });
+    } else {
+      const running = !!(status && status.running);
+      const checkBusy = aboutUpdate.checking || running;
+      setDisabled(checkBtn, checkBusy, checkBusy
+        ? { reason: running ? 'An update is already installing.' : 'Checking…' }
+        : { ttKey: 'about.check_updates' });
+      checkBtn.addEventListener('click', aboutCheckUpdates);
+
+      const available = !!(result && result.available);
+      const canSelf = status ? !!status.can_self_update : true;
+      if (available && canSelf && !running) {
+        setDisabled(updateBtn, false, { ttKey: 'about.update_now' });
+        updateBtn.addEventListener('click', aboutConfirmUpdate);
+      } else {
+        let reason = TOOLTIPS['about.update_now'] || '';
+        if (running) {
+          reason = 'An update is already installing.';
+        } else if (status && !status.can_self_update) {
+          reason = "You're running from source. Update with git (pull the "
+            + 'latest) instead of the in-app updater.';
+        } else if (!available) {
+          reason = 'Check for updates first — there is nothing to install yet.';
+        }
+        setDisabled(updateBtn, true, { reason });
+      }
+    }
+    upRow.append(checkBtn, updateBtn);
+
+    const every = document.createElement('select');
+    every.className = 'cb-sel';
+    every.style.width = '150px';
+    const options = (status && status.options) || [];
+    options.forEach((opt) => {
+      const o = document.createElement('option');
+      o.value = opt;
+      o.textContent = `Every ${opt}`;
+      if (status && status.interval === opt) o.selected = true;
+      every.appendChild(o);
+    });
+    if (!isLocal) {
+      setDisabled(every, true, {
+        reason: (TOOLTIPS['about.update_interval_readonly'] ||
+                 TOOLTIPS['about.update_interval'] || '') +
+                '\n\n' + ABOUT_UPDATER_NOTE,
+      });
+    } else if (!options.length) {
+      setDisabled(every, true, { reason: 'Loading…' });
+    } else {
+      setDisabled(every, false, { ttKey: 'about.update_interval' });
+      every.addEventListener('change', async () => {
+        try {
+          aboutUpdate.status = await call('update.set_interval', { value: every.value });
+        } catch (_) { /* call() already toasted the reason */ }
+        renderAbout();
+      });
+    }
+    upRow.appendChild(every);
+    host.append(upHead, upRow);
+
+    if (isLocal) {
+      const statusLine = document.createElement('div');
+      statusLine.className = 'cb-mut';
+      statusLine.style.cssText = 'font-size:12px;margin-top:2px';
+      statusLine.textContent = aboutUpdate.checking
+        ? 'Checking for updates…' : aboutUpdateStatusLine(result);
+      host.appendChild(statusLine);
+
+      const next = status && status.next_check;
+      if (next) {
+        const nextLine = document.createElement('div');
+        nextLine.className = 'cb-mut';
+        nextLine.style.cssText = 'font-size:11.5px';
+        nextLine.textContent = `Next check: ${new Date(next * 1000).toLocaleString()}`;
+        host.appendChild(nextLine);
+      }
+    } else {
+      const warn = document.createElement('div');
+      warn.className = 'cb-warnbox';
+      warn.textContent = ABOUT_UPDATER_NOTE;
+      host.appendChild(warn);
+    }
+  }
+
   async function aboutOpen() {
     if (about.info || about.loading) { renderAbout(); return; }
     about.loading = true;
     renderAbout();
     try {
       about.info = await call('about.info');
+      if (cbApi.transport === 'local') {
+        try { aboutUpdate.status = await call('update.status'); }
+        catch (_) { /* toasted; the card just shows nothing to start from */ }
+      }
     } catch (_) { /* call() already toasted the reason */ }
     about.loading = false;
     renderAbout();
@@ -5351,6 +5567,26 @@
     });
   }
 
+  /* The self-updater's three events. Wired separately from the
+     download/watchlist/maintenance set above because they drive the About
+     screen's own progress modal, not one of the run-panels those cover. */
+  function subscribeUpdateEvents() {
+    cbApi.on('update.progress', (p) => aboutPaintApplyProgress(p));
+    cbApi.on('update.restarting', (p) => aboutShowRestarting(p && p.build));
+    /* The silent auto-check timer found something — reflect it in the About
+       card if it's open, exactly as a manual Check for updates would, so
+       Update Now lights up without the user having to ask again. */
+    cbApi.on('update.available', (p) => {
+      if (!p) return;
+      aboutUpdate.result = {
+        reachable: true, valid: true, available: true,
+        current_build: p.current_build, latest_build: p.build,
+        notes: p.notes, can_self_update: p.can_self_update,
+      };
+      renderAbout();
+    });
+  }
+
   let booted = false;
 
   async function boot() {
@@ -5366,6 +5602,7 @@
       wire();
       subscribeDownloadEvents();
       subscribeSessionEvents();
+      subscribeUpdateEvents();
     }
     renderBell();
     await refresh();

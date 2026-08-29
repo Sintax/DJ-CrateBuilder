@@ -10,10 +10,12 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from datetime import datetime
 
 from cratebuilder import activitylog, rebuild, startup, ui_strings, util
+from cratebuilder import updater_core as ucore
 from cratebuilder.artwork import DEFAULT_COVER_ART_MODE, extract_cover
 from cratebuilder.batchresolve import platform_dir
 from cratebuilder.batchrun import BatchRunner
@@ -42,6 +44,13 @@ WATCHLIST_JOB = "watchlist"
 # never be writing the downloads table at the same time.
 MAINTENANCE_JOB = "maintenance"
 
+# The job registry's category for an in-app self-update. Its slot excludes,
+# and is excluded by, batch/watchlist/maintenance in both directions — an
+# update swaps every file under the app and restarts it, which a download or
+# maintenance run mid-flight would not survive; see _require_idle_for_update
+# and the UPDATE_JOB checks in _require_idle_for_download/_require_idle_library.
+UPDATE_JOB = "update"
+
 # The one event that means "this job category is free again". Emitted by
 # _start_job AFTER the slot is released, which is what separates it from the
 # runs' own terminal events (`batch.finished`, the closing DONE scan line) —
@@ -61,6 +70,7 @@ JOB_TITLES = {
     "batch": "Downloads",
     WATCHLIST_JOB: "Watch List",
     MAINTENANCE_JOB: "Database maintenance",
+    UPDATE_JOB: "Update",
 }
 
 # Method prefixes the remote transport must refuse server-side. The design's
@@ -153,6 +163,21 @@ RETAG_BLOCKS_GENRE_MOVE = (
     "second genre move would put two tag writers on the same files — wait for "
     "it to finish, then try again.")
 
+# The update job's exclusion, spelled once for each direction — see UPDATE_JOB.
+UPDATE_BLOCKS_DOWNLOAD = (
+    "An update is installing. The app will restart to finish it, so a "
+    "download has to wait — try again once the update completes.")
+
+UPDATE_BLOCKS_LIBRARY = (
+    "An update is installing. The app will restart to finish it, so "
+    "database maintenance has to wait — try again once the update "
+    "completes.")
+
+UPDATE_NEEDS_IDLE_JOBS = (
+    "A download, scan, or database maintenance job is running. Installing "
+    "an update restarts the app, which would cut that off mid-way — wait "
+    "for it to finish, or cancel it, then try again.")
+
 # The settings the tkinter app freezes for the length of a run
 # (`_set_download_lock`, DJ-CrateBuilder_v1.3.py:9994), mapped from the widgets
 # it disables to the contract keys that drive them:
@@ -186,6 +211,45 @@ DOWNLOAD_LOCKED_SETTINGS = {
 
 _VERSION_RE = re.compile(r'^APP_VERSION\s*=\s*"([^"]+)"', re.M)
 _BUILD_RE = re.compile(r"^APP_BUILD\s*=\s*(\d+)", re.M)
+
+# The auto-check dropdown's choices, read verbatim from the monolith's own
+# UPDATE_CHECK_OPTIONS (DJ-CrateBuilder_v1.3.py:474) rather than reparsed from
+# source: it is a plain list literal assigned once, with no per-release drift
+# to guard against the way APP_BUILD has. There is no "Off" state — the
+# monolith's list never offers one for this dropdown (unlike the download
+# auto-run interval, which does).
+UPDATE_CHECK_OPTIONS = ["1 hour", "3 hours", "6 hours", "12 hours", "1 day"]
+
+# The two manifest URL constants, read out of the monolith the same way
+# version_info() reads APP_VERSION/APP_BUILD — one copy, no drift. Unlike
+# those two, each is built from adjacent string literals rather than one
+# short literal, so this walks the assignment via ast.literal_eval instead of
+# a line-anchored regex.
+_MANIFEST_URL_NAMES = ("UPDATE_MANIFEST_URL", "UPDATE_MANIFEST_URL_LINUX")
+
+
+def _manifest_urls(script_path=None):
+    """{'UPDATE_MANIFEST_URL': ..., 'UPDATE_MANIFEST_URL_LINUX': ...} read
+    from the monolith's own module-level assignments, or {} if the file
+    can't be read or parsed."""
+    path = script_path or os.path.join(repo_root(), MAIN_SCRIPT)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+    except (OSError, SyntaxError, ValueError):
+        return {}
+    found = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            name = getattr(target, "id", None)
+            if name in _MANIFEST_URL_NAMES:
+                try:
+                    found[name] = ast.literal_eval(node.value)
+                except (ValueError, TypeError):
+                    pass
+    return found
 
 # The About screen's own copy. The avatar is the bundle's, at the 44x44 the
 # tkinter label uses; the note is the monolith's bug/suggestion line, which
@@ -633,7 +697,15 @@ class CrateBuilderService:
         self._remote_state = remote_state
         self._log_watch_interval = log_watch_interval
         self._log_watchers = {}
+        # Invoked from the update.apply worker thread once the updater process
+        # has been handed off, so the local window can exit cleanly. None on
+        # a service nothing has wired it into (every test, the remote-only
+        # entry points) — the worker treats that as "nothing to call".
+        self.on_update_restart = None
+        self._update_timer = None
+        self._next_update_check_ts = None
         self.reset_stale_watchlist_rows()
+        self._arm_update_timer()
 
     # ── events / jobs ─────────────────────────────────────────────────────────
 
@@ -768,7 +840,13 @@ class CrateBuilderService:
         (`batchrun._settle` → `TrackDownloader.tag`) while `genrefix` is saving
         the same file. `watchlist_edit` already refuses the move while a
         download runs; this is the reverse order.
+
+        The update half is the same argument one layer up: an update swaps
+        every file under the app and restarts it, which a download mid-flight
+        would not survive — see UPDATE_JOB.
         """
+        if UPDATE_JOB in self._jobs:
+            raise CBError(UPDATE_BLOCKS_DOWNLOAD)
         if MAINTENANCE_JOB in self._jobs:
             raise CBError(MAINTENANCE_BLOCKS_DOWNLOAD)
         if self._retags:
@@ -902,6 +980,11 @@ class CrateBuilderService:
             "remote.pair_cancel": lambda p: self.remote_pair_cancel(),
             "remote.revoke": lambda p: self.remote_revoke(
                 p.get("device_id") or p.get("token_hash")),
+            "update.check": lambda p: self.update_check(),
+            "update.apply": lambda p: self.update_apply(),
+            "update.status": lambda p: self.update_status(),
+            "update.set_interval":
+                lambda p: self.update_set_interval(p.get("value")),
         }
 
     def _unavailable(self, what):
@@ -1620,6 +1703,8 @@ class CrateBuilderService:
         there is no slot to claim) and `_maintenance_guard`."""
         if task not in self._MAINTENANCE_NEEDS_IDLE:
             return
+        if UPDATE_JOB in self._jobs:
+            raise CBError(UPDATE_BLOCKS_LIBRARY)
         if "batch" in self._jobs or WATCHLIST_JOB in self._jobs:
             raise CBError(DOWNLOAD_BLOCKS_LIBRARY)
 
@@ -2311,3 +2396,243 @@ class CrateBuilderService:
             subprocess.Popen(["open", target])
         else:
             subprocess.Popen(["xdg-open", target])
+
+    # ── self-update (local session only — LOCAL_ONLY's "update." prefix) ───────
+    # cratebuilder.updater_core owns every moving part (manifest fetch,
+    # checksum, extract, the swap-process handoff); what lives here is what the
+    # transport layer owns — refusing a run the way the tkinter About tab does,
+    # trusting nothing the client says about which build to install, and
+    # keeping an update's file-swap exclusive with every other job category
+    # that writes into the install or the downloads table.
+
+    def _update_manifest_url(self):
+        urls = _manifest_urls()
+        key = "UPDATE_MANIFEST_URL_LINUX" if ucore.is_linux() else "UPDATE_MANIFEST_URL"
+        return urls.get(key)
+
+    def update_check(self):
+        """Fetch the manifest and report what it says — never raises for an
+        unreachable host or an invalid manifest; that is itself the result
+        the About screen and the auto-check timer both act on.
+
+        `last_update_check` is persisted here on every call, matching the
+        monolith's `_check_updates_worker` (manual or automatic, a check is a
+        check).
+        """
+        manifest = ucore.fetch_manifest(self._update_manifest_url())
+        try:
+            self._settings.set("last_update_check", time.time())
+        except Exception:
+            pass
+        current = version_info()["build"]
+        result = {
+            "reachable": manifest is not None,
+            "valid": False,
+            "available": False,
+            "current_build": current,
+            "latest_build": None,
+            "notes": None,
+            "can_self_update": ucore.can_self_update(),
+        }
+        if manifest is None:
+            return result
+        ok, _reason = ucore.validate_manifest(manifest)
+        result["valid"] = ok
+        if not ok:
+            return result
+        result["available"] = ucore.is_update_available(manifest, current)
+        if result["available"]:
+            result["latest_build"] = int(manifest["build"])
+            result["notes"] = str(manifest.get("notes", "")).strip() or None
+        return result
+
+    def _require_idle_for_update(self):
+        """`update_apply`'s pre-flight AND `_start_job`'s guard: refuse to
+        start unless batch, watchlist and maintenance are ALL idle and no
+        genre-move retag is sweeping. An update swaps every file under the
+        app and restarts it — anything still writing when that happens is
+        the failure mode the monolith's own `_launch_updater_and_quit` polls
+        around; refusing to start is simpler and just as safe."""
+        if ("batch" in self._jobs or WATCHLIST_JOB in self._jobs
+                or MAINTENANCE_JOB in self._jobs or self._retags):
+            raise CBError(UPDATE_NEEDS_IDLE_JOBS)
+
+    def update_apply(self):
+        """Download, verify, stage, and hand off to the separate updater
+        process. Takes NO trusted parameters from the client — the manifest
+        is fetched here, and the build/url/sha256 the worker acts on come
+        from that fetch alone.
+        """
+        manifest = ucore.fetch_manifest(self._update_manifest_url())
+        try:
+            self._settings.set("last_update_check", time.time())
+        except Exception:
+            pass
+        ok, _reason = ucore.validate_manifest(manifest) if manifest else (False, "")
+        if not ok:
+            raise CBError("Couldn't reach the update server, or the update "
+                          "information looks invalid right now. Try Check "
+                          "for updates again in a moment.")
+        current = version_info()["build"]
+        if not ucore.is_update_available(manifest, current):
+            raise CBError(f"You're already on the latest build ({current}).")
+        build = int(manifest["build"])
+
+        # Linux: the pkexec/apt install flow is deliberately not ported here
+        # (the .deb payload doesn't ship the web UI), regardless of whether
+        # this install could otherwise self-update.
+        if ucore.is_linux():
+            raise CBError(
+                "The in-app updater isn't available for this Linux install. "
+                "Download the latest .deb and install it manually: "
+                "https://github.com/Sintax/DJ-CrateBuilder/releases/tag/"
+                "linux-v1.3")
+        if not ucore.can_self_update():
+            raise CBError(
+                f"Build {build} is available, but you're running from "
+                "source.\n\nUpdate with git (pull the latest) instead of "
+                "the in-app updater.")
+        self._require_idle_for_update()
+
+        dl_url = manifest["url"]
+        sha256 = manifest["sha256"]
+        notes = str(manifest.get("notes", "")).strip() or None
+
+        def worker():
+            ws = ucore.default_workspace()
+            ucore.purge_dir(ws)
+            os.makedirs(ws, exist_ok=True)
+            try:
+                zip_path = os.path.join(ws, f"build-{build}.zip")
+
+                def progress(done, total):
+                    self.emit("update.progress", {
+                        "phase": "download",
+                        "pct": int(done * 100 / total) if total else None,
+                        "done_mb": done // 1048576,
+                        "total_mb": (total // 1048576) if total else None,
+                    })
+
+                ucore.download(dl_url, zip_path, progress_cb=progress)
+
+                self.emit("update.progress", {"phase": "verify"})
+                if not ucore.verify_sha256(zip_path, sha256):
+                    raise CBError(
+                        "checksum mismatch — the download may be corrupt")
+
+                self.emit("update.progress", {"phase": "stage"})
+                staged = os.path.join(ws, "staged")
+                ucore.purge_dir(staged)
+                ucore.extract_zip(zip_path, staged)
+
+                self.emit("update.restarting", {"build": build})
+                app_dir = ucore.install_dir()
+                cmd = ucore.launch_updater_command(
+                    os.getpid(), staged, app_dir, sys.executable,
+                    os.path.join(ws, "backup"), os.path.join(ws, "update.log"))
+                flags = 0
+                if os.name == "nt":
+                    flags = 0x00000008 | 0x00000200  # DETACHED | NEW_PROCESS_GROUP
+                subprocess.Popen(cmd, close_fds=True, creationflags=flags,
+                                 cwd=app_dir)
+                if self.on_update_restart is not None:
+                    self.on_update_restart()
+            except Exception:
+                # Never leave a half-downloaded/half-staged workspace behind —
+                # the next attempt (or the next auto-check) starts clean.
+                ucore.purge_dir(ws)
+                raise
+
+        job_id = self._start_job(UPDATE_JOB, worker, title="Update",
+                                 guard=self._require_idle_for_update)
+        return {"job_id": job_id, "build": build, "notes": notes}
+
+    def update_status(self):
+        """Everything the About screen's Updates card renders besides the
+        result of the last check: the interval dropdown's options and current
+        value, when the next silent check will fire, and whether this build
+        can self-update at all."""
+        return {
+            "interval": self._settings.get("update_check_interval"),
+            "options": UPDATE_CHECK_OPTIONS,
+            "last_check": self._settings.get("last_update_check"),
+            "next_check": self._next_update_check_ts,
+            "can_self_update": ucore.can_self_update(),
+            "running": self._job_running(UPDATE_JOB),
+        }
+
+    def update_set_interval(self, value):
+        if value not in UPDATE_CHECK_OPTIONS:
+            raise CBError(f"Unknown auto-check interval: {value!r}")
+        self._settings.set("update_check_interval", value)
+        self._arm_update_timer()
+        return self.update_status()
+
+    def _arm_update_timer(self):
+        """(Re)arm the silent auto-check timer from the current interval.
+
+        LOCAL only — a remote browser must never make this host poll GitHub
+        on its own behalf, matching update.*'s LOCAL_ONLY gate. Per ADR 0001
+        this reads the real wall clock rather than an injected one; a test
+        wanting a fast fire sets a short interval, not a fake clock.
+        """
+        if self._default_transport != LOCAL:
+            return
+        with self._lock:
+            if self._update_timer is not None:
+                self._update_timer.cancel()
+            secs = util.interval_label_to_seconds(
+                self._settings.get("update_check_interval"))
+            if not secs:
+                self._update_timer = None
+                self._next_update_check_ts = None
+                return
+            timer = threading.Timer(secs, self._update_timer_fire)
+            timer.daemon = True
+            self._update_timer = timer
+            self._next_update_check_ts = time.time() + secs
+            timer.start()
+
+    def _update_timer_fire(self):
+        """One scheduled silent check, then re-arm for the next interval.
+
+        Skipped (but still re-armed) while any job is running — installing
+        mid-scan is how updates fail, and the next tick offers it again once
+        things are quiet. Never downloads on its own: a newer build is only
+        announced, exactly like the monolith's automatic check with nobody
+        watching the window.
+        """
+        with self._lock:
+            self._update_timer = None
+            busy = bool(self._jobs)
+        if not busy:
+            try:
+                result = self.update_check()
+            except Exception:
+                result = None
+            if result and result["reachable"] and result["valid"] and result["available"]:
+                self.emit("update.available", {
+                    "build": result["latest_build"],
+                    "current_build": result["current_build"],
+                    "notes": result["notes"],
+                    "can_self_update": result["can_self_update"],
+                })
+                self.emit("notification", {
+                    "level": "info",
+                    "title": "Update available",
+                    "body": (f"Build {result['latest_build']} is available "
+                            f"— you're on {result['current_build']}. Open "
+                            "About to install."),
+                    "at": datetime.now().isoformat(timespec="seconds"),
+                    "job": UPDATE_JOB,
+                })
+        self._arm_update_timer()
+
+    def close(self):
+        """Release the background resources this service holds — chiefly the
+        auto-check timer, so a service built for one test or one process
+        shutdown never leaves a daemon Timer armed past its use."""
+        with self._lock:
+            if self._update_timer is not None:
+                self._update_timer.cancel()
+                self._update_timer = None

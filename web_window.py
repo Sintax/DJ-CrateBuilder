@@ -185,6 +185,13 @@ def main():
         height=WINDOW_SIZE[1],
         min_size=MIN_SIZE,
     )
+    # The update.apply worker calls this from its own (non-UI) thread once the
+    # updater process has been handed off. window.destroy() is safe to call
+    # off the main thread — pywebview marshals it — and makes webview.start()
+    # return, which exits the process (updater.exe waits up to 30s on this
+    # PID before swapping files).
+    service.on_update_restart = window.destroy
+    window.events.closing += service.close
     # private_mode=False keeps localStorage across restarts, so the database
     # viewer's column widths and order can live client-side.
     webview.start(lambda: start_push_bridge(window, service), private_mode=False)

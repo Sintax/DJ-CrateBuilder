@@ -411,6 +411,27 @@ def apply_update(staged_dir, app_dir, backup_dir, _copyfn=shutil.copy2):
         raise
 
 
+def launch_updater_command(pid, staged, app_dir, relaunch, backup, log):
+    """The argv to hand off to the separate updater process.
+
+    Mirrors the command construction inside DJ-CrateBuilder_v1.3.py's
+    `_launch_updater_and_quit`: prefers `updater.exe` beside the running app,
+    falling back to driving `updater.py` with the current interpreter for a
+    dev/source run. Pure — builds the list, spawns nothing; the caller Popens
+    it. The monolith keeps its own inline copy of this logic (not refactored
+    to call here), so a change here does not silently change the desktop app.
+    """
+    updater_exe = os.path.join(app_dir, "updater.exe")
+    if os.path.exists(updater_exe):
+        cmd = [updater_exe]
+    else:
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cmd = [sys.executable, os.path.join(repo_root, "updater.py")]
+    cmd += ["--pid", str(pid), "--src", staged, "--dst", app_dir,
+            "--relaunch", relaunch, "--backup", backup, "--log", log]
+    return cmd
+
+
 def install_ffmpeg_from_zip(zip_path, expected_sha, install_dir,
                             staged_dir, backup_dir, version):
     """Verify, extract, and swap a downloaded ffmpeg zip into ``install_dir``.
