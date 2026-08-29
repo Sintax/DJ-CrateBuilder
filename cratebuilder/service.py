@@ -241,7 +241,7 @@ def _manifest_urls(script_path=None):
     """{'UPDATE_MANIFEST_URL': ..., 'UPDATE_MANIFEST_URL_LINUX': ...} read
     from the monolith's own module-level assignments, or {} if the file
     can't be read or parsed."""
-    path = script_path or os.path.join(repo_root(), MAIN_SCRIPT)
+    path = script_path or _monolith_path()
     try:
         stamp = os.stat(path)
         signature = (stamp.st_mtime_ns, stamp.st_size)
@@ -562,12 +562,60 @@ def repo_root():
     Resolved from this file rather than sys.argv[0]: the web frontend is
     launched by its own entry point, which would otherwise point
     runtime_data_dir at the wrong folder and open a second, empty database.
+    Frozen, this resolves inside PyInstaller's `_internal/` — fine for
+    finding this file, but never the right root for user data or the
+    bundled monolith; see app_dir() and _monolith_path().
     """
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def app_dir():
-    return util.runtime_data_dir(os.path.join(repo_root(), MAIN_SCRIPT))
+    """Where the DB, both logs, the link store and the remote-access store
+    live.
+
+    From source, that's beside the monolith script, as always. Frozen,
+    it's the install root next to DJ-CrateBuilder.exe — where every
+    existing 1.3 install already keeps cratebuilder.db — never repo_root(),
+    which resolves inside `_internal/` under PyInstaller and would orphan
+    that data on upgrade. util.runtime_data_dir's not-writable fallback
+    still applies either way.
+    """
+    script = (sys.executable if getattr(sys, "frozen", False)
+             else os.path.join(repo_root(), MAIN_SCRIPT))
+    return util.runtime_data_dir(script)
+
+
+def _monolith_path():
+    """Where the monolith's source text lives right now.
+
+    From source, the repo checkout; frozen, PyInstaller's --add-data root
+    (sys._MEIPASS), which is where the build places a bundled copy of the
+    script. version_info, about_info and _manifest_urls all read the
+    monolith as plain text rather than importing it — this is the one
+    place that decides which copy they see, so the three can't drift.
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.join(sys._MEIPASS, MAIN_SCRIPT)
+    return os.path.join(repo_root(), MAIN_SCRIPT)
+
+
+def bundled_ffmpeg_dir():
+    """The bundled FFmpeg's directory when frozen, else None.
+
+    The service-side twin of DJ-CrateBuilder_v2.0.py's bundled_ffmpeg_dir():
+    PyInstaller ships ffmpeg.exe/ffprobe.exe beside the app's own exe, so
+    pointing yt-dlp straight at that folder works regardless of how the app
+    is installed. From source, None lets yt-dlp find FFmpeg on PATH, as
+    documented.
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    exe_dir = os.path.dirname(sys.executable)
+    name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+    for cand in (exe_dir, getattr(sys, "_MEIPASS", None)):
+        if cand and os.path.isfile(os.path.join(cand, name)):
+            return cand
+    return None
 
 
 def version_info(script_path=None):
@@ -576,7 +624,7 @@ def version_info(script_path=None):
     Parsed rather than imported: importing the v1.3 script builds a Tk window,
     which would drag the whole service into the gui test lane for two constants.
     """
-    path = script_path or os.path.join(repo_root(), MAIN_SCRIPT)
+    path = script_path or _monolith_path()
     try:
         with open(path, "r", encoding="utf-8") as fh:
             source = fh.read()
@@ -600,7 +648,7 @@ def about_info(script_path=None):
     A file that cannot be read or parsed yields empty fields rather than an
     error: the About screen still renders, minus the parts it could not find.
     """
-    path = script_path or os.path.join(repo_root(), MAIN_SCRIPT)
+    path = script_path or _monolith_path()
     try:
         stamp = os.stat(path)
         signature = (stamp.st_mtime_ns, stamp.st_size)
@@ -1155,6 +1203,7 @@ class CrateBuilderService:
                 self._settings, self._db_for_write, self.emit,
                 links_path=self._links_path, log_line=self.log_line,
                 counts=self.counts, flush=self._emit.flush,
+                ffmpeg_dir=bundled_ffmpeg_dir(),
                 claim_tag_writes=self.claim_tag_writes,
                 release_tag_writes=self.release_tag_writes)
         return self._watchlist_ops
@@ -1732,7 +1781,7 @@ class CrateBuilderService:
             self._maintenance_ops = MaintenanceOps(
                 self._settings, self._db_for_write, self.emit,
                 log_line=self.log_line, counts=self.counts,
-                flush=self._emit.flush)
+                flush=self._emit.flush, ffmpeg_dir=bundled_ffmpeg_dir())
         return self._maintenance_ops
 
     # Rebuild, de-dup and the artwork backfill all write the downloads table
@@ -2095,7 +2144,7 @@ class CrateBuilderService:
         runner = BatchRunner(
             self._settings, self._db_for_write(), self.emit,
             log_line=self.log_line, counts=self.counts,
-            flush=self._emit.flush)
+            flush=self._emit.flush, ffmpeg_dir=bundled_ffmpeg_dir())
         previous = self._batch_runner
         self._batch_runner = runner
         try:

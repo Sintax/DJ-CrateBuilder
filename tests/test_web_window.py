@@ -169,3 +169,101 @@ def test_serving_the_bundle_revalidated_twice_does_not_stack_wrappers(monkeypatc
     second = web_window.serve_bundle_revalidated()
 
     assert first is second is bottle.static_file
+
+
+# ── entry-point duties (frozen awareness) ────────────────────────────────────
+# The four things main() must do before/around building the window, mirroring
+# DJ-CrateBuilder_v2.0.py's __main__ block. Each is factored into a seam that
+# takes no window and no real singleton port, so none of this spawns one.
+
+def test_run_scan_worker_if_requested_is_a_noop_without_the_flag():
+    assert web_window.run_scan_worker_if_requested(["prog"]) is None
+
+
+def test_run_scan_worker_if_requested_answers_the_protocol_and_exits(monkeypatch):
+    """Must never reach the singleton lock or a window — this only proves the
+    dispatch: the flag is detected and scanproc.worker_main() decides the
+    exit code, before anything else in main() runs."""
+    import cratebuilder.scanproc as scanproc
+
+    calls = []
+    monkeypatch.setattr(scanproc, "worker_main", lambda: calls.append(1) or 0)
+    with pytest.raises(SystemExit) as info:
+        web_window.run_scan_worker_if_requested(["prog", "--scan-worker"])
+    assert info.value.code == 0
+    assert calls == [1]
+
+
+def test_acquire_or_hand_off_returns_the_lock_on_success(monkeypatch):
+    sentinel = object()
+    monkeypatch.setattr(web_window, "acquire_single_instance",
+                        lambda port: sentinel)
+    assert web_window.acquire_or_hand_off(port=0) is sentinel
+
+
+def test_acquire_or_hand_off_hands_off_and_exits_when_already_running(monkeypatch):
+    asked = []
+    monkeypatch.setattr(web_window, "acquire_single_instance", lambda port: None)
+    monkeypatch.setattr(web_window, "request_show", asked.append)
+    with pytest.raises(SystemExit) as info:
+        web_window.acquire_or_hand_off(port=49737)
+    assert info.value.code == 0
+    assert asked == [49737]
+
+
+def test_restore_window_calls_restore_then_show():
+    calls = []
+
+    class Window:
+        def restore(self):
+            calls.append("restore")
+
+        def show(self):
+            calls.append("show")
+
+    web_window.restore_window(Window())
+    assert calls == ["restore", "show"]
+
+
+def test_restore_window_swallows_a_race_with_the_window_closing():
+    """pywebview marshals restore()/show() from the listener's own thread; a
+    window that closed a moment before must not take that thread down."""
+    class Window:
+        def restore(self):
+            raise RuntimeError("window already destroyed")
+
+        def show(self):
+            raise AssertionError("never reached")
+
+    web_window.restore_window(Window())    # must not raise
+
+
+def test_prepare_runtime_workspace_purges_and_chdirs(tmp_path, monkeypatch):
+    purged = []
+    monkeypatch.setattr(web_window.ucore, "default_workspace",
+                        lambda: str(tmp_path / "workspace"))
+    monkeypatch.setattr(web_window.ucore, "purge_dir", purged.append)
+    monkeypatch.setattr(web_window.util, "runtime_data_dir",
+                        lambda: str(tmp_path))
+    chdired = []
+    monkeypatch.setattr(web_window.os, "chdir", chdired.append)
+
+    web_window.prepare_runtime_workspace()
+
+    assert purged == [str(tmp_path / "workspace")]
+    assert chdired == [str(tmp_path)]
+
+
+def test_prepare_runtime_workspace_swallows_an_unchdirable_directory(monkeypatch):
+    """A Run-key startup launch begins in System32; if chdir can't land on
+    the real runtime dir either, the launch must still proceed."""
+    monkeypatch.setattr(web_window.ucore, "default_workspace", lambda: "")
+    monkeypatch.setattr(web_window.ucore, "purge_dir", lambda p: None)
+    monkeypatch.setattr(web_window.util, "runtime_data_dir", lambda: "unreachable")
+
+    def _raise(path):
+        raise OSError("no such directory")
+
+    monkeypatch.setattr(web_window.os, "chdir", _raise)
+
+    web_window.prepare_runtime_workspace()    # must not raise
