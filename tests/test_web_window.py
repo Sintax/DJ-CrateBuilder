@@ -135,3 +135,37 @@ def test_the_embedded_thread_refuses_lan_without_consent(tmp_path, capsys):
 
     assert web_window.start_remote_mount(Svc(), port=0, lan=True) is None
     assert "Allow remote control" in capsys.readouterr().err
+
+
+def test_the_local_bundle_is_served_revalidated(tmp_path, monkeypatch):
+    """pywebview means to send no-store and doesn't.
+
+    Its static route sets the header on `bottle.response`, then returns
+    `bottle.static_file(...)` — an HTTPResponse whose own headers replace the
+    ones set there. The bundle reaches the window carrying only Last-Modified
+    and ETag, WebView2 applies heuristic freshness, and an edited web/ file is
+    invisible until that window expires. Measured against the real window:
+    cache-control absent, and all three assets served with transferSize 0.
+    """
+    bottle = pytest.importorskip("bottle")
+    # Registers the current function for restoration, so the patch this test
+    # applies cannot leak into the rest of the suite.
+    monkeypatch.setattr(bottle, "static_file", bottle.static_file)
+    (tmp_path / "app.css").write_text(".x{}", encoding="utf-8")
+
+    web_window.serve_bundle_revalidated()
+    response = bottle.static_file("app.css", root=str(tmp_path))
+
+    assert "no-cache" in response.headers.get("Cache-Control", "")
+
+
+def test_serving_the_bundle_revalidated_twice_does_not_stack_wrappers(monkeypatch):
+    """A second application must be a no-op rather than another layer of
+    wrapping around the same function."""
+    bottle = pytest.importorskip("bottle")
+    monkeypatch.setattr(bottle, "static_file", bottle.static_file)
+
+    first = web_window.serve_bundle_revalidated()
+    second = web_window.serve_bundle_revalidated()
+
+    assert first is second is bottle.static_file
