@@ -15,7 +15,7 @@ import webbrowser
 from datetime import datetime
 
 from cratebuilder import (activitylog, debuglog, rebuild, startup, ui_strings,
-                          util)
+                          util, ydl)
 from cratebuilder import updater_core as ucore
 from cratebuilder.artwork import DEFAULT_COVER_ART_MODE, extract_cover
 from cratebuilder.batchresolve import platform_dir
@@ -39,6 +39,15 @@ REMOTE = "remote"
 # The job registry's category for every Watch List run. One at a time, so a
 # scan and a download can never fight over the same channel folder.
 WATCHLIST_JOB = "watchlist"
+
+# Cold-boot guard for the startup scan. When the app auto-launches at Windows
+# login the network is often a few seconds behind, and a scan run while offline
+# just fails every channel for nothing. So the startup scan waits for
+# connectivity first: probe every _NET_DELAY seconds, up to _NET_TRIES times,
+# then give up quietly — a manual scan still runs normally.
+WATCHLIST_STARTUP_NET_TRIES = 18      # ≈ 90 s window at the delay below
+WATCHLIST_STARTUP_NET_DELAY = 5.0     # seconds between connectivity probes
+WATCHLIST_STARTUP_DELAY = 2.2         # the monolith's after(2200, …) settle
 
 # The job registry's category for every database maintenance run — rebuild,
 # de-dup, tag repair and artwork backfill share one slot, so two of them can
@@ -616,6 +625,33 @@ def bundled_ffmpeg_dir():
     for cand in (exe_dir, getattr(sys, "_MEIPASS", None)):
         if cand and os.path.isfile(os.path.join(cand, name)):
             return cand
+    return None
+
+
+def app_icon_path():
+    """The bundled app icon (icon.ico), or None when it isn't there.
+
+    The service-side twin of DJ-CrateBuilder_v2.0.py's app_icon_path(), for
+    the same reason bundled_ffmpeg_dir() has one: the web entry point cannot
+    import the monolith to borrow it — that builds a Tk window — and its tray
+    icon wants the real artwork rather than TrayIcon's runtime-drawn
+    placeholder. Same resolution order as the monolith's: beside the frozen
+    executable, then PyInstaller's data root, then beside the script from
+    source. The Linux .deb ships the icon as a hicolor PNG instead of beside
+    the script, which is the last candidate.
+    """
+    if getattr(sys, "frozen", False):
+        cands = (os.path.dirname(sys.executable), getattr(sys, "_MEIPASS", None))
+    else:
+        cands = (repo_root(),)
+    for cand in cands:
+        if cand:
+            path = os.path.join(cand, "icon.ico")
+            if os.path.isfile(path):
+                return path
+    png = "/usr/share/icons/hicolor/256x256/apps/dj-cratebuilder.png"
+    if os.path.isfile(png):
+        return png
     return None
 
 
@@ -2745,6 +2781,103 @@ class CrateBuilderService:
         No-ops on REMOTE and once `close()` has run — see `_arm_update_timer`.
         """
         self._arm_update_timer()
+
+    def start_startup_scan(self):
+        """Arm the launch scan of every watched channel, so the cards show
+        current new-track counts without the user pressing anything.
+
+        Explicit rather than a constructor side effect, for the same reason
+        `start_update_timer()` is: a service built for one snapshot or one
+        test must not spawn a background thread just from being constructed.
+        The local window calls this once, right after building its service.
+
+        LOCAL only, the same rule `_arm_update_timer` follows — a headless
+        remote mount must never make the host start scanning channels on its
+        own; only the machine whose window just opened owes that scan.
+
+        Returns the thread it started, or None when nothing was armed: the
+        setting is off, the Watch List is empty (the monolith's
+        get_all_watchlist_channels gate), or this is a remote mount.
+        """
+        if self._default_transport != LOCAL:
+            return None
+        if not self._settings.get("watchlist_scan_on_startup"):
+            return None
+        if not self._watchlist_rows():
+            return None
+        thread = threading.Thread(target=self._startup_scan_wait, daemon=True,
+                                  name="cratebuilder-startup-scan")
+        thread.start()
+        return thread
+
+    def _startup_scan_wait(self):
+        """Settle, wait for the network, then scan every watched channel.
+
+        The monolith arms this as `after(2200, _watchlist_startup_scan)` and
+        polls for connectivity on a worker thread, marshalling the scan back
+        to the UI thread. There is no UI thread here, so the settle delay and
+        the connectivity poll share this one thread and the scan starts from
+        it directly.
+
+        The busy re-check the monolith does before scanning is in two halves
+        here. `watchlist_scan_all()` is one: it raises CBError when the Watch
+        List slot is taken (or the list has since emptied), which is a
+        startup scan giving way rather than a failure. The batch check above
+        it is the other — the monolith's `self._downloading` — because a
+        plain download holds no Watch List slot and nothing would otherwise
+        refuse a Scan All landing on top of one. Both matter: minutes can
+        pass in the network wait, and the user is not idle in them. Nothing
+        else may escape either — this thread must never take itself down
+        noisily or leave the window waiting on it.
+
+        `_closed` is read under the lock `close()` sets it under, before the
+        settle and again before scanning, so a window closed mid-wait ends
+        the thread instead of scanning into a half-torn-down service.
+        """
+        try:
+            if self._is_closed():
+                return
+            time.sleep(WATCHLIST_STARTUP_DELAY)
+            if not self._wait_for_network():
+                return
+            if self._is_closed():
+                return
+            if self._job_running("batch"):
+                return
+            self.log_line("🚀 Startup check: scanning all channels…")
+            try:
+                self.watchlist_scan_all()
+            except CBError:
+                pass                # a manual run took the slot; give way
+        except Exception:
+            pass
+
+    def _wait_for_network(self):
+        """Poll for connectivity within the cold-boot budget; True once the
+        network answers.
+
+        False means give up — either the budget ran out, which is said once
+        in the activity log and never retried (a scheduled or manual scan
+        still runs normally), or the service closed while this waited, which
+        says nothing at all.
+        """
+        for attempt in range(WATCHLIST_STARTUP_NET_TRIES):
+            if self._is_closed():
+                return False
+            if ydl.network_is_reachable():
+                return True
+            if attempt == 0:
+                self.log_line("🌐 Waiting for the network before the "
+                              "startup scan…")
+            time.sleep(WATCHLIST_STARTUP_NET_DELAY)
+        self.log_line("Startup scan skipped — no network detected. Channels "
+                      "keep their links; scan once you're back online.")
+        return False
+
+    def _is_closed(self):
+        """The shutdown flag, read under the lock `close()` sets it under."""
+        with self._lock:
+            return self._closed
 
     def _arm_update_timer(self):
         """(Re)arm the silent auto-check timer from the current interval.

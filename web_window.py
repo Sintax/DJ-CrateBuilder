@@ -28,7 +28,8 @@ import webview
 
 from cratebuilder import updater_core as ucore
 from cratebuilder import util
-from cratebuilder.service import LOCAL, CBError, CrateBuilderService
+from cratebuilder.service import (JOB_FINISHED, LOCAL, CBError,
+                                  CrateBuilderService, app_icon_path)
 from cratebuilder.singleton import (SINGLE_INSTANCE_PORT, acquire_single_instance,
                                     listen_for_show_requests, request_show)
 
@@ -41,6 +42,14 @@ WINDOW_TITLE = "DJ-CrateBuilder"
 # are designed against. Ask for enough that a scaled display still clears it.
 WINDOW_SIZE = (1560, 980)
 MIN_SIZE = (1280, 820)
+
+# Windows caps a tray tooltip at 127 characters; keep it well under.
+TRAY_TOOLTIP_LIMIT = 127
+# The monolith's after(2000, _tray_title_tick) cadence, in seconds.
+TRAY_TITLE_INTERVAL = 2.0
+# How long a track title may run before the tooltip elides it, as _tray_summary
+# truncates it.
+TRAY_TITLE_MAX = 55
 
 
 class JsApi:
@@ -62,6 +71,374 @@ class JsApi:
             return {"ok": False, "error": str(exc)}
         except Exception as exc:                     # never kill the bridge
             return {"ok": False, "error": f"Unexpected host error: {exc}"}
+
+
+def setting_is_on(service, key):
+    """One live read of a boolean setting, through the service's own surface.
+
+    Live on purpose: the tray's rules are read per event, not cached at
+    startup, so a checkbox toggled in Settings takes effect on the next
+    minimise — the monolith reads the BooleanVar its checkbox writes, which
+    has the same property for free. A setting that can't be read is off:
+    that leaves the window on screen rather than hidden with no icon.
+    """
+    try:
+        return bool(service.call("settings.get", {"key": key},
+                                 transport=LOCAL)["value"])
+    except Exception:
+        return False
+
+
+def run_detached(fn):
+    """Run *fn* on a short-lived daemon thread — WindowTray's `schedule`.
+
+    Nothing in a tray callback needs a UI thread the way Tk demands one, but
+    it still must not run on pystray's own menu thread: a service call that
+    takes a moment to answer would freeze the menu until it did.
+    """
+    thread = threading.Thread(target=fn, daemon=True)
+    thread.start()
+    return thread
+
+
+class WindowTray:
+    """The system tray icon for the pywebview window.
+
+    The web port of DJ-CrateBuilder_v2.0.py's tray section: the same lazy
+    creation on first hide, the same four menu items in the same order, the
+    same hover tooltip, and the same two conditions on the minimize button.
+    `cratebuilder.tray.TrayIcon` is reused unchanged. Two things depart from
+    the monolith, both because there is no Tk main thread here:
+
+    * TrayIcon marshals every menu callback through `schedule` because Tk
+      demands its own thread. pywebview marshals window calls itself and
+      `service.call` is thread-safe, so nothing needs a UI thread — but a
+      callback still must not run on pystray's own menu thread, where a call
+      that takes a moment to answer would freeze the menu. Each gets a
+      short-lived daemon thread instead of the monolith's `after(0, fn)`.
+    * The tooltip is assembled from event-bus state instead of being read off
+      Tk labels, and re-armed on a threading.Timer instead of `after(2000)`.
+      The service is never polled for it: `counts()` reads the database, and
+      a hover tooltip is not a reason to query it twice a second.
+    """
+
+    def __init__(self, window, service, tray_factory=None, spawn=run_detached):
+        self._window = window
+        self._service = service
+        self._tray_factory = tray_factory
+        self._spawn = spawn
+        self._icon = None
+        self._timer = None
+        self._stopped = False
+        # Tk serialised _ensure_tray for the monolith by construction; here
+        # pywebview delivers each window event on a thread of its own, so two
+        # minimises in quick succession could otherwise raise two icons.
+        self._lock = threading.Lock()
+        self._pending_new = None     # read on first use — see download_label
+        self._statuses = {}          # watchlist row id → its last known status
+        self._current = None         # last progress.current payload
+        self._overall = None         # last progress.overall payload
+        self._unsubscribe = service.events.subscribe(self._on_event)
+
+    # ── menu actions ─────────────────────────────────────────────────────────
+    def open(self):
+        """Tray 'Open': bring the window back from the tray."""
+        restore_window(self._window)
+
+    def scan_now(self):
+        """Tray 'Scan Now': focus the app, show the Watch List, then scan —
+        the monolith's _tray_scan_now, whose tab select is a hash route here."""
+        self.open()
+        self._navigate("watchlist")
+        self._call("watchlist.scan_all")
+
+    def download_all_new(self):
+        """Tray 'Download All New': focus the app, show Downloads — the web
+        equivalent of the monolith's Main tab, where the batch progress lives
+        — then run the same action as the Watch List button."""
+        self.open()
+        self._navigate("downloads")
+        self._call("watchlist.download_all_new")
+
+    def quit(self):
+        """Tray 'Quit': drop the icon, then close the window, which is what
+        ends webview.start() and the process with it.
+
+        No close confirmation, unlike the monolith's _tray_close: the web
+        window's own X button doesn't confirm either.
+        """
+        self.stop()
+        try:
+            self._window.destroy()
+        except Exception:
+            pass
+
+    def _navigate(self, screen):
+        """Route the frontend to *screen*. The nav is hash-based (web/app.js),
+        so setting the hash is what selecting a tab was."""
+        try:
+            self._window.evaluate_js(f"location.hash = {json.dumps(screen)}")
+        except Exception:
+            pass
+
+    def _call(self, method):
+        """One tray-initiated service call, on the local transport.
+
+        A refusal — nothing pending, a job already running — is an answer to
+        the menu click, not a failure: it is notified and dropped. Nothing may
+        be raised back into pystray's menu thread.
+        """
+        try:
+            self._service.call(method, transport=LOCAL)
+        except CBError as exc:
+            self._notify(str(exc))
+        except Exception:
+            pass
+
+    def _notify(self, message):
+        """Say a refused action out loud, the monolith's _notify_tray order:
+        the activity log always, then the tray balloon if an icon is up. The
+        balloon alone would leave a Scan Now refused from the tray with
+        nothing in activity.log to explain the silence."""
+        try:
+            self._service.log_line(f"🔔 Tray: {message}")
+        except Exception:
+            pass
+        icon = self._icon
+        if icon is not None:
+            icon.notify(message, WINDOW_TITLE)
+
+    # ── window lifecycle ─────────────────────────────────────────────────────
+    def on_minimized(self):
+        """Minimize button → hide to the system tray when that option is on.
+
+        Both conditions are the monolith's _on_minimize: the setting, read
+        live so toggling it in Settings takes effect immediately, and win32 —
+        the tray is a Windows affordance and Settings only offers the option
+        there. Unlike the monolith this needs no settle delay: pywebview
+        raises `minimized` for the window itself, not for every child widget
+        being unmapped.
+        """
+        if sys.platform != "win32":
+            return
+        if not setting_is_on(self._service, "minimize_to_tray"):
+            return
+        self.hide()
+
+    def hide(self):
+        """Hide to the tray, keeping the app running.
+
+        An unavailable tray means the window simply stays minimized — this is
+        only ever reached from the minimize button, so it already is. That is
+        where this parts company with _hide_to_tray, whose fallback calls
+        iconify(): Tk generates no <Unmap> for an already-iconic window, so
+        the monolith cannot feed itself. Here, a second WindowState write is
+        answered by pywebview with another `minimized` event on another
+        thread, and with no icon to break the cycle every one of them would
+        try again. start_minimized() keeps the show-and-minimize fallback,
+        because there the window really is hidden and needs it.
+        """
+        if self._ensure() is None:
+            return
+        self._window_call("hide")
+
+    def start_minimized(self):
+        """Hand a window created hidden straight to the tray.
+
+        Two-part, exactly as the monolith: the window is created `hidden=True`
+        so it is never mapped at all (it withdraws before a single widget is
+        built, so the UI can't flash), and this half — the tray handoff, which
+        needs the event loop running — is the after(0) at the end of its
+        __init__. Returns whether the tray took it.
+
+        If the tray can't start, the window is shown minimized instead: a
+        hidden window with no icon has no way back. That is _hide_to_tray's
+        fallback, one step earlier — and the one path where minimizing is
+        right, since the window is hidden rather than already minimized (see
+        hide()).
+        """
+        if self._ensure() is not None:
+            return True
+        self._window_call("show")
+        self._window_call("minimize")
+        return False
+
+    def stop(self):
+        """Stop the icon, its tooltip timer and the event subscription.
+
+        The monolith stops its tray in _quit_app; the subscription is this
+        port's own, and left behind it would keep pushing events into a dead
+        window's tray state.
+        """
+        with self._lock:
+            self._stopped = True
+            timer, self._timer = self._timer, None
+            unsubscribe, self._unsubscribe = self._unsubscribe, None
+            icon, self._icon = self._icon, None
+        if timer is not None:
+            timer.cancel()
+        if unsubscribe is not None:
+            unsubscribe()
+        if icon is not None:
+            icon.stop()
+
+    def _window_call(self, name):
+        """pywebview marshals hide/show/minimize from any thread, but a window
+        already destroyed must not take the caller's thread down with it."""
+        try:
+            getattr(self._window, name)()
+        except Exception:
+            pass
+
+    # ── the icon ─────────────────────────────────────────────────────────────
+    def _ensure(self):
+        """Create and start the icon on first hide (lazy), as _ensure_tray
+        does. None means the tray is unavailable and the caller must fall
+        back — pystray missing, no image, a backend that refused to run, or
+        anything that went wrong on the way.
+
+        Nothing may escape: tray.py catches only ImportError around pystray,
+        pystray's own Icon construction can throw on a broken backend, and
+        every caller is on a thread nobody is watching — a window event's, or
+        webview.start()'s. A traceback there reaches no one and leaves a
+        start_minimized launch with a hidden window, no taskbar button and no
+        icon. Being the thing that guarantees a way back is this method's
+        whole job, so a failure is a None, never a raise.
+        """
+        try:
+            with self._lock:
+                if self._icon is not None or self._stopped:
+                    return self._icon
+                factory = self._tray_factory
+                if factory is None:
+                    from cratebuilder.tray import TrayIcon   # lazy: pystray
+                    factory = TrayIcon
+                icon = factory(schedule=self._spawn,
+                               on_open=self.open,
+                               on_scan=self.scan_now,
+                               on_download=self.download_all_new,
+                               on_quit=self.quit,
+                               download_text=lambda *_: self.download_label(),
+                               image=self._load_image())
+                if not icon.available or not icon.start():
+                    return None
+                self._icon = icon
+        except Exception:
+            return None
+        self._tick()
+        # Re-read rather than hand back the local: a stop() landing in the gap
+        # has already stopped this icon, and the caller must not hide the
+        # window behind a dead one.
+        with self._lock:
+            return self._icon
+
+    @staticmethod
+    def _load_image():
+        """The real app icon as a PIL image, or None to let TrayIcon draw its
+        placeholder (the monolith's _load_tray_image)."""
+        path = app_icon_path()
+        if not path:
+            return None
+        try:
+            from PIL import Image
+            return Image.open(path)
+        except Exception:
+            return None
+
+    def download_label(self):
+        """The live 'Download All New (N)' menu label, mirroring the Watch
+        List button — TrayIcon reads it through a callable for exactly that.
+
+        The count is seeded HERE, on first read, not at construction: this
+        label does not exist until an icon has been raised, while counts()
+        reads the database and scandirs the crate root and every platform
+        folder under it — which at construction is work done in main(), ahead
+        of webview.start(), delaying first paint for a menu nobody has opened.
+        Everything else about the icon is lazy; so is this. An event that
+        arrives first wins, since it is fresher than any read here.
+        """
+        if self._pending_new is None:
+            self._pending_new = self._read_pending_new()
+        return f"Download All New ({self._pending_new})"
+
+    def _read_pending_new(self):
+        """The pending-new total, or 0 when it can't be read."""
+        try:
+            return int(self._service.counts().get("pending_new") or 0)
+        except Exception:
+            return 0
+
+    def _on_event(self, type, payload):
+        """Keep the label and the tooltip current from the same bus the push
+        bridge feeds the frontend from."""
+        payload = payload or {}
+        if type == "state.patch":
+            counts = payload.get("counts") or {}
+            if "pending_new" in counts:
+                self._pending_new = int(counts.get("pending_new") or 0)
+        elif type == "watchlist.card":
+            self._statuses[payload.get("id")] = payload.get("status")
+        elif type == "progress.current":
+            self._current = payload
+        elif type == "progress.overall":
+            self._overall = payload
+        elif type == JOB_FINISHED:
+            job = payload.get("job")
+            if self._current is not None and self._current.get("job") in (job, None):
+                self._current = None
+            if self._overall is not None and self._overall.get("job") in (job, None):
+                self._overall = None
+
+    def summary(self):
+        """The multi-line hover tooltip, from the live progress and Watch List
+        state — the event-bus reading of _tray_summary.
+
+        The monolith's 'Queue: N left' line is left out: the queue panel is
+        rendered client-side from queue.row events and its remaining count has
+        no event-bus equivalent, while the overall line already carries the
+        same work as done/total.
+        """
+        lines = [WINDOW_TITLE]
+        if self._current:
+            title = str(self._current.get("title") or "").strip() or "working…"
+            if len(title) > TRAY_TITLE_MAX:
+                title = title[:TRAY_TITLE_MAX - 1] + "…"
+            lines.append(f"▶ {title}")
+        overall = self._overall or {}
+        parts = []
+        if overall.get("total"):
+            parts.append(f"{overall.get('done') or 0}/{overall['total']}")
+        if overall.get("percent") is not None:
+            parts.append(f"{overall['percent']}%")
+        if str(overall.get("eta_text") or "").strip():
+            parts.append(overall["eta_text"].strip())
+        if parts:
+            lines.append("Overall: " + "  ".join(parts))
+        scanning = sum(1 for s in self._statuses.values() if s == "scanning")
+        if scanning:
+            lines.append(f"👁 Watch List: scanning {scanning}…")
+        elif any(s == "downloading" for s in self._statuses.values()):
+            lines.append("👁 Watch List: downloading new tracks…")
+        if len(lines) == 1:
+            lines.append("Idle")
+        return "\n".join(lines)[:TRAY_TOOLTIP_LIMIT]
+
+    def _tick(self):
+        """Refresh the hover tooltip and re-arm, while the icon lives."""
+        icon = self._icon
+        if icon is None or self._stopped:
+            return
+        icon.set_title(self.summary())
+        timer = threading.Timer(TRAY_TITLE_INTERVAL, self._tick)
+        timer.daemon = True
+        with self._lock:
+            # stop() reads and cancels _timer under this lock, so arming
+            # outside it would let a stop() in the gap leave a live Timer
+            # nothing ever cancels.
+            if self._stopped:
+                return
+            self._timer = timer
+        timer.start()
 
 
 def serve_bundle_revalidated():
@@ -206,13 +583,21 @@ def restore_window(window):
     """Bring *window* back from the tray/taskbar on a second launch's
     request. pywebview marshals restore()/show() safely from a thread that
     isn't the UI thread — this is called from the single-instance listener's
-    own thread — but a race with the window already closing must not take
-    that listener thread down with it."""
-    try:
-        window.restore()
-        window.show()
-    except Exception:
-        pass
+    own thread, and from the tray menu's — but a race with the window already
+    closing must not take that thread down with it.
+
+    Both calls earn their place: restore() un-minimizes, and show() is what
+    brings back a window WindowTray hid into the tray — so they are guarded
+    separately. Sharing one `try` would let a restore() that threw skip the
+    show() behind it, and the tray's Open would be the one thing that cannot
+    reopen a tray-hidden window. pywebview's winforms restore() Invoke()s
+    without the InvokeRequired check its show() has, which is exactly the
+    asymmetry that would bite."""
+    for call in (window.restore, window.show):
+        try:
+            call()
+        except Exception:
+            pass
 
 
 def prepare_runtime_workspace():
@@ -257,6 +642,11 @@ def main():
             print(f"Remote mount could not start: {exc}", file=sys.stderr)
     webview.settings["ALLOW_DOWNLOADS"] = True       # Export CSV, log downloads
     serve_bundle_revalidated()
+    # Created hidden when the user asked to start in the tray, so the window is
+    # never mapped at all — the monolith withdraws before it builds a widget
+    # for the same reason. The handoff to the tray is the second half, once the
+    # event loop is up; see WindowTray.start_minimized.
+    start_minimized = setting_is_on(service, "start_minimized")
     window = webview.create_window(
         WINDOW_TITLE,
         index + screen,
@@ -264,7 +654,9 @@ def main():
         width=WINDOW_SIZE[0],
         height=WINDOW_SIZE[1],
         min_size=MIN_SIZE,
+        hidden=start_minimized,
     )
+    tray = WindowTray(window, service)
     # The update.apply worker calls this from its own (non-UI) thread once the
     # updater process has been handed off. window.destroy() is safe to call
     # off the main thread — pywebview marshals it — and makes webview.start()
@@ -272,10 +664,24 @@ def main():
     # PID before swapping files).
     service.on_update_restart = window.destroy
     window.events.closing += service.close
+    window.events.closing += tray.stop
+    window.events.minimized += tray.on_minimized
     listen_for_show_requests(lock, lambda: restore_window(window))
+
+    def started():
+        start_push_bridge(window, service)
+        # Explicit, like start_update_timer() above — and armed only once the
+        # bridge is subscribed, so the cards the scan repaints have somewhere
+        # to arrive. Armed before create_window, its 2.2 s settle would be
+        # spent while WebView2 was still starting; the monolith measures its
+        # after(2200, …) from a UI that is already built.
+        service.start_startup_scan()
+        if start_minimized:
+            tray.start_minimized()
+
     # private_mode=False keeps localStorage across restarts, so the database
     # viewer's column widths and order can live client-side.
-    webview.start(lambda: start_push_bridge(window, service), private_mode=False)
+    webview.start(started, private_mode=False)
 
 
 if __name__ == "__main__":
