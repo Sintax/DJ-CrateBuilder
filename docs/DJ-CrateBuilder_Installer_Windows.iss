@@ -1,5 +1,5 @@
 ; ============================================================================
-; DJ-CrateBuilder v1.3 — Inno Setup Installer (Windows)
+; DJ-CrateBuilder v2.0 — Inno Setup Installer (Windows)
 ; Installs to Program Files with admin privileges
 ; ============================================================================
 ;
@@ -15,8 +15,8 @@
 ; IMPORTANT: Replace this GUID with your own unique identifier
 AppId={{738f32f9-352c-481b-8209-2b44f04502b7}
 AppName=DJ-CrateBuilder
-AppVersion=1.3
-AppVerName=DJ-CrateBuilder v1.3
+AppVersion=2.0
+AppVerName=DJ-CrateBuilder v2.0
 AppPublisher=Corrupt Sintax
 DefaultDirName={autopf}\DJ-CrateBuilder
 DefaultGroupName=DJ-CrateBuilder
