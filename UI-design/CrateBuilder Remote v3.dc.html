@@ -1,0 +1,1050 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="_ds/nocturne-5d0f2be1-6734-49bf-b31a-d95212746ff3/styles.css">
+<script src="_ds/nocturne-5d0f2be1-6734-49bf-b31a-d95212746ff3/_ds_bundle.js"></script>
+<style>
+body{margin:0;background:#E4E6EA;font-family:'IBM Plex Sans',sans-serif}
+a{color:#CC0000}a:hover{color:#E00000}
+:focus-visible{outline:2px solid #E00000;outline-offset:2px}
+::selection{background:rgba(224,0,0,.18)}
+.dv-turn{padding:40px 44px 34px;scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 20px}
+.dv-tid{font:600 10px 'IBM Plex Mono',monospace;padding:3px 7px;background:#E00000;color:#fff;border-radius:4px;text-decoration:none}
+.dv-tname{font:500 13px/1.2 'IBM Plex Sans',sans-serif;color:#24262B}
+.dv-opts{display:flex;flex-direction:column;gap:34px;align-items:flex-start}
+.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px 'IBM Plex Mono',monospace;padding:3px 7px;background:#fff;border:1px solid #CC0000;color:#CC0000;border-radius:5px;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:8px;font:400 11.5px/1.3 'IBM Plex Sans',sans-serif;color:#565B66}
+.dv-card{max-width:100%;background:#F4F5F7;border:1px solid #CC0000;border-radius:8px;box-shadow:0 1px 3px rgba(20,22,28,.06),0 8px 24px rgba(20,22,28,.06);overflow:hidden}
+.dv-note{margin:26px 0 0;font:12px/1.6 'IBM Plex Sans',sans-serif;color:#565B66;max-width:900px}
+.cb-card{background:#fff;border:1px solid #CC0000;border-radius:8px;box-shadow:0 1px 2px rgba(20,22,28,.05)}
+.cb-btn{font:500 13px 'IBM Plex Sans',sans-serif;padding:7px 13px;border-radius:8px;background:#fff;border:1px solid #CC0000;color:#CC0000;cursor:pointer;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;transition:background .12s}
+.cb-btn:hover{background:rgba(224,0,0,.06)}
+.cb-btn:active{background:rgba(224,0,0,.14)}
+.cb-btn-fill{background:#E00000;border-color:#E00000;color:#fff}
+.cb-btn-fill:hover{background:#E60000}
+.cb-btn-quiet{border-color:#D6D9E0;color:#4B4F59}
+.cb-btn-quiet:hover{background:#EEF0F4}
+.cb-btn-warn{border-color:#CC0000;color:#fff;background:#CC0000}
+.cb-btn-warn:hover{background:#B00000}
+.cb-btn-sm{font-size:12px;padding:5px 9px;border-radius:6px}
+.cb-btn[disabled]{opacity:.42;cursor:default}
+.cb-nav{display:flex;align-items:center;gap:9px;font-size:13.5px;color:#4B4F59;text-decoration:none;padding:7px 10px;border-radius:8px;border:1px solid transparent}
+.cb-nav:hover{background:#EEF0F4;color:#24262B}
+.cb-nav-on{color:#CC0000;border:2px solid #E00000;font-weight:500;padding:6px 9px}
+.cb-nav-on:hover{background:rgba(224,0,0,.06);color:#CC0000}
+.cb-crumb{display:flex;align-items:center;gap:11px;padding:9px 14px;border-bottom:1px solid #CC0000;background:#F4F5F7;flex:none}
+.cb-back{display:inline-flex;align-items:center;gap:7px;font:500 12.5px 'IBM Plex Sans',sans-serif;color:#CC0000;text-decoration:none;padding:6px 11px;border:1px solid #CC0000;border-radius:8px;background:#fff}
+.cb-back:hover{background:rgba(224,0,0,.06)}
+.cb-btn[disabled],.cb-sel[disabled],.cb-in[disabled]{opacity:.45;cursor:not-allowed;border-color:#B4B9C3;color:#6E7480;background:#fff;box-shadow:none}
+.cb-btn[disabled]:hover{background:#fff;border-color:#B4B9C3;color:#6E7480}
+.cb-cbx[disabled]{opacity:.45;cursor:not-allowed}
+.cb-nav-c{margin-left:auto;font:500 10.5px 'IBM Plex Mono',monospace;background:#E00000;color:#fff;border-radius:9px;padding:1px 6px}
+.cb-in{font:400 13px 'IBM Plex Sans',sans-serif;width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid #D6D9E0;background:#fff;color:#24262B}
+.cb-in::placeholder{color:#727884}
+.cb-in:focus{border-color:#E00000;outline:none}
+.cb-sel{font:400 13px 'IBM Plex Sans',sans-serif;padding:8px 26px 8px 10px;border-radius:8px;border:1px solid #D6D9E0;background:#fff url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='7' viewBox='0 0 10 7'><path d='M1 1l4 4 4-4' fill='none' stroke='%234B4F59' stroke-width='1.4'/></svg>") no-repeat right 9px center;color:#24262B;appearance:none;cursor:pointer}
+.cb-sel:focus{border-color:#E00000;outline:none}
+.cb-tag{font:500 10px 'IBM Plex Sans',sans-serif;letter-spacing:.04em;text-transform:uppercase;padding:3px 7px;border-radius:5px;border:1px solid #CC0000;color:#CC0000;background:rgba(224,0,0,.05);white-space:nowrap}
+.cb-tag-grey{border-color:#D6D9E0;color:#696F7B;background:#F4F5F7}
+.cb-tag-fill{background:#E00000;border-color:#E00000;color:#fff}
+.cb-mono{font-family:'IBM Plex Mono',monospace}
+.cb-th{font:500 10px 'IBM Plex Sans',sans-serif;letter-spacing:.06em;text-transform:uppercase;color:#676D79;text-align:left;padding:0 10px 8px;border-bottom:1px solid #CC0000;white-space:nowrap}
+.cb-td{font-size:13px;color:#24262B;padding:9px 10px;border-bottom:1px solid rgba(204,0,0,.2)}
+.cb-tr:hover .cb-td{background:#FBFBFC}
+.cb-mut{color:#696F7B}
+.cb-kick{font:500 10px 'IBM Plex Sans',sans-serif;letter-spacing:.07em;text-transform:uppercase;color:#676D79}
+.cb-lab{font-size:12.5px;color:#4B4F59}
+.cb-h{font-family:'IBM Plex Sans';font-weight:600;color:#24262B;letter-spacing:-.015em;margin:0}
+.cb-row{display:flex;align-items:center;gap:12px}
+.cb-seg{display:inline-flex;border:1px solid #D6D9E0;border-radius:8px;overflow:hidden;background:#fff}
+.cb-seg span{font:500 12px 'IBM Plex Sans',sans-serif;padding:6px 11px;color:#4B4F59;border-right:1px solid #D6D9E0;cursor:pointer;white-space:nowrap}
+.cb-seg span:last-child{border-right:none}
+.cb-seg span:hover{background:#EEF0F4}
+.cb-seg .on{background:#E00000;color:#fff;border-right-color:#E00000}
+.cb-seg .on:hover{background:#E60000}
+.cb-bar{height:8px;border-radius:4px;background:#E4E6EA;border:1px solid rgba(204,0,0,.3);overflow:hidden}
+.cb-cbx{width:15px;height:15px;accent-color:#E00000;margin:0;cursor:pointer}
+.cb-slider{accent-color:#E00000;width:220px;height:16px;cursor:pointer}
+.cb-sect{font:600 13px 'IBM Plex Sans',sans-serif;color:#24262B;letter-spacing:-.01em}
+.cb-div{height:1px;background:rgba(204,0,0,.22)}
+.cb-toolbar{display:flex;align-items:center;gap:10px;padding:9px 14px;background:#fff;border-bottom:1px solid #CC0000;flex-wrap:wrap}
+.cb-vsep{width:1px;align-self:stretch;background:#D6D9E0;margin:0 2px}
+.cb-statbar{display:flex;gap:22px;padding:6px 14px;background:#fff;border-top:1px solid #CC0000;font:400 11px 'IBM Plex Mono',monospace;color:#6B7280}
+.cb-pathbar{padding:5px 14px;background:#F4F5F7;border-top:1px solid rgba(204,0,0,.22);font:400 11px 'IBM Plex Mono',monospace;color:#626875}
+.cb-log{font:400 12px/1.65 'IBM Plex Mono',monospace;background:#fff;padding:10px 14px;overflow:hidden}
+.cb-log div{white-space:pre-wrap}
+.cb-ts{color:#6B7280}
+.cb-dl{color:#127A3E}.cb-sk{color:#A66300}.cb-er{color:#CC0000}.cb-df{color:#4B4F59}.cb-dbg{color:#6E7480}.cb-warn{color:#A66300}
+.cb-hl{background:#FFE9A8;color:#24262B}
+.cb-hlc{background:#FF9A3D;color:#24262B}
+.tt{position:relative;display:inline-flex}
+.tt-b{display:block}
+.tt-pop{position:absolute;top:calc(100% + 7px);left:0;z-index:60;width:max-content;max-width:300px;background:#24262B;color:#F4F5F7;font:400 11.5px/1.5 'IBM Plex Sans',sans-serif;padding:8px 10px;border-radius:6px;border:1px solid #E00000;box-shadow:0 6px 20px rgba(20,22,28,.28);opacity:0;pointer-events:none;transition:opacity .1s;white-space:pre-line;text-transform:none;letter-spacing:0}
+.tt:hover .tt-pop{opacity:1}
+.tt-r .tt-pop{left:auto;right:0}
+.tt-up .tt-pop{top:auto;bottom:calc(100% + 7px)}
+.tt-on .tt-pop{opacity:1}
+.tt-static{display:block}
+.tt-static .tt-pop{position:static;display:block;opacity:1;margin-top:8px;max-width:100%;width:auto;box-shadow:none}
+.cb-help{width:14px;height:14px;flex:none;border:1px solid #6E7480;border-radius:3px;color:#6E7480;font:600 9px/12px 'IBM Plex Sans',sans-serif;align-items:center;justify-content:center;cursor:help;background:#fff}
+.cb-help:hover{border-color:#E00000;color:#CC0000}
+.cb-menu{background:#fff;border:1px solid #CC0000;border-radius:7px;box-shadow:0 8px 26px rgba(20,22,28,.18);padding:4px;min-width:190px}
+.cb-menu div{font-size:12.5px;color:#24262B;padding:6px 9px;border-radius:5px;cursor:pointer}
+.cb-menu div:hover{background:rgba(224,0,0,.08);color:#CC0000}
+.cb-dim{background:rgba(36,38,43,.55);padding:30px;display:flex;justify-content:center}
+.cb-modal{background:#fff;border:1px solid #CC0000;border-radius:8px;box-shadow:0 18px 50px rgba(20,22,28,.4);width:100%;display:flex;flex-direction:column}
+.cb-mhead{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid #CC0000}
+.cb-mtitle{font:600 15px 'IBM Plex Sans',sans-serif;color:#24262B;letter-spacing:-.01em}
+.cb-mbody{padding:16px 18px;display:flex;flex-direction:column;gap:13px}
+.cb-mfoot{display:flex;align-items:center;gap:9px;padding:13px 18px;border-top:1px solid rgba(204,0,0,.22);background:#FAFAFB}
+.cb-pick{display:flex;gap:11px;align-items:flex-start;padding:11px 12px;border:1px solid #D6D9E0;border-radius:7px;cursor:pointer}
+.cb-pick:hover{background:#FBFBFC;border-color:#CC0000}
+.cb-pick.on{border-color:#E00000;border-width:2px;padding:10px 11px;background:rgba(224,0,0,.04)}
+.cb-warnbox{font:400 11.5px/1.6 'IBM Plex Sans',sans-serif;color:#4B4F59;background:rgba(255,140,0,.08);border:1px solid #CC7A00;border-radius:6px;padding:9px 11px}
+</style>
+</helmet>
+<section class="dv-turn" id="t3">
+<div class="dv-thd"><a class="dv-tid" href="#t3">3</a><span class="dv-tname">Side-panel shell, finalized — every surface of the app, with tooltips, log viewers and the database browser</span></div>
+<div class="dv-opts">
+
+<div class="dv-opt" id="3a"><div class="dv-olabel"><a class="dv-oid" href="#3a">3a</a>Overview — the landing screen after pairing. Hover any control for its tooltip; the pattern itself is documented in <a class="dv-oid" href="#3l">3l</a>.</div>
+<div class="dv-card" style="width:1240px">
+<div style="display:flex;min-height:600px">
+<div style="width:236px;flex:none;border-right:1px solid #CC0000;background:#fff;padding:18px 16px;display:flex;flex-direction:column;gap:20px">
+<div class="cb-row" style="gap:9px"><img src="assets/logo.png" alt="DJ-CrateBuilder" width="22" height="22" style="border-radius:5px;display:block;flex:none"><span style="font-weight:600;font-size:14.5px;color:#24262B;letter-spacing:-.01em">CrateBuilder</span><span class="cb-tag">Remote</span></div>
+<div style="display:flex;flex-direction:column;gap:8px">
+<div class="cb-kick">Quick actions</div>
+<span class="tt tt-b"><input class="cb-in" placeholder="Paste a URL to download…"><span class="tt-pop">Paste a YouTube or SoundCloud link — single track, playlist or whole channel. Enter queues it with the genre picked on Downloads.</span></span>
+<span class="tt tt-b"><button class="cb-btn cb-btn-fill" style="justify-content:center;width:100%">Add to batch</button><span class="tt-pop">Queue the link in the URL field above, tagged with the genre you picked. Pressing Enter in the URL field does the same thing.</span></span>
+<span class="tt tt-b"><button class="cb-btn" style="justify-content:center;width:100%">Scan all channels</button><span class="tt-pop">Check every channel for new uploads since the last scan.</span></span>
+</div>
+<div style="display:flex;flex-direction:column;gap:2px;margin-top:52px">
+<div class="cb-kick" style="margin-bottom:5px">Navigate</div>
+<a class="cb-nav cb-nav-on" href="#3a">Overview</a>
+<a class="cb-nav" href="#3b">Downloads</a>
+<a class="cb-nav" href="#3d">Watch List<span class="cb-nav-c">63</span></a>
+
+
+
+<a class="cb-nav" href="#3j">Settings</a>
+</div>
+<div style="margin-top:auto;display:flex;flex-direction:column;gap:8px;padding-top:14px;border-top:1px solid rgba(204,0,0,.22)">
+<span class="tt tt-b"><span class="cb-row" style="gap:8px;font-size:12px;color:#6B7280"><span style="width:7px;height:7px;border-radius:50%;background:{{ hostDot }}"></span><span class="cb-mono" style="font-size:11px">{{ hostLabel }}</span></span><span class="tt-pop">The desktop app this browser is paired with. Offline means the host process is not running — controls are read-only until it returns.</span></span>
+<span class="cb-mono cb-mut" style="font-size:10.5px">v1.3 · build 60</span>
+</div>
+</div>
+<div style="flex:1;padding:20px 24px;display:flex;flex-direction:column;gap:16px">
+<div class="cb-row"><h4 class="cb-h" style="font-size:20px">Overview</h4><span class="cb-mut" style="font-size:12.5px">Library <span class="cb-mono">1,204</span> tracks · <span class="cb-mono">9</span> genres · <span class="cb-mono">5</span> channels</span>
+<div style="margin-left:auto" class="cb-row">
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm">⟳ Refresh</button><span class="tt-pop">Reload every panel from the host.</span></span>
+<span class="tt tt-r"><span style="position:relative;display:grid;place-items:center;width:30px;height:30px;border:1px solid #CC0000;border-radius:8px;background:#fff;cursor:pointer"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#CC0000" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2a4.4 4.4 0 0 0-4.4 4.4c0 3-1.4 4.2-1.4 4.2h11.6s-1.4-1.2-1.4-4.2A4.4 4.4 0 0 0 8 2Z"></path><path d="M6.6 13.4a1.6 1.6 0 0 0 2.8 0"></path></svg><span style="position:absolute;top:-3px;right:-3px;min-width:15px;height:15px;border-radius:8px;background:#E00000;color:#fff;font:500 9.5px/15px 'IBM Plex Mono',monospace;text-align:center">3</span></span><span class="tt-pop">Scan results, finished batches and errors pushed from the host.</span></span>
+</div></div>
+<div style="display:grid;grid-template-columns:1.4fr 1fr;gap:14px">
+<div class="cb-card" style="padding:16px 18px;display:flex;flex-direction:column;gap:13px">
+<div class="cb-row"><span class="cb-kick">Now running</span><span class="cb-tag cb-tag-fill">Batch</span><span class="cb-mut cb-mono" style="margin-left:auto;font-size:11.5px">12 / 63 · ~41 min left</span></div>
+<div><div class="cb-row" style="gap:8px;margin-bottom:7px;align-items:baseline"><span style="font-size:13.5px;color:#24262B">Neon Bass Radio — Midnight Circuit (Extended Mix)</span><span class="cb-mut cb-mono" style="margin-left:auto;font-size:11.5px">64% · 2.1 MB/s · 320k</span></div><div class="cb-bar"><div style="width:64%;height:100%;background:#E00000"></div></div></div>
+<div><div class="cb-row" style="gap:8px;margin-bottom:7px"><span class="cb-lab">Overall</span><span class="cb-mut cb-mono" style="margin-left:auto;font-size:11.5px">19%</span></div><div class="cb-bar"><div style="width:19%;height:100%;background:rgba(224,0,0,.45)"></div></div></div>
+<div class="cb-row" style="gap:8px;margin-top:2px">
+<span class="tt"><button class="cb-btn cb-btn-sm">⏸ Pause</button><span class="tt-pop">Hold the batch after the current track finishes. Resume picks up at the next URL.</span></span>
+<span class="tt"><button class="cb-btn cb-btn-quiet cb-btn-sm">Cancel</button><span class="tt-pop">Stop after the current track. Tracks already downloaded are kept.</span></span>
+<a href="#3c" style="margin-left:auto;font-size:12px">Open Downloads →</a>
+</div>
+</div>
+<div class="cb-card" style="padding:16px 18px;display:flex;flex-direction:column;gap:12px">
+<span class="cb-kick">Watch List</span>
+<div class="cb-row" style="align-items:flex-end;gap:8px"><span class="cb-mono" style="font-size:30px;font-weight:500;color:#E00000;line-height:1">63</span><span class="cb-mut" style="font-size:12.5px;padding-bottom:4px">new tracks across 5 channels</span></div>
+<div class="cb-div"></div>
+<div class="cb-row" style="font-size:12.5px;color:#4B4F59"><span>Next auto-download</span><span class="cb-mono" style="margin-left:auto">in 7 h 12 m</span></div>
+<div class="cb-row" style="font-size:12.5px;color:#4B4F59"><span>Last full scan</span><span class="cb-mono" style="margin-left:auto">2 min ago</span></div>
+<span class="tt tt-b tt-up"><button class="cb-btn" style="justify-content:center;width:100%">⬇ Download All New (63)</button><span class="tt-pop">Download all pending new tracks across every channel.</span></span>
+</div>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px">
+<div class="cb-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:9px"><span class="cb-kick">Recent activity</span>
+<div style="display:flex;flex-direction:column;gap:3px"><div style="font-size:12.5px;color:#24262B">Scan complete — <span class="cb-mono">63</span> new across <span class="cb-mono">5</span> channels</div><div class="cb-mut cb-mono" style="font-size:11px;white-space:nowrap">4 min ago</div></div>
+<div style="display:flex;flex-direction:column;gap:3px"><div style="font-size:12.5px;color:#24262B">Download finished — Liquid Sessions, <span class="cb-mono">3</span> tracks</div><div class="cb-mut cb-mono" style="font-size:11px;white-space:nowrap">1 h ago</div></div>
+<div style="display:flex;flex-direction:column;gap:3px"><div style="font-size:12.5px;color:#24262B">Repair Track Tags — <span class="cb-mono">1,204</span> files</div><div class="cb-mut cb-mono" style="font-size:11px;white-space:nowrap">2 h ago</div></div>
+<a href="#3e" style="font-size:12px;margin-top:2px">Activity Log →</a></div>
+<div class="cb-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:9px"><span class="cb-kick">Needs attention</span>
+<div class="cb-row" style="gap:8px;font-size:12.5px;color:#24262B"><span class="cb-tag">1 link</span>Garage Archive is unresolved</div>
+<div class="cb-row" style="gap:8px;font-size:12.5px;color:#24262B"><span class="cb-tag cb-tag-grey">14</span>tracks held as unavailable</div>
+<div class="cb-row" style="gap:8px;font-size:12.5px;color:#24262B"><span class="cb-tag cb-tag-grey">0</span>duplicate database rows</div>
+<a href="#3d" style="font-size:12px;margin-top:2px">Watch List →</a></div>
+<div class="cb-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:9px"><span class="cb-kick">Host</span>
+<div class="cb-row" style="font-size:12.5px;color:#4B4F59"><span>Save directory</span><span class="cb-mono cb-mut" style="margin-left:auto;font-size:11px">~/Music/DJ-CrateBuilder</span></div>
+<div class="cb-row" style="font-size:12.5px;color:#4B4F59"><span>Output</span><span class="cb-mono" style="margin-left:auto;font-size:11.5px">MP3 320 kbps</span></div>
+<div class="cb-row" style="font-size:12.5px;color:#4B4F59"><span>Cookies</span><span class="cb-mono" style="margin-left:auto;font-size:11.5px">Firefox · 214</span></div>
+<a href="#3j" style="font-size:12px;margin-top:2px">Settings →</a></div>
+</div>
+</div></div></div></div>
+
+<div class="dv-opt" id="3b"><div class="dv-olabel"><a class="dv-oid" href="#3b">3b</a>Downloads — idle. URL, genre, batch queue with per-row controls, skip-existing, the progress card at rest.</div>
+<div class="dv-card" style="width:1240px">
+<div style="display:flex;min-height:660px">
+<div style="width:236px;flex:none;border-right:1px solid #CC0000;background:#fff;padding:18px 16px;display:flex;flex-direction:column;gap:20px">
+<div class="cb-row" style="gap:9px"><img src="assets/logo.png" alt="DJ-CrateBuilder" width="22" height="22" style="border-radius:5px;display:block;flex:none"><span style="font-weight:600;font-size:14.5px;color:#24262B;letter-spacing:-.01em">CrateBuilder</span><span class="cb-tag">Remote</span></div>
+<div style="display:flex;flex-direction:column;gap:8px"><div class="cb-kick">Quick actions</div>
+<input class="cb-in" placeholder="Paste a URL to download…">
+<button class="cb-btn cb-btn-fill" style="justify-content:center;width:100%">Add to batch</button>
+<button class="cb-btn" style="justify-content:center;width:100%">Scan all channels</button></div>
+<div style="display:flex;flex-direction:column;gap:2px;margin-top:52px"><div class="cb-kick" style="margin-bottom:5px">Navigate</div>
+<a class="cb-nav" href="#3a">Overview</a><a class="cb-nav cb-nav-on" href="#3b">Downloads</a><a class="cb-nav" href="#3d">Watch List<span class="cb-nav-c">63</span></a><a class="cb-nav" href="#3j">Settings</a></div>
+<div style="margin-top:auto;padding-top:14px;border-top:1px solid rgba(204,0,0,.22)" class="cb-row"><span class="cb-row" style="gap:8px;font-size:12px;color:#6B7280"><span style="width:7px;height:7px;border-radius:50%;background:{{ hostDot }}"></span><span class="cb-mono" style="font-size:11px">{{ hostLabel }}</span></span></div>
+</div>
+<div style="flex:1;padding:20px 24px;display:flex;flex-direction:column;gap:16px;max-width:900px">
+<div class="cb-row"><h4 class="cb-h" style="font-size:20px">Downloads</h4><span class="cb-tag cb-tag-grey">Idle</span></div>
+
+<div class="cb-card" style="padding:16px 18px;display:flex;flex-direction:column;gap:13px">
+<div class="cb-row"><span class="cb-kick">Add a link</span>
+<div class="cb-seg" style="margin-left:auto"><span class="on">YouTube</span><span>SoundCloud</span></div>
+<span class="tt tt-r cb-help">?<span class="tt-pop">Platform is detected from the URL you paste; this only sets which folder tree the download is filed under when a link is ambiguous.</span></span>
+</div>
+<div style="display:flex;gap:10px;align-items:flex-end">
+<div style="flex:1"><div class="cb-kick" style="margin-bottom:5px">URL</div><span class="tt tt-b"><input class="cb-in" placeholder="https://www.youtube.com/…   or   https://soundcloud.com/…"><span class="tt-pop">Single track, playlist, or an entire channel. Recent URLs are kept as history — the wheel will not change this field.</span></span></div>
+<div style="width:190px"><div class="cb-kick" style="margin-bottom:5px">Genre</div><select class="cb-sel" style="width:100%"><option>Drum n Bass</option><option>House</option><option>Techno</option><option>UK Garage</option><option>(none)</option></select></div>
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet">+ New genre</button><span class="tt-pop">Create a genre folder under the platform tree. Tracks with no genre are filed under _No Genre.</span></span>
+<span class="tt tt-r"><button class="cb-btn cb-btn-fill">+ Add to Batch</button><span class="tt-pop">Queue the link in the URL field above, tagged with the genre you picked. Pressing Enter in the URL field does the same thing.</span></span>
+</div></div>
+
+<div class="cb-card" style="padding:14px 18px;display:flex;flex-direction:column;gap:10px">
+<div class="cb-row"><span class="cb-kick">Batch queue</span><span class="cb-mut cb-mono" style="font-size:11.5px">3 URLs</span>
+<span class="tt cb-help">?<span class="tt-pop">Paste a link, pick a genre, press Add to Batch.
+Repeat to stack as many links as you want — each can have its own genre.
+Use the ▲ ▼ buttons on a row to reorder it, or ✕ to remove it; 'Clear All' empties the whole queue.
+When you press 'Start Downloads', every link in the queue is processed top to bottom.</span></span>
+<span class="tt tt-r" style="margin-left:auto"><button class="cb-btn cb-btn-quiet cb-btn-sm">Clear All</button><span class="tt-pop">Empty the whole queue. Nothing already downloaded is affected.</span></span></div>
+<div style="display:flex;flex-direction:column">
+<div class="cb-row" style="gap:10px;padding:8px 0;border-bottom:1px solid rgba(204,0,0,.2)"><span class="cb-mut cb-mono" style="width:14px;font-size:11.5px">1</span><span class="cb-mono" style="font-size:12px;color:#24262B;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">youtube.com/@DeepHouseDaily — channel</span><span class="cb-tag cb-tag-grey">House</span>
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:3px 7px" disabled="{{ true }}">⏭</button><span class="tt-pop">Skip this URL in the running batch, immediately: if it's the one downloading now, the download is interrupted on the spot and the batch moves straight on to the next URL.
+
+Only available while a batch is running.</span></span>
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:3px 7px">▲</button><span class="tt-pop">Move this URL up in the queue</span></span>
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:3px 7px">▼</button><span class="tt-pop">Move this URL down in the queue</span></span>
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:3px 7px">✕</button><span class="tt-pop">Remove this URL from the queue</span></span></div>
+<div class="cb-row" style="gap:10px;padding:8px 0;border-bottom:1px solid rgba(204,0,0,.2)"><span class="cb-mut cb-mono" style="width:14px;font-size:11.5px">2</span><span class="cb-mono" style="font-size:12px;color:#24262B;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">soundcloud.com/neonbassradio/sets/liquid-selections — playlist</span><span class="cb-tag cb-tag-grey">Drum n Bass</span><button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:3px 7px" disabled="{{ true }}">⏭</button><button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:3px 7px">▲</button><button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:3px 7px">▼</button><button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:3px 7px">✕</button></div>
+<div class="cb-row" style="gap:10px;padding:8px 0"><span class="cb-mut cb-mono" style="width:14px;font-size:11.5px">3</span><span class="cb-mono" style="font-size:12px;color:#24262B;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">youtube.com/watch?v=kX9pL2 — single track</span><span class="cb-tag cb-tag-grey">Techno</span><button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:3px 7px" disabled="{{ true }}">⏭</button><button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:3px 7px">▲</button><button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:3px 7px">▼</button><button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:3px 7px">✕</button></div>
+</div></div>
+
+<div class="cb-row" style="gap:12px;flex-wrap:wrap">
+<label class="cb-row" style="gap:8px;cursor:pointer"><input type="checkbox" class="cb-cbx" checked><span style="font-size:13px;color:#24262B">Skip files already downloaded</span></label>
+<select class="cb-sel"><option>In Database ~ In Folder</option><option>In Folder Only</option><option>In Database Only</option></select>
+<span class="tt cb-help">?<span class="tt-pop">How an already-downloaded track is recognised:
+
+• In Database ~ In Folder — skip if it's in the downloads database OR already on disk (safest).
+• In Folder Only — skip only if the file exists in the destination folder.
+• In Database Only — skip only if the database says it was downloaded before, even if the file has since been moved or deleted.</span></span>
+<span class="tt tt-r" style="margin-left:auto"><button class="cb-btn cb-btn-quiet">📂 Open Main Folder</button><span class="tt-pop">Reveal the save directory in the host machine's file manager. Local host only.</span></span>
+</div>
+
+<div class="cb-row" style="gap:10px">
+<span class="tt tt-up" style="flex:1"><button class="cb-btn cb-btn-fill" style="width:100%;justify-content:center;font-size:14.5px;padding:11px">Start Downloads</button><span class="tt-pop">Process every link in the queue, top to bottom.</span></span>
+<button class="cb-btn cb-btn-quiet" disabled="{{ true }}">Cancel</button>
+<button class="cb-btn cb-btn-quiet" disabled="{{ true }}">⏸ Pause</button>
+</div>
+
+<div class="cb-card" style="padding:15px 18px;display:flex;flex-direction:column;gap:13px;opacity:.6">
+<div class="cb-row" style="gap:10px;align-items:baseline"><span class="cb-kick">Current</span><span class="cb-mut" style="font-size:13.5px">—</span></div>
+<div class="cb-bar"></div>
+<div class="cb-row" style="gap:10px;align-items:baseline"><span class="cb-kick">Overall</span><span class="cb-mut" style="font-size:12.5px">—</span></div>
+<div class="cb-bar"></div>
+</div>
+<div><div class="cb-row" style="gap:8px;margin-bottom:8px"><span class="cb-kick">Queue</span><span class="cb-mut cb-mono" style="font-size:11.5px">empty</span></div>
+<div class="cb-card" style="padding:12px 14px;font:400 12px/1.7 'IBM Plex Mono',monospace;color:#6B7280;min-height:74px">Queue is empty — add links above, then press Start Downloads.</div></div>
+</div></div></div></div>
+
+<div class="dv-opt" id="3c"><div class="dv-olabel"><a class="dv-oid" href="#3c">3c</a>Downloads — batch running. Live progress, per-row queue states, skip enabled on the active URL.</div>
+<div class="dv-card" style="width:1240px">
+<div style="display:flex;min-height:620px">
+<div style="width:236px;flex:none;border-right:1px solid #CC0000;background:#fff;padding:18px 16px;display:flex;flex-direction:column;gap:20px">
+<div class="cb-row" style="gap:9px"><img src="assets/logo.png" alt="DJ-CrateBuilder" width="22" height="22" style="border-radius:5px;display:block;flex:none"><span style="font-weight:600;font-size:14.5px;color:#24262B;letter-spacing:-.01em">CrateBuilder</span><span class="cb-tag">Remote</span></div>
+<div style="display:flex;flex-direction:column;gap:8px"><div class="cb-kick">Quick actions</div>
+<input class="cb-in" placeholder="Paste a URL to download…">
+<button class="cb-btn cb-btn-fill" style="justify-content:center;width:100%">Add to batch</button>
+<span class="tt tt-b"><button class="cb-btn" style="justify-content:center;width:100%" disabled="{{ true }}">Scan all channels</button><span class="tt-pop">Unavailable while a batch is running — a scan and a download can't share the host's yt-dlp session.</span></span></div>
+<div style="display:flex;flex-direction:column;gap:2px;margin-top:20px"><div class="cb-kick" style="margin-bottom:5px">Navigate</div>
+<a class="cb-nav" href="#3a">Overview</a><a class="cb-nav cb-nav-on" href="#3c">Downloads</a><a class="cb-nav" href="#3d">Watch List<span class="cb-nav-c">63</span></a><a class="cb-nav" href="#3j">Settings</a></div>
+<div style="margin-top:auto;padding-top:14px;border-top:1px solid rgba(204,0,0,.22);display:flex;flex-direction:column;gap:7px">
+<div class="cb-row" style="gap:8px;font-size:12px;color:#6B7280"><span style="width:7px;height:7px;border-radius:50%;background:{{ hostDot }}"></span><span class="cb-mono" style="font-size:11px">{{ hostLabel }}</span></div>
+<div class="cb-bar" style="height:5px"><div style="width:19%;height:100%;background:#E00000"></div></div>
+<span class="cb-mono cb-mut" style="font-size:10.5px">Batch 12 / 63</span>
+</div>
+</div>
+<div style="flex:1;padding:20px 24px;display:flex;flex-direction:column;gap:14px;max-width:900px">
+<div class="cb-row"><h4 class="cb-h" style="font-size:20px">Downloads</h4><span class="cb-tag cb-tag-fill">Batch running</span>
+<div style="margin-left:auto" class="cb-row" style="gap:10px">
+<span class="tt tt-r"><button class="cb-btn">⏸ Pause</button><span class="tt-pop">Hold the batch after the current track finishes.</span></span>
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet">Cancel</button><span class="tt-pop">Stop after the current track. Tracks already downloaded are kept.</span></span>
+</div></div>
+<div class="cb-card" style="padding:16px 18px;display:flex;flex-direction:column;gap:14px">
+<div><div class="cb-row" style="gap:10px;margin-bottom:8px;align-items:baseline"><span class="cb-kick">Current</span><span style="font-size:13.5px;color:#24262B">Neon Bass Radio — Midnight Circuit (Extended Mix)</span><span class="cb-mono" style="margin-left:auto;font-size:11.5px;color:#127A3E">320 kbps</span><span class="cb-mut cb-mono" style="font-size:11.5px">2.1 MB/s · 64%</span></div><div class="cb-bar"><div style="width:64%;height:100%;background:#E00000"></div></div></div>
+<div><div class="cb-row" style="gap:10px;margin-bottom:8px;align-items:baseline"><span class="cb-kick">Overall</span><span class="cb-mut" style="font-size:12.5px"><span class="cb-mono">12</span> of <span class="cb-mono">63</span> · <span class="cb-mono">9</span> downloaded · <span class="cb-mono">2</span> skipped · <span class="cb-mono">1</span> error</span><span class="cb-mut cb-mono" style="margin-left:auto;font-size:11.5px">~41 min left · 19%</span></div><div class="cb-bar"><div style="width:19%;height:100%;background:rgba(224,0,0,.45)"></div></div></div>
+</div>
+<div class="cb-card" style="padding:14px 18px;display:flex;flex-direction:column;gap:10px">
+<div class="cb-row"><span class="cb-kick">Batch queue</span><span class="cb-mut cb-mono" style="font-size:11.5px">3 URLs · running #2</span></div>
+<div class="cb-row" style="gap:10px;padding:8px 0;border-bottom:1px solid rgba(204,0,0,.2);opacity:.55"><span class="cb-mono" style="width:14px;font-size:11.5px;color:#127A3E">✓</span><span class="cb-mono" style="font-size:12px;flex:1">youtube.com/@DeepHouseDaily — channel</span><span class="cb-tag cb-tag-grey">Done</span></div>
+<div class="cb-row" style="gap:10px;padding:8px 0;border-bottom:1px solid rgba(204,0,0,.2)"><span class="cb-mono" style="width:14px;font-size:11.5px;color:#CC0000">▶</span><span class="cb-mono" style="font-size:12px;flex:1;color:#24262B;font-weight:500">soundcloud.com/neonbassradio/sets/liquid-selections</span><span class="cb-tag cb-tag-fill">Running</span><span class="tt tt-r"><button class="cb-btn cb-btn-warn cb-btn-sm">⏭ Skip</button><span class="tt-pop">Skip this URL in the running batch, immediately: if it's the one downloading now, the download is interrupted on the spot and the batch moves straight on to the next URL.</span></span></div>
+<div class="cb-row" style="gap:10px;padding:8px 0"><span class="cb-mut cb-mono" style="width:14px;font-size:11.5px">3</span><span class="cb-mono" style="font-size:12px;flex:1;color:#4B4F59">youtube.com/watch?v=kX9pL2 — single track</span><span class="cb-tag">Pending</span><span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm">⏭</button><span class="tt-pop">Pass over this URL when the batch reaches it.</span></span></div>
+</div>
+<div><div class="cb-row" style="gap:8px;margin-bottom:8px"><span class="cb-kick">Queue</span><span class="cb-mut cb-mono" style="font-size:11.5px">63 tracks · 12 processed</span></div>
+<div class="cb-card cb-log" style="padding:12px 14px">
+<div><span class="cb-dl">✓  Sundown Terrace                          </span><span class="cb-mut">Deep House Daily   6:12   320k</span></div>
+<div><span class="cb-dl">✓  Amber Rooms (Original Mix)                </span><span class="cb-mut">Deep House Daily   7:04   320k</span></div>
+<div><span class="cb-sk">⊘  Warehouse Set, March                     </span><span class="cb-mut">over time limit — 2:14:09</span></div>
+<div><span class="cb-er">✗  Fracture Point                           </span><span class="cb-mut">HTTP 403 — retrying (2/3)</span></div>
+<div style="background:rgba(224,0,0,.07);border-radius:4px;padding:0 4px;margin:0 -4px"><span style="color:#24262B;font-weight:500">▶  Midnight Circuit (Extended Mix)          </span><span style="color:#63697A">Neon Bass Radio   7:48   64%</span></div>
+<div><span class="cb-mut">·  Bassline Study 04                        Garage Archive     4:41   queued</span></div>
+<div><span class="cb-mut">·  Liquid Selections 12                     Neon Bass Radio    5:03   queued</span></div>
+</div></div>
+</div></div></div></div>
+
+<div class="dv-opt" id="3d"><div class="dv-olabel"><a class="dv-oid" href="#3d">3d</a>Watch List — channel cards over the pinned scan log, with the unresolved-link case and per-card actions.</div>
+<div class="dv-card" style="width:1240px">
+<div style="display:flex;min-height:720px">
+<div style="width:236px;flex:none;border-right:1px solid #CC0000;background:#fff;padding:18px 16px;display:flex;flex-direction:column;gap:20px">
+<div class="cb-row" style="gap:9px"><img src="assets/logo.png" alt="DJ-CrateBuilder" width="22" height="22" style="border-radius:5px;display:block;flex:none"><span style="font-weight:600;font-size:14.5px;color:#24262B;letter-spacing:-.01em">CrateBuilder</span><span class="cb-tag">Remote</span></div>
+<div style="display:flex;flex-direction:column;gap:8px"><div class="cb-kick">Quick actions</div>
+<input class="cb-in" placeholder="Paste a URL to download…">
+<button class="cb-btn cb-btn-fill" style="justify-content:center;width:100%">Add to batch</button>
+<button class="cb-btn" style="justify-content:center;width:100%">Scan all channels</button></div>
+<div style="display:flex;flex-direction:column;gap:2px;margin-top:52px"><div class="cb-kick" style="margin-bottom:5px">Navigate</div>
+<a class="cb-nav" href="#3a">Overview</a><a class="cb-nav" href="#3b">Downloads</a><a class="cb-nav cb-nav-on" href="#3d">Watch List<span class="cb-nav-c">63</span></a><a class="cb-nav" href="#3j">Settings</a></div>
+<div style="margin-top:auto;padding-top:14px;border-top:1px solid rgba(204,0,0,.22)" class="cb-row"><span class="cb-row" style="gap:8px;font-size:12px;color:#6B7280"><span style="width:7px;height:7px;border-radius:50%;background:{{ hostDot }}"></span><span class="cb-mono" style="font-size:11px">{{ hostLabel }}</span></span></div>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+<div style="padding:20px 24px 0;display:flex;flex-direction:column;gap:12px">
+<div class="cb-row"><h4 class="cb-h" style="font-size:20px">Watch List</h4><span class="cb-mut" style="font-size:12.5px"><span class="cb-mono">5</span> channels · <span class="cb-mono">63</span> new</span></div>
+<div class="cb-row" style="gap:8px;flex-wrap:wrap">
+<span class="tt"><button class="cb-btn cb-btn-fill">+ Add Channel</button><span class="tt-pop">Track a YouTube or SoundCloud channel so new uploads are found automatically.</span></span>
+<span class="tt"><button class="cb-btn" style="border-color:#CC7A00;color:#A66300">🛠 Check Links</button><span class="tt-pop">Look up the real YouTube channel for any folder that still needs one, so it can be scanned. Shows the top matches to choose from.</span></span>
+<span class="tt"><button class="cb-btn">⬇ Download All New (63)</button><span class="tt-pop">Download all pending new tracks across every channel.</span></span>
+<span class="tt"><button class="cb-btn">🔍 Scan for new</button><span class="tt-pop">Check every channel for new uploads since the last scan.</span></span>
+<span class="tt"><button class="cb-btn cb-btn-quiet" disabled="{{ true }}">✕ Cancel</button><span class="tt-pop">Stop all in-progress Watch List scans and downloads.</span></span>
+<span class="cb-mono" style="margin-left:auto;font-size:11.5px;color:#CC0000">Next auto-download in 7 h 12 m</span>
+</div></div>
+<div style="flex:1;padding:14px 24px 16px;display:flex;flex-direction:column;gap:10px;overflow:hidden">
+<div class="cb-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:8px">
+<div class="cb-row" style="gap:9px"><span class="tt"><a href="#3d" style="font-weight:600;font-size:14.5px;color:#24262B;text-decoration:none;border-bottom:1px dotted #CC0000">Deep House Daily</a><span class="tt-pop">Open channel page:
+youtube.com/@DeepHouseDaily</span></span><span class="cb-tag cb-tag-grey">YouTube</span><span class="cb-tag">House</span><span class="cb-mono" style="margin-left:auto;color:#CC0000;font-size:12.5px;font-weight:500">7 new</span></div>
+<div class="cb-mut cb-mono" style="font-size:11px">Last scan 2 min ago · 81 downloaded · added Apr 02, 2026 · idle</div>
+<div class="cb-row" style="gap:5px;flex-wrap:wrap">
+<span class="tt"><button class="cb-btn cb-btn-quiet cb-btn-sm">🔍 Scan</button><span class="tt-pop">Check this channel for new uploads without downloading anything.</span></span>
+<span class="tt"><button class="cb-btn cb-btn-quiet cb-btn-sm">⚡ Force Download</button><span class="tt-pop">Re-download every track from this channel, including ones already in your library.</span></span>
+<span class="tt"><button class="cb-btn cb-btn-sm">⬇ Download New (7)</button><span class="tt-pop">Download this channel's new tracks — the ones counted since the last scan — into its folder.
+
+If another Watch List download is already running, this channel is added to that run's queue instead: it appears in the Batch Queue behind the channels already listed and downloads in turn. Pressing it again while queued does nothing — a channel is never queued twice.</span></span>
+<span class="tt"><button class="cb-btn cb-btn-quiet cb-btn-sm">✏ Edit</button><span class="tt-pop">Change this channel's link or download settings.</span></span>
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm">✕ Remove</button><span class="tt-pop">Removes this channel entry from the Watch List only — no downloaded files or folders are deleted.</span></span>
+</div></div>
+<div class="cb-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:8px;border-color:#E00000;border-width:2px">
+<div class="cb-row" style="gap:9px"><span style="font-weight:600;font-size:14.5px;color:#24262B">Neon Bass Radio</span><span class="cb-tag cb-tag-grey">SoundCloud</span><span class="cb-tag">Drum n Bass</span><span class="cb-tag cb-tag-fill">Downloading</span><span class="cb-mono" style="margin-left:auto;color:#CC0000;font-size:12.5px;font-weight:500">12 new · 5 done</span></div>
+<div class="cb-bar" style="height:6px"><div style="width:42%;height:100%;background:#E00000"></div></div>
+<div class="cb-mut cb-mono" style="font-size:11px">Midnight Circuit (Extended Mix) — 64% · 214 downloaded</div>
+<div class="cb-row" style="gap:5px;flex-wrap:wrap">
+<button class="cb-btn cb-btn-quiet cb-btn-sm" disabled="{{ true }}">🔍 Scan</button>
+<button class="cb-btn cb-btn-quiet cb-btn-sm" disabled="{{ true }}">⚡ Force Download</button>
+<button class="cb-btn cb-btn-sm" disabled="{{ true }}">⬇ Download New (12)</button>
+<button class="cb-btn cb-btn-quiet cb-btn-sm" disabled="{{ true }}">✏ Edit</button>
+<span class="tt tt-r"><button class="cb-btn cb-btn-warn cb-btn-sm">✕ Cancel</button><span class="tt-pop">Stop the scan or download running on this channel.</span></span>
+</div></div>
+<div class="cb-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:8px">
+<div class="cb-row" style="gap:9px"><span style="font-weight:600;font-size:14.5px;color:#24262B">Garage Archive</span><span class="cb-tag cb-tag-grey">YouTube</span><span class="cb-tag">UK Garage</span><span class="cb-tag" style="border-color:#CC7A00;color:#8F5600;background:rgba(255,140,0,.08)">Link unresolved</span><span class="cb-mono" style="margin-left:auto;color:#CC0000;font-size:12.5px;font-weight:500">41 new</span></div>
+<div class="cb-mut cb-mono" style="font-size:11px">Last scan 5 min ago · 12 downloaded · folder has no canonical channel id</div>
+<div class="cb-row" style="gap:5px;flex-wrap:wrap">
+<button class="cb-btn cb-btn-quiet cb-btn-sm">🔍 Scan</button>
+<button class="cb-btn cb-btn-quiet cb-btn-sm">⚡ Force Download</button>
+<button class="cb-btn cb-btn-sm">⬇ Download New (41)</button>
+<span class="tt"><button class="cb-btn cb-btn-sm" style="background:#FF8C00;border-color:#FF8C00;color:#1a1a1a;font-weight:600">🛠 Fix Link</button><span class="tt-pop">Search YouTube for this channel by name and pick the right match, so scans can resolve it. Duplicate entries are detected before the link is saved.</span></span>
+<button class="cb-btn cb-btn-quiet cb-btn-sm">✏ Edit</button>
+<button class="cb-btn cb-btn-quiet cb-btn-sm">✕ Remove</button>
+</div></div>
+<div class="cb-row" style="justify-content:center;gap:8px;padding:2px 0"><span class="cb-mut" style="font-size:11.5px">Techno Warehouse · Liquid Sessions</span><a href="#3d" style="font-size:11.5px">show 2 more</a></div>
+</div>
+<div style="height:6px;background:#E4E6EA;border-top:1px solid rgba(204,0,0,.22);border-bottom:1px solid rgba(204,0,0,.22);cursor:ns-resize;display:grid;place-items:center"><span style="width:34px;height:2px;background:#B4B9C3;border-radius:1px"></span></div>
+<div style="background:#fff;display:flex;flex-direction:column">
+<div class="cb-row" style="padding:8px 14px;border-bottom:1px solid rgba(204,0,0,.22);gap:10px"><span class="cb-kick">Scan log</span><span class="cb-mut cb-mono" style="font-size:11px">live · pinned</span>
+<div style="margin-left:auto" class="cb-row" style="gap:8px">
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm">Clear</button><span class="tt-pop">Clear the pinned log view. The Activity Log on disk is untouched.</span></span>
+<span class="tt tt-r"><a href="#3e" class="cb-btn cb-btn-quiet cb-btn-sm" style="text-decoration:none">Open Activity Log ↗</a><span class="tt-pop">Open the full colour-coded Activity Log viewer.</span></span>
+</div></div>
+<div class="cb-log" style="height:156px">
+<div><span class="cb-ts">14:22:09 |</span><span class="cb-df"> SCAN     Deep House Daily — enumerating uploads…</span></div>
+<div><span class="cb-ts">14:22:14 |</span><span class="cb-df"> SCAN     Deep House Daily — 88 entries, 7 new since last scan</span></div>
+<div><span class="cb-ts">14:22:14 |</span><span class="cb-sk"> HELD     Deep House Daily — 1 premiere held back (starts 21:00)</span></div>
+<div><span class="cb-ts">14:22:31 |</span><span class="cb-df"> SCAN     Neon Bass Radio — 226 entries, 12 new since last scan</span></div>
+<div><span class="cb-ts">14:22:33 |</span><span class="cb-er"> ERROR    Garage Archive — channel id unresolved, using folder name</span></div>
+<div><span class="cb-ts">14:22:40 |</span><span class="cb-df"> SCAN     Garage Archive — 53 entries, 41 new since last scan</span></div>
+<div><span class="cb-ts">14:22:41 |</span><span class="cb-dl"> DONE     Scan complete — 63 new across 5 channels</span></div>
+</div>
+</div>
+</div></div></div></div>
+
+<div class="dv-opt" id="3e"><div class="dv-olabel"><a class="dv-oid" href="#3e">3e</a>Activity Log — opened from Settings, not the nav. The tkinter viewer as a page: filter, wrap, search with match count, stats and path bars.</div>
+<div class="dv-card" style="width:1240px">
+<div style="display:flex;min-height:600px">
+<div style="width:236px;flex:none;border-right:1px solid #CC0000;background:#fff;padding:18px 16px;display:flex;flex-direction:column;gap:20px">
+<div class="cb-row" style="gap:9px"><img src="assets/logo.png" alt="DJ-CrateBuilder" width="22" height="22" style="border-radius:5px;display:block;flex:none"><span style="font-weight:600;font-size:14.5px;color:#24262B;letter-spacing:-.01em">CrateBuilder</span><span class="cb-tag">Remote</span></div>
+<div style="display:flex;flex-direction:column;gap:8px"><div class="cb-kick">Quick actions</div>
+<input class="cb-in" placeholder="Paste a URL to download…">
+<button class="cb-btn cb-btn-fill" style="justify-content:center;width:100%">Add to batch</button>
+<button class="cb-btn" style="justify-content:center;width:100%">Scan all channels</button></div>
+<div style="display:flex;flex-direction:column;gap:2px;margin-top:52px"><div class="cb-kick" style="margin-bottom:5px">Navigate</div>
+<a class="cb-nav" href="#3a">Overview</a><a class="cb-nav" href="#3b">Downloads</a><a class="cb-nav" href="#3d">Watch List<span class="cb-nav-c">63</span></a><a class="cb-nav cb-nav-on" href="#3j">Settings</a></div>
+<div style="margin-top:auto;padding-top:14px;border-top:1px solid rgba(204,0,0,.22)" class="cb-row"><span class="cb-row" style="gap:8px;font-size:12px;color:#6B7280"><span style="width:7px;height:7px;border-radius:50%;background:{{ hostDot }}"></span><span class="cb-mono" style="font-size:11px">{{ hostLabel }}</span></span></div>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;min-width:0;background:#fff">
+<div class="cb-crumb"><span class="tt"><a class="cb-back" href="#3j">‹ Settings</a><span class="tt-pop">Back to Settings — the log viewers and the database browser open from there, and are not listed in the side panel.</span></span><span class="cb-mut" style="font-size:12.5px">Activity Log</span></div>
+<div class="cb-toolbar">
+<span class="cb-lab">Filter:</span>
+<span class="tt"><select class="cb-sel" style="width:130px"><option>All</option><option>Downloaded</option><option>Skipped</option><option>Errors</option></select><span class="tt-pop">Choose which log entries to show — all, downloaded, skipped, or errors.</span></span>
+<span class="cb-vsep"></span>
+<span class="tt"><button class="cb-btn cb-btn-sm" style="border-color:#127A3E;color:#127A3E;background:rgba(18,122,62,.06)">Wrap: On</button><span class="tt-pop">Toggle line wrapping for long entries.</span></span>
+<span class="cb-vsep"></span>
+<span class="cb-lab">Search:</span>
+<input class="cb-in" value="Fracture" style="width:190px">
+<span class="tt"><button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:4px 8px">▲</button><span class="tt-pop">Jump to the previous search match.</span></span>
+<span class="tt"><button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:4px 8px">▼</button><span class="tt-pop">Jump to the next search match.</span></span>
+<span class="tt"><button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:4px 8px">✕</button><span class="tt-pop">Clear the search and its highlights.</span></span>
+<span class="cb-mono cb-mut" style="font-size:11px;width:66px">2 of 6</span>
+<div style="margin-left:auto" class="cb-row" style="gap:8px">
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm">⤒</button><span class="tt-pop">Jump to the top of the log.</span></span>
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm">⤓</button><span class="tt-pop">Jump to the newest entry.</span></span>
+<span class="cb-vsep"></span>
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm">⟳ Refresh</button><span class="tt-pop">Reload the log file from disk.</span></span>
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm">⤓ Download</button><span class="tt-pop">Remote replacement for “System Viewer” — the host's text editor can't be opened from a browser, so the log is sent to you as a file instead.</span></span>
+</div></div>
+<div class="cb-log" style="flex:1;background:#FBFBFC">
+<div><span class="cb-ts">2026-08-25 14:19:02 |</span><span class="cb-df"> ════════ BATCH START — 3 URLs — MP3 320 kbps ════════</span></div>
+<div><span class="cb-ts">2026-08-25 14:19:44 |</span><span class="cb-dl"> DOWNLOADED  Deep House Daily — Sundown Terrace.mp3   6:12   320 kbps</span></div>
+<div><span class="cb-ts">2026-08-25 14:20:31 |</span><span class="cb-dl"> DOWNLOADED  Deep House Daily — Amber Rooms (Original Mix).mp3   7:04</span></div>
+<div><span class="cb-ts">2026-08-25 14:20:33 |</span><span class="cb-sk"> SKIPPED     Deep House Daily — Warehouse Set, March   over time limit (2:14:09 &gt; 15:00)</span></div>
+<div><span class="cb-ts">2026-08-25 14:20:35 |</span><span class="cb-sk"> SKIPPED     Deep House Daily — Terrace Dub   already in database</span></div>
+<div><span class="cb-ts">2026-08-25 14:21:12 |</span><span class="cb-er"> ERROR       Neon Bass Radio — <span class="cb-hlc">Fracture</span> Point   HTTP 403 Forbidden — retry 2 of 3</span></div>
+<div><span class="cb-ts">2026-08-25 14:21:58 |</span><span class="cb-dl"> DOWNLOADED  Neon Bass Radio — <span class="cb-hl">Fracture</span> Point.mp3   5:03   320 kbps   art embedded</span></div>
+<div><span class="cb-ts">2026-08-25 14:22:41 |</span><span class="cb-df"> SCAN        Watch List — 63 new across 5 channels</span></div>
+<div><span class="cb-ts">2026-08-25 14:23:06 |</span><span class="cb-er"> ERROR       Garage Archive — channel id unresolved, falling back to folder name</span></div>
+<div><span class="cb-ts">2026-08-25 14:24:20 |</span><span class="cb-dl"> DOWNLOADED  Neon Bass Radio — Midnight Circuit (Extended Mix).mp3   7:48</span></div>
+<div><span class="cb-ts">2026-08-25 14:24:22 |</span><span class="cb-df"> ════════ BATCH CANCELLED — 9 downloaded, 2 skipped, 1 error ════════</span></div>
+</div>
+<div class="cb-pathbar">~/DJ-CrateBuilder/activity.log &nbsp;·&nbsp; 2.1 MB of 5 MB limit &nbsp;·&nbsp; trimmed from the top</div>
+<div class="cb-statbar"><span>412 lines shown (total 8,904)</span><span style="color:#127A3E">✓ 268 downloaded</span><span style="color:#A66300">⊘ 121 skipped</span><span style="color:#CC0000">✗ 23 errors</span><span style="margin-left:auto">streaming · tail follows</span></div>
+</div></div></div></div>
+
+<div class="dv-opt" id="3f"><div class="dv-olabel"><a class="dv-oid" href="#3f">3f</a>Debug Log — opened from Settings. Same shell, level filter and level-coloured lines with full tracebacks.</div>
+<div class="dv-card" style="width:1240px">
+<div style="display:flex;min-height:560px">
+<div style="width:236px;flex:none;border-right:1px solid #CC0000;background:#fff;padding:18px 16px;display:flex;flex-direction:column;gap:20px">
+<div class="cb-row" style="gap:9px"><img src="assets/logo.png" alt="DJ-CrateBuilder" width="22" height="22" style="border-radius:5px;display:block;flex:none"><span style="font-weight:600;font-size:14.5px;color:#24262B;letter-spacing:-.01em">CrateBuilder</span><span class="cb-tag">Remote</span></div>
+<div style="display:flex;flex-direction:column;gap:8px"><div class="cb-kick">Quick actions</div>
+<input class="cb-in" placeholder="Paste a URL to download…">
+<button class="cb-btn cb-btn-fill" style="justify-content:center;width:100%">Add to batch</button>
+<button class="cb-btn" style="justify-content:center;width:100%">Scan all channels</button></div>
+<div style="display:flex;flex-direction:column;gap:2px;margin-top:52px"><div class="cb-kick" style="margin-bottom:5px">Navigate</div>
+<a class="cb-nav" href="#3a">Overview</a><a class="cb-nav" href="#3b">Downloads</a><a class="cb-nav" href="#3d">Watch List<span class="cb-nav-c">63</span></a><a class="cb-nav cb-nav-on" href="#3j">Settings</a></div>
+<div style="margin-top:auto;padding-top:14px;border-top:1px solid rgba(204,0,0,.22)" class="cb-row"><span class="cb-row" style="gap:8px;font-size:12px;color:#6B7280"><span style="width:7px;height:7px;border-radius:50%;background:{{ hostDot }}"></span><span class="cb-mono" style="font-size:11px">{{ hostLabel }}</span></span></div>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;min-width:0;background:#fff">
+<div class="cb-crumb"><span class="tt"><a class="cb-back" href="#3j">‹ Settings</a><span class="tt-pop">Back to Settings — the log viewers and the database browser open from there, and are not listed in the side panel.</span></span><span class="cb-mut" style="font-size:12.5px">Debug Log</span></div>
+<div class="cb-toolbar">
+<span class="cb-lab">Filter:</span>
+<span class="tt"><select class="cb-sel" style="width:110px"><option>All</option><option>INFO</option><option>ERROR</option><option>DEBUG</option></select><span class="tt-pop">Choose which debug log lines to show — all, or a single level (INFO, ERROR, DEBUG).</span></span>
+<span class="cb-vsep"></span>
+<span class="tt"><button class="cb-btn cb-btn-sm" style="border-color:#127A3E;color:#127A3E;background:rgba(18,122,62,.06)">Wrap: On</button><span class="tt-pop">Toggle line wrapping for long entries.</span></span>
+<span class="cb-vsep"></span>
+<span class="cb-lab">Search:</span><input class="cb-in" placeholder="cookie" style="width:190px">
+<button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:4px 8px">▲</button><button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:4px 8px">▼</button><button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:4px 8px">✕</button>
+<span class="cb-mono cb-mut" style="font-size:11px;width:66px">no match</span>
+<div style="margin-left:auto" class="cb-row" style="gap:8px">
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm">⟳ Refresh</button><span class="tt-pop">Reload the debug log from disk.</span></span>
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm">⤓ Download</button><span class="tt-pop">Send the debug log to this browser as a file — the right thing to attach to a bug report.</span></span>
+</div></div>
+<div class="cb-log" style="flex:1;background:#FBFBFC">
+<div><span class="cb-ts">14:18:59.220</span><span class="cb-df"> INFO     | CFG | cookies: browser=firefox profile=cratebuilder container=none</span></div>
+<div><span class="cb-ts">14:18:59.284</span><span class="cb-dbg"> DEBUG    | YDL | opts: format=bestaudio/best sleep_interval=4 max_sleep=11 geo_bypass=False</span></div>
+<div><span class="cb-ts">14:18:59.301</span><span class="cb-dbg"> DEBUG    | YDL | user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) rv:127.0</span></div>
+<div><span class="cb-ts">14:19:02.114</span><span class="cb-df"> INFO     | DB  | schema initialized at ~/DJ-CrateBuilder/cratebuilder.db (v7)</span></div>
+<div><span class="cb-ts">14:19:02.118</span><span class="cb-df"> INFO     | DB  | unique path index present — duplicate protection active</span></div>
+<div><span class="cb-ts">14:21:12.667</span><span class="cb-warn"> WARNING  | YDL | 403 on itag 251, retrying with android client</span></div>
+<div><span class="cb-ts">14:21:12.670</span><span class="cb-er"> ERROR    | YDL | Fracture Point — HTTP Error 403: Forbidden</span></div>
+<div><span class="cb-ts">14:21:12.671</span><span class="cb-er">              Traceback (most recent call last):</span></div>
+<div><span class="cb-ts">14:21:12.671</span><span class="cb-er">                File "cratebuilder/ydl.py", line 214, in extract</span></div>
+<div><span class="cb-ts">14:21:12.671</span><span class="cb-er">                  info = ydl.extract_info(url, download=True)</span></div>
+<div><span class="cb-ts">14:21:12.671</span><span class="cb-er">              yt_dlp.utils.DownloadError: HTTP Error 403: Forbidden</span></div>
+<div><span class="cb-ts">14:21:58.902</span><span class="cb-df"> INFO     | TAG | APIC written — 1 frame, 84 KB, 640×640 JPEG</span></div>
+<div><span class="cb-ts">14:22:33.014</span><span class="cb-warn"> WARNING  | WL  | Garage Archive — channel_id null, search-based healing needed</span></div>
+</div>
+<div class="cb-pathbar">~/DJ-CrateBuilder/debug.log &nbsp;·&nbsp; 4.6 MB of 5 MB limit</div>
+<div class="cb-statbar"><span>1,208 lines shown (total 41,663)</span><span>ℹ 902 info</span><span style="color:#6E7480">· 214 debug</span><span style="color:#A66300">⚠ 61 warning</span><span style="color:#CC0000">✗ 31 error</span><span style="margin-left:auto">streaming · tail follows</span></div>
+</div></div></div></div>
+
+<div class="dv-opt" id="3g"><div class="dv-olabel"><a class="dv-oid" href="#3g">3g</a>Database → Downloads, opened from Settings. Group-by tree, filters, sortable draggable columns, right-click menu open, Help tooltip.</div>
+<div class="dv-card" style="width:1240px">
+<div style="display:flex;min-height:660px">
+<div style="width:236px;flex:none;border-right:1px solid #CC0000;background:#fff;padding:18px 16px;display:flex;flex-direction:column;gap:20px">
+<div class="cb-row" style="gap:9px"><img src="assets/logo.png" alt="DJ-CrateBuilder" width="22" height="22" style="border-radius:5px;display:block;flex:none"><span style="font-weight:600;font-size:14.5px;color:#24262B;letter-spacing:-.01em">CrateBuilder</span><span class="cb-tag">Remote</span></div>
+<div style="display:flex;flex-direction:column;gap:8px"><div class="cb-kick">Quick actions</div>
+<input class="cb-in" placeholder="Paste a URL to download…">
+<button class="cb-btn cb-btn-fill" style="justify-content:center;width:100%">Add to batch</button>
+<button class="cb-btn" style="justify-content:center;width:100%">Scan all channels</button></div>
+<div style="display:flex;flex-direction:column;gap:2px;margin-top:52px"><div class="cb-kick" style="margin-bottom:5px">Navigate</div>
+<a class="cb-nav" href="#3a">Overview</a><a class="cb-nav" href="#3b">Downloads</a><a class="cb-nav" href="#3d">Watch List<span class="cb-nav-c">63</span></a><a class="cb-nav cb-nav-on" href="#3j">Settings</a></div>
+<div style="margin-top:auto;padding-top:14px;border-top:1px solid rgba(204,0,0,.22)" class="cb-row"><span class="cb-row" style="gap:8px;font-size:12px;color:#6B7280"><span style="width:7px;height:7px;border-radius:50%;background:{{ hostDot }}"></span><span class="cb-mono" style="font-size:11px">{{ hostLabel }}</span></span></div>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;min-width:0;background:#fff">
+<div class="cb-crumb"><span class="tt"><a class="cb-back" href="#3j">‹ Settings</a><span class="tt-pop">Back to Settings — the log viewers and the database browser open from there, and are not listed in the side panel.</span></span><span class="cb-mut" style="font-size:12.5px">Database → Downloads</span></div>
+<div class="cb-row" style="padding:10px 14px 0;gap:6px">
+<a href="#3g" class="cb-btn cb-btn-sm" style="text-decoration:none;border-width:2px;border-color:#E00000">⬇ Downloads</a>
+<a href="#3h" class="cb-btn cb-btn-quiet cb-btn-sm" style="text-decoration:none">👁 Watch List</a>
+<a href="#3i" class="cb-btn cb-btn-quiet cb-btn-sm" style="text-decoration:none">🖼 Artwork</a>
+<span class="tt tt-r" style="margin-left:auto"><button class="cb-btn cb-btn-quiet cb-btn-sm">❔ Help</button><span class="tt-pop" style="max-width:400px">DOWNLOADS TAB
+• Group by — change how rows nest (e.g. Platform › Genre › Channel).
+• Platform / Genre filters — hide rows that don't match the selection.
+• Search — live-filter rows by any column text.
+• ⊞ / ⊟ — expand or collapse every group at once.
+• Click a column header to sort; drag a header to reorder columns.
+• Double-click a row to open the file.
+• Right-click a row for Open File / Open Containing Folder / Copy Path.
+• ⤓ Export CSV — write the current view to a .csv file.
+• ⟳ Refresh — reload from the database.
+
+Column widths and order are remembered between sessions.</span></span>
+</div>
+<div class="cb-toolbar" style="margin-top:10px">
+<span class="cb-lab">Group by:</span>
+<span class="tt"><select class="cb-sel" style="width:200px"><option>Platform › Genre › Channel</option><option>Genre › Channel</option><option>Channel</option><option>Platform › Channel</option></select><span class="tt-pop">Change how rows nest under one another.</span></span>
+<span class="cb-vsep"></span>
+<span class="cb-lab">Platform:</span><select class="cb-sel" style="width:118px"><option>All platforms</option><option>YouTube</option><option>SoundCloud</option></select>
+<span class="cb-lab">Genre:</span><select class="cb-sel" style="width:130px"><option>All genres</option><option>House</option><option>Drum n Bass</option></select>
+<span class="cb-lab">Search:</span><input class="cb-in" placeholder="any column…" style="width:150px">
+<div style="margin-left:auto" class="cb-row" style="gap:8px">
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm">⊞</button><span class="tt-pop">Expand all groups</span></span>
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm">⊟</button><span class="tt-pop">Collapse all groups</span></span>
+<span class="cb-vsep"></span>
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm">⟳ Refresh</button><span class="tt-pop">Reload from the database.</span></span>
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm">⤓ Export CSV</button><span class="tt-pop">Write the current view to a .csv file.</span></span>
+</div></div>
+<div style="flex:1;position:relative;overflow:auto">
+<table style="width:100%;border-collapse:collapse">
+<thead><tr>
+<th class="cb-th" style="padding-left:14px;width:330px"><span class="tt"><span style="cursor:pointer;border-bottom:1px dotted #CC0000">Title / Group ▾</span><span class="tt-pop">Click to sort. Drag onto another header to reorder columns — the order is remembered between sessions.</span></span></th>
+<th class="cb-th">Channel</th><th class="cb-th">Genre</th><th class="cb-th">Platform</th><th class="cb-th">Upload</th><th class="cb-th">Downloaded</th><th class="cb-th" style="text-align:right;padding-right:14px">Bitrate</th>
+</tr></thead>
+<tbody>
+<tr class="cb-tr" style="background:#F4F5F7"><td class="cb-td" style="padding-left:14px;font-weight:600">▾ YouTube <span class="cb-mut cb-mono" style="font-weight:400;font-size:11.5px">840 tracks</span></td><td class="cb-td"></td><td class="cb-td"></td><td class="cb-td"></td><td class="cb-td"></td><td class="cb-td"></td><td class="cb-td"></td></tr>
+<tr class="cb-tr" style="background:#FAFAFB"><td class="cb-td" style="padding-left:32px;font-weight:600">▾ House <span class="cb-mut cb-mono" style="font-weight:400;font-size:11.5px">312</span></td><td class="cb-td"></td><td class="cb-td"></td><td class="cb-td"></td><td class="cb-td"></td><td class="cb-td"></td><td class="cb-td"></td></tr>
+<tr class="cb-tr" style="background:#FAFAFB"><td class="cb-td" style="padding-left:50px;font-weight:500">▾ Deep House Daily <span class="cb-mut cb-mono" style="font-weight:400;font-size:11.5px">81</span></td><td class="cb-td"></td><td class="cb-td"></td><td class="cb-td"></td><td class="cb-td"></td><td class="cb-td"></td><td class="cb-td"></td></tr>
+<tr class="cb-tr"><td class="cb-td" style="padding-left:68px">Sundown Terrace</td><td class="cb-td cb-mut">Deep House Daily</td><td class="cb-td cb-mut">House</td><td class="cb-td cb-mut">YouTube</td><td class="cb-td cb-mut cb-mono" style="font-size:12px">2026-05-19</td><td class="cb-td cb-mut cb-mono" style="font-size:12px">2026-08-25 14:19</td><td class="cb-td cb-mono" style="text-align:right;padding-right:14px">320</td></tr>
+<tr class="cb-tr" style="background:#FAFAFB"><td class="cb-td" style="padding-left:68px">Amber Rooms (Original Mix)</td><td class="cb-td cb-mut">Deep House Daily</td><td class="cb-td cb-mut">House</td><td class="cb-td cb-mut">YouTube</td><td class="cb-td cb-mut cb-mono" style="font-size:12px">2026-05-11</td><td class="cb-td cb-mut cb-mono" style="font-size:12px">2026-08-25 14:20</td><td class="cb-td cb-mono" style="text-align:right;padding-right:14px">320</td></tr>
+<tr class="cb-tr" style="background:rgba(224,0,0,.06)"><td class="cb-td" style="padding-left:68px;font-weight:500">Terrace Dub</td><td class="cb-td cb-mut">Deep House Daily</td><td class="cb-td cb-mut">House</td><td class="cb-td cb-mut">YouTube</td><td class="cb-td cb-mut cb-mono" style="font-size:12px">2026-04-28</td><td class="cb-td cb-mut cb-mono" style="font-size:12px">2026-07-02 09:14</td><td class="cb-td cb-mono" style="text-align:right;padding-right:14px">192</td></tr>
+<tr class="cb-tr" style="background:#FAFAFB"><td class="cb-td" style="padding-left:50px;font-weight:500">▸ Techno Warehouse <span class="cb-mut cb-mono" style="font-weight:400;font-size:11.5px">129</span></td><td class="cb-td"></td><td class="cb-td"></td><td class="cb-td"></td><td class="cb-td"></td><td class="cb-td"></td><td class="cb-td"></td></tr>
+<tr class="cb-tr" style="background:#F4F5F7"><td class="cb-td" style="padding-left:14px;font-weight:600">▸ SoundCloud <span class="cb-mut cb-mono" style="font-weight:400;font-size:11.5px">364 tracks</span></td><td class="cb-td"></td><td class="cb-td"></td><td class="cb-td"></td><td class="cb-td"></td><td class="cb-td"></td><td class="cb-td"></td></tr>
+</tbody></table>
+<div class="cb-menu" style="position:absolute;top:196px;left:210px">
+<div>Open File</div><div>Open Containing Folder</div><div>Copy Path</div>
+<div style="border-top:1px solid rgba(204,0,0,.22);margin-top:3px;padding-top:6px">Copy Source URL</div>
+</div>
+</div>
+<div class="cb-statbar"><span>1,204 rows · 8 groups</span><span>9 genres</span><span>5 channels</span><span style="margin-left:auto">sorted by Downloaded ▾</span></div>
+</div></div></div></div>
+
+<div class="dv-opt" id="3h"><div class="dv-olabel"><a class="dv-oid" href="#3h">3h</a>Database → Watch List. Every tracked channel as a row, with the Folders Cleanup ticks and a disabled-cell explainer.</div>
+<div class="dv-card" style="width:1240px">
+<div style="display:flex;min-height:520px">
+<div style="width:236px;flex:none;border-right:1px solid #CC0000;background:#fff;padding:18px 16px;display:flex;flex-direction:column;gap:20px">
+<div class="cb-row" style="gap:9px"><img src="assets/logo.png" alt="DJ-CrateBuilder" width="22" height="22" style="border-radius:5px;display:block;flex:none"><span style="font-weight:600;font-size:14.5px;color:#24262B;letter-spacing:-.01em">CrateBuilder</span><span class="cb-tag">Remote</span></div>
+<div style="display:flex;flex-direction:column;gap:8px"><div class="cb-kick">Quick actions</div>
+<input class="cb-in" placeholder="Paste a URL to download…">
+<button class="cb-btn cb-btn-fill" style="justify-content:center;width:100%">Add to batch</button>
+<button class="cb-btn" style="justify-content:center;width:100%">Scan all channels</button></div>
+<div style="display:flex;flex-direction:column;gap:2px;margin-top:52px"><div class="cb-kick" style="margin-bottom:5px">Navigate</div>
+<a class="cb-nav" href="#3a">Overview</a><a class="cb-nav" href="#3b">Downloads</a><a class="cb-nav" href="#3d">Watch List<span class="cb-nav-c">63</span></a><a class="cb-nav cb-nav-on" href="#3j">Settings</a></div>
+<div style="margin-top:auto;padding-top:14px;border-top:1px solid rgba(204,0,0,.22)" class="cb-row"><span class="cb-row" style="gap:8px;font-size:12px;color:#6B7280"><span style="width:7px;height:7px;border-radius:50%;background:{{ hostDot }}"></span><span class="cb-mono" style="font-size:11px">{{ hostLabel }}</span></span></div>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;min-width:0;background:#fff">
+<div class="cb-crumb"><span class="tt"><a class="cb-back" href="#3j">‹ Settings</a><span class="tt-pop">Back to Settings — the log viewers and the database browser open from there, and are not listed in the side panel.</span></span><span class="cb-mut" style="font-size:12.5px">Database → Watch List</span></div>
+<div class="cb-row" style="padding:10px 14px 0;gap:6px">
+<a href="#3g" class="cb-btn cb-btn-quiet cb-btn-sm" style="text-decoration:none">⬇ Downloads</a>
+<a href="#3h" class="cb-btn cb-btn-sm" style="text-decoration:none;border-width:2px;border-color:#E00000">👁 Watch List</a>
+<a href="#3i" class="cb-btn cb-btn-quiet cb-btn-sm" style="text-decoration:none">🖼 Artwork</a>
+<span class="tt tt-r" style="margin-left:auto"><button class="cb-btn cb-btn-quiet cb-btn-sm">❔ Help</button><span class="tt-pop" style="max-width:400px">WATCH LIST TAB
+• Every tracked channel with its scan, pending-new, and download history.
+• URL Link column — the channel's source page (YouTube/SoundCloud).
+• Folder column — the local save folder for that channel.
+• Click a column header to sort; drag a header to reorder columns.
+• Right-click a row to open or copy the channel URL, or Open Folder to reveal the channel's folder in the system file manager.
+• ⟳ Refresh — reload from the database.</span></span>
+</div>
+<div class="cb-toolbar" style="margin-top:10px">
+<span class="cb-lab">Watched channels — click a column to sort</span>
+<div style="margin-left:auto" class="cb-row" style="gap:8px">
+<span class="tt tt-r"><button class="cb-btn cb-btn-warn cb-btn-sm">🧹 Folders Cleanup ‹Smart›</button><span class="tt-pop">Scans each ticked channel's live YouTube/SoundCloud listing, then flags downloaded tracks in that channel's folder that no longer appear on the channel. You review and confirm every deletion per channel before anything is removed (files go to the Recycle Bin).</span></span>
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm">⟳ Refresh</button><span class="tt-pop">Reload from the database.</span></span>
+</div></div>
+<div style="flex:1;overflow:auto">
+<table style="min-width:1040px;border-collapse:collapse">
+<thead><tr><th class="cb-th" style="padding-left:14px;width:34px"></th><th class="cb-th">Channel</th><th class="cb-th">URL Link</th><th class="cb-th">Folder</th><th class="cb-th">Platform</th><th class="cb-th">Genre</th><th class="cb-th">Last scan</th><th class="cb-th" style="text-align:right">Pending new</th><th class="cb-th" style="text-align:right">Total dl'd</th><th class="cb-th" style="padding-right:14px">Status</th></tr></thead>
+<tbody>
+<tr class="cb-tr"><td class="cb-td" style="padding-left:14px"><input type="checkbox" class="cb-cbx" checked></td><td class="cb-td" style="font-weight:500">Deep House Daily</td><td class="cb-td"><a href="#3h" class="cb-mono" style="font-size:11.5px">youtube.com/@DeepHouseDaily</a></td><td class="cb-td cb-mut cb-mono" style="font-size:11.5px">YouTube/House/Deep House Daily -(Complete Catalog)-</td><td class="cb-td cb-mut">YouTube</td><td class="cb-td cb-mut">House</td><td class="cb-td cb-mut cb-mono" style="font-size:11.5px">14:22</td><td class="cb-td cb-mono" style="text-align:right;color:#CC0000;font-weight:500">7</td><td class="cb-td cb-mono cb-mut" style="text-align:right">81</td><td class="cb-td cb-mut" style="padding-right:14px">idle</td></tr>
+<tr class="cb-tr" style="background:#FAFAFB"><td class="cb-td" style="padding-left:14px"><span class="tt"><input type="checkbox" class="cb-cbx" disabled="{{ true }}"><span class="tt-pop">Can't be cleaned while this channel is downloading — its folder is being written to. Wait for the run to finish, then tick it.</span></span></td><td class="cb-td" style="font-weight:500">Neon Bass Radio</td><td class="cb-td"><a href="#3h" class="cb-mono" style="font-size:11.5px">soundcloud.com/neonbassradio</a></td><td class="cb-td cb-mut cb-mono" style="font-size:11.5px">SoundCloud/Drum n Bass/Neon Bass Radio</td><td class="cb-td cb-mut">SoundCloud</td><td class="cb-td cb-mut">Drum n Bass</td><td class="cb-td cb-mut cb-mono" style="font-size:11.5px">14:22</td><td class="cb-td cb-mono" style="text-align:right;color:#CC0000;font-weight:500">12</td><td class="cb-td cb-mono cb-mut" style="text-align:right">214</td><td class="cb-td" style="padding-right:14px"><span class="cb-tag cb-tag-fill">downloading</span></td></tr>
+<tr class="cb-tr"><td class="cb-td" style="padding-left:14px"><input type="checkbox" class="cb-cbx"></td><td class="cb-td" style="font-weight:500">Techno Warehouse</td><td class="cb-td"><a href="#3h" class="cb-mono" style="font-size:11.5px">youtube.com/@TechnoWarehouse</a></td><td class="cb-td cb-mut cb-mono" style="font-size:11.5px">YouTube/Techno/Techno Warehouse -(Complete Catalog)-</td><td class="cb-td cb-mut">YouTube</td><td class="cb-td cb-mut">Techno</td><td class="cb-td cb-mut cb-mono" style="font-size:11.5px">14:20</td><td class="cb-td cb-mono cb-mut" style="text-align:right">0</td><td class="cb-td cb-mono cb-mut" style="text-align:right">129</td><td class="cb-td cb-mut" style="padding-right:14px">idle</td></tr>
+<tr class="cb-tr" style="background:#FAFAFB"><td class="cb-td" style="padding-left:14px"><input type="checkbox" class="cb-cbx"></td><td class="cb-td" style="font-weight:500">Liquid Sessions</td><td class="cb-td"><a href="#3h" class="cb-mono" style="font-size:11.5px">soundcloud.com/liquidsessions</a></td><td class="cb-td cb-mut cb-mono" style="font-size:11.5px">SoundCloud/Drum n Bass/Liquid Sessions</td><td class="cb-td cb-mut">SoundCloud</td><td class="cb-td cb-mut">Drum n Bass</td><td class="cb-td cb-mut cb-mono" style="font-size:11.5px">14:21</td><td class="cb-td cb-mono" style="text-align:right;color:#CC0000;font-weight:500">3</td><td class="cb-td cb-mono cb-mut" style="text-align:right">58</td><td class="cb-td cb-mut" style="padding-right:14px">idle</td></tr>
+<tr class="cb-tr"><td class="cb-td" style="padding-left:14px"><span class="tt"><input type="checkbox" class="cb-cbx" disabled="{{ true }}"><span class="tt-pop">Can't be cleaned until this channel's link is resolved — without a canonical channel id there is no live listing to compare the folder against. Use Fix Link on the Watch List first.</span></span></td><td class="cb-td" style="font-weight:500">Garage Archive</td><td class="cb-td"><span class="cb-mono" style="font-size:11.5px;color:#A66300">unresolved — folder name only</span></td><td class="cb-td cb-mut cb-mono" style="font-size:11.5px">YouTube/UK Garage/Garage Archive</td><td class="cb-td cb-mut">YouTube</td><td class="cb-td cb-mut">UK Garage</td><td class="cb-td cb-mut cb-mono" style="font-size:11.5px">14:22</td><td class="cb-td cb-mono" style="text-align:right;color:#CC0000;font-weight:500">41</td><td class="cb-td cb-mono cb-mut" style="text-align:right">12</td><td class="cb-td" style="padding-right:14px"><span class="cb-tag" style="border-color:#CC7A00;color:#8F5600;background:rgba(255,140,0,.08)">needs link</span></td></tr>
+</tbody></table>
+</div>
+<div class="cb-statbar"><span>5 channels</span><span>63 pending new</span><span>494 downloaded</span><span>1 ticked for cleanup</span><span style="margin-left:auto">sorted by Channel ▴</span></div>
+</div></div></div></div>
+
+<div class="dv-opt" id="3i"><div class="dv-olabel"><a class="dv-oid" href="#3i">3i</a>Database → Artwork. Coverage table with the sidecar/embedded distinction and a preview pane.</div>
+<div class="dv-card" style="width:1240px">
+<div style="display:flex;min-height:560px">
+<div style="width:236px;flex:none;border-right:1px solid #CC0000;background:#fff;padding:18px 16px;display:flex;flex-direction:column;gap:20px">
+<div class="cb-row" style="gap:9px"><img src="assets/logo.png" alt="DJ-CrateBuilder" width="22" height="22" style="border-radius:5px;display:block;flex:none"><span style="font-weight:600;font-size:14.5px;color:#24262B;letter-spacing:-.01em">CrateBuilder</span><span class="cb-tag">Remote</span></div>
+<div style="display:flex;flex-direction:column;gap:8px"><div class="cb-kick">Quick actions</div>
+<input class="cb-in" placeholder="Paste a URL to download…">
+<button class="cb-btn cb-btn-fill" style="justify-content:center;width:100%">Add to batch</button>
+<button class="cb-btn" style="justify-content:center;width:100%">Scan all channels</button></div>
+<div style="display:flex;flex-direction:column;gap:2px;margin-top:52px"><div class="cb-kick" style="margin-bottom:5px">Navigate</div>
+<a class="cb-nav" href="#3a">Overview</a><a class="cb-nav" href="#3b">Downloads</a><a class="cb-nav" href="#3d">Watch List<span class="cb-nav-c">63</span></a><a class="cb-nav cb-nav-on" href="#3j">Settings</a></div>
+<div style="margin-top:auto;padding-top:14px;border-top:1px solid rgba(204,0,0,.22)" class="cb-row"><span class="cb-row" style="gap:8px;font-size:12px;color:#6B7280"><span style="width:7px;height:7px;border-radius:50%;background:{{ hostDot }}"></span><span class="cb-mono" style="font-size:11px">{{ hostLabel }}</span></span></div>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;min-width:0;background:#fff">
+<div class="cb-crumb"><span class="tt"><a class="cb-back" href="#3j">‹ Settings</a><span class="tt-pop">Back to Settings — the log viewers and the database browser open from there, and are not listed in the side panel.</span></span><span class="cb-mut" style="font-size:12.5px">Database → Artwork</span></div>
+<div class="cb-row" style="padding:10px 14px 0;gap:6px">
+<a href="#3g" class="cb-btn cb-btn-quiet cb-btn-sm" style="text-decoration:none">⬇ Downloads</a>
+<a href="#3h" class="cb-btn cb-btn-quiet cb-btn-sm" style="text-decoration:none">👁 Watch List</a>
+<a href="#3i" class="cb-btn cb-btn-sm" style="text-decoration:none;border-width:2px;border-color:#E00000">🖼 Artwork</a>
+<span class="tt tt-r" style="margin-left:auto"><button class="cb-btn cb-btn-quiet cb-btn-sm">❔ Help</button><span class="tt-pop" style="max-width:400px">ARTWORK TAB
+• Every track and the cover art the database has on record for it.
+• Embedded — is the image actually written into the MP3's ID3 tag. This is the only thing Explorer and Android media players read.
+• Sidecar — the archival JPEG in the channel's hidden .artwork folder.
+• On Disk — whether that sidecar JPEG is still where the DB expects it.
+• Filter — narrow to tracks missing art, or to sidecars that have gone missing off disk.
+• Select a row to preview the image; right-click for Open Image, Open Containing Folder, Copy Image Path, or Copy Thumbnail URL.
+• 🖼 Fetch Missing Artwork — find and embed art for every track that has none.</span></span>
+</div>
+<div class="cb-toolbar" style="margin-top:10px">
+<span class="cb-lab">Filter:</span>
+<select class="cb-sel" style="width:200px"><option>All tracks</option><option>Has artwork</option><option>Missing artwork</option><option>Embedded only</option><option>Sidecar missing on disk</option></select>
+<span class="cb-lab">Search:</span><input class="cb-in" placeholder="track or channel…" style="width:170px">
+<div style="margin-left:auto" class="cb-row" style="gap:8px">
+<span class="tt tt-r"><button class="cb-btn cb-btn-sm">🖼 Fetch Missing Artwork</button><span class="tt-pop">Finds cover art for tracks you downloaded before the Cover Art feature existed, and embeds it into them. Re-uses artwork already on disk where possible, so re-running it is cheap.</span></span>
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm">⟳ Refresh</button><span class="tt-pop">Reload from the database.</span></span>
+</div></div>
+<div style="flex:1;display:flex;min-height:0">
+<div style="flex:1;overflow:auto;border-right:1px solid rgba(204,0,0,.22)">
+<table style="width:100%;border-collapse:collapse">
+<thead><tr><th class="cb-th" style="padding-left:14px">Track</th><th class="cb-th">Channel</th><th class="cb-th">Platform</th><th class="cb-th" style="text-align:center">Embedded</th><th class="cb-th">Sidecar</th><th class="cb-th" style="text-align:center">On Disk</th></tr></thead>
+<tbody>
+<tr class="cb-tr" style="background:rgba(224,0,0,.06)"><td class="cb-td" style="padding-left:14px;font-weight:500">Sundown Terrace</td><td class="cb-td cb-mut">Deep House Daily</td><td class="cb-td cb-mut">YouTube</td><td class="cb-td" style="text-align:center;color:#127A3E">✓</td><td class="cb-td cb-mut cb-mono" style="font-size:11px">.artwork/kX9pL2.jpg</td><td class="cb-td" style="text-align:center;color:#127A3E">✓</td></tr>
+<tr class="cb-tr"><td class="cb-td" style="padding-left:14px">Amber Rooms (Original Mix)</td><td class="cb-td cb-mut">Deep House Daily</td><td class="cb-td cb-mut">YouTube</td><td class="cb-td" style="text-align:center;color:#127A3E">✓</td><td class="cb-td cb-mut cb-mono" style="font-size:11px">.artwork/m2Vq81.jpg</td><td class="cb-td" style="text-align:center;color:#127A3E">✓</td></tr>
+<tr class="cb-tr" style="background:#FAFAFB"><td class="cb-td" style="padding-left:14px">Terrace Dub</td><td class="cb-td cb-mut">Deep House Daily</td><td class="cb-td cb-mut">YouTube</td><td class="cb-td" style="text-align:center;color:#CC0000">✗</td><td class="cb-td cb-mut cb-mono" style="font-size:11px">.artwork/p04Nz9.jpg</td><td class="cb-td" style="text-align:center;color:#A66300">missing</td></tr>
+<tr class="cb-tr"><td class="cb-td" style="padding-left:14px">Fracture Point</td><td class="cb-td cb-mut">Neon Bass Radio</td><td class="cb-td cb-mut">SoundCloud</td><td class="cb-td" style="text-align:center;color:#127A3E">✓</td><td class="cb-td cb-mut cb-mono" style="font-size:11px">.artwork/sc-88213.jpg</td><td class="cb-td" style="text-align:center;color:#127A3E">✓</td></tr>
+<tr class="cb-tr" style="background:#FAFAFB"><td class="cb-td" style="padding-left:14px">Bassline Study 04</td><td class="cb-td cb-mut">Garage Archive</td><td class="cb-td cb-mut">YouTube</td><td class="cb-td" style="text-align:center;color:#CC0000">✗</td><td class="cb-td cb-mut" style="font-size:12px">—</td><td class="cb-td" style="text-align:center;color:#6E7480">—</td></tr>
+</tbody></table>
+</div>
+<div style="width:266px;flex:none;padding:14px 16px;display:flex;flex-direction:column;gap:11px">
+<span class="cb-kick">Preview</span>
+<div style="width:100%;aspect-ratio:1;border:1px solid #CC0000;border-radius:8px;background:#F4F5F7;display:grid;place-items:center;color:#626875;font-size:11.5px;text-align:center;padding:12px">Cover art served from the host<br><span class="cb-mono" style="font-size:10.5px">640 × 640 JPEG · 84 KB</span></div>
+<div style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:#4B4F59">
+<div class="cb-row" style="gap:8px"><span class="cb-mut">Embedded</span><span style="margin-left:auto;color:#127A3E">APIC present</span></div>
+<div class="cb-row" style="gap:8px"><span class="cb-mut">Sidecar</span><span class="cb-mono" style="margin-left:auto;font-size:11px">.artwork/kX9pL2.jpg</span></div>
+<div class="cb-row" style="gap:8px"><span class="cb-mut">Source</span><a href="#3i" class="cb-mono" style="margin-left:auto;font-size:11px">i.ytimg.com/vi/…</a></div>
+</div>
+<div class="cb-div"></div>
+<span class="tt tt-b tt-up tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm" style="width:100%;justify-content:center">Copy Thumbnail URL</button><span class="tt-pop">Copy the source thumbnail URL — the only way back to SoundCloud art, which can't be rebuilt from the track id.</span></span>
+<span class="tt tt-b tt-up tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm" style="width:100%;justify-content:center">Re-embed on host</button><span class="tt-pop">Write the sidecar JPEG back into this track's ID3 tag on the host machine.</span></span>
+</div>
+</div>
+<div class="cb-statbar"><span>1,204 tracks</span><span style="color:#127A3E">1,108 embedded</span><span style="color:#A66300">62 sidecar missing</span><span style="color:#CC0000">96 no artwork</span><span style="margin-left:auto">92% coverage</span></div>
+</div></div></div></div>
+
+<div class="dv-opt" id="3j"><div class="dv-olabel"><a class="dv-oid" href="#3j">3j</a>Settings — full mirror of the desktop tab, every option with its <span class="cb-mono">?</span> help icon carrying the app's own copy.</div>
+<div class="dv-card" style="width:1240px">
+<div style="display:flex;min-height:900px">
+<div style="width:236px;flex:none;border-right:1px solid #CC0000;background:#fff;padding:18px 16px;display:flex;flex-direction:column;gap:20px">
+<div class="cb-row" style="gap:9px"><img src="assets/logo.png" alt="DJ-CrateBuilder" width="22" height="22" style="border-radius:5px;display:block;flex:none"><span style="font-weight:600;font-size:14.5px;color:#24262B;letter-spacing:-.01em">CrateBuilder</span><span class="cb-tag">Remote</span></div>
+<div style="display:flex;flex-direction:column;gap:8px"><div class="cb-kick">Quick actions</div>
+<input class="cb-in" placeholder="Paste a URL to download…">
+<button class="cb-btn cb-btn-fill" style="justify-content:center;width:100%">Add to batch</button>
+<button class="cb-btn" style="justify-content:center;width:100%">Scan all channels</button></div>
+<div style="display:flex;flex-direction:column;gap:2px;margin-top:52px"><div class="cb-kick" style="margin-bottom:5px">Navigate</div>
+<a class="cb-nav" href="#3a">Overview</a><a class="cb-nav" href="#3b">Downloads</a><a class="cb-nav" href="#3d">Watch List<span class="cb-nav-c">63</span></a><a class="cb-nav cb-nav-on" href="#3j">Settings</a></div>
+<div style="margin-top:auto;padding-top:14px;border-top:1px solid rgba(204,0,0,.22);display:flex;flex-direction:column;gap:6px">
+<div class="cb-row" style="gap:8px;font-size:12px;color:#6B7280"><span style="width:7px;height:7px;border-radius:50%;background:{{ hostDot }}"></span><span class="cb-mono" style="font-size:11px">{{ hostLabel }}</span></div>
+<span class="cb-mono" style="font-size:10.5px;color:#127A3E">All changes autosave</span>
+</div>
+</div>
+<div style="flex:1;padding:20px 24px;min-width:0">
+<div class="cb-row" style="margin-bottom:16px"><h4 class="cb-h" style="font-size:20px">⚙ Settings</h4><span class="cb-mut" style="font-size:12.5px">Every option writes straight to <span class="cb-mono">~/.dj_cratebuilder_config.json</span> on the host</span></div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start">
+
+<div class="cb-card" style="padding:16px 18px;display:flex;flex-direction:column;gap:12px">
+<div class="cb-row" style="gap:7px"><span class="cb-sect">Automation / Startup</span></div>
+<label class="cb-row" style="gap:8px;cursor:pointer"><input type="checkbox" class="cb-cbx"><span class="cb-lab">Run App on Startup</span></label>
+<label class="cb-row" style="gap:8px;cursor:pointer"><input type="checkbox" class="cb-cbx"><span class="cb-lab">Start App Minimized to System Tray</span></label>
+<label class="cb-row" style="gap:8px;cursor:pointer"><input type="checkbox" class="cb-cbx" checked><span class="cb-lab">Minimize to System Tray</span><span class="tt cb-help">?<span class="tt-pop">Keeps Watch-List scheduler running in the background</span></span></label>
+<label class="cb-row" style="gap:8px;cursor:pointer"><input type="checkbox" class="cb-cbx" checked><span class="cb-lab">Scan Watch List for new uploads when the app starts</span></label>
+<label class="cb-row" style="gap:8px;cursor:pointer"><input type="checkbox" class="cb-cbx" checked><span class="cb-lab">Auto-add channels to Watch List after downloading</span></label>
+<div class="cb-row" style="gap:9px;flex-wrap:wrap"><span class="cb-lab">Auto-download Watch-List channels every:</span><select class="cb-sel" style="width:104px"><option>1 day</option><option>Off</option><option>6 hours</option><option>12 hours</option><option>2 days</option></select><span class="tt cb-help">?<span class="tt-pop">How often to automatically scan every watched channel for new uploads and download them. Each run scans all channels first, then downloads everything new. Default 1 day; 'Off' disables it.</span></span></div>
+</div>
+
+<div class="cb-card" style="padding:16px 18px;display:flex;flex-direction:column;gap:12px">
+<div class="cb-row" style="gap:7px"><span class="cb-sect">Time / Length Limiter</span><span class="tt cb-help">?<span class="tt-pop">Skip any file whose duration exceeds the limit below. Uncheck to allow files of any length.</span></span></div>
+<label class="cb-row" style="gap:8px;cursor:pointer"><input type="checkbox" class="cb-cbx" checked><span class="cb-lab">Enable</span></label>
+<div class="cb-row" style="gap:9px"><span class="cb-lab" style="font-weight:500">Max Length:</span>
+<button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:2px 8px">−</button>
+<input type="range" class="cb-slider" min="1" max="180" value="15">
+<button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:2px 8px">+</button>
+<span class="cb-mono" style="font-size:14px;font-weight:500;color:#24262B;width:78px">15 min</span></div>
+<div class="cb-mut" style="font-size:11.5px">Tracks longer than this are logged as SKIPPED and never counted against a channel's pending-new list.</div>
+</div>
+
+<div class="cb-card" style="padding:16px 18px;display:flex;flex-direction:column;gap:12px">
+<div class="cb-row" style="gap:7px"><span class="cb-sect">File Output</span></div>
+<div class="cb-row" style="gap:9px"><span class="cb-lab" style="font-weight:500">Output Quality:</span><select class="cb-sel" style="width:118px"><option>320 kbps</option><option>128 kbps</option><option>192 kbps</option><option>224 kbps</option><option>256 kbps</option></select><span class="tt cb-help">?<span class="tt-pop">192 kbps = good quality  •  320 kbps = maximum MP3 quality</span></span></div>
+<label class="cb-row" style="gap:8px;cursor:pointer;align-items:flex-start"><input type="checkbox" class="cb-cbx" style="margin-top:2px"><span class="cb-lab">Auto-upgrade bitrate when the source is higher (slower)</span><span class="tt tt-r cb-help" style="margin-top:1px">?<span class="tt-pop">Probes each track's real formats before downloading and, when the source stream is higher-bitrate than your Output Quality (e.g. 256 kbps on a Premium-authenticated account), encodes the MP3 at that source bitrate instead of downgrading. Adds ~4 seconds per track and only ever helps with a YouTube Premium login — free-tier YouTube serves at most ~130-160 kbps, so this can be left off.</span></span></label>
+<label class="cb-row" style="gap:8px;cursor:pointer"><input type="checkbox" class="cb-cbx"><span class="cb-lab">Do not convert to MP3! (Keeps downloaded format)</span><span class="tt tt-r cb-help">?<span class="tt-pop">When enabled, files are saved in their original format and bitrate without conversion to MP3. YouTube typically serves .webm (Opus) or .m4a (AAC); SoundCloud serves .mp3 or .webm. Your folder will contain a mix of extensions.</span></span></label>
+<div class="cb-div"></div>
+<label class="cb-row" style="gap:8px;cursor:pointer"><input type="checkbox" class="cb-cbx" checked><span class="cb-lab">Attach cover art to files</span><span class="tt tt-r cb-help">?<span class="tt-pop">Turn off to skip artwork entirely — no thumbnail download, no hidden .artwork folder and no embedded image.</span></span></label>
+<div class="cb-row" style="gap:9px"><span class="cb-lab" style="font-weight:500">Formatting:</span><select class="cb-sel" style="width:196px"><option>On ~ Crop to square</option><option>On ~ Keep original aspect</option><option>Off</option></select><span class="tt tt-r cb-help">?<span class="tt-pop">Embeds the YouTube/SoundCloud thumbnail into each MP3 so cover art shows in Windows Explorer, media players and on Android. A copy is also kept in a hidden .artwork folder beside the tracks. Cropping to square fills the art slot; keeping 16:9 letterboxes it.</span></span></div>
+</div>
+
+<div class="cb-card" style="padding:16px 18px;display:flex;flex-direction:column;gap:12px">
+<div class="cb-row" style="gap:7px"><span class="cb-sect">Download Behavior</span><span class="tt cb-help">?<span class="tt-pop">Options that control how DJ-CrateBuilder connects and paces requests. These can help avoid throttling, geographic restrictions, or IP-banning from YouTube/SoundCloud when doing entire channel/batch downloads.</span></span></div>
+<label class="cb-row" style="gap:8px;cursor:pointer"><input type="checkbox" class="cb-cbx"><span class="cb-lab">Enable geo-bypass</span><span class="tt cb-help">?<span class="tt-pop">Bypass geographic IP-based restrictions using a fake X-Forwarded-For header</span></span></label>
+<label class="cb-row" style="gap:8px;cursor:pointer"><input type="checkbox" class="cb-cbx" checked><span class="cb-lab">Rotate User-Agent</span><span class="tt cb-help">?<span class="tt-pop">Send a randomized browser User-Agent string (consistent within each session)</span></span></label>
+<label class="cb-row" style="gap:8px;cursor:pointer"><input type="checkbox" class="cb-cbx" checked><span class="cb-lab">Throttle Requests</span><span class="tt cb-help">?<span class="tt-pop">Pause between requests to avoid rate-limiting or IP bans during large channel / batch downloads. Auto picks delays from the selected preset; Manual lets you set exact min/max seconds.</span></span></label>
+<div class="cb-row" style="gap:9px;flex-wrap:wrap"><span class="cb-lab">Mode:</span><select class="cb-sel" style="width:94px"><option>Auto</option><option>Manual</option></select>
+<span class="cb-lab">Preset:</span><span class="tt tt-r"><select class="cb-sel" style="width:150px"><option>Light</option><option>Moderate</option><option>Aggressive</option></select><span class="tt-pop">Light = Downloading 50 files or less, per 24hrs.
+Moderate = Downloading between 50-200 files, per 24hrs.
+Aggressive = Downloading 200+ files, per 24hrs.</span></span></div>
+<div class="cb-row" style="gap:9px;opacity:.5"><span class="cb-lab">Min (s)</span><input class="cb-in cb-mono" value="4" style="width:60px;padding:5px 8px"><span class="cb-lab">Max (s)</span><input class="cb-in cb-mono" value="11" style="width:60px;padding:5px 8px"><span class="cb-mut" style="font-size:11px">Enabled with Manual</span></div>
+</div>
+
+<div class="cb-card" style="padding:16px 18px;display:flex;flex-direction:column;gap:12px">
+<div class="cb-row" style="gap:7px"><span class="cb-sect">Browser Cookies</span><span class="tt cb-help">?<span class="tt-pop">Authenticate with a YouTube account for faster downloads and fewer "login required" errors. Use a dedicated/throwaway account — never your personal one. Chrome 127+ blocks cookie extraction; use Firefox or a cookie file.</span></span></div>
+<label class="cb-row" style="gap:8px;cursor:pointer"><input type="checkbox" class="cb-cbx" checked><span class="cb-lab">Use Browser Cookies</span></label>
+<div class="cb-row" style="gap:9px"><span class="cb-lab">Method:</span><select class="cb-sel" style="width:150px"><option>Browser Profile</option><option>Cookie File</option></select>
+<span class="cb-lab">Browser:</span><select class="cb-sel" style="width:112px"><option>Firefox</option><option>Chrome</option><option>Edge</option><option>Brave</option></select></div>
+<div class="cb-row" style="gap:9px"><span class="cb-lab" style="width:56px">Profile:</span><input class="cb-in cb-mono" value="cratebuilder" style="font-size:12px"></div>
+<div class="cb-row" style="gap:9px;opacity:.5"><span class="cb-lab" style="width:56px">File:</span><input class="cb-in cb-mono" placeholder="cookies.txt" style="font-size:12px"><button class="cb-btn cb-btn-quiet cb-btn-sm">Browse…</button><span class="tt tt-r cb-help">?<span class="tt-pop">Netscape/Mozilla cookie.txt format</span></span></div>
+<div class="cb-row" style="gap:8px;font-size:12px;color:#4B4F59"><span style="width:6px;height:6px;border-radius:50%;background:#127A3E"></span>Cookies loaded on host · <span class="cb-mono">214</span> · <span class="cb-mono">youtube.com</span></div>
+<div class="cb-row" style="gap:8px"><button class="cb-btn cb-btn-quiet cb-btn-sm">Test authentication</button><span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm">How-To: dedicated Firefox profile ↗</button><span class="tt-pop">Opens the built-in walkthrough for setting up a throwaway profile.</span></span></div>
+</div>
+
+<div class="cb-card" style="padding:16px 18px;display:flex;flex-direction:column;gap:12px">
+<div class="cb-row" style="gap:7px"><span class="cb-sect">Default Save Directory</span></div>
+<div class="cb-row" style="gap:9px"><input class="cb-in cb-mono" value="~/Music/DJ-CrateBuilder" style="font-size:12px"><span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm">Browse…</button><span class="tt-pop">Opens a native folder picker on the host machine. Remote browsers get a path field instead — the host validates it before saving.</span></span></div>
+<div class="cb-mut cb-mono" style="font-size:11px">YouTube/‹Genre›/‹Channel› -(Complete Catalog)-/Track.mp3</div>
+<div class="cb-div"></div>
+<div class="cb-row" style="gap:7px"><span class="cb-sect">Log Size Limit</span><select class="cb-sel" style="width:110px"><option>5 MB</option><option>1 MB</option><option>10 MB</option><option>50 MB</option><option>Unlimited</option></select><span class="tt tt-r cb-help">?<span class="tt-pop">Caps the size of the Activity Log and Debug Log (each file separately). When a log grows past this size, the oldest lines at the top are removed to make room for the newest — so the file keeps the most recent activity and never grows without bound. 'Unlimited' disables trimming.</span></span></div>
+<div class="cb-row" style="gap:8px;flex-wrap:wrap"><a href="#3e" class="cb-btn cb-btn-quiet cb-btn-sm" style="text-decoration:none">📋 Activity Log</a><a href="#3f" class="cb-btn cb-btn-quiet cb-btn-sm" style="text-decoration:none">🔍 Debug Log</a><span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm">⤓ Download both</button><span class="tt-pop">Sends activity.log and debug.log to this browser as files.</span></span></div>
+</div>
+
+<div class="cb-card" style="padding:16px 18px;display:flex;flex-direction:column;gap:12px;grid-column:span 2">
+<div class="cb-row" style="gap:7px"><span class="cb-sect">Downloads Database</span><span class="tt cb-help">?<span class="tt-pop">The SQLite database tracks every download for fast lookups and Watch List history. If it gets corrupted or deleted, rebuild it from the files on disk.</span></span><span class="cb-mono cb-mut" style="margin-left:auto;font-size:11px">~/DJ-CrateBuilder/cratebuilder.db · schema v7 · 1,204 rows</span></div>
+<div class="cb-row" style="gap:9px;flex-wrap:wrap">
+<a href="#3g" class="cb-btn cb-btn-sm" style="text-decoration:none">🗂 Open Database</a>
+<span class="tt"><button class="cb-btn cb-btn-warn cb-btn-sm">🔄 Rebuild Database from Files</button><span class="tt-pop">Scans the audio files already in your library folders and rebuilds the database from them. This is safe to run at any time — it clears and rebuilds from scratch. Cover art already on disk is reused, never re-downloaded.</span></span>
+<span class="tt"><button class="cb-btn cb-btn-warn cb-btn-sm">🧹 Remove Duplicates</button><span class="tt-pop">Collapses repeated database rows that point at the same file — the history could show a track four or five times. Only the database is touched: no audio file, cover art or Watch List entry is removed, and everything the repeated rows knew is merged onto the single row that remains. It also switches on the protection that stops them coming back.</span></span>
+<span class="tt"><button class="cb-btn cb-btn-warn cb-btn-sm">🖼 Fetch Missing Artwork</button><span class="tt-pop">Finds cover art for tracks you downloaded before the Cover Art feature existed, and embeds it into them. Re-uses artwork already on disk where possible, so re-running it is cheap.</span></span>
+<span class="tt tt-r"><button class="cb-btn cb-btn-warn cb-btn-sm">🏷 Repair Track Tags</button><span class="tt-pop" style="max-width:360px">Realigns the tags on every track in your library. The Genre tag is set to match the CrateBuilder folder the track is filed under — a track in YouTube/Drum &amp; Bass gets the genre "Drum &amp; Bass", and tracks under _No Genre have theirs cleared. Title, Encoded-by and the source URL are filled in only where a track is missing them, which is what gives a name back to tracks downloaded before CrateBuilder wrote tags. Anything you edited by hand is left alone, so re-running costs nothing. Covers MP3, M4A and Opus/Ogg files. Cancel any time — tracks already repaired keep their tags.</span></span>
+</div>
+<label class="cb-row" style="gap:8px;cursor:pointer"><input type="checkbox" class="cb-cbx" checked><span class="cb-lab">Warn about duplicates at startup</span><span class="tt cb-help">?<span class="tt-pop">Checks the database at launch and warns you if it is holding duplicate rows, since duplicate protection stays switched off until they are merged. The warning appears on every launch while any duplicates exist; untick this to silence it.</span></span></label>
+<div class="cb-row" style="gap:8px;font-size:12px;color:#4B4F59"><span style="width:6px;height:6px;border-radius:50%;background:#127A3E"></span>Unique path index present — duplicate protection active</div>
+</div>
+
+<div class="cb-card" style="padding:16px 18px;display:flex;flex-direction:column;gap:12px;grid-column:span 2">
+<div class="cb-row" style="gap:7px"><span class="cb-sect">Remote Access</span><span class="tt cb-help">?<span class="tt-pop">Remote-only section — no equivalent in the desktop app. Governs who can reach this control surface and what they are allowed to do.</span></span></div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 22px">
+<label class="cb-row" style="gap:8px;cursor:pointer"><input type="checkbox" class="cb-cbx" checked><span class="cb-lab">Allow remote control over the internet</span><span class="tt cb-help">?<span class="tt-pop">Off restricts the interface to the local network. The host still serves the same pages — only the relay is disabled.</span></span></label>
+<label class="cb-row" style="gap:8px;cursor:pointer"><input type="checkbox" class="cb-cbx" checked><span class="cb-lab">Require pairing code for new devices</span></label>
+<label class="cb-row" style="gap:8px;cursor:pointer"><input type="checkbox" class="cb-cbx"><span class="cb-lab">Read-only mode for remote devices</span><span class="tt cb-help">?<span class="tt-pop">Remote browsers can watch progress and read logs but cannot start, cancel, or change settings. Useful when the pairing code has been shared.</span></span></label>
+<label class="cb-row" style="gap:8px;cursor:pointer"><input type="checkbox" class="cb-cbx" checked><span class="cb-lab">Notify remote devices when a scan finds new tracks</span></label>
+<label class="cb-row" style="gap:8px;cursor:pointer"><input type="checkbox" class="cb-cbx" checked><span class="cb-lab">Notify when a batch completes</span></label>
+<label class="cb-row" style="gap:8px;cursor:pointer"><input type="checkbox" class="cb-cbx" checked><span class="cb-lab">Notify on errors</span></label>
+</div>
+<div class="cb-div"></div>
+<div class="cb-row" style="gap:9px"><span class="cb-lab">Paired devices</span><span class="cb-mono cb-mut" style="font-size:11.5px">2 — this browser (Aug 25) · iPhone (Aug 12)</span><span class="tt tt-r" style="margin-left:auto"><button class="cb-btn cb-btn-quiet cb-btn-sm">Revoke all &amp; re-pair</button><span class="tt-pop">Drops every paired device and issues a fresh pairing code on the host.</span></span></div>
+</div>
+
+</div></div></div></div></div>
+
+<div class="dv-opt" id="3k"><div class="dv-olabel"><a class="dv-oid" href="#3k">3k</a>Pairing, and the host-offline state the whole shell falls back to.</div>
+<div style="display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start">
+<div class="dv-card" style="width:520px;background:#fff">
+<div style="padding:42px 52px 38px;display:flex;flex-direction:column;align-items:center;text-align:center">
+<div class="cb-row" style="gap:9px;margin-bottom:22px"><img src="assets/logo.png" alt="DJ-CrateBuilder" width="26" height="26" style="border-radius:6px;display:block;flex:none"><span style="font-weight:600;font-size:17px;color:#24262B;letter-spacing:-.01em">CrateBuilder</span><span class="cb-tag">Remote</span></div>
+<h3 class="cb-h" style="font-size:21px;margin-bottom:8px">Pair with your desktop</h3>
+<p class="cb-mut" style="font-size:13.5px;max-width:350px;margin:0;line-height:1.55">On the desktop app open <span style="color:#24262B">Settings → Remote Access</span>, then scan this code — or type the pairing code below.</p>
+<div style="width:170px;height:170px;margin:20px 0 18px;border:1px solid #CC0000;border-radius:8px;background:#fff;display:grid;place-items:center">
+<svg width="124" height="124" viewBox="0 0 29 29" fill="#24262B" shape-rendering="crispEdges"><path d="M0 0h7v7H0zM22 0h7v7h-7zM0 22h7v7H0z" fill="none" stroke="#24262B" stroke-width="1.6"></path><rect x="2" y="2" width="3" height="3"></rect><rect x="24" y="2" width="3" height="3"></rect><rect x="2" y="24" width="3" height="3"></rect><path d="M9 0h2v2H9zM13 1h2v2h-2zM17 0h1v3h-1zM10 4h3v1h-3zM15 4h2v2h-2zM9 7h1v2H9zM12 8h2v2h-2zM16 8h3v1h-3zM0 10h2v2H0zM4 9h2v2H4zM7 11h3v2H7zM12 12h2v2h-2zM16 11h2v3h-2zM20 9h2v2h-2zM24 10h2v2h-2zM27 9h2v2h-2zM1 14h2v2H1zM5 14h1v3H5zM9 15h2v2H9zM14 15h3v1h-3zM19 14h2v2h-2zM23 15h2v2h-2zM26 14h2v2h-2zM0 18h2v2H0zM4 18h3v1H4zM8 19h2v2H8zM13 18h2v2h-2zM17 19h3v2h-3zM22 18h1v3h-1zM25 19h3v1h-3zM9 23h2v2H9zM13 22h1v3h-1zM16 23h3v1h-3zM21 23h2v2h-2zM25 23h2v2h-2zM10 26h3v2h-3zM15 26h2v2h-2zM19 27h3v1h-3zM24 27h2v2h-2z"></path></svg>
+</div>
+<div class="cb-mono" style="font-weight:500;font-size:32px;letter-spacing:.2em;color:#E00000">739 214</div>
+<p class="cb-mut cb-mono" style="font-size:11px;margin:8px 0 0">Code expires in 4:32</p>
+<div class="cb-div" style="width:100%;margin:24px 0 16px"></div>
+<div class="cb-row" style="gap:8px;font-size:12.5px;color:#6B7280"><span style="width:7px;height:7px;border-radius:50%;background:#E00000"></span>Waiting for <span class="cb-mono" style="font-size:12px">DESKTOP-STUDIO</span> to confirm…</div>
+</div></div>
+<div class="dv-card" style="width:520px">
+<div style="padding:0">
+<div style="background:#24262B;padding:11px 18px;display:flex;align-items:center;gap:10px"><span style="width:8px;height:8px;border-radius:50%;background:#B4B9C3"></span><span style="color:#F4F5F7;font-size:12.5px">Host offline — showing the last state received <span class="cb-mono cb-mut" style="color:#9AA0AC">14:24</span></span><button class="cb-btn cb-btn-sm" style="margin-left:auto;background:transparent;border-color:#E00000;color:#FF6B6B">Retry</button></div>
+<div style="padding:20px 22px;display:flex;flex-direction:column;gap:14px">
+<div class="cb-row"><h5 class="cb-h" style="font-size:16px">Watch List</h5><span class="cb-mut" style="font-size:12px">read-only</span></div>
+<div class="cb-card" style="padding:13px 15px;display:flex;flex-direction:column;gap:7px;opacity:.62">
+<div class="cb-row" style="gap:9px"><span style="font-weight:600;font-size:14px;color:#24262B">Deep House Daily</span><span class="cb-tag cb-tag-grey">YouTube</span><span class="cb-mono" style="margin-left:auto;font-size:12.5px;color:#6B7280">7 new</span></div>
+<div class="cb-mut cb-mono" style="font-size:11px">Last known scan 2 min before disconnect</div>
+<div class="cb-row" style="gap:5px"><button class="cb-btn cb-btn-quiet cb-btn-sm" disabled="{{ true }}">🔍 Scan</button><button class="cb-btn cb-btn-quiet cb-btn-sm" disabled="{{ true }}">⬇ Download New (7)</button><button class="cb-btn cb-btn-quiet cb-btn-sm" disabled="{{ true }}">✏ Edit</button></div>
+</div>
+<div class="cb-card" style="padding:13px 15px;display:flex;flex-direction:column;gap:7px;opacity:.62">
+<div class="cb-row" style="gap:9px"><span style="font-weight:600;font-size:14px;color:#24262B">Neon Bass Radio</span><span class="cb-tag cb-tag-grey">SoundCloud</span><span class="cb-mono" style="margin-left:auto;font-size:12.5px;color:#6B7280">12 new</span></div>
+<div class="cb-mut cb-mono" style="font-size:11px">Download was at 42% when the host went away</div>
+<div class="cb-row" style="gap:5px"><button class="cb-btn cb-btn-quiet cb-btn-sm" disabled="{{ true }}">🔍 Scan</button><button class="cb-btn cb-btn-quiet cb-btn-sm" disabled="{{ true }}">⬇ Download New (12)</button><button class="cb-btn cb-btn-quiet cb-btn-sm" disabled="{{ true }}">✏ Edit</button></div>
+</div>
+<div class="cb-mut" style="font-size:11.5px;line-height:1.6">Every control is disabled rather than hidden, and the last received state stays on screen — a remote surface that empties itself on a dropped socket reads as data loss. Queued actions are refused, not buffered: the host is the only source of truth for what actually ran.</div>
+</div>
+</div></div>
+</div></div>
+
+<div class="dv-opt" id="3l"><div class="dv-olabel"><a class="dv-oid" href="#3l">3l</a>Tooltip pattern — the three affordances, pinned open with clear space around them.</div>
+<div class="dv-card" style="width:1240px;background:#fff">
+<div style="padding:22px 26px 30px;display:flex;flex-direction:column;gap:20px">
+<div class="cb-row"><h4 class="cb-h" style="font-size:19px">Tooltip pattern</h4><span class="cb-mut" style="font-size:12.5px">One registry, two UIs — <span class="cb-mono">cratebuilder/ui_strings.py</span> feeds both tkinter and the web bundle</span></div>
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:26px">
+
+<div style="display:flex;flex-direction:column;gap:12px">
+<span class="cb-kick">1 · Control tooltip</span>
+<p class="cb-mut" style="font-size:12px;line-height:1.6;margin:0">Wraps the control itself. 350 ms hover delay, instant on keyboard focus, dismissed on Escape, long-press on touch. Used on every button in the app.</p>
+<div class="cb-mono cb-mut" style="font-size:10.5px">wl.scan_all · py:10904</div>
+<span class="tt tt-static"><button class="cb-btn" style="justify-content:center;width:100%">🔍 Scan for new</button><span class="tt-pop">Check every channel for new uploads since the last scan.</span></span>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:12px">
+<span class="cb-kick">2 · <span class="cb-mono">?</span> help icon</span>
+<p class="cb-mut" style="font-size:12px;line-height:1.6;margin:0">A 14px outlined box after a Settings row, matching <span class="cb-mono">_settings_help</span>. Used where the label needs more than a sentence.</p>
+<div class="cb-mono cb-mut" style="font-size:10.5px">settings.throttle · py:6543</div>
+<span class="tt tt-static"><span class="cb-row" style="gap:8px"><input type="checkbox" class="cb-cbx" checked><span class="cb-lab">Throttle Requests</span><span class="cb-help" style="display:inline-flex">?</span></span><span class="tt-pop">Pause between requests to avoid rate-limiting or IP bans during large channel / batch downloads. Auto picks delays from the selected preset; Manual lets you set exact min/max seconds.</span></span>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:12px">
+<span class="cb-kick">3 · Disabled-cell explainer</span>
+<p class="cb-mut" style="font-size:12px;line-height:1.6;margin:0">On a disabled control, the tooltip explains <em>why</em>, matching <span class="cb-mono">_wl_celltip</span>. Never disable a control without one — the reason string already exists in <span class="cb-mono">_wl_eligible</span>.</p>
+<div class="cb-mono cb-mut" style="font-size:10.5px">db.cleanup_ineligible_downloading · py:3399</div>
+<span class="tt tt-static"><span class="cb-row" style="gap:9px"><input type="checkbox" class="cb-cbx" disabled="{{ true }}"><span class="cb-lab" style="opacity:.5">Neon Bass Radio</span></span><span class="tt-pop">Can't be cleaned while this channel is downloading — its folder is being written to. Wait for the run to finish, then tick it.</span></span>
+</div>
+
+</div>
+<div class="cb-div"></div>
+<div class="cb-row" style="gap:26px;flex-wrap:wrap;font-size:12px;color:#4B4F59">
+<span><span class="cb-mono" style="color:#CC0000">aria-describedby</span> on the control, <span class="cb-mono" style="color:#CC0000">role="tooltip"</span> on the popover</span>
+<span>The hover-only CSS in this mockup is a convenience — wire focus and Escape in JS</span>
+<span><span class="cb-mono">62</span> strings in the registry · <span class="cb-mono">54</span> verbatim from the Python, <span class="cb-mono">8</span> remote-only</span>
+</div>
+</div></div></div>
+
+<div class="dv-opt" id="3m"><div class="dv-olabel"><a class="dv-oid" href="#3m">3m</a>Dialogs — centred modals over a dimmed page, matching the desktop app's separate windows.</div>
+<div style="display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start">
+
+<div class="dv-card" style="width:608px"><div class="cb-dim">
+<div class="cb-modal">
+<div class="cb-mhead"><span class="cb-mtitle">🛠 Fix Link — Garage Archive</span><span class="cb-tag" style="border-color:#CC7A00;color:#8F5600;background:rgba(255,140,0,.08)">Unresolved</span><button class="cb-btn cb-btn-quiet cb-btn-sm" style="margin-left:auto;padding:3px 8px">✕</button></div>
+<div class="cb-mbody">
+<p class="cb-mut" style="font-size:12.5px;line-height:1.6;margin:0">This folder has no canonical channel id, so scans fall back to the folder name. Pick the channel it belongs to — the top matches from a YouTube search for <span class="cb-mono" style="color:#24262B">"Garage Archive"</span>.</p>
+<label class="cb-pick on"><input type="radio" name="fixlink" class="cb-cbx" checked style="margin-top:2px"><span style="display:flex;flex-direction:column;gap:3px;min-width:0"><span style="font-size:13.5px;font-weight:500;color:#24262B">Garage Archive</span><span class="cb-mono cb-mut" style="font-size:11px">youtube.com/@GarageArchive · UC8kQm2… · 41.2k subscribers</span></span></label>
+<label class="cb-pick"><input type="radio" name="fixlink" class="cb-cbx" style="margin-top:2px"><span style="display:flex;flex-direction:column;gap:3px;min-width:0"><span style="font-size:13.5px;font-weight:500;color:#24262B">Garage Archive Classics</span><span class="cb-mono cb-mut" style="font-size:11px">youtube.com/@GarageArchiveClassics · UCz91La… · 8.7k subscribers</span></span></label>
+<label class="cb-pick" style="opacity:.6"><input type="radio" name="fixlink" class="cb-cbx" disabled="{{ true }}" style="margin-top:2px"><span style="display:flex;flex-direction:column;gap:3px;min-width:0"><span style="font-size:13.5px;font-weight:500;color:#24262B">UK Garage Archive</span><span class="cb-mono cb-mut" style="font-size:11px">youtube.com/@UKGarageArchive · UCr40Bt… · 22.4k subscribers</span><span class="cb-mono" style="font-size:10.5px;color:#A66300">Already tracked as "UK Garage Archive" — would duplicate</span></span></label>
+<div class="cb-row" style="gap:9px"><span class="cb-lab" style="width:74px">Or paste:</span><input class="cb-in cb-mono" placeholder="https://www.youtube.com/@…" style="font-size:12px"></div>
+</div>
+<div class="cb-mfoot"><span class="cb-mut" style="font-size:11.5px">Resolving does not re-download anything — the next scan simply finds the right listing.</span><button class="cb-btn cb-btn-quiet cb-btn-sm" style="margin-left:auto">Cancel</button><button class="cb-btn cb-btn-fill cb-btn-sm">Apply link</button></div>
+</div></div></div>
+
+<div class="dv-card" style="width:520px"><div class="cb-dim">
+<div class="cb-modal">
+<div class="cb-mhead"><span class="cb-mtitle">Edit — Deep House Daily</span><button class="cb-btn cb-btn-quiet cb-btn-sm" style="margin-left:auto;padding:3px 8px">✕</button></div>
+<div class="cb-mbody">
+<div><div style="font-weight:600;font-size:13px;color:#24262B;margin-bottom:5px">Channel / Playlist URL</div>
+<input class="cb-in cb-mono" value="https://www.youtube.com/@DeepHouseDaily" style="font-size:12px">
+<p class="cb-mut" style="font-size:11px;line-height:1.55;margin:6px 0 0">Paste the channel (…/@handle or …/channel/UC…) or a playlist URL. Leave as-is to keep the current channel.</p></div>
+<div class="cb-row" style="gap:8px;flex-wrap:wrap">
+<span class="tt"><button class="cb-btn cb-btn-quiet cb-btn-sm" disabled="{{ true }}">📂 Open Folder</button><span class="tt-pop">Opens the channel's folder in the host's file manager — local window only. Remote clients get the path to copy instead.</span></span>
+<button class="cb-btn cb-btn-quiet cb-btn-sm">🌐 Open Link</button>
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm">🛠 Smart-Edit Link</button><span class="tt-pop">Hands off to Fix Link to search for the right channel. Closes this dialog first so two modals can't fight over focus.</span></span>
+</div>
+<div><div style="font-weight:600;font-size:13px;color:#24262B;margin-bottom:5px">Genre</div>
+<div class="cb-row" style="gap:8px"><select class="cb-sel" style="flex:1"><option>House</option><option>Techno</option><option>UK Garage</option><option>(none)</option></select>
+<button class="cb-btn cb-btn-quiet cb-btn-sm">+ New</button>
+<span class="tt tt-r"><button class="cb-btn cb-btn-warn cb-btn-sm">− Remove</button><span class="tt-pop">Deletes the selected genre's folder — only if it is empty. A genre folder can only be removed once every channel folder inside it has been moved out or deleted.</span></span>
+</div></div>
+<span class="tt tt-b"><button class="cb-btn cb-btn-quiet cb-btn-sm">Forget unavailable tracks (14)</button><span class="tt-pop">Tracks that failed permanently (DRM, removed, geo-blocked) stop being reported as new. Forgetting them makes the next scan offer them again and the next download re-attempt them.</span></span>
+<p style="font-size:11px;line-height:1.55;margin:0;color:#6B7280">✓ Folder was moved out of band — the database has been re-linked to the current location (House).</p>
+<div class="cb-warnbox">Saving a different genre moves the channel folder, updates the database rows, and sets the Genre tag inside each file to match. You get a confirmation naming the track count first, and a failed database write rolls the move back.</div>
+</div>
+<div class="cb-mfoot"><span class="cb-mut cb-mono" style="font-size:11px">460 × 576 on the desktop</span><button class="cb-btn cb-btn-quiet cb-btn-sm" style="margin-left:auto">Cancel</button><button class="cb-btn cb-btn-fill cb-btn-sm">Save</button></div>
+</div></div></div>
+
+<div class="dv-card" style="width:900px"><div class="cb-dim">
+<div class="cb-modal">
+<div class="cb-mhead"><span class="cb-mtitle">Folders Cleanup — Deep House Daily</span><span class="cb-tag cb-tag-grey">1 of 3</span><span class="tt tt-r" style="margin-left:auto"><button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:3px 8px">✕</button><span class="tt-pop">Closing is the safe no-delete exit — it skips this channel when several are queued, or cancels the scan when it is the only one.</span></span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:9px 16px;background:#FAFAFB;border-bottom:1px solid rgba(204,0,0,.22)">
+<span style="font-size:12px;color:#4B4F59">4 file(s) on disk are no longer on “Deep House Daily”. Ticked files go to the Recycle Bin.</span>
+<div style="margin-left:auto" class="cb-row" style="gap:6px"><button class="cb-btn cb-btn-quiet cb-btn-sm">Select All</button><button class="cb-btn cb-btn-quiet cb-btn-sm">Deselect All</button></div>
+</div>
+<div style="overflow:auto">
+<table style="min-width:874px;border-collapse:collapse">
+<thead><tr><th class="cb-th" style="padding-left:16px;width:34px;text-align:center"></th><th class="cb-th">File</th><th class="cb-th" style="text-align:right">Size</th><th class="cb-th">Modified</th><th class="cb-th" style="padding-right:16px">Reason</th></tr></thead>
+<tbody>
+<tr class="cb-tr"><td class="cb-td" style="padding-left:16px;text-align:center;color:#CC0000">☑</td><td class="cb-td cb-mono" style="font-size:12px">Sundown Terrace (Radio Edit).mp3</td><td class="cb-td cb-mono cb-mut" style="text-align:right">8.4 MB</td><td class="cb-td cb-mono cb-mut" style="font-size:12px">2026-06-02</td><td class="cb-td cb-mut" style="font-size:12px;padding-right:16px">Not in channel listing (id match)</td></tr>
+<tr class="cb-tr" style="background:#FAFAFB"><td class="cb-td" style="padding-left:16px;text-align:center;color:#CC0000">☑</td><td class="cb-td cb-mono" style="font-size:12px">Terrace Dub (Unreleased).mp3</td><td class="cb-td cb-mono cb-mut" style="text-align:right">11.2 MB</td><td class="cb-td cb-mono cb-mut" style="font-size:12px">2026-05-18</td><td class="cb-td cb-mut" style="font-size:12px;padding-right:16px">Not in channel listing (id match)</td></tr>
+<tr class="cb-tr" style="opacity:.55"><td class="cb-td" style="padding-left:16px;text-align:center">☐</td><td class="cb-td cb-mono" style="font-size:12px">Amber Rooms (VIP Mix).mp3</td><td class="cb-td cb-mono cb-mut" style="text-align:right">9.1 MB</td><td class="cb-td cb-mono cb-mut" style="font-size:12px">2026-04-27</td><td class="cb-td cb-mut" style="font-size:12px;padding-right:16px">Title-only match — weak</td></tr>
+<tr class="cb-tr" style="background:#FAFAFB;opacity:.55"><td class="cb-td" style="padding-left:16px;text-align:center">☐</td><td class="cb-td cb-mono" style="font-size:12px">Live at Terrace, 2025.mp3</td><td class="cb-td cb-mono cb-mut" style="text-align:right">184.0 MB</td><td class="cb-td cb-mono cb-mut" style="font-size:12px">2026-03-09</td><td class="cb-td cb-mut" style="font-size:12px;padding-right:16px">No video id recorded — weak</td></tr>
+</tbody></table>
+</div>
+<div class="cb-mfoot"><button class="cb-btn cb-btn-fill cb-btn-sm">Confirm Deletions</button><button class="cb-btn cb-btn-quiet cb-btn-sm">Skip Channel</button><span class="cb-mut" style="font-size:11px;margin-left:8px">Strong matches start ticked; weak ones are dimmed and start unticked.</span><button class="cb-btn cb-btn-quiet cb-btn-sm" style="margin-left:auto">Cancel Scans</button></div>
+</div></div></div>
+
+<div class="dv-card" style="width:520px"><div class="cb-dim">
+<div class="cb-modal">
+<div class="cb-mhead"><span class="cb-mtitle">🏷 Repair Track Tags</span><span class="cb-tag cb-tag-fill">Running</span></div>
+<div class="cb-mbody">
+<div><div class="cb-row" style="gap:8px;margin-bottom:7px;align-items:baseline"><span class="cb-kick">Current</span><span style="font-size:13px;color:#24262B;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Neon Bass Radio — Fracture Point.mp3</span></div><div class="cb-bar"><div style="width:58%;height:100%;background:#E00000"></div></div></div>
+<div class="cb-row" style="gap:8px"><span class="cb-mut cb-mono" style="font-size:11.5px">704 of 1,204 files</span><span class="cb-mono" style="margin-left:auto;font-size:11.5px;color:#127A3E">312 repaired</span></div>
+<p class="cb-mut" style="font-size:11.5px;line-height:1.6;margin:0">One shell for all three long jobs — Rebuild Database, Repair Track Tags and Fetch Missing Artwork. Fetch Artwork adds a per-track <span class="cb-mono">Skip</span>; the others have Cancel only.</p>
+</div>
+<div class="cb-mfoot"><span class="cb-mut" style="font-size:11.5px">Anything you edited by hand is left alone.</span><span class="tt tt-r" style="margin-left:auto"><button class="cb-btn cb-btn-warn cb-btn-sm">Cancel</button><span class="tt-pop">Stop after the current track. Tags already written are kept.</span></span></div>
+</div></div></div>
+
+</div></div>
+
+<div class="dv-opt" id="3n"><div class="dv-olabel"><a class="dv-oid" href="#3n">3n</a>Notification panel, and About in a remote session — the updater is enabled only in the local window on the host.</div>
+<div style="display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start">
+
+<div class="dv-card" style="width:392px;background:#fff">
+<div style="padding:14px 16px;display:flex;flex-direction:column;gap:12px">
+<div class="cb-row"><span style="font-weight:600;font-size:14px;color:#24262B">Notifications</span><span class="cb-tag cb-tag-fill">3 new</span><a href="#3n" style="margin-left:auto;font-size:11.5px">Mark all read</a></div>
+<div class="cb-div"></div>
+<div class="cb-row" style="gap:10px;align-items:flex-start"><span style="width:6px;height:6px;border-radius:50%;background:#E00000;margin-top:6px;flex:none"></span><div style="min-width:0"><div style="font-size:12.5px;color:#24262B">Scan complete — <span class="cb-mono">63</span> new tracks across <span class="cb-mono">5</span> channels</div><div class="cb-row" style="gap:8px;margin-top:4px"><span class="cb-mut cb-mono" style="font-size:10.5px">4 min ago</span><a href="#3d" style="font-size:11px">Download all new</a></div></div></div>
+<div class="cb-row" style="gap:10px;align-items:flex-start"><span style="width:6px;height:6px;border-radius:50%;background:#E00000;margin-top:6px;flex:none"></span><div style="min-width:0"><div style="font-size:12.5px;color:#24262B">Garage Archive — channel id unresolved, scan fell back to the folder name</div><div class="cb-row" style="gap:8px;margin-top:4px"><span class="cb-mut cb-mono" style="font-size:10.5px">4 min ago</span><a href="#3m" style="font-size:11px">Fix Link</a></div></div></div>
+<div class="cb-row" style="gap:10px;align-items:flex-start"><span style="width:6px;height:6px;border-radius:50%;background:#E00000;margin-top:6px;flex:none"></span><div style="min-width:0"><div style="font-size:12.5px;color:#24262B">Download finished — Liquid Sessions, <span class="cb-mono">3</span> tracks</div><div class="cb-mut cb-mono" style="font-size:10.5px;margin-top:4px">1 h ago</div></div></div>
+<div class="cb-div"></div>
+<div class="cb-row" style="gap:10px;align-items:flex-start;opacity:.55"><span style="width:6px;height:6px;border-radius:50%;background:#B4B9C3;margin-top:6px;flex:none"></span><div style="min-width:0"><div style="font-size:12.5px;color:#24262B">Fracture Point — HTTP 403, succeeded on retry 3</div><div class="cb-mut cb-mono" style="font-size:10.5px;margin-top:4px">2 h ago</div></div></div>
+<div class="cb-row" style="gap:10px;align-items:flex-start;opacity:.55"><span style="width:6px;height:6px;border-radius:50%;background:#B4B9C3;margin-top:6px;flex:none"></span><div style="min-width:0"><div style="font-size:12.5px;color:#24262B">Host reconnected</div><div class="cb-mut cb-mono" style="font-size:10.5px;margin-top:4px">3 h ago</div></div></div>
+<div class="cb-div"></div>
+<div class="cb-row"><a href="#3j" style="font-size:11.5px">Notification settings</a><span class="cb-mut" style="margin-left:auto;font-size:11px">Mirrors the tray notifications</span></div>
+</div></div>
+
+<div class="dv-card" style="width:686px;background:#fff">
+<div style="padding:22px 24px 24px;display:flex;flex-direction:column;gap:16px">
+<div class="cb-row" style="gap:14px">
+<img src="assets/logo.png" alt="DJ-CrateBuilder" width="54" height="54" style="border-radius:8px;display:block;flex:none">
+<div><div style="font-weight:600;font-size:19px;color:#24262B;letter-spacing:-.015em">DJ-CrateBuilder</div><div class="cb-mono cb-mut" style="font-size:11.5px;margin-top:3px">version 1.3 · You're on build 60 · host DESKTOP-STUDIO</div></div>
+<span class="cb-tag" style="margin-left:auto">Read-only</span>
+</div>
+<div class="cb-div"></div>
+<div style="display:flex;flex-direction:column;gap:13px">
+<div class="cb-row" style="gap:8px;align-items:flex-start">
+<span style="font-weight:600;font-size:13px;color:#24262B;width:88px;flex:none;padding-top:11px">Created by</span>
+<img src="assets/about_avatar.png" alt="" width="44" height="44" style="border-radius:6px;display:block;flex:none">
+<div style="display:flex;flex-direction:column;gap:3px;padding-top:3px">
+<span style="font-size:13.5px;color:#24262B">Corrupt Sintax</span>
+<span class="tt"><a href="#3n" style="font-size:12.5px;text-decoration:underline">CorruptSintax@Gmail.com</a><span class="tt-pop">Write to the author in your mail client</span></span>
+</div></div>
+<div class="cb-row" style="gap:8px;align-items:baseline">
+<span style="font-weight:600;font-size:13px;color:#24262B;width:88px;flex:none">Built with</span>
+<span style="font-size:13.5px;color:#24262B">Vibe-Coded entirely with Claude-AI</span>
+</div>
+</div>
+<div class="cb-row" style="gap:9px;flex-wrap:wrap">
+<span class="tt"><a href="#3n" class="cb-btn cb-btn-quiet cb-btn-sm" style="text-decoration:none">View on GitHub ↗</a><span class="tt-pop">Opens the DJ-CrateBuilder GitHub page in your browser. Check here for the latest releases and update notes.</span></span>
+<span class="tt"><a href="#3n" class="cb-btn cb-btn-quiet cb-btn-sm" style="text-decoration:none">↗ Submit Issues / Suggestions</a><span class="tt-pop">Opens the GitHub 'Create new issue' form in your browser, where you can report a bug or suggest a feature.</span></span>
+<a href="#3n" class="cb-btn cb-btn-quiet cb-btn-sm" style="text-decoration:none">Licence</a>
+</div>
+<p class="cb-mut" style="font-size:12px;line-height:1.6;margin:0">*(For any bugs encountered or suggestions you'd like to make, submit them using the Submit Issues/Suggestions button.)</p>
+<div class="cb-div"></div>
+<div style="display:flex;flex-direction:column;gap:10px">
+<div class="cb-row" style="gap:7px"><span class="cb-sect">Updates</span><span class="cb-tag cb-tag-grey">Local session only</span></div>
+<div class="cb-row" style="gap:9px;flex-wrap:wrap">
+<span class="tt"><button class="cb-btn cb-btn-sm" disabled="{{ true }}">⟳ Check for updates</button><span class="tt-pop">Checks GitHub for a newer nightly build and, if one exists, downloads and installs it (the app restarts to finish). Available only in the window running on the host machine itself — this is a remote session, so it is switched off.</span></span>
+<span class="tt"><button class="cb-btn cb-btn-sm" disabled="{{ true }}">⤓ Update Now</button><span class="tt-pop">Installs the newer build and restarts the app. Local window only.</span></span>
+<span class="tt tt-r"><select class="cb-sel" style="width:150px" disabled="{{ true }}"><option>Every 24 hours</option></select><span class="tt-pop">How often DJ-CrateBuilder quietly checks GitHub for a newer nightly build in the background. Set on the host; read-only from here.</span></span>
+</div>
+<div class="cb-warnbox">The updater runs only in the local window on the host machine — there it is fully enabled and behaves exactly as it does in the desktop app. From any remote session the same three controls render disabled: a browser somewhere else should not be able to replace the binary it is talking to. The build number above tells you whether the host is current.</div>
+</div>
+<div class="cb-div"></div>
+<div>
+<div class="cb-row" style="margin-bottom:9px"><span class="cb-kick">Frequently Asked Questions</span>
+<div style="margin-left:auto" class="cb-row" style="gap:6px">
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:3px 8px">⊞</button><span class="tt-pop">Expand all answers</span></span>
+<span class="tt tt-r"><button class="cb-btn cb-btn-quiet cb-btn-sm" style="padding:3px 8px">⊟</button><span class="tt-pop">Collapse all answers</span></span>
+</div></div>
+<div style="border:1px solid rgba(204,0,0,.22);border-radius:7px;overflow:hidden">
+<div class="cb-row" style="gap:9px;padding:10px 12px;border-bottom:1px solid rgba(204,0,0,.22);cursor:pointer"><span style="color:#CC0000;font-size:11px">▾</span><span style="font-size:12.5px;font-weight:500;color:#24262B">Q: What is DJ-CrateBuilder?</span></div>
+<div style="padding:0 12px 11px 32px;border-bottom:1px solid rgba(204,0,0,.22);font-size:12px;line-height:1.65;color:#4B4F59">A: A tool that downloads audio from YouTube and SoundCloud as MP3 files, organized by platform, genre, and channel. It's designed for DJs and music collectors who want to build local music libraries from online sources.</div>
+<div class="cb-row" style="gap:9px;padding:10px 12px;border-bottom:1px solid rgba(204,0,0,.22);cursor:pointer"><span class="cb-mut" style="font-size:11px">▸</span><span style="font-size:12.5px;color:#24262B">Q: Do I need Python installed to run this?</span></div>
+<div class="cb-row" style="gap:9px;padding:10px 12px;border-bottom:1px solid rgba(204,0,0,.22);cursor:pointer"><span class="cb-mut" style="font-size:11px">▸</span><span style="font-size:12.5px;color:#24262B">Q: What is FFmpeg and why is it needed?</span></div>
+<div class="cb-row" style="gap:9px;padding:10px 12px;cursor:pointer"><span class="cb-mut" style="font-size:11px">▸</span><span class="cb-mut" style="font-size:12.5px">…and the rest of the built-in FAQ, served from the host</span></div>
+</div></div>
+</div></div>
+
+</div></div>
+
+</div>
+<p class="dv-note">Tooltips are live — hover any control. <a class="dv-oid" href="#3l">3l</a> shows the three affordances pinned open, so the pattern reads without covering the screens. Copy is lifted verbatim from the tkinter <span class="cb-mono">Tooltip(...)</span> and <span class="cb-mono">_settings_help(...)</span> calls; remote-only controls are marked <span class="cb-mono">source: new</span> in the contract.<br><br>Handoff for the VS Code session: <span class="cb-mono">HANDOFF.md</span> (stack decision, architecture, phases, acceptance criteria, files to touch), <span class="cb-mono">ui-contract.json</span> (API methods, events, every settings key, the full tooltip registry with source line numbers, column definitions), <span class="cb-mono">theme.css</span> (drop-in tokens and components).</p>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;hostOnline&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Remote state&quot;}}">
+class Component extends DCLogic {
+  componentDidMount() {
+    this._flip = () => this.flipTooltips();
+    this._one = e => { const tt = e.target.closest && e.target.closest(".tt:not(.tt-static)"); if (tt) this.flipOne(tt); };
+    this._flip();
+    if (document.fonts) document.fonts.ready.then(this._flip);
+    window.addEventListener("resize", this._flip);
+    window.addEventListener("load", this._flip);
+    // The decision goes stale exactly when a popover's own box changes — a
+    // webfont swap or a rewrap alters its height, which is what the fit test
+    // measures. So observe the popovers, not the body (whose box never changes).
+    this._ro = new ResizeObserver(entries => {
+      entries.forEach(e => { const tt = e.target.closest(".tt:not(.tt-static)"); if (tt) this.flipOne(tt); });
+    });
+    document.querySelectorAll(".tt:not(.tt-static) .tt-pop").forEach(p => this._ro.observe(p));
+    document.addEventListener("pointerenter", this._one, true);
+    document.addEventListener("focusin", this._one, true);
+  }
+  componentWillUnmount() {
+    window.removeEventListener("resize", this._flip);
+    document.removeEventListener("pointerenter", this._one, true);
+    document.removeEventListener("focusin", this._one, true);
+    if (this._ro) this._ro.disconnect();
+  }
+  // .tt-pop only opens downward; an anchor near a card's bottom edge would be
+  // clipped by the card's overflow:hidden. Measure and flip the ones that don't fit.
+  flipOne(tt) {
+    const pop = tt.querySelector(".tt-pop"), card = tt.closest(".dv-card");
+    if (!pop || !card) return;
+    tt.classList.remove("tt-up");
+    const a = tt.getBoundingClientRect(), c = card.getBoundingClientRect();
+    const h = pop.offsetHeight + 7;
+    if (a.bottom + h > c.bottom && a.top - h >= c.top) tt.classList.add("tt-up");
+  }
+  flipTooltips() { document.querySelectorAll(".tt:not(.tt-static)").forEach(tt => this.flipOne(tt)); }
+  renderVals() {
+    const online = this.props.hostOnline ?? true;
+    return {
+      hostLabel: online ? "DESKTOP-STUDIO · Online" : "DESKTOP-STUDIO · Offline",
+      hostDot: online ? "#E00000" : "#B4B9C3",
+    };
+  }
+}
+</script>
+</body>
+</html>

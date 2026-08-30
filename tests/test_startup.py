@@ -46,7 +46,7 @@ def test_startup_command_from_source_quotes_script(monkeypatch):
     # Non-frozen: command must quote the runner and include the script path.
     monkeypatch.setattr(startup.sys, "frozen", False, raising=False)
     monkeypatch.setattr(startup.sys, "executable", r"C:\Py\python.exe")
-    monkeypatch.setattr(startup.sys, "argv", [r"C:\app\DJ-CrateBuilder_v1.3.py"])
+    monkeypatch.setattr(startup.sys, "argv", [r"C:\app\DJ-CrateBuilder_v2.0.py"])
     cmd = startup._startup_command()
     assert cmd.startswith('"')
-    assert "DJ-CrateBuilder_v1.3.py" in cmd
+    assert "DJ-CrateBuilder_v2.0.py" in cmd

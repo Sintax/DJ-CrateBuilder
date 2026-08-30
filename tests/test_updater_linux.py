@@ -10,13 +10,13 @@ from cratebuilder import updater_core as uc
 # ── linux_install_kind ────────────────────────────────────────────────────────
 def test_install_kind_deb_for_opt_path():
     kind = uc.linux_install_kind(
-        module_path="/opt/dj-cratebuilder/DJ-CrateBuilder_v1.3.py")
+        module_path="/opt/dj-cratebuilder/DJ-CrateBuilder_v2.0.py")
     assert kind == "deb"
 
 
 def test_install_kind_source_for_other_path():
     kind = uc.linux_install_kind(
-        module_path="/home/dj/DJ-CrateBuilder/DJ-CrateBuilder_v1.3.py")
+        module_path="/home/dj/DJ-CrateBuilder/DJ-CrateBuilder_v2.0.py")
     assert kind == "source"
 
 

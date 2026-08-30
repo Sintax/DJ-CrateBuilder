@@ -1,0 +1,323 @@
+{
+  "$comment": "DJ-CrateBuilder web UI contract. Design source: 'CrateBuilder Remote v3.dc.html'. Tooltip strings marked source:'py' are verbatim from DJ-CrateBuilder_v1.3.py at the given line; source:'new' are remote-only controls with no desktop equivalent.",
+  "version": "1.0",
+  "app": { "name": "DJ-CrateBuilder", "display_version": "1.3", "db_schema": 7 },
+
+  "transport": {
+    "facade": "web/api.js exports cbApi.call(method, params) -> Promise, cbApi.on(event, handler) -> unsubscribe",
+    "local": {
+      "runtime": "pywebview",
+      "rpc": "window.pywebview.api.<method>(paramsJson)",
+      "push": "window.evaluate_js from worker threads",
+      "notes": ["private_mode=False to persist localStorage", "ALLOW_DOWNLOADS=True for CSV and log export", "create_file_dialog(FOLDER_DIALOG) backs fs.pick_folder"]
+    },
+    "remote": {
+      "runtime": "FastAPI + uvicorn",
+      "rpc": "POST /rpc {method, params, token}",
+      "push": "WebSocket /ws?token=... , JSON {type, payload}; EventSource /events as fallback",
+      "notes": ["coalesce progress to ~4 Hz", "log tail as append deltas, never whole-file", "single-writer control lock", "TLS terminated upstream (Caddy / Cloudflare Tunnel)"]
+    }
+  },
+
+  "api": {
+    "state.snapshot": { "params": {}, "returns": "full shell state: host, batch, progress, watchlist[], settings, counts", "notes": "one call on connect; everything after is a delta" },
+    "ui_strings": { "params": {}, "returns": "{tooltips: {id: text}, labels: {id: text}}", "notes": "served from cratebuilder/ui_strings.py so tkinter and web share one copy" },
+
+    "batch.list": { "params": {}, "returns": "[{index, url, kind, genre, state}]" },
+    "batch.add": { "params": { "url": "str", "genre": "str|null" }, "returns": "{index}", "errors": ["invalid_url", "unsupported_platform"] },
+    "batch.remove": { "params": { "index": "int" }, "returns": "ok" },
+    "batch.move": { "params": { "index": "int", "delta": "-1|1" }, "returns": "ok" },
+    "batch.clear": { "params": {}, "returns": "ok" },
+    "batch.skip": { "params": { "index": "int" }, "returns": "ok", "notes": "interrupts the active download on the spot if index is the running one" },
+
+    "download.start": { "params": {}, "returns": "{job_id}", "errors": ["already_running", "queue_empty", "not_controller"] },
+    "download.pause": { "params": {}, "returns": "ok" },
+    "download.resume": { "params": {}, "returns": "ok" },
+    "download.cancel": { "params": {}, "returns": "ok", "notes": "stops after the current track; downloaded tracks are kept" },
+
+    "watchlist.list": { "params": {}, "returns": "[channel_card]" },
+    "watchlist.add": { "params": { "url": "str", "genre": "str|null" }, "returns": "{channel_id}" },
+    "watchlist.edit": { "params": { "channel_id": "int", "url": "str|null", "genre": "str|null" }, "returns": "ok" },
+    "watchlist.remove": { "params": { "channel_id": "int" }, "returns": "ok", "notes": "database row only; no files are deleted" },
+    "watchlist.scan": { "params": { "channel_id": "int" }, "returns": "{job_id}" },
+    "watchlist.scan_all": { "params": {}, "returns": "{job_id}" },
+    "watchlist.download_new": { "params": { "channel_id": "int" }, "returns": "{job_id|queued_position}" },
+    "watchlist.download_all_new": { "params": {}, "returns": "{job_id}" },
+    "watchlist.force_download": { "params": { "channel_id": "int" }, "returns": "{job_id}" },
+    "watchlist.cancel": { "params": { "channel_id": "int" }, "returns": "ok" },
+    "watchlist.cancel_all": { "params": {}, "returns": "ok" },
+    "watchlist.resolve_candidates": { "params": { "channel_id": "int" }, "returns": "[{title, channel_id, url, handle, followers}]", "notes": "backs Fix Link / Check Links" },
+    "watchlist.resolve_apply": { "params": { "channel_id": "int", "resolved_url": "str" }, "returns": "ok", "errors": ["duplicate_entry"] },
+
+    "settings.get": { "params": {}, "returns": "{key: value}" },
+    "settings.set": { "params": { "key": "str", "value": "any" }, "returns": "{key, stored_value}", "notes": "validates, autosaves, echoes the stored value; one key per call, mirroring the desktop per-widget autosave" },
+
+    "logs.tail": { "params": { "name": "activity|debug", "offset": "int", "limit": "int" }, "returns": "{lines[], next_offset, total_lines, bytes, limit_bytes}" },
+    "logs.search": { "params": { "name": "activity|debug", "query": "str" }, "returns": "{offsets[], count}", "notes": "full-file grep server-side; in-window search stays client-side" },
+    "logs.download": { "params": { "name": "activity|debug" }, "returns": "{url}", "notes": "replaces 'System Viewer', which has no remote equivalent" },
+
+    "db.groups": { "params": { "group_by": "str", "filters": {}, "search": "str" }, "returns": "[{path[], label, count}]", "notes": "tree skeleton with counts; leaves load on expand" },
+    "db.query": { "params": { "table": "downloads|watchlist|artwork", "group_path": [], "filters": {}, "sort": { "col": "str", "desc": "bool" }, "offset": "int", "limit": "int" }, "returns": "{rows[], total}" },
+    "db.export_csv": { "params": { "table": "str", "filters": {}, "sort": {} }, "returns": "{url}" },
+    "db.rebuild": { "params": {}, "returns": "{job_id}" },
+    "db.dedupe": { "params": {}, "returns": "{job_id}" },
+    "db.fetch_artwork": { "params": {}, "returns": "{job_id}" },
+    "db.repair_tags": { "params": {}, "returns": "{job_id}" },
+    "db.cleanup_scan": { "params": { "channel_ids": [] }, "returns": "{job_id}", "notes": "phase 1 of Folders Cleanup; reports candidates per channel" },
+    "db.cleanup_apply": { "params": { "channel_id": "int", "paths": [] }, "returns": "{trashed}", "notes": "phase 2; send2trash only what the user confirmed" },
+
+    "fs.pick_folder": { "params": { "initial": "str|null" }, "returns": "str|null", "notes": "local transport only; returns null remotely" },
+
+    "remote.pair_begin": { "params": {}, "returns": "{code, expires_at, qr_svg}", "notes": "host-side only" },
+    "remote.pair_claim": { "params": { "code": "str" }, "returns": "{device_token}", "errors": ["bad_code", "expired", "rate_limited"] },
+    "remote.devices": { "params": {}, "returns": "[{name, paired_at, last_seen, is_this}]" },
+    "remote.revoke": { "params": { "device_id": "str|'all'" }, "returns": "ok" },
+    "remote.claim_control": { "params": {}, "returns": "{holder}", "notes": "single-writer lock" }
+  },
+
+  "events": {
+    "state.patch": "partial shell state merge",
+    "progress.current": "{title, channel, percent, speed, bitrate, eta}",
+    "progress.overall": "{done, total, downloaded, skipped, errors, percent, eta}",
+    "queue.row": "{index, state: pending|active|done|skipped|error, note}",
+    "batch.finished": "{downloaded, skipped, errors, cancelled}",
+    "watchlist.card": "one channel card, replaced wholesale",
+    "scan.line": "{level, text} — streams into the pinned scan log",
+    "log.append": "{name, lines[]}",
+    "notification": "{level, title, body, at}",
+    "host.status": "{online, since}",
+    "control.holder": "{device_id, name}"
+  },
+
+  "settings_keys": [
+    { "key": "run_at_startup", "label": "Run App on Startup", "type": "bool", "default": false, "platform": "win32", "section": "Automation / Startup" },
+    { "key": "start_minimized", "label": "Start App Minimized to System Tray", "type": "bool", "default": false, "platform": "win32", "section": "Automation / Startup" },
+    { "key": "minimize_to_tray", "label": "Minimize to System Tray", "type": "bool", "default": false, "platform": "win32", "section": "Automation / Startup", "tooltip": "settings.minimize_to_tray" },
+    { "key": "watchlist_scan_on_startup", "label": "Scan Watch List for new uploads when the app starts", "type": "bool", "default": true, "section": "Automation / Startup" },
+    { "key": "auto_add_to_watchlist", "label": "Auto-add channels to Watch List after downloading", "type": "bool", "default": true, "section": "Automation / Startup" },
+    { "key": "auto_dl_interval", "label": "Auto-download Watch-List channels every", "type": "enum", "options": ["Off", "6 hours", "12 hours", "1 day", "2 days"], "default": "1 day", "section": "Automation / Startup", "tooltip": "settings.auto_dl_interval" },
+
+    { "key": "limit_enabled", "label": "Enable", "type": "bool", "default": true, "section": "Time / Length Limiter", "tooltip": "settings.limiter" },
+    { "key": "limit_minutes", "label": "Max Length", "type": "int", "min": 1, "max": 180, "default": 8, "unit": "min", "section": "Time / Length Limiter" },
+
+    { "key": "bitrate_quality", "label": "Output Quality", "type": "enum", "options": ["128 kbps", "192 kbps", "224 kbps", "256 kbps", "320 kbps"], "default": "192 kbps", "section": "File Output", "tooltip": "settings.bitrate" },
+    { "key": "bitrate_auto_upgrade", "label": "Auto-upgrade bitrate when the source is higher (slower)", "type": "bool", "default": false, "section": "File Output", "tooltip": "settings.bitrate_upgrade" },
+    { "key": "no_conversion", "label": "Do not convert to MP3! (Keeps downloaded format)", "type": "bool", "default": false, "section": "File Output", "tooltip": "settings.no_conversion" },
+    { "key": "cover_art_enabled", "label": "Attach cover art to files", "type": "bool", "default": true, "section": "File Output", "tooltip": "settings.cover_art_enabled" },
+    { "key": "cover_art_mode", "label": "Formatting", "type": "enum", "options": ["On ~ Crop to square", "On ~ Keep original aspect", "Off"], "default": "On ~ Crop to square", "section": "File Output", "tooltip": "settings.cover_art_mode" },
+
+    { "key": "skip_existing", "label": "Skip files already downloaded", "type": "bool", "default": true, "section": "Downloads", "screen": "3b" },
+    { "key": "skip_mode", "label": "Skip mode", "type": "enum", "options": ["In Database ~ In Folder", "In Folder Only", "In Database Only"], "default": "In Database ~ In Folder", "section": "Downloads", "screen": "3b", "tooltip": "main.skip_mode" },
+
+    { "key": "geo_bypass", "label": "Enable geo-bypass", "type": "bool", "default": false, "section": "Download Behavior", "tooltip": "settings.geo_bypass" },
+    { "key": "rotate_ua", "label": "Rotate User-Agent", "type": "bool", "default": true, "section": "Download Behavior", "tooltip": "settings.rotate_ua" },
+    { "key": "sleep_enabled", "label": "Throttle Requests", "type": "bool", "default": true, "section": "Download Behavior", "tooltip": "settings.throttle" },
+    { "key": "sleep_mode", "label": "Mode", "type": "enum", "options": ["Auto", "Manual"], "default": "Auto", "section": "Download Behavior" },
+    { "key": "sleep_preset", "label": "Preset", "type": "enum", "options": ["Light", "Moderate", "Aggressive"], "default": "Light", "section": "Download Behavior", "tooltip": "settings.throttle_preset" },
+    { "key": "sleep_min", "label": "Min (s)", "type": "int", "default": 4, "section": "Download Behavior", "enabled_when": "sleep_mode == Manual" },
+    { "key": "sleep_max", "label": "Max (s)", "type": "int", "default": 11, "section": "Download Behavior", "enabled_when": "sleep_mode == Manual" },
+
+    { "key": "use_cookies", "label": "Use Browser Cookies", "type": "bool", "default": false, "section": "Browser Cookies" },
+    { "key": "cookie_method", "label": "Method", "type": "enum", "options": ["Browser Profile", "Cookie File"], "default": "Browser Profile", "section": "Browser Cookies" },
+    { "key": "cookies_browser", "label": "Browser", "type": "enum", "options": ["Firefox", "Chrome", "Edge", "Brave", "Chromium", "Opera", "Vivaldi"], "default": "Firefox", "section": "Browser Cookies" },
+    { "key": "cookies_profile", "label": "Profile", "type": "str", "default": "", "section": "Browser Cookies" },
+    { "key": "cookie_file", "label": "Cookie file", "type": "path", "default": "", "section": "Browser Cookies", "tooltip": "settings.cookie_file" },
+
+    { "key": "base_dir", "label": "Default Save Directory", "type": "path", "default": "~/Music/DJ-CrateBuilder", "section": "Default Save Directory", "notes": "canonicalize and validate server-side; never accept a client path unchecked" },
+    { "key": "log_limit", "label": "Log Size Limit", "type": "enum", "options": ["1 MB", "5 MB", "10 MB", "50 MB", "Unlimited"], "default": "5 MB", "section": "Logs", "tooltip": "settings.log_limit" },
+    { "key": "dupe_check_enabled", "label": "Warn about duplicates at startup", "type": "bool", "default": true, "section": "Downloads Database", "tooltip": "settings.dupe_check" },
+
+    { "key": "remote_enabled", "label": "Allow remote control over the internet", "type": "bool", "default": false, "section": "Remote Access", "source": "new", "tooltip": "remote.enabled" },
+    { "key": "remote_require_pairing", "label": "Require pairing code for new devices", "type": "bool", "default": true, "section": "Remote Access", "source": "new" },
+    { "key": "remote_read_only", "label": "Read-only mode for remote devices", "type": "bool", "default": false, "section": "Remote Access", "source": "new", "tooltip": "remote.read_only" },
+    { "key": "notify_scan_found", "label": "Notify remote devices when a scan finds new tracks", "type": "bool", "default": true, "section": "Remote Access", "source": "new" },
+    { "key": "notify_batch_done", "label": "Notify when a batch completes", "type": "bool", "default": true, "section": "Remote Access", "source": "new" },
+    { "key": "notify_errors", "label": "Notify on errors", "type": "bool", "default": true, "section": "Remote Access", "source": "new" },
+
+    { "key": "db_dl_col_widths", "label": "(internal) Downloads column widths", "type": "dict", "section": "internal" },
+    { "key": "db_dl_col_order", "label": "(internal) Downloads column order", "type": "list", "section": "internal" },
+    { "key": "db_wl_col_widths", "label": "(internal) Watch List column widths", "type": "dict", "section": "internal" },
+    { "key": "db_wl_col_order", "label": "(internal) Watch List column order", "type": "list", "section": "internal" },
+    { "key": "db_art_col_widths", "label": "(internal) Artwork column widths", "type": "dict", "section": "internal" },
+    { "key": "db_art_col_order", "label": "(internal) Artwork column order", "type": "list", "section": "internal" }
+  ],
+
+  "tooltips": {
+    "$note": "Move these into cratebuilder/ui_strings.py as TOOLTIPS and have BOTH UIs read from it. py_line is the current location in DJ-CrateBuilder_v1.3.py.",
+
+    "main.batch_add": { "text": "Queue the link in the URL field above, tagged with the genre you picked. Pressing Enter in the URL field does the same thing.", "source": "py", "py_line": 5313, "screen": "3b" },
+    "main.batch_help": { "text": "Paste a link, pick a genre, press Add to Batch.\nRepeat to stack as many links as you want — each can have its own genre.\nUse the ▲ ▼ buttons on a row to reorder it, or ✕ to remove it; 'Clear All' empties the whole queue.\nWhen you press 'Start Downloads', every link in the queue is processed top to bottom.", "source": "py", "py_line": 5296, "screen": "3b" },
+    "main.row_skip": { "text": "Skip this URL in the running batch, immediately: if it's the one downloading now, the download is interrupted on the spot and the batch moves straight on to the next URL.\n\nOnly available while a batch is running.", "source": "py", "py_line": 5496, "screen": "3b,3c" },
+    "main.row_skip_marked": { "text": "Skipped — this URL is being passed over by the running batch.", "source": "py", "py_line": 5496, "screen": "3c" },
+    "main.row_up": { "text": "Move this URL up in the queue", "source": "py", "py_line": 5509, "screen": "3b" },
+    "main.row_down": { "text": "Move this URL down in the queue", "source": "py", "py_line": 5509, "screen": "3b" },
+    "main.row_remove": { "text": "Remove this URL from the queue", "source": "py", "py_line": 5525, "screen": "3b" },
+    "main.skip_mode": { "text": "How an already-downloaded track is recognised:\n\n• In Database ~ In Folder — skip if it's in the downloads database OR already on disk (safest).\n• In Folder Only — skip only if the file exists in the destination folder.\n• In Database Only — skip only if the database says it was downloaded before, even if the file has since been moved or deleted.", "source": "py", "py_line": 6110, "screen": "3b" },
+    "main.cancel_batch": { "text": "Stop after the current track. Tags already written are kept.", "source": "py", "py_line": 13755, "screen": "3c" },
+
+    "wl.check_links": { "text": "Look up the real YouTube channel for any folder that still needs one, so it can be scanned. Shows the top matches to choose from.", "source": "py", "py_line": 10875, "screen": "3d" },
+    "wl.download_all_new": { "text": "Download all pending new tracks across every channel.", "source": "py", "py_line": 10893, "screen": "3a,3d" },
+    "wl.scan_all": { "text": "Check every channel for new uploads since the last scan.", "source": "py", "py_line": 10904, "screen": "3a,3d" },
+    "wl.cancel_all": { "text": "Stop all in-progress Watch List scans and downloads.", "source": "py", "py_line": 10917, "screen": "3d" },
+    "wl.card_title": { "text": "Open channel page:\n{url}", "source": "py", "py_line": 11140, "screen": "3d" },
+    "wl.card_scan": { "text": "Check this channel for new uploads without downloading anything.", "source": "py", "py_line": 11216, "screen": "3d" },
+    "wl.card_force": { "text": "Re-download every track from this channel, including ones already in your library.", "source": "py", "py_line": 11218, "screen": "3d" },
+    "wl.card_download_new": { "text": "Download this channel's new tracks — the ones counted since the last scan — into its folder.\n\nIf another Watch List download is already running, this channel is added to that run's queue instead: it appears in the Main tab's Batch Queue behind the channels already listed and downloads in turn. Pressing it again while queued does nothing — a channel is never queued twice.", "source": "py", "py_line": 11222, "screen": "3d" },
+    "wl.card_edit": { "text": "Change this channel's link or download settings.", "source": "py", "py_line": 11239, "screen": "3d" },
+    "wl.card_remove": { "text": "Removes this channel entry from the Watch List only — no downloaded files or folders are deleted.", "source": "py", "py_line": 11242, "screen": "3d" },
+    "wl.card_cancel": { "text": "Stop the scan or download running on this channel.", "source": "py", "py_line": 11249, "screen": "3d" },
+    "wl.card_fix_link": { "text": "Search YouTube for this channel by name and pick the right match, so scans can resolve it. Duplicate entries are detected before the link is saved.", "source": "new", "screen": "3d", "note": "desktop Fix Link has no tooltip today; add this string to both UIs" },
+
+    "log.filter_activity": { "text": "Choose which log entries to show — all, downloaded, skipped, or errors.", "source": "py", "py_line": 970, "screen": "3e" },
+    "log.filter_debug": { "text": "Choose which debug log lines to show — all, or a single level (INFO, ERROR, DEBUG).", "source": "py", "py_line": 1217, "screen": "3f" },
+    "log.wrap": { "text": "Toggle line wrapping for long entries.", "source": "py", "py_line": 988, "screen": "3e,3f" },
+    "log.search_prev": { "text": "Jump to the previous search match.", "source": "py", "py_line": 1015, "screen": "3e,3f" },
+    "log.search_next": { "text": "Jump to the next search match.", "source": "py", "py_line": 1016, "screen": "3e,3f" },
+    "log.search_clear": { "text": "Clear the search and its highlights.", "source": "py", "py_line": 1017, "screen": "3e,3f" },
+    "log.refresh_activity": { "text": "Reload the log file from disk.", "source": "py", "py_line": 1035, "screen": "3e" },
+    "log.refresh_debug": { "text": "Reload the debug log from disk.", "source": "py", "py_line": 1290, "screen": "3f" },
+    "log.system_viewer": { "text": "Open this log in your default text editor.", "source": "py", "py_line": 1030, "screen": "local only" },
+    "log.download": { "text": "Remote replacement for “System Viewer” — the host's text editor can't be opened from a browser, so the log is sent to you as a file instead.", "source": "new", "screen": "3e,3f" },
+
+    "db.help_downloads": { "text": "DOWNLOADS TAB\n• Group by — change how rows nest (e.g. Platform › Genre › Channel).\n• Platform / Genre filters — hide rows that don't match the selection.\n• Search — live-filter rows by any column text.\n• ⊞ / ⊟ — expand or collapse every group at once.\n• Click a column header to sort; drag a header to reorder columns.\n• Double-click a row to open the file.\n• Right-click a row for Open File / Open Containing Folder / Copy Path.\n• ⤓ Export CSV — write the current view to a .csv file.\n• ⟳ Refresh — reload from the database.\n\nColumn widths and order are remembered between sessions.", "source": "py", "py_line": 2563, "screen": "3g" },
+    "db.help_watchlist": { "text": "WATCH LIST TAB\n• Every tracked channel with its scan, pending-new, and download history.\n• URL Link column — the channel's source page (YouTube/SoundCloud).\n• Folder column — the local save folder for that channel.\n• Click a column header to sort; drag a header to reorder columns.\n• Right-click a row to open or copy the channel URL, or Open Folder to reveal the channel's folder in the system file manager.\n• ⟳ Refresh — reload from the database.", "source": "py", "py_line": 2576, "screen": "3h" },
+    "db.help_artwork": { "text": "ARTWORK TAB\n• Every track and the cover art the database has on record for it.\n• Embedded — is the image actually written into the MP3's ID3 tag. This is the only thing Explorer and Android media players read.\n• Sidecar — the archival JPEG in the channel's hidden .artwork folder.\n• On Disk — whether that sidecar JPEG is still where the DB expects it.\n• Filter — narrow to tracks missing art, or to sidecars that have gone missing off disk.\n• Select a row to preview the image; right-click for Open Image, Open Containing Folder, Copy Image Path, or Copy Thumbnail URL.\n• 🖼 Fetch Missing Artwork — find and embed art for every track that has none.", "source": "py", "py_line": 2585, "screen": "3i" },
+    "db.expand_all": { "text": "Expand all groups", "source": "py", "py_line": 2700, "screen": "3g" },
+    "db.collapse_all": { "text": "Collapse all groups", "source": "py", "py_line": 2699, "screen": "3g" },
+    "db.folders_cleanup": { "text": "Scans each ticked channel's live YouTube/SoundCloud listing, then flags downloaded tracks in that channel's folder that no longer appear on the channel. You review and confirm every deletion per channel before anything is removed (files go to the Recycle Bin).", "source": "py", "py_line": 2790, "screen": "3h" },
+    "db.cleanup_ineligible_downloading": { "text": "Can't be cleaned while this channel is downloading — its folder is being written to. Wait for the run to finish, then tick it.", "source": "py", "py_line": 3399, "screen": "3h", "note": "_wl_eligible carries the reason string; send it to the client rather than hard-coding" },
+    "db.cleanup_ineligible_unresolved": { "text": "Can't be cleaned until this channel's link is resolved — without a canonical channel id there is no live listing to compare the folder against. Use Fix Link on the Watch List first.", "source": "py", "py_line": 3399, "screen": "3h" },
+    "db.column_header": { "text": "Click to sort. Drag onto another header to reorder columns — the order is remembered between sessions.", "source": "new", "screen": "3g,3h,3i" },
+
+    "settings.minimize_to_tray": { "text": "Keeps Watch-List scheduler running in the background", "source": "py", "py_line": 6295, "screen": "3j" },
+    "settings.auto_dl_interval": { "text": "How often to automatically scan every watched channel for new uploads and download them. Each run scans all channels first, then downloads everything new. Default 1 day; 'Off' disables it.", "source": "py", "py_line": 6320, "screen": "3j" },
+    "settings.limiter": { "text": "Skip any file whose duration exceeds the limit below. Uncheck to allow files of any length.", "source": "py", "py_line": 6339, "screen": "3j" },
+    "settings.bitrate": { "text": "192 kbps = good quality  •  320 kbps = maximum MP3 quality", "source": "py", "py_line": 6417, "screen": "3j" },
+    "settings.bitrate_upgrade": { "text": "Probes each track's real formats before downloading and, when the source stream is higher-bitrate than your Output Quality (e.g. 256 kbps on a Premium-authenticated account), encodes the MP3 at that source bitrate instead of downgrading. Adds ~4 seconds per track and only ever helps with a YouTube Premium login — free-tier YouTube serves at most ~130-160 kbps, so this can be left off.", "source": "py", "py_line": 6430, "screen": "3j" },
+    "settings.no_conversion": { "text": "When enabled, files are saved in their original format and bitrate without conversion to MP3. YouTube typically serves .webm (Opus) or .m4a (AAC); SoundCloud serves .mp3 or .webm. Your folder will contain a mix of extensions.", "source": "py", "py_line": 6449, "screen": "3j" },
+    "settings.cover_art_enabled": { "text": "Turn off to skip artwork entirely — no thumbnail download, no hidden .artwork folder and no embedded image.", "source": "py", "py_line": 6466, "screen": "3j" },
+    "settings.cover_art_mode": { "text": "Embeds the YouTube/SoundCloud thumbnail into each MP3 so cover art shows in Windows Explorer, media players and on Android. A copy is also kept in a hidden .artwork folder beside the tracks. Cropping to square fills the art slot; keeping 16:9 letterboxes it.", "source": "py", "py_line": 6486, "screen": "3j" },
+    "settings.download_behavior": { "text": "Options that control how DJ-CrateBuilder connects and paces requests. These can help avoid throttling, geographic restrictions, or IP-banning from YouTube/SoundCloud when doing entire channel/batch downloads.", "source": "py", "py_line": 6504, "screen": "3j" },
+    "settings.geo_bypass": { "text": "Bypass geographic IP-based restrictions using a fake X-Forwarded-For header", "source": "py", "py_line": 6518, "screen": "3j" },
+    "settings.rotate_ua": { "text": "Send a randomized browser User-Agent string (consistent within each session)", "source": "py", "py_line": 6530, "screen": "3j" },
+    "settings.throttle": { "text": "Pause between requests to avoid rate-limiting or IP bans during large channel / batch downloads. Auto picks delays from the selected preset; Manual lets you set exact min/max seconds.", "source": "py", "py_line": 6543, "screen": "3j" },
+    "settings.throttle_preset": { "text": "Light = Downloading 50 files or less, per 24hrs.\nModerate = Downloading between 50-200 files, per 24hrs.\nAggressive = Downloading 200+ files, per 24hrs.", "source": "py", "py_line": 6588, "screen": "3j" },
+    "settings.cookie_file": { "text": "Netscape/Mozilla cookie.txt format", "source": "py", "py_line": 6766, "screen": "3j" },
+    "settings.activity_log": { "text": "A color-coded record of every downloaded, skipped, and failed file. View it here in the built-in viewer, or open it in your system's default text editor.", "source": "py", "py_line": 6818, "screen": "3j" },
+    "settings.debug_log": { "text": "Detailed diagnostic log capturing cookie configuration, yt-dlp options, request/response data, and full error tracebacks. Useful for troubleshooting download failures.", "source": "py", "py_line": 6855, "screen": "3j" },
+    "settings.log_limit": { "text": "Caps the size of the Activity Log and Debug Log (each file separately). When a log grows past this size, the oldest lines at the top are removed to make room for the newest — so the file keeps the most recent activity and never grows without bound. 'Unlimited' disables trimming.", "source": "py", "py_line": 6903, "screen": "3j" },
+    "settings.database": { "text": "The SQLite database tracks every download for fast lookups and Watch List history. If it gets corrupted or deleted, rebuild it from the files on disk.", "source": "py", "py_line": 6917, "screen": "3j" },
+    "settings.rebuild_db": { "text": "Scans the audio files already in your library folders and rebuilds the database from them. This is safe to run at any time — it clears and rebuilds from scratch. Cover art already on disk is reused, never re-downloaded.", "source": "py", "py_line": 6938, "screen": "3j" },
+    "settings.dedupe_db": { "text": "Collapses repeated database rows that point at the same file — the history could show a track four or five times. Only the database is touched: no audio file, cover art or Watch List entry is removed, and everything the repeated rows knew is merged onto the single row that remains. It also switches on the protection that stops them coming back.", "source": "py", "py_line": 6950, "screen": "3j" },
+    "settings.dupe_check": { "text": "Checks the database at launch and warns you if it is holding duplicate rows, since duplicate protection stays switched off until they are merged. The warning appears on every launch while any duplicates exist; untick this to silence it.", "source": "py", "py_line": 6965, "screen": "3j" },
+    "settings.fetch_artwork": { "text": "Finds cover art for tracks you downloaded before the Cover Art feature existed, and embeds it into them. Re-uses artwork already on disk where possible, so re-running it is cheap.", "source": "py", "py_line": 6979, "screen": "3i,3j" },
+    "settings.repair_tags": { "text": "Realigns the tags on every track in your library. The Genre tag is set to match the CrateBuilder folder the track is filed under — a track in YouTube/Drum & Bass gets the genre \"Drum & Bass\", and tracks under _No Genre have theirs cleared. Title, Encoded-by and the source URL are filled in only where a track is missing them, which is what gives a name back to tracks downloaded before CrateBuilder wrote tags. Anything you edited by hand is left alone, so re-running costs nothing. Covers MP3, M4A and Opus/Ogg files. Cancel any time — tracks already repaired keep their tags.", "source": "py", "py_line": 6990, "screen": "3j" },
+    "settings.open_folder": { "text": "Open this folder in your file explorer", "source": "py", "py_line": 6847, "screen": "local only" },
+
+    "remote.host_status": { "text": "The desktop app this browser is paired with. Offline means the host process is not running — controls are read-only until it returns.", "source": "new", "screen": "all" },
+    "remote.enabled": { "text": "Off restricts the interface to the local network. The host still serves the same pages — only the relay is disabled.", "source": "new", "screen": "3j" },
+    "remote.read_only": { "text": "Remote browsers can watch progress and read logs but cannot start, cancel, or change settings. Useful when the pairing code has been shared.", "source": "new", "screen": "3j" },
+    "remote.revoke_all": { "text": "Drops every paired device and issues a fresh pairing code on the host.", "source": "new", "screen": "3j" },
+    "remote.browse_folder": { "text": "Opens a native folder picker on the host machine. Remote browsers get a path field instead — the host validates it before saving.", "source": "new", "screen": "3j" },
+
+    "about.mail": { "text": "Write to the author in your mail client", "source": "py", "py_line": 8588, "screen": "3n" },
+    "about.github": { "text": "Opens the DJ-CrateBuilder GitHub page in your browser. Check here for the latest releases and update notes.", "source": "py", "py_line": 8594, "screen": "3n" },
+    "about.issues": { "text": "Opens the GitHub 'Create new issue' form in your browser, where you can report a bug or suggest a feature.", "source": "py", "py_line": 8602, "screen": "3n" },
+    "about.faq_expand": { "text": "Expand all answers", "source": "py", "py_line": 8627, "screen": "3n" },
+    "about.faq_collapse": { "text": "Collapse all answers", "source": "py", "py_line": 8627, "screen": "3n" },
+    "about.check_updates": { "text": "Checks GitHub for a newer nightly build and, if one exists, downloads and installs it (the app restarts to finish). Available only in the window running on the host machine itself — this is a remote session, so it is switched off.", "source": "py", "py_line": 8528, "screen": "local only" },
+    "about.update_interval": { "text": "How often DJ-CrateBuilder quietly checks GitHub for a newer nightly build in the background.", "source": "py", "py_line": 8542, "screen": "local only" }
+  },
+
+  "shell": {
+    "nav": ["Overview (3a)", "Downloads (3b/3c)", "Watch List (3d)", "Settings (3j)"],
+    "not_in_nav": {
+      "Activity Log (3e)": "opened from Settings › Log Size Limit card",
+      "Debug Log (3f)": "opened from Settings › Log Size Limit card",
+      "Database viewer (3g/3h/3i)": "opened from Settings › Downloads Database card"
+    },
+    "active_item_rule": "while a log or database screen is open, Settings stays the active nav item",
+    "breadcrumb": "3e, 3f, 3g, 3h, 3i each open with a `‹ Settings` back button and the screen name, above the toolbar"
+  },
+
+  "about": {
+    "$comment": "ABOUT_FIELDS at DJ-CrateBuilder_v1.3.py:100; values at :70-72. Avatar from about_avatar_path() — assets/about_avatar.png, 44x44.",
+    "created_by": "Corrupt Sintax",
+    "contact_email": "CorruptSintax@Gmail.com",
+    "description": "Vibe-Coded entirely with Claude-AI",
+    "avatar": "assets/about_avatar.png",
+    "build_status": "You're on build {APP_BUILD}.",
+    "note": "*(For any bugs encountered or suggestions you'd like to make, submit them using the Submit Issues/Suggestions button.)",
+    "local_session_only": { "controls": ["Check for updates", "Update Now", "Auto-check for updates interval", "next-check countdown"], "rule": "enabled in the local pywebview window on the host machine; rendered disabled in any remote session, and update.* must be rejected server-side on the remote transport" }
+  },
+
+  "columns": {
+    "downloads": [
+      { "id": "title", "head": "Title / Group", "w": 340, "align": "w", "tree": true },
+      { "id": "channel", "head": "Channel", "w": 160, "align": "w" },
+      { "id": "genre", "head": "Genre", "w": 110, "align": "w" },
+      { "id": "platform", "head": "Platform", "w": 80, "align": "w" },
+      { "id": "upload", "head": "Upload", "w": 110, "align": "w" },
+      { "id": "downloaded", "head": "Downloaded", "w": 140, "align": "w", "default_sort": "desc" },
+      { "id": "bitrate", "head": "Bitrate", "w": 70, "align": "e" }
+    ],
+    "watchlist": [
+      { "id": "sel", "head": "", "w": 34, "align": "center", "pinned": true },
+      { "id": "channel", "head": "Channel", "w": 180, "align": "w", "default_sort": "asc" },
+      { "id": "link", "head": "URL Link", "w": 220, "align": "w" },
+      { "id": "folder", "head": "Folder", "w": 260, "align": "w" },
+      { "id": "platform", "head": "Platform", "w": 80, "align": "w" },
+      { "id": "genre", "head": "Genre", "w": 110, "align": "w" },
+      { "id": "last_scan", "head": "Last scan", "w": 120, "align": "w" },
+      { "id": "pending", "head": "Pending new", "w": 90, "align": "e" },
+      { "id": "total", "head": "Total dl'd", "w": 80, "align": "e" },
+      { "id": "status", "head": "Status", "w": 90, "align": "w" }
+    ],
+    "artwork": [
+      { "id": "title", "head": "Track", "w": 260, "align": "w", "default_sort": "asc" },
+      { "id": "channel", "head": "Channel", "w": 150, "align": "w" },
+      { "id": "platform", "head": "Platform", "w": 80, "align": "w" },
+      { "id": "embedded", "head": "Embedded", "w": 80, "align": "center" },
+      { "id": "sidecar", "head": "Sidecar", "w": 170, "align": "w" },
+      { "id": "on_disk", "head": "On Disk", "w": 70, "align": "center" },
+      { "id": "thumb_url", "head": "Thumbnail URL", "w": 240, "align": "w" }
+    ]
+  },
+
+  "enums": {
+    "group_presets": ["Platform › Genre › Channel", "Genre › Channel", "Channel", "Platform › Channel"],
+    "artwork_filters": ["All tracks", "Has artwork", "Missing artwork", "Embedded only", "Sidecar missing on disk"],
+    "activity_log_filters": ["All", "Downloaded", "Skipped", "Errors"],
+    "debug_log_filters": ["All", "INFO", "ERROR", "DEBUG"],
+    "queue_row_states": ["pending", "active", "done", "skipped", "error"],
+    "watchlist_status": ["idle", "scanning", "downloading", "queued", "needs link", "error"]
+  },
+
+  "theme": {
+    "stylesheet": "theme.css",
+    "bg": "#F4F5F7",
+    "surface": "#FFFFFF",
+    "line": "#CC0000",
+    "line_soft": "rgba(204,0,0,.22)",
+    "accent": "#E00000",
+    "text": "#24262B",
+    "muted": "#696F7B",
+    "quiet_border": "#D6D9E0",
+    "dim": "#676D79",
+    "log_timestamp": "#6B7280",
+    "ok": "#127A3E",
+    "warn": "#A66300",
+    "error": "#CC0000",
+    "unresolved": "#FF8C00",
+    "radius": 8,
+    "font_ui": "IBM Plex Sans",
+    "font_mono": "IBM Plex Mono",
+    "rules": [
+      "Structural outlines are #CC0000 at 1px — never #E00000, which vibrates on near-white.",
+      "#E00000 is reserved for fills, active nav borders, progress bars and badges.",
+      "Every numeral, path, timestamp and log line is IBM Plex Mono.",
+      "Minimum control height 32px, 44px on touch. Log and table type never below 12px.",
+      "Dim tokens are darker than the desktop app's TEXT_DIM: the same dimming that works on a near-black ground fails AA on near-white. Column headers, section kickers and log timestamps use #6E7480 / #6B7280."
+    ]
+  }
+}

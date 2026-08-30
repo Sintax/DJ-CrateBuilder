@@ -19,10 +19,11 @@ from tkinter import ttk
 
 import pytest
 
+from cratebuilder import service as cb_service
 from cratebuilder import startup as cb_startup
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_MAIN = os.path.join(_ROOT, "DJ-CrateBuilder_v1.3.py")
+_MAIN = os.path.join(_ROOT, "DJ-CrateBuilder_v2.0.py")
 
 
 def _load_main():
@@ -52,6 +53,49 @@ def pytest_collection_modifyitems(items):
     for item in items:
         if _GUI_FIXTURES & set(getattr(item, "fixturenames", ())):
             item.add_marker(pytest.mark.gui)
+
+
+@pytest.fixture(scope="session")
+def _service_sandbox(tmp_path_factory):
+    """One throwaway HOME + app dir for the whole non-GUI lane.
+
+    Session-scoped and OUTSIDE any test's own tmp_path on purpose: nothing is
+    supposed to write here at all — it is the floor a forgetful test lands on,
+    not a workspace — and a per-test directory inside tmp_path would show up in
+    the several tests that assert on their tmp dir's exact contents.
+    """
+    root = tmp_path_factory.mktemp("service_sandbox")
+    home = root / "home"
+    runtime = root / "runtime"
+    home.mkdir()
+    runtime.mkdir()
+    return str(home), str(runtime)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_service_paths(request, monkeypatch, _service_sandbox):
+    """Make service-layer isolation STRUCTURAL, not a convention.
+
+    Every service/DB fixture in the suite passes explicit tmp paths today, but
+    nothing stopped the next test from writing `CrateBuilderService()` bare —
+    which would read the developer's real ~/.dj_cratebuilder_config.json, probe
+    the real cratebuilder.db beside the checkout, and (through `remote_state`)
+    write the real cratebuilder_remote.json. Two seams close all of it: HOME /
+    USERPROFILE, which is what `util.config_path` and `util.default_base_dir`
+    expand, and `service.app_dir`, which is where the database, the two logs,
+    the link store and the token store live.
+
+    GUI tests are skipped: `make_app` / `shared_app` already redirect the same
+    things for the monolith, and this fixture is function-scoped while
+    `shared_app` is not — undoing its environment between tests in a file would
+    be a regression, not a guard.
+    """
+    if _GUI_FIXTURES & set(request.fixturenames):
+        return
+    home, runtime = _service_sandbox
+    monkeypatch.setenv("HOME", home)
+    monkeypatch.setenv("USERPROFILE", home)
+    monkeypatch.setattr(cb_service, "app_dir", lambda: runtime)
 
 
 @pytest.fixture(scope="module")

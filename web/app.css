@@ -1,0 +1,467 @@
+/* Layout only. theme.css owns every colour and component — keep it untouched
+   so the design's stylesheet stays a drop-in.
+
+   The four values below are the exception: the design fixes them and theme.css
+   has no token for any of them, so they are declared once here rather than
+   sprayed as literals through the rules that need them (and never added to
+   theme.css, which stays a drop-in). Each says what it is derived from, so a
+   second palette has one place to answer. */
+:root {
+  /* --cb-text at 55% — the modal scrim (3m). */
+  --cb-scrim: rgba(36, 38, 43, .55);
+  /* --cb-unresolved darkened, exactly as theme.css darkens it for
+     .cb-tag--attn's border: the raw orange fails small-text contrast. */
+  --cb-attn-line: #CC7A00;
+  /* --cb-unresolved at 8%, matching .cb-tag--attn's fill. */
+  --cb-attn-wash: rgba(255, 140, 0, .08);
+  /* 3d's Fix Link button: near-black label on --cb-unresolved (white fails
+     contrast on it), and the same orange one step darker for hover. */
+  --cb-fix-ink: #1A1A1A;
+  --cb-fix-hover: #F08000;
+}
+
+html, body { height: 100%; }
+body { overflow: hidden; }
+
+/* Must beat the display:flex on .cb-pad / .cb-card below. */
+[hidden] { display: none !important; }
+
+.cb-shell { display: flex; height: 100vh; }
+
+.cb-panel { overflow: hidden; }
+.cb-brand {
+  font-weight: 600; font-size: 14.5px; color: var(--cb-text); letter-spacing: -.01em;
+}
+.cb-panel__foot {
+  margin-top: auto; padding-top: 14px;
+  border-top: 1px solid var(--cb-line-soft);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.cb-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--cb-muted); flex: none;
+}
+.cb-dot.is-on { background: var(--cb-ok); }
+.cb-dot.is-off { background: var(--cb-err); }
+
+.cb-main { flex: 1; overflow-y: auto; min-width: 0; }
+
+.cb-screen {
+  display: none;
+  padding: 20px 24px;
+  flex-direction: column; gap: 16px;
+  max-width: 900px;
+}
+.cb-screen.is-on { display: flex; }
+#screen-settings { max-width: none; }
+
+.cb-h { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: -.01em; }
+.cb-pad { padding: 16px 18px; display: flex; flex-direction: column; gap: 13px; }
+/* The settings sections are independent cards whose heights have nothing to do
+   with one another, and a grid row is only ever as short as its tallest card —
+   the shortfall showed as up to 146px of dead space beside a card, and a whole
+   empty slot at the end. Columns instead: each card starts where the one above
+   it ended, and the balancer keeps the two columns level. break-inside stops a
+   card being split down the middle at a column boundary. */
+.cb-grid-2 { column-count: 2; column-gap: 16px; }
+.cb-grid-2 > * { min-width: 0; break-inside: avoid; margin-bottom: 16px; }
+.cb-card { overflow-wrap: anywhere; }
+/* Full-width sections interrupt the flow rather than claiming two tracks. */
+.cb-span-2 { column-span: all; }
+.cb-cards { display: flex; flex-direction: column; gap: 10px; }
+.cb-big { font-size: 30px; font-weight: 500; color: var(--cb-accent); line-height: 1; }
+
+/* Overview (3a) — the 1.4fr/1fr pair over a three-up row of summary cards */
+.cb-grid-ov {
+  display: grid; grid-template-columns: 1.4fr minmax(0, 1fr);
+  gap: 14px; align-items: start;
+}
+.cb-grid-3 {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px; align-items: start;
+}
+.cb-grid-ov > *, .cb-grid-3 > * { min-width: 0; }
+.cb-ov-line { font-size: 12.5px; color: #4B4F59; }
+/* .cb-card sets overflow-wrap:anywhere so a long path cannot widen the grid —
+   which would otherwise break the LABEL one letter per line once the value
+   claims the row. The label never wraps; the value truncates and carries the
+   whole string in its tooltip. */
+.cb-ov-line > :first-child { flex: none; white-space: nowrap; }
+.cb-ov-line > :last-child {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cb-ov-mini { gap: 9px; padding: 14px 16px; }
+.cb-ov-list { display: flex; flex-direction: column; gap: 9px; }
+.cb-ov-item { display: flex; flex-direction: column; gap: 3px; }
+.cb-ov-item__text { font-size: 12.5px; color: var(--cb-text); }
+.cb-ov-item__when { font: 400 11px var(--cb-mono); color: var(--cb-muted); white-space: nowrap; }
+.cb-ov-empty { font-size: 12.5px; color: var(--cb-muted); }
+
+/* Notifications bell (3a header) and its panel (3n) */
+.cb-bell {
+  position: relative; display: grid; place-items: center;
+  width: 30px; height: 30px; flex: none;
+  border: 1px solid var(--cb-line); border-radius: var(--cb-radius);
+  background: var(--cb-surface); color: var(--cb-line); cursor: pointer;
+}
+.cb-bell:hover { background: var(--cb-accent-wash); }
+.cb-bell__count {
+  position: absolute; top: -3px; right: -3px; min-width: 15px; height: 15px;
+  border-radius: 8px; background: var(--cb-accent); color: #fff;
+  font: 500 9.5px/15px var(--cb-mono); text-align: center;
+}
+.cb-notif {
+  position: fixed; z-index: 85; width: 392px; max-width: calc(100vw - 20px);
+  background: var(--cb-surface); border: 1px solid var(--cb-line);
+  border-radius: var(--cb-radius); box-shadow: var(--cb-shadow-pop);
+  padding: 14px 16px; display: flex; flex-direction: column; gap: 12px;
+  max-height: min(560px, calc(100vh - 90px)); overflow: auto;
+}
+.cb-notif__row { display: flex; gap: 10px; align-items: flex-start; }
+.cb-notif__row.is-read { opacity: .55; }
+.cb-notif__dot {
+  width: 6px; height: 6px; border-radius: 50%; margin-top: 6px; flex: none;
+  background: var(--cb-accent);
+}
+.cb-notif__row.is-read .cb-notif__dot { background: #B4B9C3; }
+.cb-notif__body { min-width: 0; }
+.cb-notif__text { font-size: 12.5px; color: var(--cb-text); }
+.cb-notif__when { font: 400 10.5px var(--cb-mono); color: var(--cb-muted); }
+.cb-notif__link { font-size: 11px; background: none; border: 0; padding: 0;
+  color: var(--cb-line); cursor: pointer; text-decoration: underline; }
+.cb-notif__text.is-err { color: var(--cb-err); }
+.cb-notif__text.is-warn { color: var(--cb-warn); }
+
+/* About (3n) */
+.cb-about-row { display: flex; gap: 8px; align-items: flex-start; }
+.cb-about-lab {
+  font-weight: 600; font-size: 13px; color: var(--cb-text);
+  width: 88px; flex: none;
+}
+.cb-about-val { font-size: 13.5px; color: var(--cb-text); }
+.cb-faq { border: 1px solid var(--cb-line-soft); border-radius: 7px; overflow: hidden; }
+.cb-faq__q {
+  display: flex; gap: 9px; align-items: baseline; width: 100%;
+  padding: 10px 12px; border: 0; border-bottom: 1px solid var(--cb-line-soft);
+  background: var(--cb-surface); text-align: left; cursor: pointer;
+  font: 500 12.5px var(--cb-font); color: var(--cb-text);
+}
+.cb-faq__q:hover { background: var(--cb-surface-alt); }
+.cb-faq > :last-child { border-bottom: none; }
+.cb-faq__chev { color: var(--cb-line); font-size: 11px; flex: none; }
+.cb-faq__a {
+  padding: 0 12px 11px 32px; border-bottom: 1px solid var(--cb-line-soft);
+  font-size: 12px; line-height: 1.65; color: #4B4F59; white-space: pre-line;
+}
+.cb-foot-link { color: var(--cb-muted); text-decoration: none; }
+.cb-foot-link:hover { color: var(--cb-line); text-decoration: underline; }
+
+/* Batch queue rows. The floor keeps four rows' worth of the card open before
+   the list has to earn its height — a .cb-qrow measures 42.75px. Past four the
+   list grows as it always did. */
+#dl-rows { min-height: 171px; }
+.cb-qrow {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 0; border-bottom: 1px solid var(--cb-line-row);
+}
+.cb-qrow:last-child { border-bottom: none; }
+.cb-qrow__mark { width: 14px; font-size: 11.5px; text-align: center; flex: none; }
+.cb-qrow__url {
+  font-family: var(--cb-mono); font-size: 12px; color: var(--cb-text);
+  flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cb-qrow.is-skipped .cb-qrow__url { text-decoration: line-through; opacity: .55; }
+/* Running-state row treatments (design 3c): a settled row (done/error/passed
+   over) fades; the one actively downloading gets weight instead. */
+.cb-qrow.is-past { opacity: .55; }
+.cb-qrow.is-active .cb-qrow__url { font-weight: 500; }
+.cb-icon { padding: 3px 7px; }
+
+/* Bottom Queue log — the currently-downloading line gets the design's tinted
+   row treatment; everything else is plain .cb-log text. */
+/* Six lines at the 19.8px .cb-log line box, on a content-box min-height, so the
+   running queue reads as a list rather than a peephole. */
+#dl-queue { min-height: 119px; }
+.cb-log__now { background: var(--cb-accent-wash); border-radius: 4px; padding: 0 4px; margin: 0 -4px; }
+.cb-log__now .cb-log__title { color: var(--cb-text); font-weight: 500; }
+
+/* Disabled treatment — one rule, per the contract */
+.cb-btn[disabled], .cb-in[disabled], .cb-sel[disabled], [aria-disabled="true"] {
+  opacity: .45;
+  border-color: var(--cb-quiet);
+  color: var(--cb-muted);
+  cursor: not-allowed;
+  /* Keep the control in hit testing: app.js's tooltip tracker asks what is
+     under the pointer, and pointer-events:none would hide a disabled control
+     from that question — which is exactly when its reason needs reading. */
+  pointer-events: auto;
+}
+.cb-btn[disabled] { background: var(--cb-surface); }
+
+/* Tooltips — JS-driven so focus and Escape work (theme.css covers hover only) */
+.cb-tip {
+  position: fixed; z-index: 80; max-width: 300px; width: max-content;
+  background: var(--cb-text); color: var(--cb-bg);
+  font: 400 11.5px/1.5 var(--cb-font); white-space: pre-line;
+  padding: 8px 10px; border-radius: var(--cb-radius-sm);
+  border: 1px solid var(--cb-accent);
+  box-shadow: 0 6px 20px rgba(20, 22, 28, .28);
+  pointer-events: none;
+}
+.cb-help { display: inline-flex; }
+.cb-tt-host { cursor: help; }
+
+/* The disabled-reason node aria-describedby points at (app.js describeReason).
+   position:absolute is load-bearing, not decoration: it takes the node out of
+   flow, so it is not a flex item and cannot add a `gap` to the row its control
+   sits in. */
+.cb-sr {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  border: 0; overflow: hidden; white-space: nowrap;
+  clip: rect(0 0 0 0); clip-path: inset(50%);
+}
+
+/* Toast */
+.cb-toast {
+  position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
+  z-index: 90; max-width: 460px;
+  background: var(--cb-text); color: var(--cb-bg);
+  font-size: 12.5px; padding: 10px 14px;
+  border-radius: var(--cb-radius); border: 1px solid var(--cb-accent);
+  box-shadow: var(--cb-shadow-pop);
+}
+.cb-toast.is-err { border-color: var(--cb-err); }
+
+/* Settings */
+.cb-set-row { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.cb-set-row > .cb-lab { flex: 1; min-width: 0; }
+/* A paired line (INLINE_GROUPS). The label giving up flex:1 is the whole point:
+   stretched, two controls end up pinned to opposite edges with the labels
+   stranded beside them, which is what made the section want the full width. */
+.cb-set-group { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
+.cb-set-group > .cb-set-row { flex: 0 1 auto; }
+.cb-set-row--inline > .cb-lab { flex: none; }
+.cb-set-card { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
+
+/* Log viewers (3e/3f) — breadcrumb + full-bleed toolbar/log/stat/path bars.
+   .cb-crumb/.cb-back aren't in theme.css (the mockup only defines them inline
+   in its own <style>), so they live here instead of being redefined there. */
+.cb-crumb {
+  display: flex; align-items: center; gap: 11px;
+  padding: 9px 14px; border-bottom: 1px solid var(--cb-line); background: var(--cb-bg);
+}
+.cb-back {
+  display: inline-flex; align-items: center; gap: 7px;
+  font: 500 12.5px var(--cb-font); color: var(--cb-line); text-decoration: none;
+  padding: 6px 11px; border: 1px solid var(--cb-line); border-radius: var(--cb-radius);
+  background: var(--cb-surface);
+}
+.cb-back:hover { background: var(--cb-accent-wash); }
+
+/* No horizontal padding: the toolbar/log/stat/path bars carry their own, and
+   run edge-to-edge like the mockup's card, rather than floating inset like
+   the other screens' .cb-card panels. Fills .cb-main's full height so the
+   stat/path bars stay pinned at the bottom of the viewport instead of
+   trailing off after however many lines happen to be loaded — only the log
+   surface itself scrolls. */
+.cb-screen--log { max-width: none; gap: 0; padding: 0; height: 100%; box-sizing: border-box; }
+.cb-screen--log .cb-toolbar { flex-wrap: nowrap; overflow-x: auto; flex: none; }
+.cb-log--viewer { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.cb-log--viewer.is-nowrap > div { white-space: pre; }
+.cb-log__count { width: 66px; flex: none; }
+.cb-screen--log .cb-pathbar, .cb-screen--log .cb-statbar { flex: none; }
+.cb-screen--log .cb-statbar { flex-wrap: wrap; row-gap: 2px; }
+.cb-log__tail { margin-left: auto; }
+
+/* Database viewer (3g/3h/3i) — same full-bleed breadcrumb+toolbar+content
+   shape as .cb-screen--log, plus a tab strip and three swappable panels.
+   .cb-table/tr.is-group/.cb-menu are theme.css's — used as-is, never
+   redefined here. */
+.cb-screen--db { max-width: none; gap: 0; padding: 0; height: 100%; box-sizing: border-box; }
+.cb-screen--db .cb-toolbar { flex-wrap: nowrap; overflow-x: auto; flex: none; }
+.db-tab { display: none; flex: 1 1 auto; min-height: 0; flex-direction: column; }
+.db-tab.is-on { display: flex; }
+.cb-tblwrap { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.cb-screen--db .cb-statbar { flex: none; flex-wrap: wrap; row-gap: 2px; }
+/* Header drag-resize handle — a thin strip on each <th>'s right edge, anchored
+   by the sticky <th> below, which is a containing block like relative was. */
+.cb-col-resize { position: absolute; right: -3px; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 2; }
+/* The column labels hold the top of .cb-tblwrap while the rows scroll under
+   them, so a row is always readable against its header. The background has to
+   be opaque or the rows show through, and border-collapse hands a collapsed
+   border to the table rather than the cell — it would scroll away with the
+   rows — so the rule under the header is drawn as an inset shadow instead.
+   No z-index: sticky already paints above the non-positioned cells, and a
+   stacking context here would trap the resize handle's 3px overhang. */
+.cb-table th {
+  position: sticky; top: 0;
+  background: var(--cb-surface);
+  box-shadow: inset 0 -1px 0 var(--cb-line);
+}
+
+/* Artwork tab: table + fixed-width preview pane, side by side. */
+.cb-art-split { flex: 1 1 auto; min-height: 0; display: flex; }
+.cb-art-preview {
+  width: 266px; flex: none; padding: 14px 16px; overflow: auto;
+  display: flex; flex-direction: column; gap: 11px;
+}
+.cb-art-preview__box {
+  width: 100%; aspect-ratio: 1; border: 1px solid var(--cb-line); border-radius: var(--cb-radius);
+  background: var(--cb-bg); display: flex; align-items: center; justify-content: center;
+  color: var(--cb-dim); font-size: 11.5px; text-align: center; padding: 12px; overflow: hidden;
+}
+
+/* Watch List (3d) — the screen fills the frame instead of growing with the
+   channel list, so the action row and the pinned scan log keep their place and
+   the cards are the only thing that scrolls. min-height:0 is what lets the
+   card strip shrink below its content; without it a flex item refuses to. */
+.cb-screen--wl { height: 100%; box-sizing: border-box; }
+.cb-screen--wl > .cb-row, .cb-screen--wl > .cb-card { flex: none; }
+.cb-screen--wl > .cb-cards { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+
+/* Watch List cards (3d) — the running card takes the 2px accent border, and
+   keeps the same box size by giving back the extra pixel in padding. */
+.cb-wlcard { padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+.cb-wlcard.is-running { border-color: var(--cb-accent); border-width: 2px; padding: 13px 15px; }
+.cb-wlcard__name { font-weight: 600; font-size: 14.5px; color: var(--cb-text); text-decoration: none; }
+a.cb-wlcard__name { border-bottom: 1px dotted var(--cb-line); }
+.cb-wlcard__new { margin-left: auto; font: 500 12.5px var(--cb-mono); color: var(--cb-line); }
+.cb-wlcard__meta { font-size: 11px; }
+.cb-wlcard__actions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+/* Fix Link is the design's one unresolved-orange control; --cb-unresolved is
+   too light for white text, so the label goes near-black as the design does. */
+.cb-btn--fix { background: var(--cb-unresolved); border-color: var(--cb-unresolved); color: var(--cb-fix-ink); font-weight: 600; }
+.cb-btn--fix:hover { background: var(--cb-fix-hover); }
+
+/* Dialogs (3m) — centred modal over a dimmed page. .cb-dim/.cb-modal and the
+   head/body/foot shell are defined in the mockup's own <style>, not in
+   theme.css, so they live here, built from theme.css's tokens. */
+.cb-dim {
+  position: fixed; inset: 0; z-index: 100;
+  background: var(--cb-scrim);
+  padding: 30px; box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center;
+}
+.cb-modal {
+  background: var(--cb-surface);
+  border: 1px solid var(--cb-line);
+  border-radius: var(--cb-radius);
+  box-shadow: 0 18px 50px rgba(20, 22, 28, .4);
+  width: 100%; max-width: 520px; max-height: 100%;
+  display: flex; flex-direction: column; min-height: 0;
+}
+.cb-mhead {
+  display: flex; align-items: center; gap: 10px; flex: none;
+  padding: 14px 18px; border-bottom: 1px solid var(--cb-line);
+}
+.cb-mtitle { font: 600 15px var(--cb-font); color: var(--cb-text); letter-spacing: -.01em; }
+.cb-mbody {
+  padding: 16px 18px; display: flex; flex-direction: column; gap: 13px;
+  overflow: auto; min-height: 0;
+}
+.cb-mfoot {
+  display: flex; align-items: center; gap: 9px; flex: none; flex-wrap: wrap;
+  padding: 13px 18px; border-top: 1px solid var(--cb-line-soft);
+  background: var(--cb-surface-alt);
+}
+.cb-mlabel { font-weight: 600; font-size: 13px; color: var(--cb-text); margin-bottom: 5px; }
+.cb-mhint { color: var(--cb-muted); font-size: 11px; line-height: 1.55; margin: 6px 0 0; }
+.cb-mnote { color: var(--cb-muted); font-size: 12.5px; line-height: 1.6; margin: 0; }
+/* In a footer the note shares the row with the buttons: let it shrink and wrap
+   rather than pushing the primary action onto a second line. */
+.cb-mfoot .cb-mnote { flex: 1 1 170px; min-width: 0; font-size: 11.5px; }
+/* theme.css gives .cb-cbx its accent colour on checkboxes only; 3m's candidate
+   list uses the same class on radios. */
+input[type="radio"].cb-cbx {
+  width: 15px; height: 15px; margin: 0; accent-color: var(--cb-accent); cursor: pointer;
+}
+.cb-merr {
+  margin: 0 18px 14px; flex: none;
+  font-size: 12px; line-height: 1.5; color: var(--cb-err);
+  border: 1px solid var(--cb-line); border-radius: var(--cb-radius-sm);
+  background: var(--cb-accent-wash); padding: 8px 10px;
+}
+/* Long-job dialog (3m): one shell for Rebuild, Repair Tags and Fetch Artwork.
+   The current-item line carries an arbitrary track or folder name, so it
+   truncates rather than growing the dialog; the tally sits at the far end of
+   the counts row the way the artboard draws it. */
+.cb-maint__item {
+  font-size: 13px; color: var(--cb-text); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Once the run has settled the same line holds its whole summary, which has
+   to wrap rather than end in an ellipsis. */
+.cb-maint__item.is-summary { white-space: normal; overflow: visible; line-height: 1.55; }
+.cb-maint__counts { font-size: 11.5px; }
+.cb-maint__tally { margin-left: auto; font-size: 11.5px; color: var(--cb-ok); }
+/* A run that raised: the reason reads as an error, and the bar stays wherever
+   it stopped rather than filling. */
+.cb-maint__item.is-failed { color: var(--cb-err); }
+/* The settled states of that dialog's head tag — theme.css ships grey, fill
+   and attn, but neither a settled-and-well nor a failed one. */
+.cb-tag--ok { border-color: var(--cb-ok); color: var(--cb-ok); background: var(--cb-surface); }
+.cb-tag--err { border-color: var(--cb-err); color: var(--cb-err); background: var(--cb-accent-wash); }
+
+/* Radio candidate rows (Fix Link) */
+.cb-pick {
+  display: flex; gap: 11px; align-items: flex-start;
+  padding: 11px 12px; border: 1px solid var(--cb-quiet); border-radius: 7px; cursor: pointer;
+}
+.cb-pick:hover { background: var(--cb-surface-alt); border-color: var(--cb-line); }
+.cb-pick.is-on { border-color: var(--cb-accent); border-width: 2px; padding: 10px 11px; background: var(--cb-accent-wash); }
+.cb-pick.is-off { opacity: .6; cursor: not-allowed; }
+.cb-pick__text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.cb-pick__name { font-size: 13.5px; font-weight: 500; color: var(--cb-text); }
+.cb-pick__meta { font: 400 11px var(--cb-mono); color: var(--cb-muted); }
+.cb-pick__dupe { font: 400 10.5px var(--cb-mono); color: var(--cb-warn); }
+.cb-warnbox {
+  font: 400 11.5px/1.6 var(--cb-font); color: var(--cb-log-default);
+  background: var(--cb-attn-wash); border: 1px solid var(--cb-attn-line);
+  border-radius: 6px; padding: 9px 11px;
+}
+
+/* ── remote transport (3k) ───────────────────────────────────────────────────
+   The offline shell's own bar has to stay usable while everything else is
+   inert — theme.css's .cb-offline kills pointer events on every control, and
+   the one control that must survive that is the Retry inside the bar. */
+.cb-offline .cb-offline-bar .cb-btn { pointer-events: auto; opacity: 1; }
+/* theme.css's .cb-offline rule covers buttons, text inputs and selects; the
+   Settings screen's checkboxes and the limiter slider are controls too, and
+   "every control is disabled rather than hidden" has to mean all of them. */
+.cb-offline .cb-cbx, .cb-offline .cb-slider, .cb-offline .cb-nav,
+.cb-offline .cb-help { opacity: .62; pointer-events: none; }
+
+/* The single-writer lock, stated above the content it is limiting. */
+.cb-session-bar {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+  padding: 9px 14px; border: 1px solid var(--cb-quiet); border-radius: 8px;
+  background: var(--cb-surface); color: var(--cb-muted);
+  font-size: 12.5px; line-height: 1.5;
+}
+.cb-offline .cb-session-bar { display: none; }
+
+/* Pairing (3k): the only thing an unpaired browser may reach, so it sits over
+   everything rather than inside a screen. */
+.cb-pair {
+  position: fixed; inset: 0; z-index: 200; display: grid; place-items: center;
+  padding: 24px; background: var(--cb-bg); overflow: auto;
+}
+.cb-pair__card {
+  width: min(460px, 100%); background: var(--cb-surface);
+  border: 1px solid var(--cb-line); border-radius: 10px;
+  box-shadow: var(--cb-shadow); padding: 38px 44px 32px;
+  display: flex; flex-direction: column; gap: 14px; text-align: center;
+}
+.cb-pair__card .cb-mlabel { text-align: left; }
+.cb-pair__card .cb-mhint { text-align: left; }
+
+/* The design targets desktop at >=1100px and states the layouts are not
+   designed to reflow below it. Collapse to one column rather than clip a card
+   off the edge — degrading is not the same as supporting a mobile breakpoint. */
+@media (max-width: 1099px) {
+  .cb-grid-2 { column-count: 1; }
+  .cb-grid-ov, .cb-grid-3 { grid-template-columns: minmax(0, 1fr); }
+  .cb-screen { max-width: none; }
+}
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }

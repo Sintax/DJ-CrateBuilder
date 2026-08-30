@@ -555,6 +555,30 @@ def push_mru(items, value, limit):
     return ([value] + rest)[:limit]
 
 
+# ── Request politeness ────────────────────────────────────────────────────────
+# One User-Agent is chosen per batch session, so a batch looks like one browser
+# rather than eight. Lives here because both download drivers — the tkinter
+# batch worker and the headless BatchRunner — pick from the same pool.
+USER_AGENT_POOL = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.4; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
+]
+
+# The Auto throttle ranges, keyed by the exact label the Settings dropdown
+# stores in the config file.
+THROTTLE_PRESETS = {
+    "Light  (1–5 s)":       (1, 5),
+    "Moderate  (3–8 s)":    (3, 8),
+    "Aggressive  (5–15 s)": (5, 15),
+}
+
+
 # Keys in a yt-dlp options dict whose values carry authentication material
 # (a cookie file path leaks the user's home directory; the browser-cookie
 # source names the profile) and must never be written to debug.log.

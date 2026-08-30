@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# DJ-CrateBuilder v1.3 — Linux Installer
+# DJ-CrateBuilder v2.0 — Linux Installer
 #
 # Self-bootstrapping. Download this one file and run it with:
 #
@@ -16,21 +16,21 @@
 set -e
 
 APP_NAME="DJ-CrateBuilder"
-APP_VERSION="1.3"
+APP_VERSION="2.0"
 INSTALL_DIR="$HOME/.local/share/DJ-CrateBuilder"
 BIN_LINK="$HOME/.local/bin/dj-cratebuilder"
 DESKTOP_DIR="$HOME/.local/share/applications"
-SCRIPT_NAME="DJ-CrateBuilder_v1.3.py"
+SCRIPT_NAME="DJ-CrateBuilder_v2.0.py"
 REPO_TARBALL="https://github.com/Sintax/DJ-CrateBuilder/archive/refs/heads/main.tar.gz"
 
 echo ""
 echo "  ┌─────────────────────────────────────────┐"
-echo "  │   DJ-CrateBuilder v1.3 — Linux Setup    │"
+echo "  │   DJ-CrateBuilder v2.0 — Linux Setup    │"
 echo "  └─────────────────────────────────────────┘"
 echo ""
 
 # ── Package-manager abstraction ───────────────────────────────────────────
-# Detect apt / dnf / pacman once, then map a generic need (tkinter, venv, ...)
+# Detect apt / dnf / pacman once, then map a generic need (gtk, venv, ...)
 # onto the right package name so the rest of the script can just call
 # ensure_pkg without caring which distro it is running on.
 PKG=""
@@ -42,17 +42,20 @@ pkg_name() {
     # $1 = generic need; echoes the distro-specific package name(s), empty = skip
     case "$PKG:$1" in
         apt-get:python)  echo "python3" ;;
-        apt-get:tkinter) echo "python3-tk" ;;
+        apt-get:gtk)     echo "python3-gi python3-gi-cairo gir1.2-gtk-3.0" ;;
+        apt-get:webkit)  echo "gir1.2-webkit2-4.1" ;;   # 4.0 fallback below
         apt-get:venv)    echo "python3-venv python3-full" ;;
         apt-get:ffmpeg)  echo "ffmpeg" ;;
         apt-get:curl)    echo "curl" ;;
         dnf:python)      echo "python3" ;;
-        dnf:tkinter)     echo "python3-tkinter" ;;
+        dnf:gtk)         echo "python3-gobject gtk3" ;;
+        dnf:webkit)      echo "webkit2gtk4.1" ;;
         dnf:venv)        echo "" ;;    # bundled with python3
         dnf:ffmpeg)      echo "ffmpeg" ;;
         dnf:curl)        echo "curl" ;;
         pacman:python)   echo "python" ;;
-        pacman:tkinter)  echo "tk" ;;
+        pacman:gtk)      echo "python-gobject gtk3" ;;
+        pacman:webkit)   echo "webkit2gtk-4.1" ;;
         pacman:venv)     echo "" ;;    # bundled with python
         pacman:ffmpeg)   echo "ffmpeg" ;;
         pacman:curl)     echo "curl" ;;
@@ -113,15 +116,45 @@ if ! find_python; then
 fi
 echo "  ✓ Python: $($PYTHON --version)"
 
-# ── Ensure tkinter ────────────────────────────────────────────────────────
-if ! "$PYTHON" -c "import tkinter" &>/dev/null; then
-    ensure_pkg tkinter "tkinter (Python GUI toolkit)"
-    if ! "$PYTHON" -c "import tkinter" &>/dev/null; then
-        echo "  ✗ tkinter still not available after install. Please install it manually."
+# ── Ensure GTK + WebKit (pywebview's Linux backend) ───────────────────────
+# The v2.0 web window renders through PyGObject/GTK/WebKit2GTK. These are
+# system packages — pip cannot build PyGObject sanely — so the venv is
+# created with --system-site-packages further down to see them.
+webkit_ok() {
+    "$PYTHON" - << 'PYEOF' &>/dev/null
+import gi
+for v in ("4.1", "4.0"):
+    try:
+        gi.require_version("WebKit2", v)
+        break
+    except ValueError:
+        pass
+else:
+    raise SystemExit(1)
+PYEOF
+}
+
+if ! "$PYTHON" -c "import gi" &>/dev/null; then
+    ensure_pkg gtk "PyGObject + GTK 3"
+    if ! "$PYTHON" -c "import gi" &>/dev/null; then
+        echo "  ✗ PyGObject (python3-gi) still not available after install."
+        echo "    Install it manually, then re-run this script."
         exit 1
     fi
 fi
-echo "  ✓ tkinter: available"
+if ! webkit_ok; then
+    # Older Ubuntu/Debian ship gir1.2-webkit2-4.0 instead of -4.1.
+    ensure_pkg webkit "WebKit2GTK" || true
+    if ! webkit_ok && [ "$PKG" = "apt-get" ]; then
+        pkg_install gir1.2-webkit2-4.0 || true
+    fi
+    if ! webkit_ok; then
+        echo "  ✗ WebKit2GTK still not available after install."
+        echo "    Install gir1.2-webkit2-4.1 (or -4.0) manually, then re-run."
+        exit 1
+    fi
+fi
+echo "  ✓ GTK + WebKit: available"
 
 # ── Ensure FFmpeg ─────────────────────────────────────────────────────────
 if ! command -v ffmpeg &>/dev/null; then
@@ -143,7 +176,8 @@ TMP_DIR=""
 cleanup() { [ -n "$TMP_DIR" ] && rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
-if [ -f "$SCRIPT_DIR/$SCRIPT_NAME" ] && [ -d "$SCRIPT_DIR/cratebuilder" ]; then
+if [ -f "$SCRIPT_DIR/$SCRIPT_NAME" ] && [ -f "$SCRIPT_DIR/web_window.py" ] \
+   && [ -d "$SCRIPT_DIR/web" ] && [ -d "$SCRIPT_DIR/cratebuilder" ]; then
     SRC_DIR="$SCRIPT_DIR"
     echo "  ✓ Using application files found next to this installer"
 else
@@ -170,24 +204,25 @@ else
     fi
     tar -xzf "$TMP_DIR/src.tar.gz" -C "$TMP_DIR"
     SRC_DIR="$(find "$TMP_DIR" -maxdepth 1 -type d -name 'DJ-CrateBuilder-*' | head -1)"
-    if [ -z "$SRC_DIR" ] || [ ! -f "$SRC_DIR/$SCRIPT_NAME" ]; then
+    if [ -z "$SRC_DIR" ] || [ ! -f "$SRC_DIR/$SCRIPT_NAME" ] || [ ! -f "$SRC_DIR/web_window.py" ]; then
         echo "  ✗ Download completed but the app files weren't where expected."
         exit 1
     fi
     echo "  ✓ Downloaded application source"
 fi
 
-# ── Create an isolated virtual environment ────────────────────────────────
+# ── Create the virtual environment ────────────────────────────────────────
 # Modern Debian/Ubuntu/Mint mark the system Python as "externally managed"
 # (PEP 668), so pip refuses to install into it — even with --user. A dedicated
-# venv sidesteps that cleanly and keeps the app's deps isolated from the OS.
+# venv sidesteps that cleanly. --system-site-packages lets it see the
+# system-installed PyGObject/GTK stack pywebview needs (pip can't build it).
 VENV_DIR="$INSTALL_DIR/venv"
 mkdir -p "$INSTALL_DIR"
 echo ""
 echo "  → Creating virtual environment"
-if ! "$PYTHON" -m venv "$VENV_DIR" 2>/dev/null; then
+if ! "$PYTHON" -m venv --system-site-packages "$VENV_DIR" 2>/dev/null; then
     ensure_pkg venv "the Python venv module"
-    if ! "$PYTHON" -m venv "$VENV_DIR" 2>/dev/null; then
+    if ! "$PYTHON" -m venv --system-site-packages "$VENV_DIR" 2>/dev/null; then
         echo "  ✗ Could not create a virtual environment even after installing venv."
         exit 1
     fi
@@ -196,13 +231,14 @@ VENV_PY="$VENV_DIR/bin/python"
 echo "  ✓ Virtual environment: $VENV_DIR"
 
 # ── Install Python dependencies into the venv ─────────────────────────────
-# yt-dlp is the download engine; pystray + Pillow drive the system-tray icon.
-echo "  → Installing Python dependencies (yt-dlp, pystray, Pillow)..."
+# yt-dlp is the download engine; pywebview renders the app window;
+# fastapi + uvicorn power the optional remote-access server.
+echo "  → Installing Python dependencies (yt-dlp, pywebview, fastapi, ...)..."
 "$VENV_PY" -m pip install --upgrade pip -q
 if [ -f "$SRC_DIR/requirements.txt" ]; then
     "$VENV_PY" -m pip install -r "$SRC_DIR/requirements.txt" -q
 else
-    "$VENV_PY" -m pip install yt-dlp "pystray>=0.19" "Pillow>=10.0" send2trash "mutagen>=1.45" -q
+    "$VENV_PY" -m pip install yt-dlp "pystray>=0.19" "Pillow>=10.0" send2trash "mutagen>=1.45" pywebview fastapi "uvicorn[standard]" -q
 fi
 echo "  ✓ Python dependencies installed"
 
@@ -210,13 +246,18 @@ echo "  ✓ Python dependencies installed"
 echo ""
 echo "  → Installing to $INSTALL_DIR"
 
+# DJ-CrateBuilder_v2.0.py ships as source text only — the service parses it
+# for version/About data; the app itself is web_window.py + web/.
 cp "$SRC_DIR/$SCRIPT_NAME" "$INSTALL_DIR/$SCRIPT_NAME"
-chmod +x "$INSTALL_DIR/$SCRIPT_NAME"
+cp "$SRC_DIR/web_window.py" "$INSTALL_DIR/web_window.py"
+cp "$SRC_DIR/web_server.py" "$INSTALL_DIR/web_server.py"
+rm -rf "$INSTALL_DIR/web"
+cp -r "$SRC_DIR/web" "$INSTALL_DIR/web"
 
-# Copy the cratebuilder/ package (util, sidecar, db, startup, tray)
+# Copy the cratebuilder/ package (service, db, download, updater core, ...)
 rm -rf "$INSTALL_DIR/cratebuilder"
 cp -r "$SRC_DIR/cratebuilder" "$INSTALL_DIR/cratebuilder"
-echo "  ✓ cratebuilder/ package installed"
+echo "  ✓ Application files installed"
 
 # Copy the app icon if present (used by the .desktop entry)
 if [ -f "$SRC_DIR/icon.ico" ]; then
@@ -228,7 +269,7 @@ mkdir -p "$(dirname "$BIN_LINK")"
 cat > "$BIN_LINK" << EOF
 #!/bin/bash
 cd "$INSTALL_DIR"
-exec "$VENV_DIR/bin/python" "$INSTALL_DIR/$SCRIPT_NAME" "\$@"
+exec "$VENV_DIR/bin/python" "$INSTALL_DIR/web_window.py" "\$@"
 EOF
 chmod +x "$BIN_LINK"
 echo "  ✓ Command: dj-cratebuilder"

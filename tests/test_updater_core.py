@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import sys
 
 import pytest
 
@@ -178,3 +179,34 @@ def test_apply_update_rolls_back_on_failure(tmp_path):
     # Both originals must be restored exactly as they were.
     assert (app / "a.txt").read_text() == "OLD-a"
     assert (app / "b.txt").read_text() == "OLD-b"
+
+
+# ── launch_updater_command ──────────────────────────────────────────────────
+
+def test_launch_updater_command_prefers_updater_exe(tmp_path):
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    (app_dir / "updater.exe").write_text("stub")
+    cmd = uc.launch_updater_command(
+        1234, str(tmp_path / "staged"), str(app_dir),
+        str(app_dir / "DJ-CrateBuilder.exe"), str(tmp_path / "backup"),
+        str(tmp_path / "update.log"))
+    assert cmd[0] == str(app_dir / "updater.exe")
+    assert "--pid" in cmd and cmd[cmd.index("--pid") + 1] == "1234"
+    assert cmd[cmd.index("--src") + 1] == str(tmp_path / "staged")
+    assert cmd[cmd.index("--dst") + 1] == str(app_dir)
+    assert cmd[cmd.index("--relaunch") + 1] == str(app_dir / "DJ-CrateBuilder.exe")
+    assert cmd[cmd.index("--backup") + 1] == str(tmp_path / "backup")
+    assert cmd[cmd.index("--log") + 1] == str(tmp_path / "update.log")
+
+
+def test_launch_updater_command_falls_back_to_source(tmp_path):
+    # No updater.exe in app_dir: dev fallback drives updater.py with Python.
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    cmd = uc.launch_updater_command(
+        99, str(tmp_path / "staged"), str(app_dir), "relaunch.exe",
+        str(tmp_path / "backup"), str(tmp_path / "update.log"))
+    assert cmd[0] == sys.executable
+    assert cmd[1].endswith("updater.py")
+    assert os.path.isfile(cmd[1])

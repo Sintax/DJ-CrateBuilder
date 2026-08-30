@@ -28,6 +28,7 @@ from cratebuilder.util import (
     runtime_data_dir, ensure_usable_tempdir, default_base_dir,
     describe_fetch_failure,
     fit_window_geometry, parse_window_geometry,
+    USER_AGENT_POOL, THROTTLE_PRESETS,
 )
 from cratebuilder.sidecar import (
     channel_url_from_id, channel_id_from_url,
@@ -61,7 +62,7 @@ from cratebuilder.settings import (
 # Version & About — edit these values to update the app info
 # ══════════════════════════════════════════════════════════════════════════════
 APP_NAME    = "DJ-CrateBuilder"
-APP_VERSION = "1.3"
+APP_VERSION = "2.0"
 # Nightly build number. The display version stays pinned at APP_VERSION; only
 # this integer increments for small in-place updates. Bump it for every build
 # you publish to the nightly channel. Publish with: python scripts/release.py
@@ -78,11 +79,11 @@ UPDATE_MANIFEST_URL = (
     "https://raw.githubusercontent.com/Sintax/DJ-CrateBuilder/"
     "nightly/update.json"
 )
-# Linux .deb update manifest, published as an asset on the linux-v1.3 release
+# Linux .deb update manifest, published as an asset on the linux-v2.0 release
 # by .github/workflows/build-deb.yml. Same schema as update.json.
 UPDATE_MANIFEST_URL_LINUX = (
     "https://github.com/Sintax/DJ-CrateBuilder/releases/download/"
-    "linux-v1.3/update-linux.json"
+    "linux-v2.0/update-linux.json"
 )
 # About-tab updater button labels. The button doubles as the install trigger:
 # it reads "Check for updates" normally and flips to "Update Now" once a newer
@@ -381,24 +382,9 @@ STALL_GRACE_SECONDS = 3
 # are left alone: a title's own spacing belongs to the title.
 _ONE_LINE_RE = re.compile(r"[\r\n\v\f\t  ]+")
 
-# ── User-Agent pool (one is chosen per batch session) ────────────────────────
-USER_AGENT_POOL = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.4; rv:125.0) Gecko/20100101 Firefox/125.0",
-    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
-]
-
-# ── Throttle presets (Auto mode ranges) ──────────────────────────────────────
-THROTTLE_PRESETS = {
-    "Light  (1–5 s)":      (1, 5),
-    "Moderate  (3–8 s)":   (3, 8),
-    "Aggressive  (5–15 s)": (5, 15),
-}
+# ── User-Agent pool / throttle presets ───────────────────────────────────────
+# Both are imported from cratebuilder.util above, shared with the headless
+# BatchRunner so the two download drivers cannot drift apart.
 
 # ── Maximum number of channel scans allowed to run concurrently during
 # ── "Scan All". Caps how hard we hit YouTube at once so large watch lists
@@ -8308,7 +8294,7 @@ class MP3DownloaderApp(tk.Tk):
                 f"Build {build} is available, but automatic installation isn't "
                 "possible here (pkexec was not found).\n\n"
                 "Download the latest .deb and install it manually:\n"
-                "https://github.com/Sintax/DJ-CrateBuilder/releases/tag/linux-v1.3",
+                "https://github.com/Sintax/DJ-CrateBuilder/releases/tag/linux-v2.0",
                 parent=self)
             return
 
