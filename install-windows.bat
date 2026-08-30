@@ -5,7 +5,7 @@ color 0A
 
 echo.
 echo  =====================================================
-echo    DJ-CrateBuilder v1.3 — Windows Setup
+echo    DJ-CrateBuilder v2.0 — Windows Setup
 echo  =====================================================
 echo.
 
@@ -61,32 +61,22 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: ── Check tkinter ─────────────────────────────────────────────────────────
-echo  [*] Checking for tkinter...
-python -c "import tkinter" >nul 2>&1
-if %errorlevel% neq 0 (
-    echo  [!] tkinter not found. It should be included with Python on Windows.
-    echo      Try reinstalling Python and ensure "tcl/tk and IDLE" is checked.
-    pause
-    exit /b 1
-) else (
-    echo  [+] tkinter OK.
-)
-
 :: ── Upgrade pip ───────────────────────────────────────────────────────────
 echo  [*] Upgrading pip...
 python -m pip install --upgrade pip --quiet
 echo  [+] pip up to date.
 
-:: ── Install yt-dlp ────────────────────────────────────────────────────────
-echo  [*] Installing yt-dlp...
-python -m pip install --upgrade yt-dlp --quiet
+:: ── Install Python dependencies ───────────────────────────────────────────
+:: yt-dlp downloads, pywebview renders the app window (over the WebView2
+:: runtime, preinstalled on Windows 10/11), fastapi+uvicorn power remote access.
+echo  [*] Installing Python dependencies (yt-dlp, pywebview, ...)...
+python -m pip install --upgrade -r "%~dp0requirements.txt" --quiet
 if %errorlevel% neq 0 (
-    echo  [X] Failed to install yt-dlp. Check your internet connection.
+    echo  [X] Failed to install dependencies. Check your internet connection.
     pause
     exit /b 1
 )
-echo  [+] yt-dlp installed.
+echo  [+] Python dependencies installed.
 
 :: ── Check FFmpeg ──────────────────────────────────────────────────────────
 echo  [*] Checking for FFmpeg...
@@ -110,23 +100,29 @@ if %errorlevel% neq 0 (
 
 :: ── Locate the script ─────────────────────────────────────────────────────
 set "SCRIPT_DIR=%~dp0"
-set "RUN_SCRIPT=%SCRIPT_DIR%DJ-CrateBuilder_v2.0.py"
+set "RUN_SCRIPT=%SCRIPT_DIR%web_window.py"
 
 if not exist "%RUN_SCRIPT%" (
-    echo  [X] Could not find DJ-CrateBuilder_v2.0.py
+    echo  [X] Could not find web_window.py
     echo      Make sure this batch file is in the DJ-CrateBuilder folder.
     pause
     exit /b 1
 )
-echo  [+] Found DJ-CrateBuilder v1.3
+echo  [+] Found DJ-CrateBuilder v2.0
 
-if not exist "%SCRIPT_DIR%cratebuilder\__init__.py" (
-    echo  [X] Could not find the cratebuilder\ package next to the script.
-    echo      v1.3 needs the cratebuilder\ folder in the same directory.
+if not exist "%SCRIPT_DIR%web\index.html" (
+    echo  [X] Could not find the web\ bundle next to the script.
+    echo      v2.0 needs the web\ folder in the same directory.
     pause
     exit /b 1
 )
-echo  [+] cratebuilder package OK
+if not exist "%SCRIPT_DIR%cratebuilder\__init__.py" (
+    echo  [X] Could not find the cratebuilder\ package next to the script.
+    echo      v2.0 needs the cratebuilder\ folder in the same directory.
+    pause
+    exit /b 1
+)
+echo  [+] web bundle + cratebuilder package OK
 
 :: ── Create desktop shortcut ───────────────────────────────────────────────
 echo  [*] Creating desktop shortcut...
