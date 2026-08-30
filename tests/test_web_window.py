@@ -236,40 +236,52 @@ def test_acquire_or_hand_off_hands_off_and_exits_when_already_running(monkeypatc
     assert asked == [49737]
 
 
-def test_restore_window_calls_restore_then_show():
+def test_restore_window_shows_before_it_restores():
+    """The order is the whole fix, not a style choice.
+
+    A window hidden to the tray is Visible=False with WindowState still
+    Minimized, and winforms re-applies that stored show-state when Show()
+    runs — so a WindowState written while the form is invisible is thrown
+    away. restore() before show() leaves the window visible and still
+    minimized: a taskbar button and nothing on screen, which is what clicking
+    the tray icon did. Measured against a real pywebview window, not inferred.
+    """
     calls = []
 
     class Window:
-        def restore(self):
-            calls.append("restore")
-
         def show(self):
             calls.append("show")
+
+        def restore(self):
+            calls.append("restore")
 
     web_window.restore_window(Window())
-    assert calls == ["restore", "show"]
+    assert calls == ["show", "restore"]
 
 
-def test_restore_window_still_shows_when_restore_throws():
-    """pywebview marshals restore()/show() from the listener's own thread, so
-    a window that closed a moment before must not take that thread down — and
-    the show() must still happen. winforms' restore() Invoke()s without the
-    InvokeRequired check its show() has, so restore() is the call that throws,
-    and show() is the one that brings a tray-hidden window back: sharing one
-    `try` would make the tray's Open the single thing that cannot reopen it."""
+@pytest.mark.parametrize("throwing", ["show", "restore"])
+def test_restore_window_guards_each_call_separately(throwing):
+    """Each call is the whole fix for a different state — show() for a window
+    hidden in the tray, restore() for one only minimized when a second launch
+    asks — so a throw in either must not skip the other. And nothing may
+    reach the caller: this runs on the single-instance listener's thread and
+    on pystray's menu thread, where a raise is unhandled."""
     calls = []
 
     class Window:
-        def restore(self):
-            calls.append("restore")
-            raise RuntimeError("window already destroyed")
-
         def show(self):
             calls.append("show")
+            if throwing == "show":
+                raise RuntimeError("window already destroyed")
+
+        def restore(self):
+            calls.append("restore")
+            if throwing == "restore":
+                raise RuntimeError("window already destroyed")
 
     web_window.restore_window(Window())    # must not raise
 
-    assert calls == ["restore", "show"]
+    assert calls == ["show", "restore"]
 
 
 def test_prepare_runtime_workspace_purges_and_chdirs(tmp_path, monkeypatch):
@@ -478,7 +490,7 @@ def test_open_restores_the_window(make_tray):
 
     tray.open()
 
-    assert window.actions == ["restore", "show"]
+    assert window.actions == ["show", "restore"]
 
 
 def test_scan_now_shows_the_watch_list_then_scans(make_tray):
@@ -487,7 +499,7 @@ def test_scan_now_shows_the_watch_list_then_scans(make_tray):
 
     tray.scan_now()
 
-    assert window.actions == ["restore", "show"]
+    assert window.actions == ["show", "restore"]
     assert window.js == ['location.hash = "watchlist"']
     assert service.calls == [{"method": "watchlist.scan_all", "params": None,
                               "transport": "local"}]
@@ -500,7 +512,7 @@ def test_download_all_new_shows_the_downloads_screen_then_downloads(make_tray):
 
     tray.download_all_new()
 
-    assert window.actions == ["restore", "show"]
+    assert window.actions == ["show", "restore"]
     assert window.js == ['location.hash = "downloads"']
     assert service.calls == [{"method": "watchlist.download_all_new",
                               "params": None, "transport": "local"}]
