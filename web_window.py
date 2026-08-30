@@ -581,19 +581,26 @@ def acquire_or_hand_off(port=SINGLE_INSTANCE_PORT):
 
 def restore_window(window):
     """Bring *window* back from the tray/taskbar on a second launch's
-    request. pywebview marshals restore()/show() safely from a thread that
+    request. pywebview marshals show()/restore() safely from a thread that
     isn't the UI thread — this is called from the single-instance listener's
     own thread, and from the tray menu's — but a race with the window already
     closing must not take that thread down with it.
 
-    Both calls earn their place: restore() un-minimizes, and show() is what
-    brings back a window WindowTray hid into the tray — so they are guarded
-    separately. Sharing one `try` would let a restore() that threw skip the
-    show() behind it, and the tray's Open would be the one thing that cannot
-    reopen a tray-hidden window. pywebview's winforms restore() Invoke()s
-    without the InvokeRequired check its show() has, which is exactly the
-    asymmetry that would bite."""
-    for call in (window.restore, window.show):
+    show() must come first. hide() leaves the form Visible=False with its
+    WindowState still Minimized, and a WindowState written while the form is
+    invisible does not stick — winforms re-applies the stored minimized
+    show-state when Show() runs. restore() before show() therefore lands on a
+    visible window that is still minimized: a taskbar button and no window,
+    which is what clicking the tray icon looked like. Showing first and
+    un-minimizing after ends Normal and focused from every state the window
+    can be in, and raises only `restored` — never `minimized`, so the tray's
+    own minimize handler cannot bounce the window straight back.
+
+    Guarded separately rather than sharing one `try`: each call is the whole
+    fix for a different state — show() for a window hidden in the tray,
+    restore() for one merely minimized when a second launch asks — so a throw
+    in either must not skip the other."""
+    for call in (window.show, window.restore):
         try:
             call()
         except Exception:
