@@ -11,6 +11,20 @@ from contextlib import contextmanager
 # another chance (the user's location or VPN may have changed since).
 GEO_RECHECK_SECONDS = 7 * 24 * 3600
 
+# Databases whose schema-init line has already been written this process.
+_schema_logged = set()
+_schema_logged_lock = threading.Lock()
+
+
+def _mark_schema_logged(db_path):
+    """True the first time this process opens *db_path*, False after."""
+    key = os.path.abspath(db_path)
+    with _schema_logged_lock:
+        if key in _schema_logged:
+            return False
+        _schema_logged.add(key)
+        return True
+
 
 def is_suppressed(reason, attempts, last_failed, now):
     """True if a remembered permanent failure should hide a track from 'new'.
@@ -322,7 +336,14 @@ class DownloadsDatabase:
             # (see _try_unique_path_index) and must not take schema init with
             # it — a failed index leaves the app exactly as it behaved at v6.
             self._try_unique_path_index()
-            self._log("info", f"schema initialized at {self.db_path}")
+            # Once per database per process, not once per instance. The tkinter
+            # app builds one DownloadsDatabase and logs this line once a
+            # session; the service builds a fresh read-only one per snapshot,
+            # so logging it per instance would repeat it dozens of times a
+            # session and, under the log's size cap, trim away the download
+            # diagnostics this file exists for. A failure still always logs.
+            if _mark_schema_logged(self.db_path):
+                self._log("info", f"schema initialized at {self.db_path}")
         except Exception as e:
             self._log("error", f"schema init failed: {e}")
             raise

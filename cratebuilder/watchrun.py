@@ -142,6 +142,21 @@ def track_specs(row, save_dir, entries, row_id=None):
     ]
 
 
+def channel_verdict(tally):
+    """The (state, detail) one finished channel's queue row settles on.
+
+    A run the user skipped or cancelled reads as skipped — its pending list
+    survives for a retry, so the panel must not claim it finished. Anything the
+    run got through reads as done and reports its tally, per-track failures
+    included: the tkinter panel marks such a channel ✓ too, because the channel
+    itself worked."""
+    summary = (f"{tally['downloaded']} downloaded, {tally['skipped']} skipped, "
+               f"{tally['errors']} failed")
+    if tally.get("stopped"):
+        return "skipped", f"skipped — {summary}"
+    return "done", summary
+
+
 def _plural(count, word):
     return f"{count} {word}{'s' if count != 1 else ''}"
 
@@ -169,7 +184,7 @@ class WatchlistOps:
                  session_factory=YdlSession, runner_factory=BatchRunner,
                  ffmpeg_dir=None, log_line=None, counts=None, flush=None,
                  spawn=_daemon, network_probe=network_is_reachable,
-                 now=time.monotonic, timestamp=None,
+                 now=time.monotonic, timestamp=None, debug=None,
                  claim_tag_writes=None, release_tag_writes=None):
         self._settings = settings
         self._db_factory = db_factory
@@ -178,6 +193,7 @@ class WatchlistOps:
         self._session_factory = session_factory
         self._runner_factory = runner_factory
         self._ffmpeg_dir = ffmpeg_dir
+        self._debug = debug
         self._log_line = log_line or (lambda text: None)
         self._counts = counts
         self._flush = flush or (lambda: None)
@@ -288,6 +304,32 @@ class WatchlistOps:
         row = self._db().get_watchlist_channel(cid)
         if row is not None:
             self._emit("watchlist.card", watchlist_card(row, **extra))
+
+    def _queue_row(self, cid, index, state, detail="", name=None):
+        """One CHANNEL's row in the Downloads screen's queue panel.
+
+        A Watch List run downloads already-resolved tracks, so BatchRunner is
+        entered through run_tracks with no queue row to report against and the
+        panel would stay empty for the whole run. The tkinter UI does not leave
+        it empty: it repurposes that otherwise-idle panel to list the run's
+        channels, one row each, with the active one highlighted
+        (DJ-CrateBuilder_v2.0.py's _wl_batch_render_rows). These are the rows
+        that panel is rebuilt from — per channel, never per track — and they
+        carry the job so a concurrent manual batch's rows stay its own."""
+        self._flush()
+        self._emit("queue.row", {
+            "id": cid, "index": index, "state": state,
+            "title": name if name is not None else self._name(cid),
+            "detail": detail, "job": WATCHLIST_JOB,
+        })
+
+    def _publish_queue(self, start=0):
+        """Announce the channels waiting their turn, so the panel shows the
+        whole run from its first frame rather than growing one row at a time."""
+        with self._lock:
+            queued = list(self._queue)
+        for index in range(start, len(queued)):
+            self._queue_row(queued[index][0], index, "queued")
 
     def _patch_counts(self):
         if self._counts is None:
@@ -577,7 +619,9 @@ class WatchlistOps:
                 if queued == cid:
                     return index + 1
             self._queue.append((cid, bool(force)))
-            return len(self._queue)
+            position = len(self._queue)
+        self._queue_row(cid, position - 1, "queued")
+        return position
 
     def run_download(self, cids, force=False):
         """Download each channel in turn — the "watchlist" job's download body.
@@ -589,6 +633,7 @@ class WatchlistOps:
         carried per queue entry, so a channel that joins later keeps the mode it
         was asked for."""
         self._begin("download", [(cid, bool(force)) for cid in cids])
+        self._publish_queue()
         index = 0
         downloaded = 0
         try:
@@ -597,13 +642,16 @@ class WatchlistOps:
                     if self._cancel_all.is_set() or index >= len(self._queue):
                         break
                     cid, entry_force = self._queue[index]
+                position = index
                 index += 1
                 try:
-                    downloaded += self._download_channel(cid, force=entry_force)
+                    downloaded += self._download_channel(cid, force=entry_force,
+                                                         index=position)
                 except Exception as exc:
                     self._failed += 1
                     self._line(LINE_ERROR,
                                f"ERROR {self._name(cid)} — {str(exc)[:120]}")
+                    self._queue_row(cid, position, "error", str(exc)[:120])
         finally:
             self._end()
             self._flush()
@@ -625,8 +673,11 @@ class WatchlistOps:
                      level="warn" if lost else "info")
         return {"downloaded": downloaded}
 
-    def _download_channel(self, cid, force=False):
+    def _download_channel(self, cid, force=False, index=0):
         """One channel end to end. Returns how many tracks it downloaded.
+
+        *index* is this channel's position in the run, carried only so every
+        exit can settle its row in the Downloads queue panel (see _queue_row).
 
         Every exit that reports this channel as broken also books it against
         the run's tally, so run_download's closing announcement can tell a run
@@ -652,11 +703,13 @@ class WatchlistOps:
         db = self._db()
         row = db.get_watchlist_channel(cid)
         if row is None or self._cancelled(cid):
+            self._queue_row(cid, index, "skipped", "cancelled")
             return 0
         name = row.get("display_name") or row.get("url") or "Channel"
         if is_unresolved_channel(row):
             self._line(LINE_ERROR, f"ERROR {name} — link unresolved; fix the link "
                                    f"before downloading")
+            self._queue_row(cid, index, "error", "link unresolved", name=name)
             return 0
 
         folder = self._folder(row, create=True)
@@ -669,11 +722,13 @@ class WatchlistOps:
             except Exception as exc:
                 self._failed += 1
                 self._line(LINE_ERROR, f"ERROR {name} — {str(exc)[:120]}")
+                self._queue_row(cid, index, "error", str(exc)[:120], name=name)
                 return 0
         else:
             entries = pending_entries(row)
         if not entries:
             self._line(LINE_DEFAULT, f"SCAN {name} — nothing pending")
+            self._queue_row(cid, index, "skipped", "nothing pending", name=name)
             return 0
 
         specs = track_specs(row, folder, entries, row_id=cid)
@@ -684,11 +739,14 @@ class WatchlistOps:
         self._card(cid, progress=dict(state))
         self._line(LINE_DEFAULT, f"SCAN {name} — downloading "
                                  f"{_plural(len(specs), 'track')}…")
+        self._queue_row(cid, index, "active", _plural(len(specs), "track"),
+                        name=name)
 
         runner = self._runner_factory(
             self._settings, db, self._channel_emit(cid, state),
             session_factory=self._session_factory,
             ffmpeg_dir=self._ffmpeg_dir, log_line=self._log_line,
+            debug=self._debug,
             # Stamps every progress frame this run emits, so the Main tab's bar
             # can tell them from its own concurrent batch.
             job=WATCHLIST_JOB)
@@ -725,6 +783,7 @@ class WatchlistOps:
         self._line(LINE_DEFAULT if not tally["errors"] else LINE_ERROR,
                    f"SCAN {name} — {tally['downloaded']} downloaded, "
                    f"{tally['skipped']} skipped, {tally['errors']} failed")
+        self._queue_row(cid, index, *channel_verdict(tally), name=name)
         return tally["downloaded"]
 
     def _channel_emit(self, cid, state):

@@ -24,6 +24,10 @@
   };
 
   const DL_MARK = { done: '✓', active: '▶', skipped: '⊘', error: '✗', queued: '·' };
+  /* The tkinter Batch Queue panel's own marks for a Watch List run's channel
+     rows (_wl_batch_render_rows) — a different vocabulary from the manual
+     queue's on purpose, so the borrowed panel reads as the Watch List's. */
+  const WL_QROW_MARK = { done: '✓', active: '⬇', skipped: '⊘', error: '✗', queued: '○' };
   const DL_LOG_CLASS = { done: 'downloaded', skipped: 'skipped', error: 'error', queued: 'default' };
   const DL_MARK_COLOR = { done: 'var(--cb-ok)', skipped: 'var(--cb-warn)', error: 'var(--cb-err)', active: 'var(--cb-accent)' };
 
@@ -1042,26 +1046,58 @@
     b.textContent = dl.paused ? '▶ Resume' : '⏸ Pause';
   }
 
+  /* A Watch List run has no pause — the reason the Overview's card gives, said
+     here too so the Downloads screen's own Pause closes with the same words. */
+  const WL_NO_PAUSE_REASON = 'A Watch List run has no pause — cancel the run ' +
+    'here, or cancel a single channel from its card.';
+
+  /* Which run this screen is showing. A Main-tab batch owns the panel whenever
+     one is running; otherwise a Watch List download borrows it, which is the
+     repurposing _batch_rebuild_rows does in the tkinter UI ("while a Watch List
+     batch is downloading, repurpose this otherwise-idle panel"). v2.0 lets the
+     two run at once, and that fallback is exactly what covers it — the manual
+     queue keeps its own panel. */
+  function dlView() {
+    // The channel rows are the test, not wl.running: a Watch List SCAN claims
+    // the same job category and has no download to show here.
+    if (!dl.running && wl.running && wlQueueRows().length) {
+      return { kind: 'watchlist', running: true, current: wl.current,
+               overall: wl.overall, marks: WL_QROW_MARK };
+    }
+    return { kind: 'batch', running: dl.running, current: dl.current,
+             overall: dl.overall, marks: DL_MARK };
+  }
+
+  /* The run's channel rows in order. queue.row carries its own index, so the
+     store is sparse until every row has arrived. */
+  function wlQueueRows() {
+    return (wl.rows || []).filter((r) => !!r);
+  }
+
   function renderDownloadsHeader() {
+    const v = dlView();
+    const watching = v.kind === 'watchlist';
     const tag = $('#dl-state');
-    tag.textContent = dl.running ? 'Batch running' : 'Idle';
-    tag.className = 'cb-tag ' + (dl.running ? 'cb-tag--fill' : 'cb-tag--grey');
-    placeBatchControls(dl.running);
+    tag.textContent = watching ? 'Watch List running'
+      : (dl.running ? 'Batch running' : 'Idle');
+    tag.className = 'cb-tag ' + (v.running ? 'cb-tag--fill' : 'cb-tag--grey');
+    placeBatchControls(v.running);
     updatePauseLabel();
-    gateWrite($('#dl-cancel'), dl.running ? '' : 'No download is running.',
+    gateWrite($('#dl-cancel'), v.running ? '' : 'No download is running.',
       'main.cancel_batch');
-    gateWrite($('#dl-pause'), dl.running ? '' : 'No download is running.',
+    gateWrite($('#dl-pause'), watching ? WL_NO_PAUSE_REASON
+      : (dl.running ? '' : 'No download is running.'),
       'main.pause_batch');
     gateWrite($('#quick-add'), '', 'main.batch_add');
     gateWrite($('#dl-add'), '', 'main.batch_add');
-    $('#dl-progress').style.opacity = dl.running ? '1' : '.6';
+    $('#dl-progress').style.opacity = v.running ? '1' : '.6';
     /* The panel's Scan-all quick action and the Watch List's own scan controls
        both close while a batch owns the host's yt-dlp session (3c). */
     renderWatchlistToolbar();
   }
 
   function renderCurrent() {
-    const p = dl.current;
+    const p = dlView().current;
     $('#dl-cur-label').textContent = p ? (p.title || '—') : '—';
     $('#dl-cur-bar').style.width = (p && p.percent != null ? p.percent : 0) + '%';
     $('#dl-cur-bitrate').textContent = (p && p.bitrate_text) || '';
@@ -1072,7 +1108,7 @@
   }
 
   function renderOverall() {
-    const p = dl.overall;
+    const p = dlView().overall;
     $('#dl-all-label').innerHTML = p
       ? `<span class="cb-mono">${num(p.done)}</span> of <span class="cb-mono">${num(p.total)}</span> · ` +
         `<span class="cb-mono">${num(p.downloaded)}</span> downloaded · ` +
@@ -1086,13 +1122,16 @@
   }
 
   function renderPanelBatchMini() {
+    const v = dlView();
     const mini = $('#panel-batch-mini');
-    mini.hidden = !dl.running;
-    if (!dl.running) return;
-    const p = dl.overall;
+    mini.hidden = !v.running;
+    if (!v.running) return;
+    const p = v.overall;
     const pct = p ? p.percent || 0 : 0;
+    const what = v.kind === 'watchlist' ? 'Watch List' : 'Batch';
     $('#panel-batch-fill').style.width = pct + '%';
-    $('#panel-batch-label').textContent = p ? `Batch ${num(p.done)} / ${num(p.total)}` : 'Batch 0 / 0';
+    $('#panel-batch-label').textContent = p
+      ? `${what} ${num(p.done)} / ${num(p.total)}` : `${what} 0 / 0`;
   }
 
   /* Which job the Now-running card is about. The artboard draws the batch
@@ -1188,7 +1227,103 @@
     return b;
   }
 
+  /* The Skip that the active channel of a MULTI-channel Watch List run
+     carries. Same channel as the card's ✕ Cancel — the run's own per-channel
+     cancel — because that is what skipping a channel is: whatever is in flight
+     is interrupted and the run moves to the next channel, with this channel's
+     pending list kept for a retry. A single-channel run gets no button: with no
+     next channel, Skip would be Cancel wearing different clothes, and the Watch
+     List card already has Cancel. */
+  function wlSkipBtn(row) {
+    const b = document.createElement('button');
+    b.className = 'cb-btn cb-btn--sm cb-icon cb-btn--warn';
+    if (wl.skipping[row.id]) {
+      b.textContent = 'Skipping…';
+      wlGate(b, 'Skipped — moving to the next channel.', 'wl.card_cancel');
+      return b;
+    }
+    b.textContent = '⏭ Skip';
+    wlGate(b, writeBlocked(), 'wl.card_cancel');
+    b.addEventListener('click', async () => {
+      wl.skipping[row.id] = true;
+      renderBatch();
+      try {
+        await call('watchlist.cancel', { channel_id: row.id });
+      } catch (_) {
+        wl.skipping[row.id] = false;
+        renderBatch();
+      }
+    });
+    return b;
+  }
+
+  /* The tkinter Main tab's _wl_batch_render_rows, in this panel: one numbered
+     row per channel of the running Watch List download, marked finished,
+     skipped or pending around the one downloading now. */
+  function renderWatchlistQueue() {
+    const rows = wlQueueRows();
+    const host = $('#dl-rows');
+    host.innerHTML = '';
+    const n = rows.length;
+    let active = rows.findIndex((r) => r.state === 'active');
+    // Between channels nothing is active; the next one still waiting is what
+    // the run is on its way to, which is what _wl_batch_active_idx holds.
+    if (active < 0) active = rows.findIndex((r) => r.state === 'queued');
+    if (active < 0) active = n - 1;
+    const pos = Math.min(Math.max(active + 1, 1), Math.max(n, 1));
+    $('#dl-count').textContent =
+      `⬇  Watch List — downloading ${pos} of ${n} channel${n === 1 ? '' : 's'}`;
+    /* The manual queue is untouched by a Watch List run — v2.0 lets the two
+       run together — so its own controls stay gated on its own contents, and
+       starting it simply takes this panel back. */
+    const queued = state.batch || [];
+    const hasWork = queued.some((r) => r.state !== 'skipped');
+    setStartDisabled(!hasWork,
+      hasWork ? '' : 'Add a link to the queue before starting a download.');
+    gateWrite($('#dl-clear'), '', 'main.batch_clear');
+
+    rows.forEach((r, i) => {
+      const st = r.state || 'queued';
+      const el = document.createElement('div');
+      el.className = 'cb-qrow' +
+        (st === 'skipped' ? ' is-skipped' : '') +
+        (st === 'done' || st === 'error' ? ' is-past' : '') +
+        (st === 'active' ? ' is-active' : '');
+
+      const idx = document.createElement('span');
+      idx.className = 'cb-mono cb-mut';
+      idx.style.cssText = 'width:22px;flex:none;text-align:right;font-size:11.5px';
+      idx.textContent = `${i + 1}.`;
+      el.appendChild(idx);
+
+      const mark = document.createElement('span');
+      mark.className = 'cb-mono cb-qrow__mark';
+      mark.textContent = WL_QROW_MARK[st] || WL_QROW_MARK.queued;
+      mark.style.color = DL_MARK_COLOR[st] || 'var(--cb-muted)';
+      el.appendChild(mark);
+
+      const name = document.createElement('span');
+      name.className = 'cb-qrow__url';
+      name.textContent = r.title || String(r.id);
+      el.appendChild(name);
+
+      const tag = document.createElement('span');
+      tag.className = 'cb-tag' + (st === 'active' ? ' cb-tag--fill'
+        : st === 'queued' ? '' : ' cb-tag--grey');
+      tag.textContent = st === 'done' ? 'Done' : st === 'error' ? 'Error'
+        : st === 'skipped' ? 'Skipped' : st === 'active' ? 'Downloading'
+        : 'Pending';
+      el.appendChild(tag);
+
+      if (st === 'active' && n > 1) el.appendChild(wlSkipBtn(r));
+      host.appendChild(el);
+    });
+    bindTips(host);
+    renderQueueLog();
+  }
+
   function renderBatch() {
+    if (dlView().kind === 'watchlist') { renderWatchlistQueue(); return; }
     const rows = state.batch || [];
     const running = dl.running;
     const host = $('#dl-rows');
@@ -1286,12 +1421,55 @@
     renderQueueLog();
   }
 
+  /* One line of the queue log, in whichever run's mark vocabulary the panel is
+     currently showing (dlView().marks). */
+  function queueLogLine(st, title, detail, marks) {
+    const line = document.createElement('div');
+    if (st === 'active') line.className = 'cb-log__now';
+
+    const mark = document.createElement('span');
+    mark.className = DL_LOG_CLASS[st] || '';
+    mark.textContent = ((marks || DL_MARK)[st] || '·') + '  ';
+    line.appendChild(mark);
+
+    const name = document.createElement('span');
+    name.className = st === 'active' ? 'cb-log__title' : '';
+    name.textContent = title;
+    line.appendChild(name);
+
+    const note = document.createElement('span');
+    note.className = 'cb-mut';
+    note.style.marginLeft = '10px';
+    note.textContent = detail;
+    line.appendChild(note);
+    return line;
+  }
+
   function renderQueueLog() {
-    const rows = state.batch || [];
+    const view = dlView();
     const log = $('#dl-queue');
     const meta = $('#dl-queue-meta');
     log.innerHTML = '';
 
+    if (view.kind === 'watchlist') {
+      const channels = wlQueueRows();
+      let settled = 0;
+      channels.forEach((r) => {
+        const st = r.state || 'queued';
+        if (st === 'done' || st === 'error' || st === 'skipped') settled += 1;
+        log.appendChild(queueLogLine(st, r.title || String(r.id),
+          st === 'active'
+            ? ((view.current && (view.current.title || '')) || 'starting…')
+            : (r.detail || (st === 'queued' ? 'waiting' : '')),
+          view.marks));
+      });
+      if (!channels.length) log.textContent = 'Starting the Watch List run…';
+      meta.textContent = `${channels.length} channel` +
+        `${channels.length === 1 ? '' : 's'} · ${settled} processed`;
+      return;
+    }
+
+    const rows = state.batch || [];
     if (!dl.running) {
       if (!rows.length) {
         log.textContent = 'Queue is empty — add links above, then press Start Downloads.';
@@ -1309,28 +1487,11 @@
       const st = rt ? rt.state : (row.state === 'skipped' ? 'skipped' : 'queued');
       if (st === 'done' || st === 'error' || st === 'skipped') processed += 1;
 
-      const line = document.createElement('div');
-      if (st === 'active') line.className = 'cb-log__now';
-
-      const mark = document.createElement('span');
-      mark.className = DL_LOG_CLASS[st] || '';
-      mark.textContent = (DL_MARK[st] || '·') + '  ';
-      line.appendChild(mark);
-
-      const title = document.createElement('span');
-      title.className = st === 'active' ? 'cb-log__title' : '';
-      title.textContent = (rt && rt.title) || row.url;
-      line.appendChild(title);
-
-      const detail = document.createElement('span');
-      detail.className = 'cb-mut';
-      detail.style.marginLeft = '10px';
-      detail.textContent = st === 'active'
-        ? ((dl.current && (dl.current.speed_text || (dl.current.percent != null ? `${dl.current.percent}%` : ''))) || 'fetching…')
-        : (rt && rt.detail) || (st === 'queued' ? 'queued' : '');
-      line.appendChild(detail);
-
-      log.appendChild(line);
+      log.appendChild(queueLogLine(st, (rt && rt.title) || row.url,
+        st === 'active'
+          ? ((dl.current && (dl.current.speed_text || (dl.current.percent != null ? `${dl.current.percent}%` : ''))) || 'fetching…')
+          : (rt && rt.detail) || (st === 'queued' ? 'queued' : ''),
+        DL_MARK));
     });
     meta.textContent = `${rows.length} track${rows.length === 1 ? '' : 's'} · ${processed} processed`;
   }
@@ -1561,6 +1722,8 @@
     cards: [],        // watchlist.list, updated in place by watchlist.card
     current: null,    // last progress.current stamped job:"watchlist"
     overall: null,    // last progress.overall stamped job:"watchlist"
+    rows: [],         // queue.row stamped job:"watchlist" — one per CHANNEL
+    skipping: {},     // channel id -> a Skip the host has been told about
   };
 
   function wlPending() {
@@ -1591,8 +1754,12 @@
   async function wlRun(method, params, note) {
     try {
       const res = await call(method, params || {});
+      if (!wl.running) { wl.rows = []; wl.skipping = {}; }
       wl.running = true;
       renderWatchlist();
+      // The Downloads screen shows this run too, so its header and controls
+      // have to arm with the Watch List's, not wait for the next event.
+      renderDownloads();
       if (res && res.queued_position) {
         toast(`Queued at position ${res.queued_position} in the run already going.`);
       } else if (note) toast(note);
@@ -5419,7 +5586,18 @@
         renderDownloads();
       } catch (_) { /* call() already toasted the reason */ }
     });
-    $('#dl-cancel').addEventListener('click', () => { call('download.cancel').catch(() => {}); });
+    /* Whichever run this panel is showing — the same rule the Overview's one
+       pair of controls follows. */
+    $('#dl-cancel').addEventListener('click', async () => {
+      if (dlView().kind === 'watchlist') {
+        try {
+          await call('watchlist.cancel_all');
+          toast(WL_CANCEL_ALL_NOTE);
+        } catch (_) { /* call() already toasted the reason */ }
+        return;
+      }
+      call('download.cancel').catch(() => {});
+    });
     $('#dl-pause').addEventListener('click', async () => {
       try {
         if (dl.paused) { await call('download.resume'); dl.paused = false; }
@@ -5490,6 +5668,7 @@
     // progress event to reveal it.
     dl.running = !!(state.running && state.running.batch);
     wl.running = !!(state.running && state.running.watchlist);
+    if (!wl.running) { wl.rows = []; wl.skipping = {}; }
     mt.running = !!(state.running && state.running.maintenance);
     mt.task = (state.running && state.running.maintenance_task) || null;
     wl.cards = state.watchlist || [];
@@ -5513,7 +5692,13 @@
   function subscribeDownloadEvents() {
     cbApi.on('progress.current', (p) => {
       if (p && p.job === 'watchlist') {
-        wl.current = p; wlPaintProgress(); renderOverviewRunning(); return;
+        wl.current = p; wlPaintProgress(); renderOverviewRunning();
+        // The Downloads screen drives the SAME shared progress UI during a
+        // Watch List download as the tkinter Main tab does
+        // (_begin_download_session(watchlist=True)) — unless a manual batch of
+        // its own is running, which keeps the panel.
+        if (!dl.running) { renderCurrent(); renderQueueLog(); }
+        return;
       }
       if (p && p.job === 'maintenance') {
         mt.current = p; maintPaint(); renderOverviewRunning(); return;
@@ -5526,7 +5711,9 @@
     });
     cbApi.on('progress.overall', (p) => {
       if (p && p.job === 'watchlist') {
-        wl.overall = p; wlPaintProgress(); renderOverviewRunning(); return;
+        wl.overall = p; wlPaintProgress(); renderOverviewRunning();
+        if (!dl.running) { renderOverall(); renderPanelBatchMini(); }
+        return;
       }
       if (p && p.job === 'maintenance') {
         mt.overall = p; maintPaint(); renderOverviewRunning(); return;
@@ -5541,7 +5728,18 @@
     // The pinned scan log, and nothing else: a run's closing DONE line is a
     // log line, not a state signal (see job.finished below).
     cbApi.on('scan.line', (entry) => { if (entry) wlLogAppend(entry); });
+    /* Rows name their job for the same reason progress frames do: a Watch List
+       download's rows are its CHANNELS, and a manual batch running beside it
+       keeps its own. */
     cbApi.on('queue.row', (r) => {
+      if (!r) return;
+      if (r.job === 'watchlist') {
+        if (!wl.running) return;
+        wl.rows[r.index] = { id: r.id, index: r.index, state: r.state,
+                             title: r.title, detail: r.detail };
+        if (!dl.running) renderDownloads();
+        return;
+      }
       if (!dl.running) return;
       dl.rows[r.id] = { state: r.state, title: r.title, detail: r.detail };
       renderBatch();
@@ -5577,6 +5775,8 @@
         wl.running = false;
         wl.current = null;
         wl.overall = null;
+        wl.rows = [];
+        wl.skipping = {};
       } else if (job === 'maintenance') {
         maintSettle(p);
       } else if (job === 'update') {

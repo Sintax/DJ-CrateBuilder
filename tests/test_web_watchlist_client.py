@@ -302,7 +302,8 @@ def test_a_read_only_remote_session_closes_every_write_control(app_js, tmp_path)
 
 _EVENTS_HARNESS = """
 const dl = { running: false, paused: false, rows: {}, current: null, overall: null };
-const wl = { running: false, cards: [], current: null, overall: null };
+const wl = { running: false, cards: [], current: null, overall: null,
+             rows: [], skipping: {} };
 const mt = { running: false, task: null, current: null, overall: null,
              note: null, view: null };
 let state = { counts: {} };
@@ -390,6 +391,226 @@ def test_only_job_finished_resyncs_state(app_js, tmp_path):
     assert r["maintenanceSettled"] is True
     assert r["refreshesAfterMaintenance"] == 3
     assert r["refreshesAfterUnknown"] == 3
+
+
+# ── the Downloads screen shows a Watch List download too ────────────────────
+# The tkinter Main tab repurposes its otherwise-idle Batch Queue panel to show
+# a running Watch List download's channels (_batch_rebuild_rows), and drives
+# the same shared progress UI (_begin_download_session(watchlist=True)). v2.0
+# routed every watchlist-stamped frame to the Watch List screen and returned,
+# leaving the Downloads screen inert for the whole run.
+
+_DLVIEW_HARNESS = """
+const DL_MARK = { queued: '·' };
+const WL_QROW_MARK = { queued: '○' };
+const dl = { running: false, current: 'dl-cur', overall: 'dl-all' };
+const wl = { running: false, rows: [], current: 'wl-cur', overall: 'wl-all' };
+%(view)s
+function pick() {
+  const v = dlView();
+  return { kind: v.kind, running: v.running, current: v.current,
+           overall: v.overall };
+}
+const out = {};
+out.idle = pick();
+wl.running = true;
+out.scanOnly = pick();
+wl.rows[0] = { id: 1, index: 0, state: 'active', title: 'UKF' };
+out.watchlistBorrows = pick();
+dl.running = true;
+out.batchKeepsIt = pick();
+console.log(JSON.stringify(out));
+"""
+
+
+def test_the_downloads_panel_is_lent_to_a_watch_list_download(app_js, tmp_path):
+    r = _run_node(tmp_path, "dlview.mjs", _DLVIEW_HARNESS % {
+        "view": _slice(app_js, "  function dlView()",
+                       "  function renderDownloadsHeader()")})
+    assert r["idle"] == {"kind": "batch", "running": False,
+                         "current": "dl-cur", "overall": "dl-all"}
+    # A Watch List SCAN claims the same job category and has nothing to show
+    # here — the channel rows, not wl.running, are what lend the panel.
+    assert r["scanOnly"]["kind"] == "batch"
+    assert r["scanOnly"]["running"] is False
+    assert r["watchlistBorrows"] == {"kind": "watchlist", "running": True,
+                                     "current": "wl-cur", "overall": "wl-all"}
+    # A manual batch keeps its own panel — the tkinter fallback, and the case
+    # v2.0 created by letting the two run at once.
+    assert r["batchKeepsIt"] == {"kind": "batch", "running": True,
+                                 "current": "dl-cur", "overall": "dl-all"}
+
+
+_QUEUE_ROW_HARNESS = """
+const dl = { running: false, paused: false, rows: {}, current: null, overall: null };
+const wl = { running: false, cards: [], current: null, overall: null,
+             rows: [], skipping: {} };
+const mt = { running: false, task: null, current: null, overall: null,
+             note: null, view: null };
+let state = { counts: {} };
+const handlers = {};
+const cbApi = { on(event, fn) { handlers[event] = fn; } };
+const num = (n) => String(n);
+const painted = [];
+function refresh() { return Promise.resolve(); }
+function toast() {}
+function isBatchProgress(p) { return !p || !p.job || p.job === 'batch'; }
+function wlPaintProgress() {}
+function maintPaint() {}
+function maintSettle() {}
+function wlApplyCard() {}
+function wlLogAppend() {}
+function renderCurrent() { painted.push('current'); }
+function renderQueueLog() { painted.push('queuelog'); }
+function renderOverall() { painted.push('overall'); }
+function renderPanelBatchMini() { painted.push('mini'); }
+function renderOverviewRunning() {}
+function renderBatch() { painted.push('batch'); }
+function renderDownloads() { painted.push('downloads'); }
+function renderShell() {}
+function renderOverview() {}
+function logHandleAppend() {}
+%(subscribe)s
+
+subscribeDownloadEvents();
+const out = {};
+wl.running = true;
+const wlRow = (id, index, st) => ({ id: id, index: index, state: st,
+                                    title: 'ch' + id, detail: '',
+                                    job: 'watchlist' });
+handlers['queue.row'](wlRow(7, 0, 'queued'));
+handlers['queue.row'](wlRow(9, 1, 'queued'));
+handlers['queue.row'](wlRow(7, 0, 'active'));
+out.wlRows = wl.rows.map((r) => [r.id, r.state]);
+out.manualRowsUntouched = Object.keys(dl.rows).length;
+
+painted.length = 0;
+handlers['progress.current']({ job: 'watchlist', title: 'Track A' });
+handlers['progress.overall']({ job: 'watchlist', done: 1, total: 3 });
+out.paintedForWatchlist = painted.slice();
+
+dl.running = true;
+painted.length = 0;
+handlers['progress.current']({ job: 'watchlist', title: 'Track B' });
+handlers['queue.row'](wlRow(9, 1, 'active'));
+out.paintedDuringBatch = painted.slice();
+out.wlRowsStillTracked = wl.rows.map((r) => r.state);
+
+handlers['queue.row']({ id: 3, index: 0, state: 'active', title: 'x',
+                        detail: '', job: 'batch' });
+out.batchRowState = dl.rows[3].state;
+
+handlers['job.finished']({ job: 'watchlist' });
+out.clearedRows = wl.rows.length;
+console.log(JSON.stringify(out));
+"""
+
+
+def test_watch_list_queue_rows_are_kept_and_painted_separately(app_js, tmp_path):
+    """`queue.row` shipped without a job field, so the frontend could not tell
+    a Watch List run's channel rows from a concurrent batch's URL rows — and
+    the Watch List path emitted none at all."""
+    r = _run_node(tmp_path, "wlqueue.mjs", _QUEUE_ROW_HARNESS % {
+        "subscribe": _slice(app_js, "  function subscribeDownloadEvents()",
+                            "  async function boot()")})
+    assert r["wlRows"] == [[7, "active"], [9, "queued"]]
+    assert r["manualRowsUntouched"] == 0
+    # No manual batch: the Watch List run drives the shared progress UI.
+    assert r["paintedForWatchlist"] == ["current", "queuelog", "overall",
+                                        "mini"]
+    # A manual batch owns the panel, so nothing watchlist-stamped repaints it —
+    # but the rows keep being tracked for when the batch finishes.
+    assert r["paintedDuringBatch"] == []
+    assert r["wlRowsStillTracked"] == ["active", "active"]
+    assert r["batchRowState"] == "active"
+    assert r["clearedRows"] == 0
+
+
+_WL_PANEL_HARNESS = """
+const WL_QROW_MARK = { done: '✓', active: '⬇', skipped: '⊘', error: '✗',
+                       queued: '○' };
+const DL_MARK_COLOR = {};
+function node(tag) {
+  return { tag: tag, className: '', textContent: '', style: {}, children: [],
+           attrs: {}, disabled: false,
+           appendChild: function (c) { this.children.push(c); return c; },
+           setAttribute: function (k, v) { this.attrs[k] = v; },
+           removeAttribute: function (k) { delete this.attrs[k]; },
+           insertAdjacentElement: function () {},
+           addEventListener: function () {},
+           set innerHTML(v) { this.children = []; },
+           get innerHTML() { return ''; } };
+}
+const document = { createElement: node };
+const els = { '#dl-rows': node('div'), '#dl-count': node('span'),
+              '#dl-start': node('button'), '#dl-clear': node('button') };
+function $(sel) { return els[sel]; }
+const wl = { rows: [], skipping: {} };
+let state = { batch: [] };
+const gates = [];
+function writeBlocked() { return ''; }
+function wlQueueRows() { return wl.rows.filter(function (r) { return !!r; }); }
+function wlGate(el, reason) { el.disabled = !!reason; }
+function setStartDisabled(off, why) { gates.push(['start', !!off, why]); }
+function gateWrite(el, why) { gates.push(['gate', !!why, why]); }
+function bindTips() {}
+function call() { return Promise.resolve(); }
+function renderBatch() {}
+function renderQueueLog() {}
+function toast() {}
+%(panel)s
+
+function render(rows) {
+  wl.rows = rows;
+  renderWatchlistQueue();
+  return {
+    header: els['#dl-count'].textContent,
+    rows: els['#dl-rows'].children.map(function (r) {
+      return { number: r.children[0].textContent,
+               mark: r.children[1].textContent,
+               name: r.children[2].textContent,
+               tag: r.children[3].textContent,
+               buttons: r.children.slice(4).map(function (b) {
+                 return b.textContent; }) };
+    }),
+  };
+}
+const row = (id, index, st) => ({ id: id, index: index, state: st,
+                                  title: 'Channel ' + id, detail: '' });
+const out = {};
+out.multi = render([row(1, 0, 'done'), row(2, 1, 'active'), row(3, 2, 'queued')]);
+out.single = render([row(1, 0, 'active')]);
+wl.skipping[2] = true;
+out.marked = render([row(1, 0, 'done'), row(2, 1, 'active'),
+                     row(3, 2, 'queued')]);
+console.log(JSON.stringify(out));
+"""
+
+
+def test_the_borrowed_panel_lists_the_runs_channels_like_the_tkinter_one(
+        app_js, tmp_path):
+    """_wl_batch_render_rows' row spec: a numbered row per channel, a state
+    mark around the one downloading, and a Skip on the active row of a
+    MULTI-channel run only — with no next channel to move on to, Skip would
+    just be Cancel wearing different clothes."""
+    r = _run_node(tmp_path, "wlpanel.mjs", _WL_PANEL_HARNESS % {
+        "panel": _slice(app_js, "  function wlSkipBtn(row)",
+                        "  function renderBatch()")})
+
+    multi = r["multi"]
+    assert multi["header"] == "⬇  Watch List — downloading 2 of 3 channels"
+    assert [x["number"] for x in multi["rows"]] == ["1.", "2.", "3."]
+    assert [x["mark"] for x in multi["rows"]] == ["✓", "⬇", "○"]
+    assert [x["tag"] for x in multi["rows"]] == ["Done", "Downloading",
+                                                 "Pending"]
+    assert [x["buttons"] for x in multi["rows"]] == [[], ["⏭ Skip"], []]
+
+    single = r["single"]
+    assert single["header"] == "⬇  Watch List — downloading 1 of 1 channel"
+    assert single["rows"][0]["buttons"] == []
+
+    # Pressed, the button says so and stops taking clicks.
+    assert r["marked"]["rows"][1]["buttons"] == ["Skipping…"]
 
 
 _REFRESH_HARNESS = """
