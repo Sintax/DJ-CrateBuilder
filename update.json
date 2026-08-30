@@ -1,10 +1,10 @@
 {
   "version": "2.0",
-  "build": 61,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.61.zip",
-  "sha256": "c8049ee34374bb32535e1028673b2a725ac4631e8cdb34f7191dbc479b4b8112",
-  "notes": "*** IMPORTANT -- STOP ALL WATCH LIST SCANS BEFORE YOU UPDATE ***\nIF A SCAN IS STILL RUNNING, THIS UPDATE WILL SILENTLY ROLL BACK AND\nOFFER ITSELF AGAIN ON THE NEXT CHECK -- AN ENDLESS UPDATE LOOP.\nBEFORE YOU CLICK YES: OPEN THE WATCH LIST TAB, PRESS CANCEL, AND WAIT\nUNTIL NO CHANNEL CARD STILL SAYS \"SCANNING\".\n\nDJ-CrateBuilder v2.0 - the new web UI is now the app: live downloads, watch list, log and database viewers.",
-  "base": 61,
+  "build": 62,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.62.zip",
+  "sha256": "55a798b0824b8d908b203a96605824a25aa7b30fcfba605dedac25084597060e",
+  "notes": "*** IMPORTANT -- STOP ALL WATCH LIST SCANS BEFORE YOU UPDATE ***\nIF A SCAN IS STILL RUNNING, THIS UPDATE WILL SILENTLY ROLL BACK AND\nOFFER ITSELF AGAIN ON THE NEXT CHECK -- AN ENDLESS UPDATE LOOP.\nBEFORE YOU CLICK YES: OPEN THE WATCH LIST TAB, PRESS CANCEL, AND WAIT\nUNTIL NO CHANNEL CARD STILL SAYS \"SCANNING\".\n\nFixed debug.log not being written, and Watch List downloads now show up in the Downloads screen.",
+  "base": 62,
   "ffmpeg": {
     "version": "9.0.1-essentials_build-www.gyan.dev+72a489ec",
     "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/ffmpeg-9.0.1-essentials_build-www.gyan.dev_72a489ec.zip",
