@@ -87,7 +87,7 @@ class Harness:
     """One runner plus the fakes it was built from."""
 
     def __init__(self, tmp_path, probe, listing, error=None, settings=None,
-                 downloader_factory=None):
+                 downloader_factory=None, debug=None):
         self.plans = []
         self.built = []
         self.sidecars = []
@@ -105,7 +105,8 @@ class Harness:
             downloader_factory=downloader_factory or self._make_downloader,
             write_sidecar=self._record_sidecar,
             log_line=self.log.append,
-            counts=lambda: {"downloads": 7})
+            counts=lambda: {"downloads": 7},
+            debug=debug)
 
     def _record_sidecar(self, folder, **kwargs):
         """Records the stamp, then writes the real sidecar file."""
@@ -225,6 +226,32 @@ def test_the_downloader_is_built_with_the_real_database(tmp_path):
     assert harness.built[0].kwargs["db"] is harness.db
 
 
+def test_the_downloader_is_built_with_the_runs_debug_logger(tmp_path):
+    """v2.0 shipped with no way to hand one in at all, so every DOWNLOAD /
+    YDL OPTS / DOWNLOAD FAIL line the downloader writes was swallowed by its
+    silent default and debug.log stayed empty."""
+    logger = object()
+    harness = Harness(tmp_path, TRACK_PROBE, [], debug=logger)
+    harness.runner.run([_row()])
+    assert harness.built[0].kwargs["debug"] is logger
+
+
+def test_a_runner_given_no_debug_logger_stays_silent(tmp_path):
+    """The default every existing caller (and every test) relies on."""
+    harness = Harness(tmp_path, TRACK_PROBE, [])
+    harness.runner.run([_row()])
+    assert harness.built[0].kwargs["debug"] is None
+
+
+def test_every_queue_row_names_its_job(tmp_path):
+    """Unlike progress frames, queue rows shipped unstamped — so a Watch List
+    run's channel rows and a concurrent batch's URL rows were indistinguishable
+    to the frontend."""
+    harness = Harness(tmp_path, TRACK_PROBE, [])
+    harness.runner.run([_row()])
+    assert {r["job"] for r in harness.emit.of("queue.row")} == {"batch"}
+
+
 # ── Collections ──────────────────────────────────────────────────────────────
 def test_a_playlist_expands_to_one_track_per_entry(tmp_path):
     harness = Harness(tmp_path, LIST_PROBE, _entries("A", "B", "C"))
@@ -238,7 +265,8 @@ def test_a_playlist_expands_to_one_track_per_entry(tmp_path):
     assert harness.emit.of("progress.overall")[-1]["total"] == 3
     assert harness.emit.of("queue.row")[-1] == {
         "id": 1, "index": 0, "state": "done",
-        "title": "https://youtube.com/watch?v=aaa", "detail": "3 downloaded"}
+        "title": "https://youtube.com/watch?v=aaa", "detail": "3 downloaded",
+        "job": "batch"}
 
 
 def test_an_entry_without_a_title_gets_the_platform_item_word(tmp_path):
@@ -731,6 +759,18 @@ def running(service, monkeypatch):
 def test_starting_an_empty_queue_is_an_error(service):
     with pytest.raises(CBError):
         service.download_start()
+
+
+def test_the_service_builds_its_runner_with_the_debug_logger(service,
+                                                             monkeypatch):
+    """The whole point of the wiring: without it the runner's downloaders fall
+    back to their silent default and debug.log never sees a DOWNLOAD line."""
+    built = {}
+    monkeypatch.setattr(service_module, "BatchRunner",
+                        lambda *a, **kw: built.update(kw) or BlockingRunner())
+    service.batch_add("https://youtube.com/watch?v=a", "Techno")
+    service.download_start()
+    assert built["debug"] is service._dbg
 
 
 def test_starting_an_all_skipped_queue_is_an_error(service):

@@ -610,10 +610,10 @@ def test_a_second_channel_can_join_the_running_download_queue(tmp_path):
 
     original = harness.ops._download_channel
 
-    def download_then_join(cid, force=False):
+    def download_then_join(cid, force=False, index=0):
         if not joins:
             joins.append(harness.ops.enqueue(second))
-        return original(cid, force=force)
+        return original(cid, force=force, index=index)
 
     harness.ops._download_channel = download_then_join
     harness.ops.run_download([first])
@@ -641,10 +641,10 @@ def test_a_channel_joining_a_forced_run_still_downloads_new_only(tmp_path):
     joined = []
     original = harness.ops._download_channel
 
-    def join_then_download(cid, force=False):
+    def join_then_download(cid, force=False, index=0):
         if not joined:
             joined.append(harness.ops.enqueue(joiner))
-        return original(cid, force=force)
+        return original(cid, force=force, index=index)
 
     harness.ops._download_channel = join_then_download
     harness.ops.run_download([forced], force=True)
@@ -667,15 +667,137 @@ def test_cancelling_one_channel_leaves_the_rest_of_the_run_alone(tmp_path):
         pending_entries=_entries("Two"), status="found")
     original = harness.ops._download_channel
 
-    def cancel_second_then_download(cid, force=False):
+    def cancel_second_then_download(cid, force=False, index=0):
         harness.ops.cancel(second)
-        return original(cid, force=force)
+        return original(cid, force=force, index=index)
 
     harness.ops._download_channel = cancel_second_then_download
     harness.ops.run_download([first, second])
 
     assert [p.title for p in harness.plans] == ["One"]
     assert harness.row(second)["pending_new_count"] == 1
+
+
+# ── The Downloads screen's borrowed queue panel ──────────────────────────────
+# The tkinter Main tab repurposes its idle Batch Queue panel to show a running
+# Watch List download's CHANNELS, one row each, with the active one highlighted
+# (DJ-CrateBuilder_v2.0.py's _batch_rebuild_rows / _wl_batch_render_rows). A
+# Watch List run enters BatchRunner through run_tracks with no queue row to
+# report against, so these are the only rows that panel can be rebuilt from.
+
+def _rows(harness):
+    return harness.emit.of("queue.row")
+
+
+def test_a_download_run_announces_every_channel_as_a_pending_row(tmp_path):
+    harness = Harness(tmp_path, FakeSession())
+    first = _scanned(harness, ("One",))
+    second = harness.add_channel(url="https://www.youtube.com/channel/UCxyz",
+                                 name="Second", channel_id="UCxyz")
+    harness.db.update_watchlist_scan_result(
+        second, timestamp=1, pending_count=1,
+        pending_entries=_entries("Two"), status="found")
+
+    harness.ops.run_download([first, second])
+
+    opening = _rows(harness)[:2]
+    assert [(r["index"], r["state"], r["title"]) for r in opening] == [
+        (0, "queued", "Deep House Daily"), (1, "queued", "Second")]
+    assert {r["job"] for r in _rows(harness)} == {"watchlist"}
+
+
+def test_each_channel_runs_from_pending_through_active_to_done(tmp_path):
+    harness = Harness(tmp_path, FakeSession())
+    cid = _scanned(harness, ("One",))
+
+    harness.ops.run_download([cid])
+
+    mine = [r for r in _rows(harness) if r["id"] == cid]
+    assert [r["state"] for r in mine] == ["queued", "active", "done"]
+    assert mine[-1]["detail"] == "1 downloaded, 0 skipped, 0 failed"
+
+
+def test_a_channel_with_nothing_pending_settles_as_skipped(tmp_path):
+    harness = Harness(tmp_path, FakeSession())
+    cid = harness.add_channel()
+
+    harness.ops.run_download([cid])
+
+    assert _rows(harness)[-1]["state"] == "skipped"
+    assert _rows(harness)[-1]["detail"] == "nothing pending"
+
+
+def test_an_unresolved_channel_settles_as_an_error_row(tmp_path):
+    harness = Harness(tmp_path, FakeSession())
+    cid = harness.add_channel(url="unresolved://Mystery", channel_id=None)
+
+    harness.ops.run_download([cid])
+
+    assert _rows(harness)[-1]["state"] == "error"
+
+
+def test_a_skipped_channel_reads_as_skipped_not_finished(tmp_path):
+    """The tkinter panel marks a passed-over channel ⊘ and keeps its pending
+    list for a retry — it must never claim the channel finished."""
+    harness = Harness(tmp_path, FakeSession())
+    cid = _scanned(harness, ("One", "Two"))
+    original = harness.ops._download_channel
+
+    def cancel_mid_channel(c, force=False, index=0):
+        harness.ops.cancel(c)
+        return original(c, force=force, index=index)
+
+    harness.ops._download_channel = cancel_mid_channel
+    harness.ops.run_download([cid])
+
+    assert _rows(harness)[-1]["state"] == "skipped"
+    assert harness.row(cid)["pending_new_count"] == 2
+
+
+def test_a_channel_joining_the_run_gets_its_own_pending_row(tmp_path):
+    harness = Harness(tmp_path, FakeSession())
+    cid = harness.add_channel()
+    joiner = harness.add_channel(url="https://www.youtube.com/channel/UCxyz",
+                                 name="Second", channel_id="UCxyz")
+
+    harness.ops._begin("download", [(cid, False)])
+    harness.ops.enqueue(joiner)
+
+    assert _rows(harness)[-1] == {"id": joiner, "index": 1, "state": "queued",
+                                  "title": "Second", "detail": "",
+                                  "job": "watchlist"}
+
+
+def test_channel_verdict_reports_the_tally_a_finished_channel_settles_on():
+    assert watchrun.channel_verdict(
+        {"downloaded": 3, "skipped": 1, "errors": 0, "stopped": False}) == (
+        "done", "3 downloaded, 1 skipped, 0 failed")
+    state, detail = watchrun.channel_verdict(
+        {"downloaded": 1, "skipped": 0, "errors": 0, "stopped": True})
+    assert state == "skipped" and detail.startswith("skipped — ")
+    # A channel that worked while some of its tracks did not is still finished:
+    # the tkinter panel marks it ✓ and the detail names the failures.
+    assert watchrun.channel_verdict(
+        {"downloaded": 0, "skipped": 0, "errors": 2, "stopped": False})[0] == "done"
+
+
+def test_the_runner_is_handed_the_debug_logger_the_service_owns(tmp_path):
+    """Without this every DOWNLOAD line a Watch List run produces is dropped —
+    the same gap the Main tab's batch had."""
+    logger = object()
+    harness = Harness(tmp_path, FakeSession())
+    harness.ops._debug = logger
+    seen = []
+    original = harness.ops._runner_factory
+
+    def capture(settings, db, emit, **kwargs):
+        seen.append(kwargs.get("debug"))
+        return original(settings, db, emit, **kwargs)
+
+    harness.ops._runner_factory = capture
+    harness.ops.run_download([_scanned(harness, ("One",))])
+
+    assert seen == [logger]
 
 
 # ── Channel management ───────────────────────────────────────────────────────
@@ -1019,6 +1141,17 @@ def test_the_dispatch_table_routes_every_watchlist_method(tmp_path):
     assert service.call("watchlist.cancel_all") == {"cancelled": True}
     assert set(service.call("watchlist.details", {"channel_id": cid})) == {
         "folder", "tracks", "unavailable"}
+
+
+def test_the_service_hands_its_watchlist_ops_the_debug_logger(tmp_path):
+    """A Watch List download writes the same DOWNLOAD lines a Main-tab batch
+    does; the service is the only thing that owns the logger they go to."""
+    settings = _settings(tmp_path)
+    service = CrateBuilderService(
+        settings=settings, db_path=str(tmp_path / "cratebuilder.db"),
+        log_path=str(tmp_path / "activity.log"),
+        debug_log_path=str(tmp_path / "debug.log"))
+    assert service._watchlist._debug is service._dbg
 
 
 def test_an_unknown_channel_id_is_refused_by_name(tmp_path):

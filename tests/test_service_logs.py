@@ -444,3 +444,43 @@ def test_logs_methods_reachable_through_call(service, tmp_path):
     watch = service.call("logs.watch", {"name": "activity", "on": True})
     assert watch == {"watching": True}
     service.call("logs.watch", {"name": "activity", "on": False})
+
+
+# ── debug.log is WRITTEN, not just read ──────────────────────────────────────
+# v2.0 shipped with the Debug Log viewer faithfully rendering a file nothing
+# ever appended to: the service stored the path for the viewer and built its
+# database and its downloaders with no logger at all.
+
+def test_the_service_opens_debug_log_with_a_session_banner(service, tmp_path):
+    text = (tmp_path / "debug.log").read_text(encoding="utf-8")
+    assert "SESSION START" in text
+    assert "yt-dlp version:" in text
+
+
+def test_the_debug_logger_reaches_every_database_the_service_opens(service):
+    """db.py drops every `DB |` line when its debug_logger is None."""
+    written = service._db_for_write()
+    assert written._dbg is service._dbg
+    assert service._db()._dbg is service._dbg
+
+
+def test_database_writes_land_in_debug_log(service, tmp_path):
+    db = service._db_for_write()
+    db.add_download(video_id="v1", title="One", channel_name="C",
+                    channel_url="https://c", channel_id=None,
+                    platform="YouTube", genre="Techno",
+                    file_path=str(tmp_path / "One.mp3"), upload_date="20260101",
+                    bitrate="192 kbps MP3")
+    assert "DB |" in (tmp_path / "debug.log").read_text(encoding="utf-8")
+
+
+def test_changing_the_log_size_limit_re_caps_the_live_debug_log(service,
+                                                                tmp_path):
+    """The tkinter app re-caps and trims its handlers on the spot; without the
+    same here the new limit only takes hold after a restart."""
+    service.settings_set("log_limit", "1 MB")
+    assert service._log_max_bytes() == 1024 * 1024
+    assert service._dbg.handlers[0].max_bytes == 1024 * 1024
+
+    service.settings_set("log_limit", "Unlimited")
+    assert service._dbg.handlers[0].max_bytes == 0

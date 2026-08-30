@@ -14,7 +14,8 @@ import time
 import webbrowser
 from datetime import datetime
 
-from cratebuilder import activitylog, rebuild, startup, ui_strings, util
+from cratebuilder import (activitylog, debuglog, rebuild, startup, ui_strings,
+                          util)
 from cratebuilder import updater_core as ucore
 from cratebuilder.artwork import DEFAULT_COVER_ART_MODE, extract_cover
 from cratebuilder.batchresolve import platform_dir
@@ -741,6 +742,13 @@ class CrateBuilderService:
         self._db_path = db_path or os.path.join(app_dir(), DB_NAME)
         self._log_path = log_path or os.path.join(app_dir(), ACTIVITY_LOG)
         self._debug_log_path = debug_log_path or os.path.join(app_dir(), DEBUG_LOG)
+        # debug.log is WRITTEN here, not merely read by the log viewer. The
+        # database and every TrackDownloader this service builds are handed this
+        # logger, which is the whole of what the tkinter app puts in that file.
+        self._dbg = debuglog.build_debug_logger(
+            self._debug_log_path, max_bytes=self._log_max_bytes())
+        debuglog.session_banner(self._dbg,
+                                version=version_info().get("version"))
         self._lock = threading.Lock()
         self._batch = []
         self._ids = itertools.count(1)
@@ -781,6 +789,14 @@ class CrateBuilderService:
         # one test (every test, most tooling) must not leak a daemon Timer
         # just from being constructed; the local window calls
         # start_update_timer() itself, right after building the service.
+
+    def _log_max_bytes(self):
+        """The byte cap the user's Log Size Limit puts on each log file;
+        0 means Unlimited, exactly as the tkinter app reads it."""
+        try:
+            return int(self._settings.get("log_max_mb") or 0) * 1024 * 1024
+        except (TypeError, ValueError):
+            return 0
 
     # ── events / jobs ─────────────────────────────────────────────────────────
 
@@ -1154,7 +1170,7 @@ class CrateBuilderService:
     def _db(self):
         if not os.path.isfile(self._db_path):
             return None
-        return DownloadsDatabase(self._db_path)
+        return DownloadsDatabase(self._db_path, debug_logger=self._dbg)
 
     def library_stats(self):
         """Counts for the Overview, or zeros when no database exists yet.
@@ -1203,7 +1219,7 @@ class CrateBuilderService:
                 self._settings, self._db_for_write, self.emit,
                 links_path=self._links_path, log_line=self.log_line,
                 counts=self.counts, flush=self._emit.flush,
-                ffmpeg_dir=bundled_ffmpeg_dir(),
+                ffmpeg_dir=bundled_ffmpeg_dir(), debug=self._dbg,
                 claim_tag_writes=self.claim_tag_writes,
                 release_tag_writes=self.release_tag_writes)
         return self._watchlist_ops
@@ -1936,6 +1952,11 @@ class CrateBuilderService:
             raise CBError(f"Unknown setting: {key}")
         except (TypeError, ValueError) as exc:
             raise CBError(str(exc))
+        if key == "log_limit":
+            # The cap has to reach the handler already holding debug.log open,
+            # or the new limit only takes effect after a restart — the tkinter
+            # app's _autosave_log_limit re-caps and trims on the spot.
+            debuglog.set_max_bytes(self._dbg, self._log_max_bytes())
         return {"key": key, "value": get(self._settings)}
 
     def _refuse_frozen_setting(self, key):
@@ -2144,7 +2165,8 @@ class CrateBuilderService:
         runner = BatchRunner(
             self._settings, self._db_for_write(), self.emit,
             log_line=self.log_line, counts=self.counts,
-            flush=self._emit.flush, ffmpeg_dir=bundled_ffmpeg_dir())
+            flush=self._emit.flush, ffmpeg_dir=bundled_ffmpeg_dir(),
+            debug=self._dbg)
         previous = self._batch_runner
         self._batch_runner = runner
         try:
@@ -2176,7 +2198,7 @@ class CrateBuilderService:
     def _db_for_write(self):
         """The database a download writes its rows into — created on demand,
         unlike the read-only probes, which never bring one into existence."""
-        return DownloadsDatabase(self._db_path)
+        return DownloadsDatabase(self._db_path, debug_logger=self._dbg)
 
     def log_line(self, text):
         """Append one line to activity.log in the app dir, timestamped exactly

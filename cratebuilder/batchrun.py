@@ -131,8 +131,13 @@ class BatchRunner:
     def __init__(self, settings, db, emit, *, session_factory=YdlSession,
                  downloader_factory=TrackDownloader, ffmpeg_dir=None,
                  log_line=None, counts=None, flush=None, runner=None,
-                 write_sidecar=None, now=time.monotonic, job=DEFAULT_JOB):
+                 write_sidecar=None, now=time.monotonic, job=DEFAULT_JOB,
+                 debug=None):
         self._job = job
+        # Handed to every TrackDownloader this run builds. None keeps the
+        # downloader's own silent default, so a caller that has no debug log
+        # (every test, any embedder) is unchanged.
+        self._debug = debug
         self._settings = settings
         self._db = db
         self._emit = emit
@@ -398,7 +403,8 @@ class BatchRunner:
             harvest_art=self._harvest_art,
             remember=crate.remember,
             log_download=self._log_download,
-            log_error=self._log_error)
+            log_error=self._log_error,
+            debug=self._debug)
         plan = TrackPlan(
             url=spec.url,
             title=spec.title,
@@ -487,6 +493,7 @@ class BatchRunner:
         self._emit("queue.row", {
             "id": row.get("id"), "index": index, "state": state,
             "title": row.get("title") or row.get("url") or "", "detail": detail,
+            "job": self._job,
         })
 
     def _overall(self):
