@@ -58,4 +58,13 @@ Filename: "{app}\DJ-CrateBuilder.exe"; Description: "Launch DJ-CrateBuilder"; Fl
 ; Python source), so there are no per-user (HKCU) registry changes to make.
 
 [UninstallDelete]
-Type: filesandordirs; Name: "{app}"
+; Only what the app is made of — NEVER the whole of {app}. The user's data
+; lives there too: cratebuilder.db (the download history and the Watch List),
+; cratebuilder_links.json, the cookie stores and both logs. Wiping "{app}"
+; here is what destroyed them on the v1.3 -> v2.0 reinstall: an uninstall runs
+; this section against everything in the folder, tracked or not. _internal is
+; app code (nightly updates add untracked files inside it, which the normal
+; uninstall would leave behind); ffmpeg.version is the FFmpeg channel's
+; untracked marker. Everything else Inno already removes by name.
+Type: filesandordirs; Name: "{app}\_internal"
+Type: files; Name: "{app}\ffmpeg.version"
