@@ -1,10 +1,10 @@
 {
-  "version": "1.3",
-  "build": 60,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-1.3.60.zip",
-  "sha256": "c10fa3c7be27e809c0bbc2f8ae03c9083e0a25e18a1e218c03e83277be93c17c",
-  "notes": "*** IMPORTANT -- STOP ALL WATCH LIST SCANS BEFORE YOU UPDATE ***\nIF A SCAN IS STILL RUNNING, THIS UPDATE WILL SILENTLY ROLL BACK AND\nOFFER ITSELF AGAIN ON THE NEXT CHECK -- AN ENDLESS UPDATE LOOP.\nBEFORE YOU CLICK YES: OPEN THE WATCH LIST TAB, PRESS CANCEL, AND WAIT\nUNTIL NO CHANNEL CARD STILL SAYS \"SCANNING\".\n\nDialog progress bars now match the app's red accent; internal test coverage added.",
-  "base": 60,
+  "version": "2.0",
+  "build": 61,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.61.zip",
+  "sha256": "c8049ee34374bb32535e1028673b2a725ac4631e8cdb34f7191dbc479b4b8112",
+  "notes": "*** IMPORTANT -- STOP ALL WATCH LIST SCANS BEFORE YOU UPDATE ***\nIF A SCAN IS STILL RUNNING, THIS UPDATE WILL SILENTLY ROLL BACK AND\nOFFER ITSELF AGAIN ON THE NEXT CHECK -- AN ENDLESS UPDATE LOOP.\nBEFORE YOU CLICK YES: OPEN THE WATCH LIST TAB, PRESS CANCEL, AND WAIT\nUNTIL NO CHANNEL CARD STILL SAYS \"SCANNING\".\n\nDJ-CrateBuilder v2.0 - the new web UI is now the app: live downloads, watch list, log and database viewers.",
+  "base": 61,
   "ffmpeg": {
     "version": "9.0.1-essentials_build-www.gyan.dev+72a489ec",
     "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/ffmpeg-9.0.1-essentials_build-www.gyan.dev_72a489ec.zip",
