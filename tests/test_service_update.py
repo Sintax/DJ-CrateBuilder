@@ -170,7 +170,7 @@ def test_apply_refuses_on_linux(service, monkeypatch):
     monkeypatch.setattr(service_mod, "version_info",
                         lambda script_path=None: {"version": "1.3", "build": 1})
     monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: True)
-    with pytest.raises(CBError, match="linux-v1.3"):
+    with pytest.raises(CBError, match="linux-v2.0"):
         service.update_apply()
 
 

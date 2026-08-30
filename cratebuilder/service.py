@@ -2597,15 +2597,15 @@ class CrateBuilderService:
             raise CBError(f"You're already on the latest build ({current}).")
         build = int(manifest["build"])
 
-        # Linux: the pkexec/apt install flow is deliberately not ported here
-        # (the .deb payload doesn't ship the web UI), regardless of whether
-        # this install could otherwise self-update.
+        # Linux: the pkexec/apt install flow is deliberately not ported here,
+        # regardless of whether this install could otherwise self-update —
+        # Linux users update by installing the newer .deb.
         if ucore.is_linux():
             raise CBError(
                 "The in-app updater isn't available for this Linux install. "
                 "Download the latest .deb and install it manually: "
                 "https://github.com/Sintax/DJ-CrateBuilder/releases/tag/"
-                "linux-v1.3")
+                "linux-v2.0")
         if not ucore.can_self_update():
             raise CBError(
                 f"Build {build} is available, but you're running from "

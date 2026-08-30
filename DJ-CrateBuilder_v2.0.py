@@ -79,11 +79,11 @@ UPDATE_MANIFEST_URL = (
     "https://raw.githubusercontent.com/Sintax/DJ-CrateBuilder/"
     "nightly/update.json"
 )
-# Linux .deb update manifest, published as an asset on the linux-v1.3 release
+# Linux .deb update manifest, published as an asset on the linux-v2.0 release
 # by .github/workflows/build-deb.yml. Same schema as update.json.
 UPDATE_MANIFEST_URL_LINUX = (
     "https://github.com/Sintax/DJ-CrateBuilder/releases/download/"
-    "linux-v1.3/update-linux.json"
+    "linux-v2.0/update-linux.json"
 )
 # About-tab updater button labels. The button doubles as the install trigger:
 # it reads "Check for updates" normally and flips to "Update Now" once a newer
@@ -8294,7 +8294,7 @@ class MP3DownloaderApp(tk.Tk):
                 f"Build {build} is available, but automatic installation isn't "
                 "possible here (pkexec was not found).\n\n"
                 "Download the latest .deb and install it manually:\n"
-                "https://github.com/Sintax/DJ-CrateBuilder/releases/tag/linux-v1.3",
+                "https://github.com/Sintax/DJ-CrateBuilder/releases/tag/linux-v2.0",
                 parent=self)
             return
 
