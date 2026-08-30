@@ -1,1 +1,4 @@
 pytest>=8.0
+# Starlette's TestClient drives the FastAPI mount through httpx rather than a
+# real socket — tests/test_server.py needs it, the app itself does not.
+httpx>=0.27

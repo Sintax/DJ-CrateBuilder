@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DJ-CrateBuilder</title>
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<div class="cb-shell">
+
+  <!-- ── Left panel: never changes width or order between screens ────────── -->
+  <aside class="cb-panel">
+    <div class="cb-row" style="gap:9px">
+      <img src="assets/logo.png" alt="" width="22" height="22"
+           style="border-radius:5px;display:block;flex:none">
+      <span class="cb-brand">CrateBuilder</span>
+      <span class="cb-tag" id="mount-tag">Local</span>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <div class="cb-kick">Quick actions</div>
+      <input class="cb-in" id="quick-url" placeholder="Paste a URL to download…"
+             data-tt="main.quick_url">
+      <button class="cb-btn cb-btn--fill" id="quick-add"
+              style="justify-content:center;width:100%"
+              data-tt="main.batch_add">Add to batch</button>
+      <button class="cb-btn" id="quick-scan"
+              style="justify-content:center;width:100%"
+              data-tt="wl.scan_all">Scan all channels</button>
+    </div>
+
+    <nav style="display:flex;flex-direction:column;gap:2px;margin-top:52px">
+      <div class="cb-kick" style="margin-bottom:5px">Navigate</div>
+      <a class="cb-nav is-on" href="#overview"  data-screen="overview">Overview</a>
+      <a class="cb-nav"       href="#downloads" data-screen="downloads">Downloads</a>
+      <a class="cb-nav"       href="#watchlist" data-screen="watchlist">Watch List<span
+           class="cb-nav__count" id="nav-count" hidden>0</span></a>
+      <a class="cb-nav"       href="#settings"  data-screen="settings">Settings</a>
+      <a class="cb-nav"       href="#about"     data-screen="about">About</a>
+    </nav>
+
+    <div class="cb-panel__foot">
+      <div class="cb-row" id="host-status" tabindex="0" data-tt="remote.host_status"
+           style="gap:8px;font-size:12px;color:#6B7280">
+        <span class="cb-dot" id="host-dot"></span>
+        <span class="cb-mono" id="host-label" style="font-size:11px">connecting…</span>
+      </div>
+      <a class="cb-mono cb-mut cb-foot-link" href="#about" id="host-version"
+         style="font-size:10.5px"
+         data-tt-text="Open About — the author, the FAQ, and the build this host is running."></a>
+      <div id="panel-batch-mini" hidden style="display:flex;flex-direction:column;gap:6px">
+        <div class="cb-bar" style="height:5px"><div class="cb-bar__fill" id="panel-batch-fill" style="width:0"></div></div>
+        <span class="cb-mono cb-mut" id="panel-batch-label" style="font-size:10.5px">Batch 0 / 0</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── Content: one scroll region ──────────────────────────────────────── -->
+  <main class="cb-main">
+
+    <!-- 3a — Overview -->
+    <section class="cb-screen is-on" id="screen-overview">
+      <div class="cb-row">
+        <h4 class="cb-h">Overview</h4>
+        <span class="cb-mut" style="font-size:12.5px" id="ov-library"></span>
+        <div class="cb-row" style="margin-left:auto;gap:8px">
+          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="ov-refresh"
+                  data-tt="main.refresh">⟳ Refresh</button>
+          <button class="cb-bell" id="ov-bell" data-tt="main.notifications"
+                  aria-haspopup="dialog" aria-expanded="false"
+                  aria-label="Notifications">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"
+                 stroke="currentColor" stroke-width="1.4" stroke-linecap="round"
+                 stroke-linejoin="round" aria-hidden="true">
+              <path d="M8 2a4.4 4.4 0 0 0-4.4 4.4c0 3-1.4 4.2-1.4 4.2h11.6s-1.4-1.2-1.4-4.2A4.4 4.4 0 0 0 8 2Z"></path>
+              <path d="M6.6 13.4a1.6 1.6 0 0 0 2.8 0"></path>
+            </svg>
+            <span class="cb-bell__count" id="ov-bell-count" hidden>0</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="cb-grid-ov">
+        <div class="cb-card cb-pad" id="ov-running">
+          <div class="cb-row">
+            <span class="cb-kick">Now running</span>
+            <span class="cb-tag cb-tag--grey" id="ov-run-tag">Idle</span>
+            <span class="cb-mut cb-mono" style="margin-left:auto;font-size:11.5px"
+                  id="ov-run-meta"></span>
+          </div>
+          <div>
+            <div class="cb-row" style="gap:8px;margin-bottom:7px;align-items:baseline">
+              <span style="font-size:13.5px;color:var(--cb-text)" id="ov-run-title">—</span>
+              <span class="cb-mut cb-mono" style="margin-left:auto;font-size:11.5px"
+                    id="ov-run-stats"></span>
+            </div>
+            <div class="cb-bar"><div class="cb-bar__fill" id="ov-run-cur" style="width:0"></div></div>
+          </div>
+          <div>
+            <div class="cb-row" style="gap:8px;margin-bottom:7px">
+              <span class="cb-lab">Overall</span>
+              <span class="cb-mut cb-mono" style="margin-left:auto;font-size:11.5px"
+                    id="ov-run-pct">0%</span>
+            </div>
+            <div class="cb-bar"><div class="cb-bar__fill cb-bar__fill--overall" id="ov-run-all" style="width:0"></div></div>
+          </div>
+          <div class="cb-row" style="gap:8px;margin-top:2px">
+            <button class="cb-btn cb-btn--sm" id="ov-pause">⏸ Pause</button>
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="ov-cancel">Cancel</button>
+            <a href="#downloads" id="ov-open" style="margin-left:auto;font-size:12px">Open Downloads →</a>
+          </div>
+        </div>
+
+        <div class="cb-card cb-pad">
+          <span class="cb-kick">Watch List</span>
+          <div class="cb-row" style="align-items:flex-end;gap:8px">
+            <span class="cb-mono cb-big" id="ov-new">0</span>
+            <span class="cb-mut" style="font-size:12.5px;padding-bottom:4px"
+                  id="ov-new-sub">new tracks</span>
+          </div>
+          <div class="cb-div"></div>
+          <div class="cb-row cb-ov-line"><span>Auto-download</span>
+            <span class="cb-mono" style="margin-left:auto" id="ov-auto">—</span></div>
+          <div class="cb-row cb-ov-line"><span>Last full scan</span>
+            <span class="cb-mono" style="margin-left:auto" id="ov-last-scan">never</span></div>
+          <button class="cb-btn" id="ov-dl-all" style="justify-content:center;width:100%"
+                  data-tt="wl.download_all_new">⬇ Download All New (0)</button>
+          <a href="#watchlist" id="ov-goto-wl" style="font-size:12px">Open Watch List →</a>
+        </div>
+      </div>
+
+      <div class="cb-grid-3">
+        <div class="cb-card cb-pad cb-ov-mini">
+          <span class="cb-kick">Recent activity</span>
+          <div id="ov-recent" class="cb-ov-list"></div>
+          <a href="#activity-log" style="font-size:12px;margin-top:2px">Activity Log →</a>
+        </div>
+        <div class="cb-card cb-pad cb-ov-mini">
+          <span class="cb-kick">Needs attention</span>
+          <div id="ov-attention" class="cb-ov-list"></div>
+          <a href="#watchlist" style="font-size:12px;margin-top:2px">Watch List →</a>
+        </div>
+        <div class="cb-card cb-pad cb-ov-mini">
+          <span class="cb-kick">Host</span>
+          <div id="ov-host" class="cb-ov-list"></div>
+          <a href="#settings" style="font-size:12px;margin-top:2px">Settings →</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3b / 3c — Downloads -->
+    <section class="cb-screen" id="screen-downloads">
+      <div class="cb-row">
+        <h4 class="cb-h">Downloads</h4>
+        <span class="cb-tag cb-tag--grey" id="dl-state">Idle</span>
+        <div class="cb-row" id="dl-header-actions" style="margin-left:auto;gap:10px" hidden></div>
+      </div>
+
+      <div class="cb-card cb-pad">
+        <div class="cb-row">
+          <span class="cb-kick">Add a link</span>
+          <div class="cb-seg" style="margin-left:auto" id="dl-platform">
+            <span class="is-on" data-platform="YouTube">YouTube</span>
+            <span data-platform="SoundCloud">SoundCloud</span>
+          </div>
+          <span class="cb-help cb-tt-host" data-tt="main.platform_help">?</span>
+        </div>
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+          <div style="flex:1;min-width:260px">
+            <div class="cb-kick" style="margin-bottom:5px">URL</div>
+            <input class="cb-in" id="dl-url" data-tt="main.url"
+                   placeholder="https://www.youtube.com/…   or   https://soundcloud.com/…">
+          </div>
+          <div style="width:190px">
+            <div class="cb-kick" style="margin-bottom:5px">Genre</div>
+            <select class="cb-sel" id="dl-genre" style="width:100%"></select>
+          </div>
+          <button class="cb-btn cb-btn--quiet" id="dl-newgenre"
+                  data-tt="main.new_genre">+ New genre</button>
+          <button class="cb-btn cb-btn--fill" id="dl-add"
+                  data-tt="main.batch_add">+ Add to Batch</button>
+        </div>
+      </div>
+
+      <div class="cb-card cb-pad">
+        <div class="cb-row">
+          <span class="cb-kick">Batch queue</span>
+          <span class="cb-mut cb-mono" style="font-size:11.5px" id="dl-count">0 URLs</span>
+          <span class="cb-help cb-tt-host" data-tt="main.batch_help">?</span>
+          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="dl-clear"
+                  style="margin-left:auto" data-tt="main.batch_clear">Clear All</button>
+        </div>
+        <div id="dl-rows"></div>
+      </div>
+
+      <div class="cb-row" style="gap:12px;flex-wrap:wrap">
+        <label class="cb-row" style="gap:8px;cursor:pointer">
+          <input type="checkbox" class="cb-cbx" id="dl-skip" data-key="skip_existing">
+          <span style="font-size:13px;color:#24262B">Skip files already downloaded</span>
+        </label>
+        <select class="cb-sel" id="dl-skipmode" data-key="skip_mode">
+          <option>In Database ~ In Folder</option>
+          <option>In Folder Only</option>
+          <option>In Database Only</option>
+        </select>
+        <span class="cb-help cb-tt-host" data-tt="main.skip_mode">?</span>
+        <button class="cb-btn cb-btn--quiet" id="dl-openfolder"
+                style="margin-left:auto" data-tt="main.open_folder">📂 Open Main Folder</button>
+      </div>
+
+      <div class="cb-row" style="gap:10px" id="dl-actions-row">
+        <button class="cb-btn cb-btn--fill" id="dl-start"
+                style="flex:1;justify-content:center;font-size:14.5px;padding:11px">Start Downloads</button>
+        <button class="cb-btn cb-btn--quiet" id="dl-cancel" disabled
+                data-tt="main.cancel_batch">Cancel</button>
+        <button class="cb-btn cb-btn--quiet" id="dl-pause" disabled>⏸ Pause</button>
+      </div>
+
+      <div class="cb-card cb-pad" id="dl-progress" style="opacity:.6">
+        <div class="cb-row" style="gap:10px;align-items:baseline">
+          <span class="cb-kick">Current</span>
+          <span class="cb-mut" style="font-size:13.5px" id="dl-cur-label">—</span>
+          <span class="cb-mono" style="margin-left:auto;font-size:11.5px;color:var(--cb-ok)" id="dl-cur-bitrate"></span>
+          <span class="cb-mut cb-mono" style="font-size:11.5px" id="dl-cur-speed"></span>
+        </div>
+        <div class="cb-bar"><div class="cb-bar__fill" id="dl-cur-bar" style="width:0"></div></div>
+        <div class="cb-row" style="gap:10px;align-items:baseline">
+          <span class="cb-kick">Overall</span>
+          <span class="cb-mut" style="font-size:12.5px" id="dl-all-label">—</span>
+          <span class="cb-mut cb-mono" style="margin-left:auto;font-size:11.5px" id="dl-all-eta"></span>
+        </div>
+        <div class="cb-bar"><div class="cb-bar__fill cb-bar__fill--overall" id="dl-all-bar" style="width:0"></div></div>
+      </div>
+
+      <div>
+        <div class="cb-row" style="gap:8px;margin-bottom:8px">
+          <span class="cb-kick">Queue</span>
+          <span class="cb-mut cb-mono" style="font-size:11.5px" id="dl-queue-meta">empty</span>
+        </div>
+        <div class="cb-card cb-log" id="dl-queue">Queue is empty — add links above, then press Start Downloads.</div>
+      </div>
+    </section>
+
+    <!-- 3d — Watch List -->
+    <section class="cb-screen cb-screen--wl" id="screen-watchlist">
+      <div class="cb-row">
+        <h4 class="cb-h">Watch List</h4>
+        <span class="cb-mut" style="font-size:12.5px" id="wl-summary"></span>
+      </div>
+      <div class="cb-row" style="gap:8px;flex-wrap:wrap">
+        <button class="cb-btn cb-btn--fill" id="wl-add" data-tt="wl.add_channel">+ Add Channel</button>
+        <button class="cb-btn" id="wl-links" style="border-color:#CC7A00;color:#A66300"
+                data-tt="wl.check_links">🛠 Check Links</button>
+        <button class="cb-btn" id="wl-dl-all" data-tt="wl.download_all_new">⬇ Download All New</button>
+        <button class="cb-btn" id="wl-scan" data-tt="wl.scan_all">🔍 Scan for new</button>
+        <button class="cb-btn cb-btn--quiet" id="wl-cancel" disabled
+                data-tt="wl.cancel_all">✕ Cancel</button>
+      </div>
+      <div id="wl-cards" class="cb-cards"></div>
+
+      <div class="cb-card" style="padding:0;overflow:hidden">
+        <div class="cb-row" style="padding:8px 14px;border-bottom:1px solid var(--cb-line-soft);gap:10px">
+          <span class="cb-kick">Scan log</span>
+          <span class="cb-mut cb-mono" style="font-size:11px">live · pinned</span>
+          <div class="cb-row" style="margin-left:auto;gap:8px">
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="wl-log-clear"
+                    data-tt="wl.clear_scan_log">Clear</button>
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="wl-log-open"
+                    data-tt="wl.open_activity_log">Open Activity Log ↗</button>
+          </div>
+        </div>
+        <div class="cb-log" id="wl-log" style="height:156px;overflow:auto"></div>
+      </div>
+    </section>
+
+    <!-- 3j — Settings -->
+    <section class="cb-screen" id="screen-settings">
+      <div class="cb-row" style="margin-bottom:4px">
+        <h4 class="cb-h">⚙ Settings</h4>
+        <span class="cb-mut" style="font-size:12.5px">Every option writes straight to
+          <span class="cb-mono" id="cfg-path">the host's config</span></span>
+        <span class="cb-mono" style="margin-left:auto;font-size:10.5px;color:var(--cb-ok)">All changes autosave</span>
+      </div>
+      <div class="cb-grid-2" id="settings-grid"></div>
+    </section>
+
+    <!-- 3e — Activity Log (opened from Settings) -->
+    <section class="cb-screen cb-screen--log" id="screen-activity-log">
+      <div class="cb-crumb">
+        <a class="cb-back" href="#settings" data-tt="log.back_to_settings">‹ Settings</a>
+        <span class="cb-mut" style="font-size:12.5px">Activity Log</span>
+      </div>
+      <div class="cb-toolbar">
+        <span class="cb-lab">Filter:</span>
+        <select class="cb-sel" id="log-activity-filter" style="width:130px" data-tt="log.filter_activity">
+          <option>All</option><option>Downloaded</option><option>Skipped</option><option>Errors</option>
+        </select>
+        <span class="cb-vsep"></span>
+        <button class="cb-btn cb-btn--sm" id="log-activity-wrap" data-tt="log.wrap">Wrap: On</button>
+        <span class="cb-vsep"></span>
+        <span class="cb-lab">Search:</span>
+        <input class="cb-in" id="log-activity-search" style="width:190px" placeholder="Search…">
+        <button class="cb-btn cb-btn--quiet cb-btn--sm cb-icon" id="log-activity-prev" data-tt="log.search_prev">▲</button>
+        <button class="cb-btn cb-btn--quiet cb-btn--sm cb-icon" id="log-activity-next" data-tt="log.search_next">▼</button>
+        <button class="cb-btn cb-btn--quiet cb-btn--sm cb-icon" id="log-activity-clear" data-tt="log.search_clear">✕</button>
+        <span class="cb-mono cb-mut cb-log__count" id="log-activity-count"></span>
+        <div class="cb-row" style="margin-left:auto;gap:8px">
+          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="log-activity-top" data-tt="log.jump_top">⤒</button>
+          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="log-activity-bottom" data-tt="log.jump_newest">⤓</button>
+          <span class="cb-vsep"></span>
+          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="log-activity-refresh" data-tt="log.refresh_activity">⟳ Refresh</button>
+          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="log-activity-download" data-tt="log.download">⤓ Download</button>
+        </div>
+      </div>
+      <div class="cb-log cb-log--viewer" id="log-activity-body"></div>
+      <div class="cb-pathbar" id="log-activity-pathbar"></div>
+      <div class="cb-statbar" id="log-activity-statbar"></div>
+    </section>
+
+    <!-- 3f — Debug Log (opened from Settings) -->
+    <section class="cb-screen cb-screen--log" id="screen-debug-log">
+      <div class="cb-crumb">
+        <a class="cb-back" href="#settings" data-tt="log.back_to_settings">‹ Settings</a>
+        <span class="cb-mut" style="font-size:12.5px">Debug Log</span>
+      </div>
+      <div class="cb-toolbar">
+        <span class="cb-lab">Filter:</span>
+        <select class="cb-sel" id="log-debug-filter" style="width:110px" data-tt="log.filter_debug">
+          <option>All</option><option>INFO</option><option>ERROR</option><option>DEBUG</option>
+        </select>
+        <span class="cb-vsep"></span>
+        <button class="cb-btn cb-btn--sm" id="log-debug-wrap" data-tt="log.wrap">Wrap: On</button>
+        <span class="cb-vsep"></span>
+        <span class="cb-lab">Search:</span>
+        <input class="cb-in" id="log-debug-search" style="width:190px" placeholder="Search…">
+        <button class="cb-btn cb-btn--quiet cb-btn--sm cb-icon" id="log-debug-prev" data-tt="log.search_prev">▲</button>
+        <button class="cb-btn cb-btn--quiet cb-btn--sm cb-icon" id="log-debug-next" data-tt="log.search_next">▼</button>
+        <button class="cb-btn cb-btn--quiet cb-btn--sm cb-icon" id="log-debug-clear" data-tt="log.search_clear">✕</button>
+        <span class="cb-mono cb-mut cb-log__count" id="log-debug-count"></span>
+        <div class="cb-row" style="margin-left:auto;gap:8px">
+          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="log-debug-top" data-tt="log.jump_top">⤒</button>
+          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="log-debug-bottom" data-tt="log.jump_newest">⤓</button>
+          <span class="cb-vsep"></span>
+          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="log-debug-refresh" data-tt="log.refresh_debug">⟳ Refresh</button>
+          <button class="cb-btn cb-btn--quiet cb-btn--sm" id="log-debug-download" data-tt="log.download_debug">⤓ Download</button>
+        </div>
+      </div>
+      <div class="cb-log cb-log--viewer" id="log-debug-body"></div>
+      <div class="cb-pathbar" id="log-debug-pathbar"></div>
+      <div class="cb-statbar" id="log-debug-statbar"></div>
+    </section>
+
+    <!-- 3g/3h/3i — Database viewer (opened from Settings) -->
+    <section class="cb-screen cb-screen--db" id="screen-database">
+      <div class="cb-crumb">
+        <a class="cb-back" href="#settings" data-tt="log.back_to_settings">‹ Settings</a>
+        <span class="cb-mut" style="font-size:12.5px">Database</span>
+      </div>
+      <div class="cb-row" style="padding:10px 14px 0;gap:6px">
+        <button class="cb-btn cb-btn--sm" id="db-tab-btn-downloads">⬇ Downloads</button>
+        <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-tab-btn-watchlist">👁 Watch List</button>
+        <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-tab-btn-artwork">🖼 Artwork</button>
+        <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-help"
+                style="margin-left:auto" data-tt="db.help_downloads">❔ Help</button>
+      </div>
+
+      <div class="db-tab is-on" id="db-tab-downloads">
+        <div class="cb-toolbar">
+          <span class="cb-lab">Group by:</span>
+          <select class="cb-sel" id="db-dl-group" style="width:200px"></select>
+          <span class="cb-vsep"></span>
+          <span class="cb-lab">Platform:</span>
+          <select class="cb-sel" id="db-dl-platform" style="width:130px"></select>
+          <span class="cb-lab">Genre:</span>
+          <select class="cb-sel" id="db-dl-genre" style="width:140px"></select>
+          <span class="cb-lab">Search:</span>
+          <input class="cb-in" id="db-dl-search" style="width:160px" placeholder="any column…">
+          <div class="cb-row" style="margin-left:auto;gap:8px">
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-dl-expand" data-tt="db.expand_all">⊞</button>
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-dl-collapse" data-tt="db.collapse_all">⊟</button>
+            <span class="cb-vsep"></span>
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-dl-refresh" data-tt="db.refresh">⟳ Refresh</button>
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-dl-export" data-tt="db.export_csv">⤓ Export CSV</button>
+          </div>
+        </div>
+        <div class="cb-tblwrap">
+          <table class="cb-table">
+            <thead><tr id="db-dl-thead"></tr></thead>
+            <tbody id="db-dl-tbody"></tbody>
+          </table>
+        </div>
+        <div class="cb-statbar" id="db-dl-statbar"></div>
+      </div>
+
+      <div class="db-tab" id="db-tab-watchlist">
+        <div class="cb-toolbar">
+          <span class="cb-lab">Watched channels — click a column to sort</span>
+          <div class="cb-row" style="margin-left:auto;gap:8px">
+            <button class="cb-btn cb-btn--warn cb-btn--sm" id="db-wl-cleanup">🧹 Folders Cleanup ‹Smart›</button>
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-wl-refresh" data-tt="db.refresh">⟳ Refresh</button>
+          </div>
+        </div>
+        <div class="cb-tblwrap">
+          <table class="cb-table">
+            <thead><tr id="db-wl-thead"></tr></thead>
+            <tbody id="db-wl-tbody"></tbody>
+          </table>
+        </div>
+        <div class="cb-statbar" id="db-wl-statbar"></div>
+      </div>
+
+      <div class="db-tab" id="db-tab-artwork">
+        <div class="cb-toolbar">
+          <span class="cb-lab">Filter:</span>
+          <select class="cb-sel" id="db-art-filter" style="width:200px"></select>
+          <span class="cb-lab">Search:</span>
+          <input class="cb-in" id="db-art-search" style="width:170px" placeholder="track or channel…">
+          <div class="cb-row" style="margin-left:auto;gap:8px">
+            <button class="cb-btn cb-btn--sm" id="db-art-fetch">🖼 Fetch Missing Artwork</button>
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-art-refresh" data-tt="db.refresh">⟳ Refresh</button>
+          </div>
+        </div>
+        <div class="cb-art-split">
+          <div class="cb-tblwrap" style="flex:1;border-right:1px solid var(--cb-line-soft)">
+            <table class="cb-table">
+              <thead><tr id="db-art-thead"></tr></thead>
+              <tbody id="db-art-tbody"></tbody>
+            </table>
+          </div>
+          <div class="cb-art-preview">
+            <span class="cb-kick">Preview</span>
+            <div id="db-art-preview-box" class="cb-art-preview__box">Select a track</div>
+            <div id="db-art-preview-meta" style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--cb-dim)"></div>
+            <div class="cb-div"></div>
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-art-copy-thumb"
+                    style="width:100%;justify-content:center" data-tt="db.copy_thumbnail_url">Copy Thumbnail URL</button>
+            <button class="cb-btn cb-btn--quiet cb-btn--sm" id="db-art-reembed"
+                    style="width:100%;justify-content:center" data-tt="db.reembed_artwork">Re-embed on host</button>
+          </div>
+        </div>
+        <div class="cb-statbar" id="db-art-statbar"></div>
+      </div>
+    </section>
+
+    <!-- 3n — About (a nav destination; also reached from the panel footer) -->
+    <section class="cb-screen" id="screen-about">
+      <div class="cb-row">
+        <h4 class="cb-h">About</h4>
+      </div>
+      <div class="cb-card cb-pad" id="about-body"></div>
+    </section>
+
+  </main>
+</div>
+
+<div class="cb-toast" id="toast" hidden></div>
+
+<script src="api.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

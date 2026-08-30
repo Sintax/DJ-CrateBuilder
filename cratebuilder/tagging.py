@@ -19,6 +19,7 @@ except ImportError:  # pragma: no cover - mutagen is a runtime dep
     OggOpus = None
     OggVorbis = None
 
+from cratebuilder.crate import CrateLayout
 from cratebuilder.util import MP4_EXTS, OGG_EXTS
 
 ENCODED_BY = "DJ-CrateBuilder"
@@ -312,5 +313,21 @@ def write_track_tags_any(path, title=None, source_url=None,
         if changed:
             audio.save()
         return changed
+    except Exception:
+        return False
+
+
+def tag_track(path, title=None, source_url=None, genre=None):
+    """Stamp our standard tags onto one downloaded (or already-owned) track.
+
+    The download path's single tagging entry point: the no-genre value
+    "(none)" carries no genre and is dropped rather than written as a literal
+    genre, and nothing here raises — a tag failure must never fail a download.
+    Returns True if the file was changed."""
+    no_genre = CrateLayout.NO_GENRE_VALUE
+    tag_genre = None if (genre or no_genre) == no_genre else genre
+    try:
+        return write_track_tags_any(path, title=title, source_url=source_url,
+                                    genre=tag_genre)
     except Exception:
         return False

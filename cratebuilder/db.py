@@ -1,5 +1,7 @@
 """SQLite persistence: downloads history + watchlist."""
 import json
+import os
+import re
 import sqlite3
 import threading
 import time
@@ -79,6 +81,71 @@ class DownloadsDatabase:
     # so those databases keep today's plain-INSERT behaviour until the user
     # runs the de-dup. See _try_unique_path_index.
     _path_unique_index = False
+
+    # ── Web viewer: paged/grouped read helpers ──────────────────────────────
+    # Additive, read-only surface behind the web Database viewer. These mirror
+    # DatabaseViewerWindow's GROUP_PRESETS / _ART_FILTERS in the monolith (a
+    # deliberate copy, not an import — the monolith depends on cratebuilder,
+    # never the other way around) so a preset or filter label means the same
+    # thing in both UIs.
+    GROUP_PRESETS = {
+        "Platform › Genre › Channel": ["platform", "genre", "channel_name"],
+        "Genre › Channel":            ["genre", "channel_name"],
+        "Channel":                    ["channel_name"],
+        "Platform › Channel":         ["platform", "channel_name"],
+    }
+
+    ARTWORK_FILTERS = (
+        "All tracks",
+        "Has artwork",
+        "Missing artwork",
+        "Embedded only",
+        "Sidecar missing on disk",
+    )
+
+    # ORDER BY can't be parameterized in SQLite, so order_by is checked
+    # against this set before it ever reaches a query string. "bitrate" sorts
+    # by a registered SQL function (_bitrate_sort_key), not the raw column —
+    # see query_downloads.
+    _DL_SORT_COLUMNS = {
+        "id", "title", "channel_name", "genre", "platform",
+        "upload_date", "download_timestamp", "bitrate",
+    }
+
+    # Bucket expressions shared by filtering and grouping, so a filter value
+    # of "(unknown)"/"(none)" means the same blank-value bucket whichever
+    # method applies it. Also the group_key whitelist: a key not in here
+    # can't select a column in a WHERE/GROUP BY clause.
+    _DL_BUCKET_SQL = {
+        "platform": "COALESCE(NULLIF(TRIM(platform), ''), '(unknown)')",
+        "genre": "CASE WHEN TRIM(COALESCE(genre, '')) = '' "
+                 "OR TRIM(genre) = '(none)' THEN '(none)' ELSE TRIM(genre) END",
+        "channel_name":
+            "COALESCE(NULLIF(TRIM(channel_name), ''), '(unknown)')",
+    }
+
+    # "Has artwork" per the monolith's _art_state is embedded OR a recorded
+    # sidecar path — on-disk truth doesn't change this (a broken sidecar path
+    # still counts as "has artwork", just not as the working kind).
+    _ART_HAS_ARTWORK_SQL = (
+        "(artwork_embedded = 1 OR "
+        "(artwork_path IS NOT NULL AND TRIM(artwork_path) != ''))"
+    )
+
+    # order_by whitelist for query_artwork_rows, same reasoning as
+    # _DL_SORT_COLUMNS: raw columns only, checked before reaching a query
+    # string. artwork_embedded is a plain 0/1 int column, so it sorts
+    # correctly without a bitrate-style custom key function.
+    _ART_SORT_COLUMNS = {
+        "title", "channel_name", "platform", "artwork_embedded",
+        "artwork_path", "thumbnail_url",
+    }
+
+    # The monolith's UNRESOLVED_URL_PREFIX (DJ-CrateBuilder_v2.0.py) — a
+    # duplicate literal, not an import, since the monolith depends on
+    # cratebuilder and not the other way around. query_watchlist_rows blanks
+    # a url carrying this sentinel, matching _wl_display_url.
+    _UNRESOLVED_URL_PREFIX = "unresolved://"
 
     def __init__(self, db_path, debug_logger=None):
         self.db_path = db_path
@@ -799,6 +866,57 @@ class DownloadsDatabase:
             self._log("error", f"get_download_count failed: {e}")
             return 0
 
+    def get_download(self, row_id):
+        """One downloads row by id, as a plain dict, or None.
+
+        The lookup behind an id-keyed artwork preview: the caller names a
+        row, never a path, so no client-supplied path ever reaches open()."""
+        try:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT * FROM downloads WHERE id = ?", (int(row_id),)
+                ).fetchone()
+                return dict(row) if row else None
+        except (TypeError, ValueError):
+            return None
+        except Exception as e:
+            self._log("error", f"get_download failed: {e}")
+            return None
+
+    def download_path_is_recorded(self, path):
+        """True when the library itself wrote *path* — a downloads row's
+        audio file or artwork sidecar, or a folder one of those sits
+        directly in.
+
+        Compared as stored, not resolved: these are strings the app wrote,
+        so an exact match is the whole point. Lets a row recorded before
+        the crate folder moved still be revealed without opening the door
+        to paths the library has never heard of."""
+        path = (path or "").strip()
+        if not path:
+            return False
+        needle = f"{self._escape_like(path)}%"
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT file_path, artwork_path FROM downloads "
+                    "WHERE file_path LIKE ? ESCAPE '\\' "
+                    "   OR artwork_path LIKE ? ESCAPE '\\' LIMIT 2000",
+                    [needle, needle]).fetchall()
+                recorded = [(r["file_path"], r["artwork_path"]) for r in rows]
+        except Exception as e:
+            self._log("error", f"download_path_is_recorded failed: {e}")
+            return False
+        target = os.path.normcase(os.path.normpath(path))
+        for pair in recorded:
+            for value in pair:
+                if not value:
+                    continue
+                norm = os.path.normcase(os.path.normpath(value))
+                if norm == target or os.path.dirname(norm) == target:
+                    return True
+        return False
+
     def clear_all_downloads(self):
         try:
             with self._conn() as conn:
@@ -982,16 +1100,19 @@ class DownloadsDatabase:
             self._log("error", f"update_watchlist_status failed: {e}")
 
     def reset_stale_watchlist_scans(self):
-        """Reset every 'scanning' row to 'idle'; returns how many were reset.
+        """Reset every in-flight row to 'idle'; returns how many were reset.
 
-        'scanning' is only meaningful while a live thread owns the row, and no
-        thread survives a restart — a row still saying it after a crash or an
-        update swap renders a ghost cancel button nothing can ever clear."""
+        'scanning' and 'downloading' are only meaningful while a live thread
+        owns the row, and no thread survives a restart — a row still saying one
+        of them after a crash or an update swap renders a ghost cancel button
+        nothing can ever clear. The web frontend writes 'downloading' where the
+        tkinter app only ever wrote 'scanning', and both open the same database,
+        so both values are cleared here rather than in one frontend."""
         try:
             with self._conn() as conn:
                 cur = conn.execute(
                     "UPDATE watchlist SET status = 'idle' "
-                    "WHERE status = 'scanning'")
+                    "WHERE status IN ('scanning', 'downloading')")
                 return cur.rowcount or 0
         except Exception as e:
             self._log("error", f"reset_stale_watchlist_scans failed: {e}")
@@ -1204,3 +1325,425 @@ class DownloadsDatabase:
                         (cnt, r["id"]))
         except Exception as e:
             self._log("error", f"refresh_watchlist_totals failed: {e}")
+
+    # ── Web viewer: paged/grouped downloads ─────────────────────────────────
+    @staticmethod
+    def _escape_like(text):
+        return (text.replace("\\", "\\\\")
+                    .replace("%", "\\%")
+                    .replace("_", "\\_"))
+
+    def _downloads_filter_sql(self, filters):
+        """Build a ' WHERE ...' clause + bound params for *filters*, shared by
+        count_downloads/query_downloads/group_downloads.
+
+        filters (all optional): platform, genre, search (title/channel_name
+        LIKE, literal % and _ escaped), group_key/group_value — group_key is
+        one of _DL_BUCKET_SQL's keys ("platform"/"genre"/"channel_name") and
+        group_value the bucketed string a group_downloads() row's "key"
+        carries (e.g. "(unknown)"), so a drill-down round-trips exactly.
+        Every value is bound as a parameter; group_key only ever selects a
+        SQL fragment out of the hard-coded _DL_BUCKET_SQL map, so caller
+        input never reaches the query string directly. An unrecognised
+        group_key raises ValueError rather than being silently ignored.
+
+        A group_key of "platform"/"genre" may legitimately coincide with
+        that same dimension's own dedicated filter key — Task 7's UI can
+        plausibly hold a platform dropdown and a drill-down state that both
+        say "YouTube" at once, and that's an ordinary interaction, not an
+        error. Only when the two values actually disagree would the two
+        equality clauses on the same bucketed column silently AND to zero
+        rows with no indication why; that combination raises instead.
+        Agreement is exact string equality (no case-folding, no whitespace
+        trimming) — the same comparison the generated SQL itself performs
+        on these bound parameters (no COLLATE NOCASE is used on this
+        equality, unlike the ORDER BY clauses elsewhere in this file, and
+        the parameter side is never trimmed the way _DL_BUCKET_SQL trims
+        the column side), so this check can't be fooled into calling two
+        values "the same" when the query would in fact treat them as
+        different."""
+        filters = filters or {}
+        clauses, params = [], []
+
+        platform = filters.get("platform")
+        if platform:
+            clauses.append(f"{self._DL_BUCKET_SQL['platform']} = ?")
+            params.append(platform)
+
+        genre = filters.get("genre")
+        if genre:
+            clauses.append(f"{self._DL_BUCKET_SQL['genre']} = ?")
+            params.append(genre)
+
+        search = (filters.get("search") or "").strip()
+        if search:
+            needle = f"%{self._escape_like(search)}%"
+            clauses.append("(title LIKE ? ESCAPE '\\' "
+                           "OR channel_name LIKE ? ESCAPE '\\')")
+            params.extend([needle, needle])
+
+        group_key = filters.get("group_key")
+        group_value = filters.get("group_value")
+        if group_key:
+            if group_key not in self._DL_BUCKET_SQL:
+                raise ValueError(f"unknown group_key: {group_key!r}")
+            if group_key in ("platform", "genre") and group_value is not None:
+                dedicated_value = filters.get(group_key)
+                if dedicated_value and dedicated_value != group_value:
+                    raise ValueError(
+                        f"group_key={group_key!r} contradicts the "
+                        f"dedicated {group_key!r} filter: "
+                        f"{dedicated_value!r} != {group_value!r}")
+            if group_value is not None:
+                clauses.append(f"{self._DL_BUCKET_SQL[group_key]} = ?")
+                params.append(group_value)
+
+        where_sql = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        return where_sql, params
+
+    def count_downloads(self, filters=None):
+        """Count downloads rows matching *filters* (see
+        _downloads_filter_sql). Returns 0 on a DB failure; a bad group_key in
+        *filters* raises ValueError rather than being swallowed."""
+        where_sql, params = self._downloads_filter_sql(filters)
+        try:
+            with self._conn() as conn:
+                row = conn.execute(
+                    f"SELECT COUNT(*) AS n FROM downloads{where_sql}",
+                    params).fetchone()
+                return int(row["n"]) if row else 0
+        except Exception as e:
+            self._log("error", f"count_downloads failed: {e}")
+            return 0
+
+    @staticmethod
+    def _bitrate_sort_key(value):
+        """Numeric sort key for one bitrate cell, registered as the SQL
+        function cb_bitrate_key by query_downloads.
+
+        The stored string is always TrackDownloader's own `quality` text
+        (cratebuilder/download.py) — "{target} kbps MP3", or "{source} kbps
+        src → {target} kbps MP3" when the source stream's own bitrate was
+        also detected — never the "Xk → Yk" bitrate_text form (that one is
+        Queue-display-only and never reaches the database). This returns
+        the LAST integer in the string, i.e. the target: the MP3 actually
+        written to disk, not the source stream that was transcoded from.
+        Returns None for blank/non-numeric values (legacy/backfilled rows
+        can carry ""), which SQLite's own NULL ordering then sorts first
+        under ASC and last under DESC — deterministic, if it should ever
+        need to be forced to one end regardless of direction that is a
+        follow-up, not a silent surprise today.
+
+        Matches "<digits> kbps MP3" specifically rather than just taking
+        the last digit run in the string — the literal suffix "MP3" itself
+        contains a digit ('3'), so a naive last-digit-run extraction reads
+        every value, including a plain "320 kbps MP3", as bitrate 3. Falls
+        back to the last digit run only for a value that doesn't match this
+        shape at all (e.g. a hypothetical bare-numeric legacy value)."""
+        value = value or ""
+        m = re.search(r"(\d+)\s*kbps\s*mp3", value, re.IGNORECASE)
+        if m:
+            return int(m.group(1))
+        digits = re.findall(r"\d+", value)
+        return int(digits[-1]) if digits else None
+
+    def query_downloads(self, filters=None, *, order_by="download_timestamp",
+                        descending=True, limit=100, offset=0):
+        """One page of downloads rows matching *filters*, newest-first by
+        default, as plain dicts carrying every downloads column.
+
+        order_by is checked against _DL_SORT_COLUMNS before use — an
+        unrecognised column raises ValueError rather than ever reaching the
+        query string, since SQLite can't bind a column/direction the way it
+        binds a value. Rows are always tie-broken on id in the sort
+        direction, so two rows sharing a sort value can't be dropped or
+        duplicated across a limit/offset page boundary.
+
+        order_by="bitrate" sorts numerically (_bitrate_sort_key), not as
+        text — the column holds strings like "320 kbps MP3" and "70 kbps
+        src → 192 kbps MP3", and a lexical sort puts "70..." after
+        "320..." alphabetically, which is backwards."""
+        if order_by not in self._DL_SORT_COLUMNS:
+            raise ValueError(f"unknown order_by column: {order_by!r}")
+        where_sql, params = self._downloads_filter_sql(filters)
+        direction = "DESC" if descending else "ASC"
+        limit = max(0, int(limit))
+        offset = max(0, int(offset))
+        order_expr = ("cb_bitrate_key(bitrate)" if order_by == "bitrate"
+                      else order_by)
+        try:
+            with self._conn() as conn:
+                if order_by == "bitrate":
+                    conn.create_function(
+                        "cb_bitrate_key", 1, self._bitrate_sort_key)
+                rows = conn.execute(
+                    f"SELECT * FROM downloads{where_sql} "
+                    f"ORDER BY {order_expr} COLLATE NOCASE {direction}, "
+                    f"id {direction} LIMIT ? OFFSET ?",
+                    [*params, limit, offset]).fetchall()
+                return [dict(r) for r in rows]
+        except Exception as e:
+            self._log("error", f"query_downloads failed: {e}")
+            return []
+
+    def group_downloads(self, preset, filters=None):
+        """[{key, label, count}] breaking down downloads by the next
+        ungrouped level of *preset*'s hierarchy (GROUP_PRESETS), under
+        *filters*.
+
+        "Next ungrouped" is the first hierarchy column not already pinned by
+        filters["platform"]/["genre"]/(filters["group_key"] together with a
+        non-None filters["group_value"] — a group_key with no value pins
+        nothing, matching _downloads_filter_sql's own "no value, no filter"
+        rule). One call breaks down exactly one level; a UI drills deeper by
+        calling this again with that level's chosen bucket pinned via
+        group_key/group_value (the same pair count_downloads/query_downloads
+        take) — i.e. expanding an N-level tree in the browser is N round
+        trips, one per node expansion, not one call returning the whole
+        nested tree. Returns [] once every hierarchy level is pinned, i.e.
+        there is nothing left to break down. key and label are both the
+        bucketed string (e.g. "(unknown)", "(none)") a caller feeds back as
+        group_value to drill further. An unrecognised preset raises
+        ValueError (and _downloads_filter_sql raises ValueError first for an
+        unrecognised group_key, or a group_key that duplicates the
+        dedicated platform/genre filter)."""
+        if preset not in self.GROUP_PRESETS:
+            raise ValueError(f"unknown group preset: {preset!r}")
+        hierarchy = self.GROUP_PRESETS[preset]
+        filters = filters or {}
+        pinned = set()
+        if filters.get("platform"):
+            pinned.add("platform")
+        if filters.get("genre"):
+            pinned.add("genre")
+        if filters.get("group_key") and filters.get("group_value") is not None:
+            pinned.add(filters["group_key"])
+        next_key = next((k for k in hierarchy if k not in pinned), None)
+        if next_key is None:
+            return []
+        where_sql, params = self._downloads_filter_sql(filters)
+        bucket_sql = self._DL_BUCKET_SQL[next_key]
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    f"SELECT {bucket_sql} AS bucket, COUNT(*) AS n "
+                    f"FROM downloads{where_sql} "
+                    f"GROUP BY bucket ORDER BY bucket COLLATE NOCASE ASC",
+                    params).fetchall()
+                return [{"key": r["bucket"], "label": r["bucket"],
+                         "count": r["n"]} for r in rows]
+        except Exception as e:
+            self._log("error", f"group_downloads failed: {e}")
+            return []
+
+    def query_watchlist_rows(self):
+        """Every watchlist row as a plain dict, plus a live per-channel
+        download_count from a single LEFT JOIN — cheaper than a
+        get_channel_download_count call per row for a table this shape.
+        total_downloaded (the stored, possibly-stale column written by
+        refresh_watchlist_total(s)) is left in the row alongside it, since
+        both are legitimate answers to "how many" and callers can pick.
+        url is blanked to "" when it carries the "unresolved://" sentinel,
+        matching the monolith's _wl_display_url — an unresolved channel has
+        no real link to show, so the raw internal placeholder shouldn't
+        reach a caller that might render it as one. Ordered by display_name.
+        Returns [] on failure."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute("""
+                    SELECT w.*, COUNT(d.id) AS download_count
+                    FROM watchlist w
+                    LEFT JOIN downloads d ON d.channel_url = w.url
+                    GROUP BY w.id
+                    ORDER BY w.display_name COLLATE NOCASE ASC
+                """).fetchall()
+        except Exception as e:
+            self._log("error", f"query_watchlist_rows failed: {e}")
+            return []
+        result = [dict(r) for r in rows]
+        for row in result:
+            if (row.get("url") or "").startswith(self._UNRESOLVED_URL_PREFIX):
+                row["url"] = ""
+        return result
+
+    def _artwork_where_sql(self, filter_name):
+        """WHERE clause for one of ARTWORK_FILTERS other than "Sidecar
+        missing on disk" (that one needs a live filesystem check, not a
+        column predicate — see _artwork_broken_candidates). Validates
+        filter_name itself rather than trusting the caller to have checked
+        already, the same defence-in-depth every other whitelist in this
+        file gets."""
+        if filter_name not in self.ARTWORK_FILTERS:
+            raise ValueError(f"unknown artwork filter: {filter_name!r}")
+        if filter_name == "All tracks":
+            return ""
+        if filter_name == "Has artwork":
+            return f" WHERE {self._ART_HAS_ARTWORK_SQL}"
+        if filter_name == "Missing artwork":
+            return f" WHERE NOT {self._ART_HAS_ARTWORK_SQL}"
+        if filter_name == "Embedded only":
+            return " WHERE artwork_embedded = 1"
+        raise ValueError(  # "Sidecar missing on disk"
+            f"{filter_name!r} needs a filesystem check, not a WHERE clause "
+            "— see _artwork_broken_candidates")
+
+    def _artwork_broken_candidates(self):
+        """downloads rows with a recorded artwork_path — every row "Sidecar
+        missing on disk" must stat() to decide, returned as plain dicts.
+
+        SQL-only: this is the *only* part of that filter's work that runs
+        under the pooled connection/lock. The filesystem check itself always
+        happens after this returns and the lock has been released (see
+        query_artwork_rows/count_artwork_rows) — the app-wide lock is shared
+        with every other db.py caller, including an in-progress download's
+        add_download write, so os.path.isfile() run while holding it would
+        stall the whole app for as long as the scan takes, not just this
+        query. Returns [] on a DB failure (logged)."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute("""
+                    SELECT * FROM downloads
+                    WHERE artwork_path IS NOT NULL AND TRIM(artwork_path) != ''
+                    ORDER BY title COLLATE NOCASE ASC, id ASC
+                """).fetchall()
+                return [dict(r) for r in rows]
+        except Exception as e:
+            self._log("error", f"_artwork_broken_candidates failed: {e}")
+            return []
+
+    @staticmethod
+    def _broken_page(candidates, offset, limit):
+        """Walk already-fetched, lock-released *candidates* (in whatever
+        order the caller already sorted them), calling os.path.isfile()
+        only until *limit* broken rows past *offset* have been found — not
+        the whole candidate set regardless of page size. Paging the front of
+        a large "Sidecar missing on disk" result therefore stats a handful
+        of rows, not every candidate in the library; only an exact count
+        (count_artwork_rows) has to look at all of them, since a count can't
+        skip anything and still be right."""
+        if limit <= 0:
+            return []
+        page, skipped = [], 0
+        for row in candidates:
+            if os.path.isfile(row["artwork_path"]):
+                continue
+            if skipped < offset:
+                skipped += 1
+                continue
+            page.append(row)
+            if len(page) >= limit:
+                break
+        return page
+
+    @staticmethod
+    def _art_row_matches_search(row, needle):
+        hay = f"{row.get('title', '')} {row.get('channel_name', '')}".lower()
+        return needle in hay
+
+    @staticmethod
+    def _art_sort_key(order_by):
+        """A Python sort key function for one whitelisted order_by column,
+        used only by the "Sidecar missing on disk" branch (its candidates
+        are a Python list, not a SQL result) — every other filter sorts in
+        SQL instead. artwork_embedded is a real 0/1 int already; everything
+        else is compared as lowercased text, and tie-broken on id so the
+        order matches the SQL branch's "ORDER BY ... , id {direction}" in
+        both directions rather than only under ASC.
+
+        One acknowledged divergence: str.lower() case-folds the whole of
+        Unicode where SQLite's COLLATE NOCASE folds ASCII only, so two
+        titles differing only in non-ASCII case can order differently
+        between this branch and the SQL one."""
+        if order_by == "artwork_embedded":
+            return lambda r: (int(bool(r.get("artwork_embedded"))), int(r.get("id") or 0))
+        return lambda r: ((r.get(order_by) or "").lower(), int(r.get("id") or 0))
+
+    def query_artwork_rows(self, filter_name, *, search=None, order_by="title",
+                           descending=False, limit=100, offset=0):
+        """One page of downloads rows under *filter_name* (ARTWORK_FILTERS),
+        as plain dicts. An unrecognised filter_name or order_by raises
+        ValueError; a DB failure logs and returns [].
+
+        *search* is an optional LIKE over title/channel_name, same escaping
+        as _downloads_filter_sql's search filter (literal %/_ escaped so
+        they can't be mistaken for SQL wildcards).
+
+        "Sidecar missing on disk" fetches its (SQL-narrowed) candidates
+        under the pooled lock via _artwork_broken_candidates, then — lock
+        already released — filters by search, sorts by order_by, and stats
+        only as many candidates as it takes to fill this page
+        (_broken_page), rather than scanning the whole candidate set on
+        every page turn."""
+        if filter_name not in self.ARTWORK_FILTERS:
+            raise ValueError(f"unknown artwork filter: {filter_name!r}")
+        if order_by not in self._ART_SORT_COLUMNS:
+            raise ValueError(f"unknown order_by column: {order_by!r}")
+        limit = max(0, int(limit))
+        offset = max(0, int(offset))
+        search = (search or "").strip()
+        if filter_name == "Sidecar missing on disk":
+            candidates = self._artwork_broken_candidates()
+            if search:
+                needle = search.lower()
+                candidates = [r for r in candidates
+                             if self._art_row_matches_search(r, needle)]
+            candidates.sort(key=self._art_sort_key(order_by), reverse=descending)
+            return [dict(r) for r in
+                    self._broken_page(candidates, offset, limit)]
+        where_sql = self._artwork_where_sql(filter_name)
+        params = []
+        if search:
+            needle = f"%{self._escape_like(search)}%"
+            clause = "(title LIKE ? ESCAPE '\\' OR channel_name LIKE ? ESCAPE '\\')"
+            where_sql = f"{where_sql} AND {clause}" if where_sql else f" WHERE {clause}"
+            params.extend([needle, needle])
+        direction = "DESC" if descending else "ASC"
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    f"SELECT * FROM downloads{where_sql} "
+                    f"ORDER BY {order_by} COLLATE NOCASE {direction}, id {direction} "
+                    f"LIMIT ? OFFSET ?", [*params, limit, offset]).fetchall()
+                return [dict(r) for r in rows]
+        except Exception as e:
+            self._log("error", f"query_artwork_rows failed: {e}")
+            return []
+
+    def count_artwork_rows(self, filter_name, *, search=None):
+        """Count of downloads rows under *filter_name* (ARTWORK_FILTERS),
+        with the same optional *search* query_artwork_rows takes. An
+        unrecognised filter_name raises ValueError; a DB failure logs and
+        returns 0.
+
+        "Sidecar missing on disk" is inherently a full scan of its
+        candidates — an exact count can't skip any of them — but, like
+        query_artwork_rows, the candidates are fetched under the pooled
+        lock via _artwork_broken_candidates and every os.path.isfile() call
+        runs after that lock has already been released."""
+        if filter_name not in self.ARTWORK_FILTERS:
+            raise ValueError(f"unknown artwork filter: {filter_name!r}")
+        search = (search or "").strip()
+        if filter_name == "Sidecar missing on disk":
+            candidates = self._artwork_broken_candidates()
+            if search:
+                needle = search.lower()
+                candidates = [r for r in candidates
+                             if self._art_row_matches_search(r, needle)]
+            return sum(1 for r in candidates
+                      if not os.path.isfile(r["artwork_path"]))
+        where_sql = self._artwork_where_sql(filter_name)
+        params = []
+        if search:
+            needle = f"%{self._escape_like(search)}%"
+            clause = "(title LIKE ? ESCAPE '\\' OR channel_name LIKE ? ESCAPE '\\')"
+            where_sql = f"{where_sql} AND {clause}" if where_sql else f" WHERE {clause}"
+            params.extend([needle, needle])
+        try:
+            with self._conn() as conn:
+                row = conn.execute(
+                    f"SELECT COUNT(*) AS n FROM downloads{where_sql}",
+                    params).fetchone()
+                return int(row["n"]) if row else 0
+        except Exception as e:
+            self._log("error", f"count_artwork_rows failed: {e}")
+            return 0

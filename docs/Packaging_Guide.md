@@ -8,8 +8,8 @@ Supported install flows:
 | Debian / Ubuntu / Linux Mint | `.deb` package (CI-built) | **Recommended Linux path** |
 | Other Linux (Fedora / Arch / …) | Bash installer (`install-linux.sh`) | Distros `dpkg` can't serve |
 
-Both platforms get **in-app updates**: Windows polls `update.json` on the
-`nightly` branch, Linux polls `update-linux.json` on the `linux-v1.3` release.
+Both platforms poll for updates: Windows polls `update.json` on the
+`nightly` branch, Linux polls `update-linux.json` on the `linux-v2.0` release.
 
 ---
 
@@ -38,14 +38,14 @@ pip install pyinstaller -r requirements.txt
 
 ## Step 1 — Build the EXE
 
-From the folder containing `DJ-CrateBuilder_v1.3.py`:
+From the folder containing `DJ-CrateBuilder_v2.0.py`:
 
 ```bash
 pyinstaller --noconfirm --clean --name "DJ-CrateBuilder" --windowed --onedir --icon "icon.ico" ^
   --collect-submodules cratebuilder ^
   --hidden-import pystray._win32 --hidden-import PIL.ImageDraw ^
   --hidden-import send2trash ^
-  DJ-CrateBuilder_v1.3.py
+  DJ-CrateBuilder_v2.0.py
 ```
 
 Output: `dist\DJ-CrateBuilder\`
@@ -106,13 +106,13 @@ Run one short YouTube download to confirm yt-dlp + FFmpeg work.
 4. Confirm the `[Files]` Source path points to your `dist\DJ-CrateBuilder\` folder
 5. Ctrl+F9 to compile
 
-Output: `releases\Build_Output\DJ-CrateBuilder_v1.3_Setup_Windows.exe`
+Output: `releases\Build_Output\DJ-CrateBuilder_v2.0_Setup_Windows.exe`
 
 `OutputDir` in the `.iss` is relative to the script's own folder (`docs\`), so
 `..\releases\Build_Output` lands at the repo root.
 
 The installer attached to the GitHub release carries the build number as well —
-`DJ-CrateBuilder_v1.3.<N>_Setup_Windows.exe`, where `<N>` is `APP_BUILD`. That
+`DJ-CrateBuilder_v2.0.<N>_Setup_Windows.exe`, where `<N>` is `APP_BUILD`. That
 suffix is added when the release is cut, not by the `.iss` script, so a build
 from source uses the plain name above.
 
@@ -160,7 +160,7 @@ python scripts/release.py
 
 It will prompt for one line of release notes, then do **everything**:
 
-1. Auto-increment `APP_BUILD` in `DJ-CrateBuilder_v1.3.py` (so the `.exe` reports
+1. Auto-increment `APP_BUILD` in `DJ-CrateBuilder_v2.0.py` (so the `.exe` reports
    the new build — no manual edit).
 2. Build the app + `updater.exe` + bundle FFmpeg (Steps 1, 1b, 2).
 3. Work out the **smallest payload**: it hashes every file in the build and zips
@@ -219,7 +219,7 @@ at install time.
 
 ```
 /opt/dj-cratebuilder/
-├── DJ-CrateBuilder_v1.3.py
+├── DJ-CrateBuilder_v2.0.py
 ├── cratebuilder/                     # the package the .py imports
 ├── requirements.txt
 └── venv/                             # created by postinst, not shipped
@@ -229,14 +229,17 @@ at install time.
 ```
 
 System dependencies are declared in the control file and resolved by `apt`:
-`python3 (>= 3.10)`, `python3-tk`, `python3-venv`, `ffmpeg`. The Python
-dependencies (`yt-dlp`, `pystray`, `Pillow`, `send2trash`, `mutagen`) go into
-`/opt/dj-cratebuilder/venv` — PEP 668 forbids installing them into the system
-Python, so the venv is not optional.
+`python3 (>= 3.10)`, `python3-venv`, `python3-gi`, `python3-gi-cairo`,
+`gir1.2-gtk-3.0`, `gir1.2-webkit2-4.1 | gir1.2-webkit2-4.0`, `ffmpeg`. The
+Python dependencies (`yt-dlp`, `pywebview`, `fastapi`, `uvicorn`, `Pillow`,
+`send2trash`, `mutagen`, ...) go into `/opt/dj-cratebuilder/venv` — PEP 668
+forbids installing them into the system Python, so the venv is not optional.
+The venv is created with `--system-site-packages` so pywebview's GTK backend
+can see the system-installed PyGObject (pip cannot sanely build it).
 
 Package version mirrors the app's own version: `build-deb.sh` greps `APP_BUILD`
-out of the source, so the `.deb` filename, the About tab, and
-`update-linux.json` all report the same `1.3.<build>`.
+out of the source, so the `.deb` filename, the About screen, and
+`update-linux.json` all report the same `2.0.<build>`.
 
 ## Publishing a release (the normal path)
 
@@ -255,11 +258,11 @@ Or: GitHub → Actions → **build-deb** → *Run workflow*.
 2. **Smoke-tests it** — installs the `.deb` on the runner, asserts
    `/usr/bin/dj-cratebuilder` exists, imports every venv dependency, and
    byte-compiles the app
-3. Uploads the `.deb` to the `linux-v1.3` GitHub Release (creating it on first
+3. Uploads the `.deb` to the `linux-v2.0` GitHub Release (creating it on first
    run), replacing any previous `.deb` asset so exactly one is ever attached
 4. Generates `update-linux.json` (build number, download URL, SHA-256,
    filename) and uploads it to the same release with `--clobber`
-5. Retitles the release to `DJ-CrateBuilder v1.3 (Build N) — Linux package (.deb)`
+5. Retitles the release to `DJ-CrateBuilder v2.0 (Build N) — Linux package (.deb)`
 
 This channel is **completely separate from the Windows nightly channel** — it
 never touches `scripts/release.py`, the `nightly` branch, or `update.json`.
@@ -275,7 +278,7 @@ Requires a Linux machine or WSL with `dpkg-deb` and `python3-pil`:
 
 ```bash
 sudo apt-get install -y python3-pil
-bash packaging/deb/build-deb.sh          # → dist/deb/dj-cratebuilder_1.3.N_all.deb
+bash packaging/deb/build-deb.sh          # → dist/deb/dj-cratebuilder_2.0.N_all.deb
 bash packaging/deb/build-deb.sh 99       # override the build number
 ```
 
@@ -287,25 +290,25 @@ the venv and `__pycache__` so `dpkg` can clean out `/opt`), and
 ## What users do
 
 Download the `.deb` from the
-[`linux-v1.3` release](https://github.com/Sintax/DJ-CrateBuilder/releases/tag/linux-v1.3)
+[`linux-v2.0` release](https://github.com/Sintax/DJ-CrateBuilder/releases/tag/linux-v2.0)
 and double-click it, or:
 
 ```bash
-sudo apt install ./dj-cratebuilder_1.3.*_all.deb
+sudo apt install ./dj-cratebuilder_2.0.*_all.deb
 ```
 
-`apt` pulls in `ffmpeg`/`python3-tk` automatically; `postinst` then builds the
-venv (this is the slow part — it's `pip install` over the network). The app
-appears in the menu under Sound & Video and as the `dj-cratebuilder` command.
+`apt` pulls in `ffmpeg` and the GTK/WebKit stack automatically; `postinst` then
+builds the venv (this is the slow part — it's `pip install` over the network).
+The app appears in the menu under Sound & Video and as the `dj-cratebuilder`
+command.
 
-### In-app updates
+### Updates
 
-The Linux build polls `update-linux.json` on the `linux-v1.3` release, the same
-way Windows polls `update.json`. On a newer build it downloads the `.deb`,
-verifies the SHA-256, and installs it via `apt` behind a **pkexec** PolicyKit
-password prompt, then relaunches. There's no separate swap process — `apt`
-replaces the files under `/opt` while the running process keeps its old file
-handles. If `pkexec` is absent the app just points the user at the release page.
+The Linux build polls `update-linux.json` on the `linux-v2.0` release, the same
+way Windows polls `update.json`, and notifies when a newer build is published.
+Installing it is manual: the v2.0 web app doesn't port the old pkexec/apt
+self-install flow — users download the new `.deb` from the release page and
+install it over the old one.
 
 ### Uninstall
 
@@ -323,11 +326,14 @@ and downloaded MP3s in `~/Music/DJ-CrateBuilder/` are left alone either way.
 
 For Fedora, Arch, openSUSE, and anything else `dpkg` can't serve, ship the repo
 contents plus [`install-linux.sh`](../install-linux.sh). It does the same job
-without a package manager: verifies Python 3.10+/`tkinter`/`ffmpeg`, pip-installs
-`requirements.txt`, copies the app and `cratebuilder/` into
+without a package manager: verifies Python 3.10+, the GTK/WebKit stack
+(PyGObject + WebKit2GTK — pywebview's Linux backend), and `ffmpeg`, builds a
+`--system-site-packages` venv and pip-installs `requirements.txt` into it,
+copies `web_window.py`/`web_server.py`/`web/`/`cratebuilder/` (plus the
+monolith source the service parses for version data) into
 `~/.local/share/DJ-CrateBuilder/`, creates the `dj-cratebuilder` launcher in
-`~/.local/bin/`, and writes a `.desktop` entry. Missing dependencies produce the
-exact `apt`/`dnf`/`pacman` command to fix them.
+`~/.local/bin/`, and writes a `.desktop` entry. Missing dependencies are
+installed via the detected `apt`/`dnf`/`pacman`.
 
 The script refuses to run if `cratebuilder/` is missing — the app will not
 launch without it.
@@ -341,7 +347,7 @@ leaves downloaded MP3s alone.
 
 ---
 
-# FILE LOCATIONS (v1.3)
+# FILE LOCATIONS
 
 | File | Path |
 |------|------|
@@ -356,7 +362,7 @@ The **debug log** is new — it captures yt-dlp options, cookie config, and full
 
 # RELEASE CHECKLIST
 
-- [ ] `APP_VERSION = "1.3"` in `DJ-CrateBuilder_v1.3.py`
+- [ ] `APP_VERSION = "2.0"` in `DJ-CrateBuilder_v2.0.py`
 - [ ] `pytest -q` passes (`requirements-dev.txt` installed)
 - [ ] (Nightly) `python scripts/release.py` run — it auto-bumps `APP_BUILD`, builds,
       publishes the delta, and pushes `update.json`. About-tab "Check for
@@ -364,9 +370,9 @@ The **debug log** is new — it captures yt-dlp options, cookie config, and full
 - [ ] (Fresh installer) `python scripts/release.py --build-only`, smoke-test, then build
       the Windows installer in Inno Setup
 - [ ] (Linux) `APP_BUILD` bump landed on `main`, then `gh workflow run build-deb.yml`
-      — CI smoke-test green, `.deb` + `update-linux.json` on the `linux-v1.3` release
+      — CI smoke-test green, `.deb` + `update-linux.json` on the `linux-v2.0` release
 - [ ] Installed the published `.deb` on a Linux Mint VM; venv built, app launches
-- [ ] About-tab "Check for updates" sees the new build on Linux and installs via pkexec
+- [ ] About screen "Check for updates" sees the new build on Linux and points at the release page
 - [ ] `sudo apt remove dj-cratebuilder` cleans up `/opt` and leaves MP3s intact
 - [ ] Debug log viewer opens and displays data after a download
 - [ ] Watch List startup auto-scan refreshes new-track counts on launch

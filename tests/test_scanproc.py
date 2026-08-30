@@ -257,7 +257,7 @@ def test_the_frozen_flag_reaches_the_worker_before_tk_or_the_lock():
     that did would poke the running app and exit with no answer). Driven
     from source the same way the frozen exe runs it."""
     proc = subprocess.run(
-        [sys.executable, os.path.join(REPO_ROOT, "DJ-CrateBuilder_v1.3.py"),
+        [sys.executable, os.path.join(REPO_ROOT, "DJ-CrateBuilder_v2.0.py"),
          "--scan-worker"], cwd=REPO_ROOT,
         input="garbage", capture_output=True, text=True, timeout=120)
     assert proc.returncode == 2

@@ -725,3 +725,48 @@ def existing_sidecar(art_dir, key):
         return path if os.path.isfile(path) else None
     except Exception:
         return None
+
+
+def raw_thumbnail(audio_path):
+    """The image yt-dlp's `writethumbnail` saved beside *audio_path*, or None.
+
+    It lands on the audio file's own outtmpl stem, so it sits next to the track
+    with an image extension — `.webp` from YouTube, `.jpg` from SoundCloud,
+    occasionally `.png`."""
+    stem = os.path.splitext(audio_path or "")[0]
+    for ext in (".webp", ".jpg", ".jpeg", ".png"):
+        if stem and os.path.isfile(stem + ext):
+            return stem + ext
+    return None
+
+
+def harvest_cover_art(audio_path, video_id, *, mode=DEFAULT_COVER_ART_MODE,
+                      ffmpeg_dir=None, retag=None):
+    """Turn the thumbnail yt-dlp just wrote into cover art for one track.
+
+    Converts the raw image into the channel folder's hidden `.artwork/` sidecar
+    as `<video_id>.jpg`, then embeds it as the track's front-cover frame — the
+    embed is what makes the art appear in Explorer, media players and on
+    Android; the sidecar is the archival copy we can re-embed from later
+    without going back to the network. A `.webm` is remuxed to `.opus` when
+    that is what embedding needs, which is why the audio path can change;
+    *retag* is then called with the new path, since the Ogg container does not
+    inherit the WebM's tags.
+
+    Returns (artwork_path, embedded, final_audio_path) — (None, False,
+    audio_path) when artwork is off, unavailable, or anything went wrong.
+    Never raises: a cover-art failure must not fail a download."""
+    raw = raw_thumbnail(audio_path)
+    if mode == "off" or not raw or not artwork_available():
+        return None, False, audio_path
+    try:
+        art_dir = thumbnail_dir(os.path.dirname(audio_path))
+        art_path = art_dir and ingest_thumbnail(raw, art_dir, video_id, mode)
+        if not art_path:
+            return None, False, audio_path
+        final_path, embedded = embed_cover_any(audio_path, art_path, ffmpeg_dir)
+        if final_path != audio_path and retag is not None:
+            retag(final_path)
+        return art_path, embedded, final_path
+    except Exception:
+        return None, False, audio_path

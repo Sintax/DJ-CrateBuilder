@@ -1,6 +1,9 @@
 #!/bin/sh
 # DJ-CrateBuilder .deb post-install: build the private venv and install the
 # Python dependencies into it (PEP 668 forbids touching the system Python).
+# --system-site-packages: pywebview's GTK backend needs PyGObject (python3-gi,
+# gir1.2-webkit2-4.1/4.0), which is a system package that pip cannot sanely
+# build in a postinst — the venv sees it via the Depends-installed system copy.
 set -e
 
 APP_DIR=/opt/dj-cratebuilder
@@ -8,9 +11,9 @@ APP_DIR=/opt/dj-cratebuilder
 case "$1" in
     configure)
         echo "DJ-CrateBuilder: creating Python virtual environment..."
-        python3 -m venv "$APP_DIR/venv"
+        python3 -m venv --system-site-packages "$APP_DIR/venv"
         "$APP_DIR/venv/bin/python" -m pip install --quiet --upgrade pip
-        echo "DJ-CrateBuilder: installing Python dependencies (yt-dlp, pystray, Pillow)..."
+        echo "DJ-CrateBuilder: installing Python dependencies (yt-dlp, pywebview, fastapi, ...)..."
         "$APP_DIR/venv/bin/python" -m pip install --quiet -r "$APP_DIR/requirements.txt"
         # Refresh menu/icon caches where the helpers exist (best-effort).
         if command -v update-desktop-database >/dev/null 2>&1; then
