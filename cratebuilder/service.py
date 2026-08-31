@@ -73,6 +73,18 @@ UPDATE_JOB = "update"
 # success (which is exactly what it used to do).
 JOB_FINISHED = "job.finished"
 
+# Its mirror: a job category has just been CLAIMED. Emitted by _start_job with
+# the slot already taken, so a frontend resyncing on it cannot be answered with
+# a snapshot that says nothing is running.
+#
+# It exists because a run does not have to be started by the frontend watching
+# it. The launch scan starts itself, the tray's Scan Now starts one with no page
+# involved, and on the remote transport one browser starts runs a second browser
+# has to render. Every one of those used to leave the other client's controls
+# reading idle — offering a Scan that the host would refuse and a Cancel that
+# was closed — until something else happened to trigger a refresh.
+JOB_STARTED = "job.started"
+
 # What a crashed job is called in the error notification _start_job publishes.
 # Maintenance passes its own per-task title instead, since "Rebuild Database
 # from Files" is what the user pressed, not "Database maintenance".
@@ -876,6 +888,9 @@ class CrateBuilderService:
                 guard()
             job_id = next(self._ids)
             self._jobs[category] = job_id
+
+        # Outside the lock, but with the slot already held — see JOB_STARTED.
+        self.emit(JOB_STARTED, {"job": category, "job_id": job_id})
 
         def run():
             error = None
@@ -2781,6 +2796,36 @@ class CrateBuilderService:
         No-ops on REMOTE and once `close()` has run — see `_arm_update_timer`.
         """
         self._arm_update_timer()
+
+    def window_placement(self):
+        """Where the last session left the window, as (geometry, maximized).
+
+        A plain method rather than an RPC, like `start_update_timer` — this is
+        the local window asking about its own frame, not a setting the Settings
+        screen renders. Keeping it off the `settings.*` surface is also what
+        stops a remote browser reading or writing the host's window placement,
+        which is none of its business.
+        """
+        return (self._settings.get("window_geometry"),
+                bool(self._settings.get("window_maximized")))
+
+    def save_window_placement(self, geometry, maximized):
+        """Remember where the window is, for the next launch.
+
+        Writes through Settings in one update, the monolith's
+        _save_window_placement — never a `settings.set` per key, which would
+        rewrite the whole config file twice and put window placement through
+        the frozen-setting checks that guard a running download's policy.
+
+        Never raises: losing a window position is not a reason to take down
+        the caller, which is a window event handler or the close path.
+        """
+        try:
+            self._settings.update({"window_geometry": geometry,
+                                   "window_maximized": bool(maximized)})
+            return True
+        except Exception:
+            return False
 
     def start_startup_scan(self):
         """Arm the launch scan of every watched channel, so the cards show

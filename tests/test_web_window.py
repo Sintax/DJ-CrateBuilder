@@ -713,23 +713,28 @@ class FakeEvent:
 
 
 class MainWindow(FakeWindow):
-    """A created window, plus the two events main() subscribes to."""
+    """A created window, plus the events main() subscribes to and the size and
+    position WindowPlacement seeds itself from."""
 
-    def __init__(self):
+    def __init__(self, geometry=(1200, 800, 40, 30)):
         super().__init__()
+        self.width, self.height, self.x, self.y = geometry
         self.events = type("Events", (), {})()
-        self.events.closing = FakeEvent()
-        self.events.minimized = FakeEvent()
+        for name in ("closing", "minimized", "moved", "resized",
+                     "maximized", "restored"):
+            setattr(self.events, name, FakeEvent())
 
 
 class MainService(RecordingService):
     """RecordingService plus the surface main() itself uses."""
 
-    def __init__(self, **kwargs):
+    def __init__(self, placement=("", False), **kwargs):
         super().__init__(**kwargs)
         self.timers = 0
         self.startup_scans = 0
         self.on_update_restart = None
+        self.placement = placement
+        self.saved_placements = []
         self.remote_state = type("Remote", (),
                                  {"get_flag": lambda self, name: False})()
 
@@ -739,14 +744,23 @@ class MainService(RecordingService):
     def start_startup_scan(self):
         self.startup_scans += 1
 
+    def window_placement(self):
+        return self.placement
+
+    def save_window_placement(self, geometry, maximized):
+        self.saved_placements.append((geometry, bool(maximized)))
+        return True
+
     def close(self):
         pass
 
 
-def run_main(monkeypatch, settings=None, available=True):
+def run_main(monkeypatch, settings=None, available=True, placement=("", False),
+             screens=()):
     """main() with every real edge stubbed. Returns what it wired up."""
-    service = MainService(settings=settings)
+    service = MainService(settings=settings, placement=placement)
     window = MainWindow()
+    monkeypatch.setattr(web_window, "screen_rects", lambda: list(screens))
     created = {}
     started = []
     icons = []
@@ -788,6 +802,16 @@ def stop_the_wired_tray(window):
     return False
 
 
+def stop_the_wired_placement(window):
+    """Run the WindowPlacement.stop main() subscribed, so its flush timer
+    cannot outlive the test."""
+    for handler in window.events.closing.handlers:
+        if getattr(handler, "__func__", None) is web_window.WindowPlacement.stop:
+            handler()
+            return True
+    return False
+
+
 def test_main_wires_the_tray_to_the_windows_events(monkeypatch):
     service, window, created, started, _ = run_main(monkeypatch)
 
@@ -812,6 +836,7 @@ def test_main_arms_the_startup_scan_only_once_the_loop_is_up(monkeypatch):
 
     assert service.startup_scans == 1
     stop_the_wired_tray(window)
+    stop_the_wired_placement(window)
 
 
 @pytest.mark.parametrize("wanted", [True, False])
@@ -827,4 +852,60 @@ def test_main_hides_the_window_at_creation_only_when_asked(monkeypatch, wanted):
 
     assert (len(icons) == 1) is wanted          # handed to the tray, or not
     assert window.actions == []                 # and never shown either way
+    stop_the_wired_tray(window)
+    stop_the_wired_placement(window)
+
+
+# ── window placement (see test_window_placement.py for the rules themselves) ──
+
+def test_main_opens_the_window_where_the_last_session_left_it(monkeypatch):
+    _, window, created, _, _ = run_main(
+        monkeypatch, placement=("1400x900+120+60", False),
+        screens=[(0, 0, 1920, 1040)])
+
+    assert (created["width"], created["height"]) == (1400, 900)
+    assert (created["x"], created["y"]) == (120, 60)
+    stop_the_wired_tray(window)
+
+
+def test_main_falls_back_to_the_default_size_with_nothing_remembered(monkeypatch):
+    _, window, created, _, _ = run_main(monkeypatch,
+                                        screens=[(0, 0, 1920, 1040)])
+
+    assert (created["width"], created["height"]) == web_window.WINDOW_SIZE
+    assert "x" not in created and "y" not in created
+    stop_the_wired_tray(window)
+
+
+def test_main_starts_capturing_the_placement_only_once_the_window_exists(
+        monkeypatch):
+    """WindowPlacement seeds itself by reading the window's own size, which
+    means it cannot start before there is a window to read."""
+    _, window, _, started, _ = run_main(monkeypatch)
+
+    assert window.events.moved.handlers == []
+
+    started()
+
+    assert window.events.moved.handlers, "never subscribed"
+    stop_the_wired_tray(window)
+    stop_the_wired_placement(window)
+
+
+def test_main_flushes_the_placement_before_it_closes_the_service(monkeypatch):
+    """pywebview runs `closing` handlers in the order they were added, and
+    the placement write has to happen while the service is still open."""
+    service, window, _, started, _ = run_main(monkeypatch)
+    started()
+    handlers = window.events.closing.handlers
+
+    placement_at = next(
+        i for i, h in enumerate(handlers)
+        if getattr(h, "__func__", None) is web_window.WindowPlacement.stop)
+    assert placement_at < handlers.index(service.close)
+
+    # And it really does write on the way out.
+    handlers[placement_at].__self__.on_moved(210, 175)
+    handlers[placement_at]()
+    assert service.saved_placements[-1][0].endswith("+210+175")
     stop_the_wired_tray(window)

@@ -179,9 +179,13 @@ body { overflow: hidden; }
 
 /* Bottom Queue log — the currently-downloading line gets the design's tinted
    row treatment; everything else is plain .cb-log text. */
-/* Six lines at the 19.8px .cb-log line box, on a content-box min-height, so the
-   running queue reads as a list rather than a peephole. */
-#dl-queue { min-height: 119px; }
+/* Six lines at the 19.8px .cb-log line box, on a content-box height, so the
+   running queue reads as a list rather than a peephole. A fixed height, not a
+   floor: one line per queued item meant the card grew from six lines to as
+   many as the batch had the moment it started, walking everything below it
+   down the screen. It scrolls instead, and renderQueueLog keeps the running
+   line in view. */
+#dl-queue { height: 119px; overflow-y: auto; }
 .cb-log__now { background: var(--cb-accent-wash); border-radius: 4px; padding: 0 4px; margin: 0 -4px; }
 .cb-log__now .cb-log__title { color: var(--cb-text); font-weight: 500; }
 
