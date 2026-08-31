@@ -536,14 +536,19 @@ def test_a_refused_menu_action_is_logged_and_notified_never_raised(make_tray):
     assert service.logged == ["🔔 Tray: No new tracks pending."]
 
 
-def test_quit_stops_the_icon_and_closes_the_window(make_tray):
+def test_quit_shows_the_window_then_closes_it_leaving_teardown_to_the_close(
+        make_tray):
+    """_tray_close: focus the app, then run the normal close confirmation.
+    destroy() raises the window's own `closing`, where WindowClose asks and
+    tears down — so quit itself must stop nothing: a "No" has to leave the
+    app, icon included, exactly as it was."""
     tray, window, _, icons = make_tray(settings={"minimize_to_tray": True})
     tray.hide()
 
     tray.quit()
 
-    assert icons[0].stopped is True
-    assert window.actions == ["hide", "destroy"]
+    assert icons[0].stopped is False
+    assert window.actions == ["hide", "show", "restore", "destroy"]
 
 
 def test_the_menu_is_wired_to_the_trays_own_actions(make_tray):
@@ -713,16 +718,23 @@ class FakeEvent:
 
 
 class MainWindow(FakeWindow):
-    """A created window, plus the events main() subscribes to and the size and
-    position WindowPlacement seeds itself from."""
+    """A created window, plus the events main() subscribes to, the size and
+    position WindowPlacement seeds itself from, and the native confirmation
+    dialog WindowClose asks its question over."""
 
     def __init__(self, geometry=(1200, 800, 40, 30)):
         super().__init__()
         self.width, self.height, self.x, self.y = geometry
+        self.confirm_answer = True
+        self.confirms = []
         self.events = type("Events", (), {})()
         for name in ("closing", "minimized", "moved", "resized",
                      "maximized", "restored"):
             setattr(self.events, name, FakeEvent())
+
+    def create_confirmation_dialog(self, title, message):
+        self.confirms.append((title, message))
+        return self.confirm_answer
 
 
 class MainService(RecordingService):
@@ -736,6 +748,8 @@ class MainService(RecordingService):
         self.on_update_restart = None
         self.placement = placement
         self.saved_placements = []
+        self.closes = 0
+        self.placements_at_close = None
         self.remote_state = type("Remote", (),
                                  {"get_flag": lambda self, name: False})()
 
@@ -756,7 +770,10 @@ class MainService(RecordingService):
         return True
 
     def close(self):
-        pass
+        self.closes += 1
+        # What the placement flush had managed BY the close — the ordering
+        # test reads this rather than trusting handler positions.
+        self.placements_at_close = len(self.saved_placements)
 
 
 def run_main(monkeypatch, settings=None, available=True, placement=("", False),
@@ -796,36 +813,33 @@ def run_main(monkeypatch, settings=None, available=True, placement=("", False),
     return service, window, created, started[0], icons
 
 
-def stop_the_wired_tray(window):
-    """Run the WindowTray.stop main() subscribed, so no Timer outlives the
-    test — and prove the handler is the tray's while we are here."""
-    for handler in window.events.closing.handlers:
-        if getattr(handler, "__func__", None) is web_window.WindowTray.stop:
-            handler()
-            return True
-    return False
-
-
-def stop_the_wired_placement(window):
-    """Run the WindowPlacement.stop main() subscribed, so its flush timer
-    cannot outlive the test."""
-    for handler in window.events.closing.handlers:
-        if getattr(handler, "__func__", None) is web_window.WindowPlacement.stop:
-            handler()
-            return True
-    return False
+def close_the_window(window):
+    """Run the ONE closing handler main() wired — WindowClose.on_closing —
+    and return what it returned. With MainWindow's dialog answering yes (the
+    default), this is the confirmed close: every timer the wiring armed is
+    torn down, so nothing outlives the test."""
+    (handler,) = window.events.closing.handlers
+    return handler()
 
 
 def test_main_wires_the_tray_to_the_windows_events(monkeypatch):
-    service, window, created, started, _ = run_main(monkeypatch)
+    service, window, created, started, icons = run_main(monkeypatch)
 
     assert service.timers == 1
     assert [getattr(h, "__func__", None)
             for h in window.events.minimized.handlers] == [
         web_window.WindowTray.on_minimized]
-    assert service.close in window.events.closing.handlers
-    assert stop_the_wired_tray(window) is True      # closing += tray.stop
+    # ONE closing handler — the WindowClose. Separate handlers would all run
+    # even on a close the user cancels (pywebview's Event.set has no early
+    # exit), which is exactly the bug the single owner exists to prevent.
+    assert [getattr(h, "__func__", None)
+            for h in window.events.closing.handlers] == [
+        web_window.WindowClose.on_closing]
     assert created["hidden"] is False               # the setting is off
+
+    close_the_window(window)
+
+    assert service.closes == 1                      # and it tears down
 
 
 def test_main_arms_the_startup_scan_only_once_the_loop_is_up(monkeypatch):
@@ -839,8 +853,7 @@ def test_main_arms_the_startup_scan_only_once_the_loop_is_up(monkeypatch):
     started()                                   # what webview.start() calls
 
     assert service.startup_scans == 1
-    stop_the_wired_tray(window)
-    stop_the_wired_placement(window)
+    close_the_window(window)
 
 
 def test_main_arms_the_auto_download_scheduler_once_the_loop_is_up(monkeypatch):
@@ -854,8 +867,7 @@ def test_main_arms_the_auto_download_scheduler_once_the_loop_is_up(monkeypatch):
     started()
 
     assert service.auto_dl_timers == 1
-    stop_the_wired_tray(window)
-    stop_the_wired_placement(window)
+    close_the_window(window)
 
 
 @pytest.mark.parametrize("wanted", [True, False])
@@ -871,8 +883,7 @@ def test_main_hides_the_window_at_creation_only_when_asked(monkeypatch, wanted):
 
     assert (len(icons) == 1) is wanted          # handed to the tray, or not
     assert window.actions == []                 # and never shown either way
-    stop_the_wired_tray(window)
-    stop_the_wired_placement(window)
+    close_the_window(window)
 
 
 # ── window placement (see test_window_placement.py for the rules themselves) ──
@@ -884,7 +895,7 @@ def test_main_opens_the_window_where_the_last_session_left_it(monkeypatch):
 
     assert (created["width"], created["height"]) == (1400, 900)
     assert (created["x"], created["y"]) == (120, 60)
-    stop_the_wired_tray(window)
+    close_the_window(window)
 
 
 def test_main_falls_back_to_the_default_size_with_nothing_remembered(monkeypatch):
@@ -893,7 +904,7 @@ def test_main_falls_back_to_the_default_size_with_nothing_remembered(monkeypatch
 
     assert (created["width"], created["height"]) == web_window.WINDOW_SIZE
     assert "x" not in created and "y" not in created
-    stop_the_wired_tray(window)
+    close_the_window(window)
 
 
 def test_main_starts_capturing_the_placement_only_once_the_window_exists(
@@ -907,24 +918,136 @@ def test_main_starts_capturing_the_placement_only_once_the_window_exists(
     started()
 
     assert window.events.moved.handlers, "never subscribed"
-    stop_the_wired_tray(window)
-    stop_the_wired_placement(window)
+    close_the_window(window)
 
 
 def test_main_flushes_the_placement_before_it_closes_the_service(monkeypatch):
-    """pywebview runs `closing` handlers in the order they were added, and
-    the placement write has to happen while the service is still open."""
+    """WindowClose runs its teardown steps in order, and the placement write
+    has to happen while the service is still open — proven by what the
+    service saw AT close time, not by handler positions."""
     service, window, _, started, _ = run_main(monkeypatch)
     started()
-    handlers = window.events.closing.handlers
 
-    placement_at = next(
-        i for i, h in enumerate(handlers)
-        if getattr(h, "__func__", None) is web_window.WindowPlacement.stop)
-    assert placement_at < handlers.index(service.close)
+    placement = window.events.moved.handlers[0].__self__
+    placement.on_moved(210, 175)
+    close_the_window(window)
 
-    # And it really does write on the way out.
-    handlers[placement_at].__self__.on_moved(210, 175)
-    handlers[placement_at]()
     assert service.saved_placements[-1][0].endswith("+210+175")
-    stop_the_wired_tray(window)
+    assert service.closes == 1
+    assert service.placements_at_close == len(service.saved_placements)
+
+
+# ── the close confirmation ───────────────────────────────────────────────────
+# The monolith's _on_window_close, ported: the X button and the tray's Close
+# always ask first, and a "No" leaves the app exactly as it was — which is why
+# WindowClose owns the whole close instead of sharing the `closing` event.
+
+def test_a_declined_close_touches_nothing(monkeypatch):
+    """The teardown steps must not have run: pywebview executes every closing
+    handler even when one cancels, so this only holds while WindowClose is
+    the sole handler and keeps the teardown behind the question."""
+    service, window, _, started, icons = run_main(
+        monkeypatch, settings={"minimize_to_tray": True})
+    started()
+    window.events.minimized.handlers[0].__self__.hide()   # raise the tray icon
+    window.confirm_answer = False
+
+    assert close_the_window(window) is False    # False cancels the close
+
+    assert window.confirms == [(web_window.CLOSE_CONFIRM_TITLE,
+                                web_window.CLOSE_CONFIRM_BODY)]
+    assert service.closes == 0
+    assert icons[0].stopped is False
+    # The push bridge is still subscribed: events keep reaching the window.
+    before = len(window.js)
+    service.events.emit("state.patch", {"counts": {"pending_new": 1}})
+    assert len(window.js) > before
+
+    window.confirm_answer = True
+    close_the_window(window)                    # real cleanup for the test
+
+
+def test_a_confirmed_close_asks_first_then_tears_down(monkeypatch):
+    service, window, _, started, icons = run_main(
+        monkeypatch, settings={"minimize_to_tray": True})
+    started()
+    window.events.minimized.handlers[0].__self__.hide()   # raise the tray icon
+
+    assert close_the_window(window) is not False
+
+    assert window.confirms == [(web_window.CLOSE_CONFIRM_TITLE,
+                                web_window.CLOSE_CONFIRM_BODY)]
+    assert service.closes == 1
+    assert icons[0].stopped is True
+    # And the bridge is gone: a dead window's JS is never evaluated again.
+    before = len(window.js)
+    service.events.emit("state.patch", {"counts": {"pending_new": 2}})
+    assert len(window.js) == before
+
+
+def test_the_update_restart_goes_around_the_question(monkeypatch):
+    """updater.exe is already waiting on this PID; a dialog nobody answers
+    would wedge the update. on_update_restart destroys without asking, and
+    the closing event the destroy raises tears down without asking either."""
+    service, window, _, started, _ = run_main(monkeypatch)
+    started()
+
+    service.on_update_restart()
+
+    assert window.actions[-1] == "destroy"
+    assert window.confirms == []
+    close_the_window(window)                    # what the destroy would raise
+    assert window.confirms == []                # still no dialog
+    assert service.closes == 1
+
+
+def test_teardown_runs_once_even_if_closing_fires_twice(monkeypatch):
+    service, window, _, started, _ = run_main(monkeypatch)
+    started()
+
+    close_the_window(window)
+    close_the_window(window)
+
+    assert service.closes == 1
+
+
+def test_a_broken_dialog_lets_the_close_proceed():
+    """A window whose dialog cannot be shown must not become unclosable —
+    the failure mode of guessing "no" is an app that can never be quit."""
+    ran = []
+    closer = web_window.WindowClose(FakeWindow(), lambda: ran.append("part"))
+
+    assert closer.on_closing() is not False     # FakeWindow has no dialog
+    assert ran == ["part"]
+
+
+def test_windowclose_runs_its_parts_in_order():
+    ran = []
+    closer = web_window.WindowClose(
+        FakeWindow(),
+        lambda: ran.append("placement"),
+        lambda: ran.append("service"),
+        ask=lambda: True)
+    closer.add(lambda: ran.append("bridge"))
+
+    closer.on_closing()
+
+    assert ran == ["placement", "service", "bridge"]
+
+
+def test_windowclose_guards_each_part_separately():
+    """The service close still has its own work to do even if the placement
+    flush ahead of it misbehaved."""
+    ran = []
+
+    def broken():
+        ran.append("broken")
+        raise RuntimeError("flush failed")
+
+    closer = web_window.WindowClose(FakeWindow(), broken,
+                                    lambda: ran.append("service"),
+                                    ask=lambda: True)
+
+    closer.on_closing()                         # must not raise
+
+    assert ran == ["broken", "service"]
