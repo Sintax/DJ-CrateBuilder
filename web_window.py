@@ -49,6 +49,12 @@ MIN_SIZE = (1280, 820)
 # lose; closing the window flushes immediately.
 PLACEMENT_FLUSH_INTERVAL = 60.0
 
+# The monolith's _on_window_close confirmation, word for word — the X button
+# and the tray's Close both run it before the app really quits.
+CLOSE_CONFIRM_TITLE = "Close DJ-CrateBuilder"
+CLOSE_CONFIRM_BODY = ("Are you sure you want to close DJ-CrateBuilder?\n\n"
+                      "Auto-downloads won't run while it's closed.")
+
 # Windows caps a tray tooltip at 127 characters; keep it well under.
 TRAY_TOOLTIP_LIMIT = 127
 # The monolith's after(2000, _tray_title_tick) cadence, in seconds.
@@ -167,13 +173,18 @@ class WindowTray:
         self._call("watchlist.download_all_new")
 
     def quit(self):
-        """Tray 'Quit': drop the icon, then close the window, which is what
-        ends webview.start() and the process with it.
+        """Tray 'Quit': focus the app, then close it — the monolith's
+        _tray_close, which shows the window and runs the normal close
+        confirmation.
 
-        No close confirmation, unlike the monolith's _tray_close: the web
-        window's own X button doesn't confirm either.
+        destroy() raises the window's `closing` event like any other close,
+        so the question and the teardown (this tray's stop included) are
+        WindowClose's; restoring first is what keeps the dialog from
+        appearing over a window that is still hidden in the tray. Nothing is
+        stopped here: a "No" must leave the app — icon and all — exactly as
+        it was.
         """
-        self.stop()
+        restore_window(self._window)
         try:
             self._window.destroy()
         except Exception:
@@ -479,10 +490,15 @@ def serve_bundle_revalidated():
 
 
 def start_push_bridge(window, service):
-    """Subscribe the window to service.events; unsubscribe when it closes.
+    """Subscribe the window to service.events; returns the unsubscribe.
 
     This is what replaces tkinter's after()-polling for the web frontend:
     a worker thread emits, and the event reaches JS via evaluate_js.
+
+    The unsubscribe is RETURNED for the caller's teardown chain rather than
+    wired to `closing` here: every closing handler runs even when the close
+    is cancelled (see WindowClose), and a bridge unsubscribed on a "No"
+    would leave a window that stayed open but never heard another event.
     """
     def push(event_type, payload):
         try:
@@ -492,8 +508,7 @@ def start_push_bridge(window, service):
         except Exception:
             pass                   # window closed mid-push; keep the emitter alive
 
-    unsubscribe = service.events.subscribe(push)
-    window.events.closing += lambda: unsubscribe()
+    return service.events.subscribe(push)
 
 
 def host_allow_args(argv):
@@ -611,6 +626,77 @@ def restore_window(window):
             call()
         except Exception:
             pass
+
+
+class WindowClose:
+    """Owns the window's `closing` event: confirmation first, teardown after.
+
+    The web port of the monolith's _on_window_close, which always asks before
+    really quitting. It has to own the WHOLE close, not just the question:
+    pywebview's Event.set runs every subscribed handler and only then looks at
+    what any of them returned, so teardown wired as separate `closing` handlers
+    (the placement flush, service.close, the tray stop) would all have run by
+    the time a "No" from a confirmation handler cancelled the close — leaving
+    the window open over a service that is already shut. So `closing` gets this
+    one handler, and the teardown steps run inside it, in order, only once the
+    close is actually going ahead.
+
+    `force_close()` is the one door around the question, for the update
+    restart: the updater process is already waiting on this PID to exit, and a
+    dialog nobody may be at the machine to answer would wedge the update.
+    pywebview's destroy() offers no bypass of its own — it just calls the
+    form's Close(), which raises `closing` like any other close.
+    """
+
+    def __init__(self, window, *parts, ask=None):
+        self._window = window
+        self._parts = list(parts)
+        self._ask = ask or self._confirm
+        self._allowed = False
+        self._done = False
+
+    def add(self, part):
+        """Append a teardown step wired later than construction — the push
+        bridge's unsubscribe, which does not exist until webview.start()."""
+        self._parts.append(part)
+
+    def force_close(self):
+        """Close without asking — the update restart's exit."""
+        self._allowed = True
+        try:
+            self._window.destroy()
+        except Exception:
+            pass
+
+    def on_closing(self):
+        """The `closing` handler. False cancels the close and touches nothing;
+        anything else lets it proceed with the teardown already done."""
+        if not self._allowed and not self._ask():
+            return False
+        self._teardown()
+
+    def _confirm(self):
+        """Put the monolith's question to the user, over the window's own
+        native dialog. A dialog that cannot be shown answers YES: the failure
+        mode of guessing "no" is an app that can never be closed."""
+        try:
+            return bool(self._window.create_confirmation_dialog(
+                CLOSE_CONFIRM_TITLE, CLOSE_CONFIRM_BODY))
+        except Exception:
+            return True
+
+    def _teardown(self):
+        """Run each step once, in order, none allowed to stop the others —
+        the service close still has its own work to do even if the placement
+        flush ahead of it misbehaved."""
+        if self._done:
+            return
+        self._done = True
+        for part in self._parts:
+            try:
+                part()
+            except Exception:
+                pass
 
 
 def screen_rects():
@@ -926,22 +1012,24 @@ def main():
     )
     tray = WindowTray(window, service)
     placement = WindowPlacement(window, service)
+    # One handler owns the whole close: the confirmation, then — only when
+    # the close is going ahead — the teardown steps in this order. The
+    # placement flush stays ahead of service.close because it still has a
+    # write to make.
+    closer = WindowClose(window, placement.stop, service.close, tray.stop)
+    window.events.closing += closer.on_closing
     # The update.apply worker calls this from its own (non-UI) thread once the
-    # updater process has been handed off. window.destroy() is safe to call
-    # off the main thread — pywebview marshals it — and makes webview.start()
-    # return, which exits the process (updater.exe waits up to 30s on this
-    # PID before swapping files).
-    service.on_update_restart = window.destroy
-    # Ahead of service.close: pywebview runs `closing` handlers synchronously,
-    # in the order they were added, and this one still has a write to make.
-    window.events.closing += placement.stop
-    window.events.closing += service.close
-    window.events.closing += tray.stop
+    # updater process has been handed off. It must not be met by the close
+    # confirmation — updater.exe is already waiting (up to 30s) on this PID —
+    # so it goes around the question. destroy() is safe to call off the main
+    # thread (pywebview marshals it) and makes webview.start() return, which
+    # exits the process.
+    service.on_update_restart = closer.force_close
     window.events.minimized += tray.on_minimized
     listen_for_show_requests(lock, lambda: restore_window(window))
 
     def started():
-        start_push_bridge(window, service)
+        closer.add(start_push_bridge(window, service))
         # After the window exists, because it seeds itself by reading the
         # window's own size and position (see WindowPlacement.start).
         placement.start()
