@@ -227,7 +227,7 @@ console.log(JSON.stringify({ idle, batching, scanning, nothingPending, readOnly,
 def _toolbar_source(app_js):
     return _TOOLBAR_HARNESS % {
         "setDisabled": _slice(app_js, "  let reasonSeq = 0;",
-                              "  function placeBatchControls("),
+                              "  function updatePauseLabel("),
         "consts": _slice(app_js, "  const WL_LOG_LIMIT = 500;", "  const wl = {"),
         "helpers": _slice(app_js, "  function wlPending()", "  function wlUrl(row)"),
         "gate": _slice(app_js, "  function tipPlus(ttKey, reason)",

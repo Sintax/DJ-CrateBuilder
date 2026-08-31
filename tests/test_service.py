@@ -5,8 +5,8 @@ import threading
 import pytest
 
 from cratebuilder.db import DownloadsDatabase
-from cratebuilder.service import (JOB_FINISHED, CBError, CrateBuilderService,
-                                  version_info)
+from cratebuilder.service import (JOB_FINISHED, JOB_STARTED, CBError,
+                                  CrateBuilderService, version_info)
 from cratebuilder.settings import Settings
 
 
@@ -283,6 +283,88 @@ def test_a_cberror_from_a_job_is_reported_as_its_own_message(service):
     service._start_job("watchlist", refuse, title="Watch List scan")
     assert done.wait(10)
     assert seen[0][1]["error"] == "The library folder is on a drive that went away."
+
+
+@pytest.mark.parametrize("category", ["batch", "watchlist", "maintenance"])
+def test_job_started_is_emitted_with_the_slot_already_taken(service, category):
+    """The mirror of job.finished's guarantee. A frontend resyncing on this
+    must not be handed a snapshot that still says nothing is running, or it
+    would re-open the controls it just closed."""
+    seen = []
+    started = threading.Event()
+
+    def on_event(type, payload):
+        if type != JOB_STARTED:
+            return
+        # Asked from the handler, exactly as a frontend would.
+        seen.append((payload,
+                     service._job_running(category),
+                     service.snapshot()["running"][category]))
+        started.set()
+
+    service.events.subscribe(on_event)
+    hold = threading.Event()
+    service._start_job(category, hold.wait)
+    try:
+        assert started.wait(10), "job.started was never emitted"
+    finally:
+        hold.set()
+
+    payload, registry_running, snapshot_running = seen[0]
+    assert payload["job"] == category
+    assert registry_running is True
+    assert snapshot_running is True
+
+
+def test_a_refused_start_announces_nothing(service):
+    """A second job in the same category never took a slot, so it must not
+    tell the frontend one opened — that would arm controls for a run that
+    does not exist."""
+    seen = []
+    service.events.subscribe(
+        lambda t, p: seen.append(t) if t == JOB_STARTED else None)
+    hold = threading.Event()
+    service._start_job("batch", hold.wait)
+    try:
+        with pytest.raises(CBError):
+            service._start_job("batch", lambda: None)
+    finally:
+        hold.set()
+
+    assert seen == [JOB_STARTED], "only the start that actually claimed a slot"
+
+
+def test_a_guard_that_refuses_announces_nothing(service):
+    seen = []
+    service.events.subscribe(
+        lambda t, p: seen.append(t) if t == JOB_STARTED else None)
+
+    def refuse():
+        raise CBError("not right now")
+
+    with pytest.raises(CBError):
+        service._start_job("batch", lambda: None, guard=refuse)
+    assert seen == []
+
+
+def test_a_job_started_by_the_host_alone_still_announces_itself(service):
+    """The whole point: nothing here is a client call. The launch scan and the
+    tray's Scan Now reach _start_job directly, and used to leave every open
+    frontend's Watch List controls reading idle for the length of the run."""
+    seen = []
+    done = threading.Event()
+
+    def on_event(type, payload):
+        if type in (JOB_STARTED, JOB_FINISHED):
+            seen.append((type, payload["job"]))
+        if type == JOB_FINISHED:
+            done.set()
+
+    service.events.subscribe(on_event)
+    service._start_job("watchlist", lambda: None)
+
+    assert done.wait(10)
+    assert seen == [(JOB_STARTED, "watchlist"), (JOB_FINISHED, "watchlist")]
 
 
 def test_a_job_guard_refuses_the_start_before_the_slot_is_taken(service):

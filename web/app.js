@@ -1001,8 +1001,8 @@
       el.__whyNode = node;
     }
     node.textContent = reason;
-    // Re-inserting an attached node MOVES it, which is what keeps the pair
-    // together when a control is re-parented (placeBatchControls does that).
+    // Re-inserting an attached node MOVES it, so the reason stays beside its
+    // control even if something re-parents one.
     el.insertAdjacentElement('afterend', node);
     el.setAttribute('aria-describedby', node.id);
   }
@@ -1025,21 +1025,20 @@
     refreshTip(el);
   }
 
-  function placeBatchControls(running) {
-    const header = $('#dl-header-actions');
-    const bottomRow = $('#dl-actions-row');
-    const cancelBtn = $('#dl-cancel');
-    const pauseBtn = $('#dl-pause');
-    if (running) {
-      header.append(pauseBtn, cancelBtn);
-      header.hidden = false;
-      bottomRow.hidden = true;
-    } else {
-      bottomRow.append(cancelBtn, pauseBtn);
-      header.hidden = true;
-      bottomRow.hidden = false;
-    }
-  }
+  /* Pause and Cancel stay in the action row in every state.
+
+     They used to move up beside the header while a run was going, as 3c draws
+     them, and the bottom row was hidden to make room — which took its whole
+     height out of the screen while the header grew to fit the buttons
+     arriving. Every card below stepped up the moment a download started and
+     back down when it ended.
+
+     Reserving the header's height instead would hold the layout still, but
+     only by making the idle header permanently taller to hold space for
+     controls that are not there — and a button's height is its font's line
+     box plus padding, which is not a number that stays true on a machine with
+     a different UI font. Leaving the controls where they already are costs
+     nothing and keeps the idle geometry exactly: the run arms them in place. */
 
   function updatePauseLabel() {
     const b = $('#dl-pause');
@@ -1081,7 +1080,6 @@
     tag.textContent = watching ? 'Watch List running'
       : (dl.running ? 'Batch running' : 'Idle');
     tag.className = 'cb-tag ' + (v.running ? 'cb-tag--fill' : 'cb-tag--grey');
-    placeBatchControls(v.running);
     updatePauseLabel();
     gateWrite($('#dl-cancel'), v.running ? '' : 'No download is running.',
       'main.cancel_batch');
@@ -1445,6 +1443,20 @@
     return line;
   }
 
+  /* The log is boxed at its idle height (app.css) so the card cannot grow with
+     the queue — which means the running line can sit below the fold, and the
+     box has to follow it. Scrolled by hand rather than with scrollIntoView,
+     which would scroll the screen behind it too, and measured off the two
+     rectangles rather than offsetTop, which answers relative to whichever
+     ancestor happens to be positioned. */
+  function scrollQueueLogToActive(log) {
+    const active = log.querySelector('.cb-log__now');
+    if (!active) return;
+    const box = log.getBoundingClientRect();
+    const line = active.getBoundingClientRect();
+    log.scrollTop += (line.top - box.top) - (box.height - line.height) / 2;
+  }
+
   function renderQueueLog() {
     const view = dlView();
     const log = $('#dl-queue');
@@ -1466,6 +1478,7 @@
       if (!channels.length) log.textContent = 'Starting the Watch List run…';
       meta.textContent = `${channels.length} channel` +
         `${channels.length === 1 ? '' : 's'} · ${settled} processed`;
+      scrollQueueLogToActive(log);
       return;
     }
 
@@ -1494,6 +1507,7 @@
         DL_MARK));
     });
     meta.textContent = `${rows.length} track${rows.length === 1 ? '' : 's'} · ${processed} processed`;
+    scrollQueueLogToActive(log);
   }
 
   /* Every write control funnels through here so a read-only session (or one
@@ -5758,6 +5772,27 @@
         `${num(r.errors)} error${r.errors === 1 ? '' : 's'}`;
       toast((r.cancelled ? 'Batch cancelled — ' : 'Batch finished — ') + parts,
         !r.cancelled && r.errors > 0);
+    });
+    /* Its mirror: a job category has just been claimed. Emitted with the slot
+       already taken, so the snapshot this asks for cannot come back claiming
+       nothing is running.
+
+       This is the only way the page hears about a run it did not start
+       itself. wlRun sets `running` optimistically when the user presses
+       something here, and a page load reads the snapshot — but a scan armed at
+       launch, one started from the tray menu, or one another browser started
+       on the remote transport went through neither. The Watch List toolbar
+       then spent the whole run saying idle: 🔍 Scan for new offering a scan
+       the host would refuse, and Cancel closed over a run that was going. */
+    cbApi.on('job.started', (p) => {
+      const job = p && p.job;
+      // Set before the snapshot lands so the controls close on this frame
+      // rather than a round trip later; refresh() then confirms from the host.
+      if (job === 'batch') dl.running = true;
+      else if (job === 'watchlist') wl.running = true;
+      else if (job === 'maintenance') mt.running = true;
+      else return;              // 'update' owns its own screen state (About)
+      refresh();
     });
     /* The one event that means a job category is free again — emitted after
        the host releases the slot, so the snapshot this asks for cannot come

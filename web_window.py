@@ -43,6 +43,12 @@ WINDOW_TITLE = "DJ-CrateBuilder"
 WINDOW_SIZE = (1560, 980)
 MIN_SIZE = (1280, 820)
 
+# How often a moved window's placement is written out, in seconds — the
+# monolith's _PLACEMENT_FLUSH_MS in the unit threading.Timer takes. The value
+# itself is captured as it moves, so this only bounds what a hard kill can
+# lose; closing the window flushes immediately.
+PLACEMENT_FLUSH_INTERVAL = 60.0
+
 # Windows caps a tray tooltip at 127 characters; keep it well under.
 TRAY_TOOLTIP_LIMIT = 127
 # The monolith's after(2000, _tray_title_tick) cadence, in seconds.
@@ -607,6 +613,256 @@ def restore_window(window):
             pass
 
 
+def screen_rects():
+    """The monitors a window may be placed on, as (x, y, w, h) work areas —
+    in the units pywebview's own window geometry speaks.
+
+    The web port of DJ-CrateBuilder_v2.0.py's screen_work_areas(), with
+    pywebview's screen list standing in for EnumDisplayMonitors, plus one
+    conversion the monolith never needed. pywebview reports a SCREEN in
+    physical pixels but a WINDOW in device-independent ones: this machine's
+    125% primary measures 2048x1152 as a screen, while a window filling it
+    reports a width of 1638. Comparing a remembered window against an
+    unconverted screen would read every window on a scaled display as hanging
+    off the right-hand edge, and "fit" it by dragging it back each launch. So
+    each screen is divided by its OWN scale — which is also what keeps a
+    second monitor running at a different scale in the right place.
+
+    Work areas rather than full bounds, for the monolith's reason: a window
+    placed under the taskbar has a title bar the user cannot grab. Primary
+    first — on Windows it is the monitor whose bounds start at the origin — so
+    fit_window_geometry's "centre it on screens[0]" fallback lands on the
+    display the user actually looks at. Returns [] when the layout cannot be
+    read, which leaves the caller its own default placement.
+    """
+    try:
+        screens = list(webview.screens)
+    except Exception:
+        return []
+    found = []
+    for screen in screens:
+        try:
+            scale = float(getattr(screen, "scale", 1) or 1)
+            frame = getattr(screen, "frame", None)
+            # .frame is the work area, but only the platforms that have one
+            # populate it with a rectangle — fall back to the full bounds.
+            try:
+                rect = (frame.X, frame.Y, frame.Width, frame.Height)
+            except AttributeError:
+                rect = (screen.x, screen.y, screen.width, screen.height)
+            x, y, width, height = (int(value / scale) for value in rect)
+            if width <= 0 or height <= 0:
+                continue
+            found.append(((screen.x, screen.y) != (0, 0),
+                          (x, y, width, height)))
+        except Exception:
+            continue
+    found.sort(key=lambda item: item[0])       # False (primary) sorts first
+    return [rect for _, rect in found]
+
+
+def window_placement_kwargs(service, min_size=MIN_SIZE):
+    """`create_window` kwargs that reopen the window where it last was.
+
+    Empty when there is nothing remembered, or nothing trustworthy to restore
+    it onto — which leaves pywebview the centred WINDOW_SIZE default, the
+    monolith's "leave the centred default already set above".
+
+    A remembered geometry is never obeyed blindly. util.fit_window_geometry
+    checks it against the monitors attached RIGHT NOW, so a window saved on a
+    second screen does not reopen off the edge of a laptop that has since been
+    undocked — visible to the window manager and unreachable with the mouse.
+    Going through the same helper the tkinter app uses is the point: the rules
+    for what a remembered window may do are one piece of tested logic, not two.
+    """
+    try:
+        remembered, maximized = service.window_placement()
+    except Exception:
+        return {}
+    kwargs = {}
+    try:
+        fitted = util.fit_window_geometry(remembered, screen_rects(),
+                                          min_size=min_size)
+        parsed = util.parse_window_geometry(fitted) if fitted else None
+    except Exception:
+        parsed = None
+    if parsed:
+        width, height, x, y = parsed
+        kwargs.update(width=width, height=height, x=x, y=y)
+    if maximized:
+        kwargs["maximized"] = True
+    return kwargs
+
+
+class WindowPlacement:
+    """Carries the window's size and position between sessions.
+
+    The web port of the monolith's window-placement section, with the same
+    three-part shape — capture as the window moves, flush on a slow timer,
+    flush again on the way out — and the same rule about which states may be
+    captured at all. A maximized window reports the size of the screen it
+    fills; a minimized or tray-hidden one reports where it last was. Writing
+    either back would mean the window never reopens at the size the user
+    actually chose, so only the normal state updates the geometry and being
+    maximized is remembered as its own flag.
+
+    pywebview supplies what tkinter's single <Configure> did not: `moved` and
+    `resized` carry the new value, and `maximized`/`restored`/`minimized` say
+    which state the window is in — so the state is never asked for, which
+    matters because these arrive on threads that are not the UI thread and
+    could not ask.
+    """
+
+    def __init__(self, window, service, interval=PLACEMENT_FLUSH_INTERVAL):
+        self._window = window
+        self._service = service
+        self._interval = interval
+        self._lock = threading.Lock()
+        self._timer = None
+        self._stopped = False
+        self._state = "normal"
+        self._size = None
+        self._pos = None
+        self._dirty = False
+        try:
+            _, self._maximized = service.window_placement()
+        except Exception:
+            self._maximized = False
+
+    def start(self):
+        """Seed from the live window, then subscribe and arm the flush timer.
+
+        Seeded explicitly rather than waiting for the first event: `moved` and
+        `resized` each carry only half of a geometry, so a session where the
+        user resized but never moved the window would otherwise have nothing
+        to write. Reading the window costs one call and settles both halves.
+
+        A window does not always open where it was asked to. fit_window_geometry
+        corrects a placement that no longer fits the monitors attached now, and
+        pywebview converts a coordinate to physical pixels and back with int(),
+        which can drop a pixel on a scaled display. So where the window ACTUALLY
+        opened is written back when it differs from what was remembered —
+        otherwise the stored value stays one the window never had, and every
+        later launch re-derives the same correction from it. The monolith
+        converges the same way, through the <Configure> its own restore fires.
+        The conversion loses at most a pixel or two before it settles: the fixed
+        points are the coordinates that survive the round trip exactly.
+        """
+        remembered = None
+        try:
+            remembered, _ = self._service.window_placement()
+        except Exception:
+            pass
+        try:
+            self._size = (int(self._window.width), int(self._window.height))
+            self._pos = (int(self._window.x), int(self._window.y))
+        except Exception:
+            pass
+        if self._geometry() not in (None, remembered):
+            self._dirty = True
+        self._window.events.moved += self.on_moved
+        self._window.events.resized += self.on_resized
+        self._window.events.maximized += self.on_maximized
+        self._window.events.restored += self.on_restored
+        self._window.events.minimized += self.on_minimized
+        self._arm()
+
+    # ── the window telling us where it is ────────────────────────────────────
+    def on_moved(self, x, y):
+        self._record(pos=(int(x), int(y)))
+
+    def on_resized(self, width, height):
+        self._record(size=(int(width), int(height)))
+
+    def on_maximized(self):
+        with self._lock:
+            self._state = "maximized"
+            if not self._maximized:
+                self._maximized = True
+                self._dirty = True
+
+    def on_minimized(self):
+        with self._lock:
+            self._state = "minimized"
+
+    def on_restored(self):
+        """Back to a normal window — from maximized, or from the tray.
+
+        Un-minimizing a window that WAS maximized does not reach this:
+        winforms only raises `restored` when the new state is Normal, and that
+        window goes back to Maximized, which raises `maximized` instead. So
+        clearing the flag here cannot lose a maximized window's state.
+        """
+        with self._lock:
+            self._state = "normal"
+            if self._maximized:
+                self._maximized = False
+                self._dirty = True
+
+    def _record(self, pos=None, size=None):
+        """Capture a placement, if this is a state whose geometry means
+        anything. Does no I/O — see PLACEMENT_FLUSH_INTERVAL."""
+        with self._lock:
+            if self._stopped or self._state != "normal":
+                return
+            if pos is not None and pos != self._pos:
+                self._pos, self._dirty = pos, True
+            if size is not None and size != self._size:
+                self._size, self._dirty = size, True
+
+    # ── writing it out ───────────────────────────────────────────────────────
+    def _geometry(self):
+        """The captured placement as a geometry string, or None while only
+        half of one is known."""
+        if self._size is None or self._pos is None:
+            return None
+        return util.format_window_geometry(self._size[0], self._size[1],
+                                           self._pos[0], self._pos[1])
+
+    def flush(self):
+        """Write the captured placement out, if it has moved since the last
+        write. True when something was actually stored.
+
+        `_dirty` is cleared only on a successful write, so a failed one is
+        retried by the next tick rather than being silently dropped."""
+        with self._lock:
+            if not self._dirty:
+                return False
+            geometry, maximized = self._geometry(), self._maximized
+        if geometry is None:
+            return False
+        if not self._service.save_window_placement(geometry, maximized):
+            return False
+        with self._lock:
+            self._dirty = False
+        return True
+
+    def _arm(self):
+        with self._lock:
+            if self._stopped:
+                return
+            self._timer = threading.Timer(self._interval, self._tick)
+            self._timer.daemon = True
+            self._timer.start()
+
+    def _tick(self):
+        self.flush()
+        self._arm()
+
+    def stop(self):
+        """Last flush, then stand down — the window is closing.
+
+        Wired ahead of `service.close` on the closing event, which pywebview
+        runs synchronously in the order handlers were added.
+        """
+        with self._lock:
+            self._stopped = True
+            timer, self._timer = self._timer, None
+        if timer is not None:
+            timer.cancel()
+        self.flush()
+
+
 def prepare_runtime_workspace():
     """Once-per-launch startup housekeeping, done before the window opens.
 
@@ -654,22 +910,31 @@ def main():
     # for the same reason. The handoff to the tray is the second half, once the
     # event loop is up; see WindowTray.start_minimized.
     start_minimized = setting_is_on(service, "start_minimized")
+    # Reopened where the last session left it, so the window is sized once
+    # rather than drawn at the default and then moved. The defaults here are
+    # the fallback they always were: window_placement_kwargs is empty on a
+    # first run, and on any launch where the remembered place no longer fits
+    # the monitors that are actually attached.
+    frame = {"width": WINDOW_SIZE[0], "height": WINDOW_SIZE[1],
+             "min_size": MIN_SIZE, "hidden": start_minimized}
+    frame.update(window_placement_kwargs(service))
     window = webview.create_window(
         WINDOW_TITLE,
         index + screen,
         js_api=JsApi(service),
-        width=WINDOW_SIZE[0],
-        height=WINDOW_SIZE[1],
-        min_size=MIN_SIZE,
-        hidden=start_minimized,
+        **frame,
     )
     tray = WindowTray(window, service)
+    placement = WindowPlacement(window, service)
     # The update.apply worker calls this from its own (non-UI) thread once the
     # updater process has been handed off. window.destroy() is safe to call
     # off the main thread — pywebview marshals it — and makes webview.start()
     # return, which exits the process (updater.exe waits up to 30s on this
     # PID before swapping files).
     service.on_update_restart = window.destroy
+    # Ahead of service.close: pywebview runs `closing` handlers synchronously,
+    # in the order they were added, and this one still has a write to make.
+    window.events.closing += placement.stop
     window.events.closing += service.close
     window.events.closing += tray.stop
     window.events.minimized += tray.on_minimized
@@ -677,6 +942,9 @@ def main():
 
     def started():
         start_push_bridge(window, service)
+        # After the window exists, because it seeds itself by reading the
+        # window's own size and position (see WindowPlacement.start).
+        placement.start()
         # Explicit, like start_update_timer() above — and armed only once the
         # bridge is subscribed, so the cards the scan repaints have somewhere
         # to arrive. Armed before create_window, its 2.2 s settle would be

@@ -388,7 +388,7 @@ def test_a_disabled_control_s_reason_is_wired_with_aria_describedby(
     stops to the tab order that the tkinter UI does not have."""
     r = _run_node(tmp_path, "ovaria.mjs", _ARIA_HARNESS % {
         "setDisabled": _slice(app_js, "  let reasonSeq = 0;",
-                              "  function placeBatchControls("),
+                              "  function updatePauseLabel("),
     })
     assert r["idsMatch"] is True
     assert r["nodeId"].startswith("cb-why-")
