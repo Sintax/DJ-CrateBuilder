@@ -66,7 +66,7 @@ APP_VERSION = "2.0"
 # Nightly build number. The display version stays pinned at APP_VERSION; only
 # this integer increments for small in-place updates. Bump it for every build
 # you publish to the nightly channel. Publish with: python scripts/release.py
-APP_BUILD   = 65
+APP_BUILD   = 66
 
 ABOUT_CREATED_BY    = "Corrupt Sintax"
 ABOUT_CONTACT_EMAIL = "CorruptSintax@Gmail.com"
