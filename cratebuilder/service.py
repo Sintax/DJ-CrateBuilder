@@ -828,6 +828,18 @@ class CrateBuilderService:
         self.on_update_restart = None
         self._update_timer = None
         self._next_update_check_ts = None
+        # The auto-download scheduler, armed by start_auto_download_timer().
+        # The anchor is set when it is armed, never read from
+        # `watchlist_last_download` — see that method for why.
+        self._auto_dl_thread = None
+        self._auto_dl_anchor = 0
+        self._auto_dl_next_ts = None
+        # Whether that None has ever been ANNOUNCED, which is not the same as
+        # its being the current value: an interval already set to 'Off' at
+        # launch publishes None, and without this the de-duplication would
+        # read it as unchanged and say nothing at all.
+        self._auto_dl_announced = False
+        self._auto_dl_wake = threading.Event()
         self._closed = False
         self.reset_stale_watchlist_rows()
         # The auto-check timer is armed explicitly via start_update_timer(),
@@ -1174,6 +1186,9 @@ class CrateBuilderService:
                             if self._maintenance_ops is not None else None)},
             "settings": self.settings_all(),
             "settings_path": self._settings.path,
+            # When the scheduler next fires, so a page that just loaded shows
+            # the same line the automation.next_run event keeps current.
+            "next_auto_download": self.next_auto_download(),
             "platform": sys.platform,
             "genres": self.genres(),
             "capabilities": {
@@ -1351,13 +1366,20 @@ class CrateBuilderService:
                                           guard=self._require_idle_for_download)}
 
     def watchlist_download_all_new(self):
-        """Download every channel's pending new tracks."""
+        """Download every channel's pending new tracks.
+
+        Re-anchors the auto-download schedule, the monolith's "Download All
+        New stamps the anchor": whoever pressed it — the user, the tray, or
+        the scheduler itself — the next scheduled run is a full interval from
+        this download rather than from the one before it.
+        """
         ids = [row["id"] for row in self._watchlist_rows()
                if int(row.get("pending_new_count") or 0) > 0]
         if not ids:
             raise CBError("No new tracks pending across any channels. Try "
                           "Scan All first.")
         self._require_idle_for_download()
+        self._reanchor_auto_download()
         return {"job_id": self._start_job(WATCHLIST_JOB,
                                           self._watchlist.run_download, ids,
                                           guard=self._require_idle_for_download)}
@@ -2008,6 +2030,12 @@ class CrateBuilderService:
             # or the new limit only takes effect after a restart — the tkinter
             # app's _autosave_log_limit re-caps and trims on the spot.
             debuglog.set_max_bytes(self._dbg, self._log_max_bytes())
+        if key == "auto_dl_interval":
+            # The monolith reschedules from the same write that saves it
+            # (_autosave_automation_settings). Without this the new interval
+            # is stored and displayed but the armed timer keeps the old one
+            # until the app restarts — this whole feature's failure mode.
+            self._auto_dl_wake.set()
         return {"key": key, "value": get(self._settings)}
 
     def _refuse_frozen_setting(self, key):
@@ -2919,6 +2947,204 @@ class CrateBuilderService:
                       "keep their links; scan once you're back online.")
         return False
 
+    # ── the auto-download scheduler ───────────────────────────────────────────
+    # The web port of the monolith's automation section: _reschedule_auto_
+    # download, _auto_download_tick and _auto_download_after_scan. Its three
+    # decisions are already pure logic in cratebuilder/util.py — when the next
+    # run is due, what a settle poll should do, and how the next run reads —
+    # and none of them had a caller here, so nothing has auto-downloaded on a
+    # schedule since v2.0 shipped.
+    #
+    # Tk's after() chain becomes one daemon thread waiting on an Event: the
+    # wait is how the timer is armed, and setting the event is how a changed
+    # interval or a manual Download All New makes it recompute without being
+    # torn down.
+
+    def start_auto_download_timer(self):
+        """Arm the periodic scan-all-then-download-new run.
+
+        Explicit rather than a constructor side effect, and LOCAL only, for
+        the reasons `start_update_timer` and `start_startup_scan` are: a
+        service built for one snapshot or one test must not spawn a thread,
+        and a headless remote mount must never make the host start downloading
+        on its own. Returns the thread, or None when nothing was armed.
+
+        The schedule counts from THIS launch, never from the stored
+        `watchlist_last_download`, which is the monolith's rule and the reason
+        it holds: an app opened after a week away would otherwise be instantly
+        overdue and start downloading while the user was still looking at it.
+        """
+        if self._default_transport != LOCAL:
+            return None
+        with self._lock:
+            if self._closed or self._auto_dl_thread is not None:
+                return None
+            self._auto_dl_anchor = int(time.time())
+            thread = threading.Thread(target=self._auto_download_loop,
+                                      daemon=True,
+                                      name="cratebuilder-auto-download")
+            self._auto_dl_thread = thread
+        thread.start()
+        return thread
+
+    def _reanchor_auto_download(self):
+        """Count the interval from now, and wake the loop to re-arm.
+
+        The monolith's "Download All New stamps the anchor": a download that
+        just happened — scheduled or pressed by hand — puts the next scheduled
+        one a full interval away rather than minutes later. Safe to call when
+        no scheduler is running; it is then only a stored number.
+        """
+        with self._lock:
+            self._auto_dl_anchor = int(time.time())
+        self._auto_dl_wake.set()
+
+    def _auto_download_interval_seconds(self):
+        """The dropdown's interval in seconds, or None for 'Off'/unreadable."""
+        try:
+            return util.interval_label_to_seconds(
+                self._settings.get("auto_download_interval"))
+        except Exception:
+            return None
+
+    def _publish_next_auto_download(self, ts):
+        """Announce when the next scheduled run is due, once per change.
+
+        The label is built here rather than in the frontend so the wording is
+        the monolith's own next_run_label and there is one implementation of
+        it. None means the schedule is off.
+        """
+        with self._lock:
+            if self._auto_dl_announced and ts == self._auto_dl_next_ts:
+                return
+            self._auto_dl_next_ts = ts
+            self._auto_dl_announced = True
+        self.emit("automation.next_run", self.next_auto_download())
+
+    def next_auto_download(self):
+        """The next scheduled run as {ts, text} — the snapshot's copy of what
+        `automation.next_run` pushes."""
+        ts = self._auto_dl_next_ts
+        return {"ts": ts, "text": util.next_run_label(ts)}
+
+    def _auto_download_loop(self):
+        """Wait out the interval, run once, repeat. Never raises.
+
+        The wait IS the timer, so waking early is how a re-arm happens: a
+        changed interval, a manual Download All New re-anchoring, or close().
+        The event is cleared before the interval and anchor are read, so a set
+        landing in the gap is answered by reading the value it was announcing
+        rather than being missed.
+        """
+        try:
+            while not self._is_closed():
+                self._auto_dl_wake.clear()
+                due = util.next_run_delay_ms(
+                    self._auto_download_interval_seconds(),
+                    self._auto_dl_anchor, time.time())
+                if due is None:                     # 'Off' — no timer at all
+                    self._publish_next_auto_download(None)
+                    self._auto_dl_wake.wait()
+                    continue
+                delay_ms, next_ts = due
+                self._publish_next_auto_download(next_ts)
+                if self._auto_dl_wake.wait(delay_ms / 1000.0):
+                    continue                        # re-armed; decide again
+                self._auto_download_run()
+        except Exception:
+            pass
+
+    def _auto_download_run(self):
+        """One scheduled run: scan every channel, wait for it, download what
+        it found. Advances the anchor on every path that reaches the end, so a
+        run that found nothing still waits a full interval before trying again.
+        """
+        if not self._wait_until_idle():
+            return
+        if self._is_closed():
+            return
+        self.log_line("⏰ Scheduled auto-download starting…")
+        try:
+            self.watchlist_scan_all()
+        except CBError:
+            # Nothing to scan, or the slot went in the gap. Either way this
+            # cycle is spent; the next is a full interval out.
+            self._reanchor_auto_download()
+            return
+        if not self._wait_for_scan_to_settle():
+            return
+        rows = self._watchlist_rows()
+        pending = [r for r in rows if int(r.get("pending_new_count") or 0) > 0]
+        total_new = sum(int(r.get("pending_new_count") or 0) for r in pending)
+        if not total_new:
+            self.log_line("⏰ Auto-download complete — no new tracks.")
+            self._reanchor_auto_download()
+            return
+        try:
+            self.watchlist_download_all_new()
+        except CBError:
+            self._reanchor_auto_download()
+            return
+        # Again, though the download just did it on its way in: this cycle is
+        # over either way, and a run whose end depends on a collaborator to
+        # close its own schedule fires twice the moment that stops being true.
+        self._reanchor_auto_download()
+        self.emit("notification", {
+            "level": "info",
+            "title": "Watch List",
+            "body": f"{total_new} new track"
+                    f"{'' if total_new == 1 else 's'} downloading across "
+                    f"{len(pending)} channel"
+                    f"{'' if len(pending) == 1 else 's'}",
+            "at": datetime.now().isoformat(timespec="seconds"),
+            "job": WATCHLIST_JOB,
+        })
+
+    def _wait_until_idle(self):
+        """Hold until nothing else is running. False means give up on this
+        cycle — closed, or re-armed while waiting.
+
+        A scheduled run never interrupts the user's own work: the monolith
+        re-arms its tick every BUSY_RETRY_MS while a manual scan or download
+        is in flight, and this is the same wait without the timer chain. Both
+        job categories count — a batch owns the same yt-dlp session a scan
+        would need.
+        """
+        while True:
+            if self._is_closed():
+                return False
+            if not (self._job_running("batch")
+                    or self._job_running(WATCHLIST_JOB)):
+                return True
+            if self._auto_dl_wake.wait(util.BUSY_RETRY_MS / 1000.0):
+                return False
+
+    def _wait_for_scan_to_settle(self):
+        """Poll until the scan releases the Watch List slot. False means give
+        up on this cycle.
+
+        `scan_settle_verdict` owns the rule, including the cap that stops a
+        wedged scan being polled forever — and, when that cap is reached, the
+        anchor is still advanced so the next cycle is a full interval away
+        rather than an immediate retry of the same stuck scan.
+        """
+        polls = 0
+        while True:
+            verdict = util.scan_settle_verdict(
+                1 if self._job_running(WATCHLIST_JOB) else 0, polls)
+            if verdict == "proceed":
+                return True
+            if verdict == "give_up":
+                self.log_line("⏰ Auto-download gave up waiting for scans "
+                              "to finish.")
+                self._reanchor_auto_download()
+                return False
+            polls += 1
+            if self._auto_dl_wake.wait(util.SCAN_SETTLE_POLL_MS / 1000.0):
+                return False
+            if self._is_closed():
+                return False
+
     def _is_closed(self):
         """The shutdown flag, read under the lock `close()` sets it under."""
         with self._lock:
@@ -3004,3 +3230,6 @@ class CrateBuilderService:
             if self._update_timer is not None:
                 self._update_timer.cancel()
                 self._update_timer = None
+        # Its thread is parked on this; setting it is what lets the wait end
+        # and the loop see `_closed` rather than sleeping out a whole interval.
+        self._auto_dl_wake.set()

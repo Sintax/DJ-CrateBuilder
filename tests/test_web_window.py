@@ -732,6 +732,7 @@ class MainService(RecordingService):
         super().__init__(**kwargs)
         self.timers = 0
         self.startup_scans = 0
+        self.auto_dl_timers = 0
         self.on_update_restart = None
         self.placement = placement
         self.saved_placements = []
@@ -743,6 +744,9 @@ class MainService(RecordingService):
 
     def start_startup_scan(self):
         self.startup_scans += 1
+
+    def start_auto_download_timer(self):
+        self.auto_dl_timers += 1
 
     def window_placement(self):
         return self.placement
@@ -835,6 +839,21 @@ def test_main_arms_the_startup_scan_only_once_the_loop_is_up(monkeypatch):
     started()                                   # what webview.start() calls
 
     assert service.startup_scans == 1
+    stop_the_wired_tray(window)
+    stop_the_wired_placement(window)
+
+
+def test_main_arms_the_auto_download_scheduler_once_the_loop_is_up(monkeypatch):
+    """Armed like the startup scan and for the same reason — and it must be
+    armed at all: it was the one piece of automation with no caller, so
+    nothing had auto-downloaded on a schedule since v2.0 shipped."""
+    service, window, _, started, _ = run_main(monkeypatch)
+
+    assert service.auto_dl_timers == 0
+
+    started()
+
+    assert service.auto_dl_timers == 1
     stop_the_wired_tray(window)
     stop_the_wired_placement(window)
 
