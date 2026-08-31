@@ -182,6 +182,9 @@ global.document = { createElement: () => ({
   className: '', id: '', textContent: '', remove() {} }) };
 %(setDisabled)s
 %(consts)s
+/* The toolbar also renders the next scheduled auto-download, whose text the
+   host builds with the monolith's own next_run_label. */
+const state = { next_auto_download: { ts: 1, text: 'NEXT-RUN' } };
 const wl = { running: false, cards: [], current: null, overall: null };
 %(helpers)s
 %(gate)s
@@ -220,7 +223,8 @@ blockedReason = '';
 wl.cards = [{ id: 1, new_count: 0, unresolved: false }];
 renderWatchlistToolbar();
 console.log(JSON.stringify({ idle, batching, scanning, nothingPending, readOnly,
-                             label: $('#wl-dl-all').textContent }));
+                             label: $('#wl-dl-all').textContent,
+                             nextDl: $('#wl-next-dl').textContent }));
 """
 
 
@@ -281,6 +285,14 @@ def test_download_all_new_carries_the_live_count_and_closes_at_zero(app_js, tmp_
     assert r["idle"]["wl-links"]["off"] is False
     assert r["nothingPending"]["wl-links"]["off"] is True
     assert r["label"] == "⬇ Download All New (0)"
+
+
+def test_the_next_scheduled_run_is_shown_beside_the_toolbar(app_js, tmp_path):
+    """The monolith's next-run line, and the only way to see the scheduler is
+    armed at all. Rendered from the host's string rather than re-derived here,
+    so the wording has one home."""
+    r = _run_node(tmp_path, "wltoolbar.mjs", _toolbar_source(app_js))
+    assert r["nextDl"] == "NEXT-RUN"
 
 
 def test_a_read_only_remote_session_closes_every_write_control(app_js, tmp_path):

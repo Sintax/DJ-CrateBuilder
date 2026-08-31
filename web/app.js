@@ -1975,6 +1975,10 @@
       'wl.cancel_all');
     $('#wl-cancel').className = 'cb-btn ' + (wl.running ? 'cb-btn--warn' : 'cb-btn--quiet');
     $('#wl-dl-all').textContent = `⬇ Download All New (${num(pending)})`;
+    /* The host builds this string with the monolith's own next_run_label, so
+       the wording lives in one place rather than being re-derived here. */
+    const next = $('#wl-next-dl');
+    if (next) next.textContent = (state.next_auto_download || {}).text || '';
     $('#wl-summary').innerHTML =
       `<span class="cb-mono">${num(wl.cards.length)}</span> channels · ` +
       `<span class="cb-mono">${num(pending)}</span> new`;
@@ -5859,6 +5863,14 @@
       // attention treatment rather than reading as routine.
       toast(`${n.title} — ${n.body}`,
         n.level === 'error' || n.level === 'warn');
+    });
+    /* The scheduler re-armed: a new interval, a Download All New that reset
+       the countdown, or the run it just finished. Only the one line moves —
+       a snapshot resync here would repaint every card for a clock tick. */
+    cbApi.on('automation.next_run', (p) => {
+      if (!state) return;
+      state.next_auto_download = p || {};
+      renderWatchlistToolbar();
     });
     cbApi.on('state.patch', (p) => {
       if (!state || !p || !p.counts) return;

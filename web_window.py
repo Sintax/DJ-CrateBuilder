@@ -951,6 +951,10 @@ def main():
         # spent while WebView2 was still starting; the monolith measures its
         # after(2200, …) from a UI that is already built.
         service.start_startup_scan()
+        # Explicit for the same reason, and armed here rather than beside
+        # create_window so its first "next run" reaches a subscribed bridge.
+        # The schedule counts from now, so nothing downloads at launch.
+        service.start_auto_download_timer()
         if start_minimized:
             tray.start_minimized()
 
