@@ -5265,6 +5265,29 @@
     return warn;
   }
 
+  /* The host refuses update.apply while a Watch List run holds its job slot
+     (an update swaps every file under the app and restarts it). While a build
+     is waiting behind one, this is the remedy offered next to the refusal:
+     the same cancel the Watch List toolbar's own button sends. */
+  function aboutStopWatchlistButton() {
+    const b = document.createElement('button');
+    b.className = 'cb-btn cb-btn--warn cb-btn--sm';
+    b.textContent = '■ Stop Watch List activity';
+    b.setAttribute('data-tt-text',
+      'A Watch List scan or download is running, and the update cannot '
+      + 'install until it stops. This cancels the run — the channel in '
+      + 'flight finishes what it is on first.');
+    b.addEventListener('click', async () => {
+      setDisabled(b, true, { reason: WL_CANCEL_ALL_NOTE });
+      b.textContent = '■ Stopping…';
+      try {
+        await call('watchlist.cancel_all');
+        toast(WL_CANCEL_ALL_NOTE);
+      } catch (_) { /* call() already toasted the reason */ }
+    });
+    return b;
+  }
+
   function aboutConfirmUpdate() {
     const result = aboutUpdate.result;
     if (!result || !result.available) return;
@@ -5277,6 +5300,21 @@
           + `${result.current_build}.`));
         if (result.notes) body.appendChild(modalNote(result.notes));
         body.appendChild(aboutAvWarningNode());
+        /* Captured when the modal opens — the one moment that matters: the
+           user is about to press install, and the host would refuse it. */
+        if (wl.running) {
+          const warn = document.createElement('div');
+          warn.className = 'cb-warnbox';
+          warn.textContent =
+            'A Watch List scan or download is running. The update cannot '
+            + 'install until it finishes or is stopped.';
+          body.appendChild(warn);
+          const row = document.createElement('div');
+          row.className = 'cb-row';
+          row.style.cssText = 'margin-top:8px;justify-content:flex-end';
+          row.appendChild(aboutStopWatchlistButton());
+          body.appendChild(row);
+        }
       },
       foot(foot) {
         const go = modalButton('Download and install', 'cb-btn--warn',
@@ -5459,6 +5497,14 @@
       }
     }
     upRow.append(checkBtn, updateBtn);
+    /* The remedy beside the refusal: while a known-available build is stuck
+       behind a live Watch List run, the card offers the stop, not just the
+       reason. renderAbout() is re-run from refresh(), which every
+       job.started/job.finished resyncs through, so the button appears and
+       leaves with the run itself. */
+    if (isLocal && result && result.available && wl.running) {
+      upRow.appendChild(aboutStopWatchlistButton());
+    }
 
     const every = document.createElement('select');
     every.className = 'cb-sel';
@@ -5703,6 +5749,11 @@
     renderDownloads();
     renderWatchlist();
     renderSettings();
+    // About re-renders too: its Updates card offers Stop Watch List activity
+    // while an available build is blocked behind a run, and job.started /
+    // job.finished both resync through here — without this the button would
+    // outlive the run it exists to stop.
+    renderAbout();
     bindTips(document);
   }
 

@@ -641,6 +641,7 @@ function renderGenres() {}
 function renderDownloads() {}
 function renderWatchlist() {}
 function renderSettings() {}
+function renderAbout() {}
 function bindTips() {}
 const document = {};
 %(refresh)s
