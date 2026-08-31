@@ -1,10 +1,10 @@
 {
   "version": "2.0",
-  "build": 64,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.64.zip",
-  "sha256": "756b6a5c8cf1c1d1458227920aab4d64c5b3a59fb20f28410f2726cc3ae8d16f",
-  "notes": "*** IMPORTANT -- STOP ALL WATCH LIST SCANS BEFORE YOU UPDATE ***\nIF A SCAN IS STILL RUNNING, THIS UPDATE WILL SILENTLY ROLL BACK AND\nOFFER ITSELF AGAIN ON THE NEXT CHECK -- AN ENDLESS UPDATE LOOP.\nBEFORE YOU CLICK YES: OPEN THE WATCH LIST TAB, PRESS CANCEL, AND WAIT\nUNTIL NO CHANNEL CARD STILL SAYS \"SCANNING\".\n\nFixed the tray icon not reopening the window after minimizing to the tray.",
-  "base": 62,
+  "build": 65,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.65.zip",
+  "sha256": "a8b7ead1f042411423c60c5d53fe789932418416cc0022eeeab80d7231d25a6d",
+  "notes": "*** IMPORTANT -- STOP ALL WATCH LIST SCANS BEFORE YOU UPDATE ***\nIF A SCAN IS STILL RUNNING, THIS UPDATE WILL SILENTLY ROLL BACK AND\nOFFER ITSELF AGAIN ON THE NEXT CHECK -- AN ENDLESS UPDATE LOOP.\nBEFORE YOU CLICK YES: OPEN THE WATCH LIST TAB, PRESS CANCEL, AND WAIT\nUNTIL NO CHANNEL CARD STILL SAYS \"SCANNING\".\n\nDownloads tab fixes + scheduled auto-downloads",
+  "base": 65,
   "ffmpeg": {
     "version": "9.0.1-essentials_build-www.gyan.dev+72a489ec",
     "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/ffmpeg-9.0.1-essentials_build-www.gyan.dev_72a489ec.zip",
