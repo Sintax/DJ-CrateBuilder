@@ -80,6 +80,84 @@ def test_the_run_controls_never_leave_the_action_row(app_js, index_html):
         assert control in row
 
 
+_CANCEL_HARNESS = """
+const DL_MARK = {}, WL_QROW_MARK = {};
+const WL_NO_PAUSE_REASON = 'A Watch List run has no pause';
+const dl = { running: false, current: null, overall: null };
+const wl = { running: false, rows: [], current: null, overall: null };
+const els = {
+  'dl-cancel': { id: 'dl-cancel', className: 'cb-btn cb-btn--quiet' },
+};
+function $(sel) {
+  const id = sel.slice(1);
+  if (!els[id]) els[id] = { id, className: '' };
+  const el = els[id];
+  if (el.style === undefined) el.style = {};
+  if (el.textContent === undefined) el.textContent = '';
+  return el;
+}
+function updatePauseLabel() {}
+function renderWatchlistToolbar() {}
+function gateWrite(el, reason) { el.disabled = !!reason; }
+%(view)s
+%(header)s
+function snap() {
+  return { cls: $('#dl-cancel').className, off: !!$('#dl-cancel').disabled,
+           tag: $('#dl-state').textContent };
+}
+renderDownloadsHeader();
+const idle = snap();
+dl.running = true;
+renderDownloadsHeader();
+const batch = snap();
+dl.running = false;
+// A Watch List download borrowing the panel: the rows are what dlView tests,
+// not wl.running — a Watch List SCAN has no queue to show here.
+wl.running = true;
+wl.rows = [{ id: 1, index: 0, state: 'active', title: 'Channel 1' }];
+renderDownloadsHeader();
+const borrowed = snap();
+// A scan, which claims the same job category but shows nothing here.
+wl.rows = [];
+renderDownloadsHeader();
+const scanning = snap();
+console.log(JSON.stringify({ idle, batch, borrowed, scanning }));
+"""
+
+
+def test_the_cancel_button_goes_red_while_a_run_is_going(app_js, tmp_path):
+    """The one control that stops what is happening has to read like it, and
+    read the same as the Watch List's Cancel, which already does."""
+    r = _run_node(tmp_path, "dlcancel.mjs", _CANCEL_HARNESS % {
+        "view": _slice(app_js, "  function dlView()",
+                       "  function renderDownloadsHeader()"),
+        "header": _slice(app_js, "  function renderDownloadsHeader()",
+                         "  function renderCurrent()"),
+    })
+
+    assert r["idle"]["cls"] == "cb-btn cb-btn--quiet"
+    assert r["idle"]["off"] is True
+
+    assert r["batch"]["cls"] == "cb-btn cb-btn--warn"
+    assert r["batch"]["off"] is False
+
+    # A Watch List download drives this panel too, and this Cancel stops it.
+    assert r["borrowed"]["cls"] == "cb-btn cb-btn--warn"
+    assert r["borrowed"]["off"] is False
+
+    # A scan owns the job category but has nothing here to cancel.
+    assert r["scanning"]["cls"] == "cb-btn cb-btn--quiet"
+    assert r["scanning"]["off"] is True
+
+
+def test_both_cancel_buttons_use_the_same_two_classes(app_js):
+    """Divergence here is exactly the kind that goes unnoticed — one screen's
+    Cancel red, the other's grey, for the same running run."""
+    rule = "'cb-btn ' + (%s ? 'cb-btn--warn' : 'cb-btn--quiet')"
+    assert rule % "v.running" in app_js
+    assert rule % "wl.running" in app_js
+
+
 def test_the_queue_log_is_boxed_rather_than_floored(app_css):
     """min-height let the card grow one line per queued track the moment a
     run started. It has to be a fixed height that scrolls."""

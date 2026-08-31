@@ -1083,6 +1083,13 @@
     updatePauseLabel();
     gateWrite($('#dl-cancel'), v.running ? '' : 'No download is running.',
       'main.cancel_batch');
+    /* The same red the Watch List's Cancel takes while its own run is going,
+       keyed off the view rather than dl.running so a Watch List download
+       borrowing this panel colours it too — it is the run this Cancel would
+       stop. The control that halts what is happening reads the same on both
+       screens. */
+    $('#dl-cancel').className =
+      'cb-btn ' + (v.running ? 'cb-btn--warn' : 'cb-btn--quiet');
     gateWrite($('#dl-pause'), watching ? WL_NO_PAUSE_REASON
       : (dl.running ? '' : 'No download is running.'),
       'main.pause_batch');
