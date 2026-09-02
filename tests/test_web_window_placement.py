@@ -81,13 +81,14 @@ class FakeScreen:
         self.frame = frame
 
 
-def test_screen_rects_divides_each_monitor_by_its_own_scale(monkeypatch):
+def test_screen_rects_takes_pywebviews_screens_in_the_units_they_come_in(monkeypatch):
     """The real reading off this machine: a 125% primary beside a 100%
-    secondary. pywebview reports both screens in physical pixels but places
-    windows in device-independent ones, so without the division a window
-    filling the primary (1638 wide to pywebview) reads as far short of a
-    2048-wide screen — and a window on the secondary, whose x starts at 2560,
-    reads as off the right-hand edge of everything."""
+    secondary. pywebview reports screens and windows in the SAME logical
+    units — a window maximized onto that primary reads 2062 wide, the
+    2048-wide screen plus its borders — so the scale it also reports is not a
+    conversion to apply. Dividing by it once had the app believing the work
+    area was 1638x883 and dragging every remembered window into the top-left
+    corner on launch."""
     monkeypatch.setattr(web_window.webview, "screens", [
         FakeScreen(0, 0, 2048, 1152, 1.25, FakeFrame(0, 0, 2048, 1104)),
         FakeScreen(2560, 359, 1920, 1080, 1.0,
@@ -95,8 +96,8 @@ def test_screen_rects_divides_each_monitor_by_its_own_scale(monkeypatch):
     ])
 
     assert web_window.screen_rects() == [
-        (0, 0, 1638, 883),              # 2048/1.25, 1104/1.25
-        (2560, 359, 1920, 1032),        # scale 1.0 — unchanged
+        (0, 0, 2048, 1104),
+        (2560, 359, 1920, 1032),
     ]
 
 
@@ -168,6 +169,20 @@ def test_a_remembered_window_is_reopened_where_it_was(monkeypatch):
 
     assert web_window.window_placement_kwargs(service) == {
         "width": 1400, "height": 900, "x": 120, "y": 60}
+
+
+def test_a_window_remembered_on_a_scaled_display_reopens_where_it_was(monkeypatch):
+    """The placement that was being lost: a window at 1408x882+411+154 on the
+    125% primary, well inside its 2048x1104 work area, reopened at +230+1
+    every launch because the screen was being read as 1638x883. Through the
+    real screen list, unconverted, it comes back where it was left."""
+    monkeypatch.setattr(web_window.webview, "screens", [
+        FakeScreen(0, 0, 2048, 1152, 1.25, FakeFrame(0, 0, 2048, 1104)),
+    ])
+    service = StubService(("1408x882+411+154", False))
+
+    assert web_window.window_placement_kwargs(service) == {
+        "width": 1408, "height": 882, "x": 411, "y": 154}
 
 
 def test_a_window_saved_on_a_monitor_that_is_gone_comes_home(monkeypatch):
@@ -282,20 +297,20 @@ def test_where_the_window_actually_opened_is_written_back():
     corrects a placement that no longer fits the monitors attached now, and
     pywebview converts a coordinate to physical pixels and back with int(),
     which drops a pixel on a scaled display. Measured on a 125% monitor:
-    asking for 1400x900+209+140 opened 1400x882+208+0.
+    asking for 1408x882+411+154 opened 1408x881+410+153.
 
     Left unwritten, the stored value stays one the window never had and every
     later launch re-derives the same correction from it. Writing it back is
-    what lets the pair converge — verified over seven real launches, settling
-    after three and then reopening exactly."""
-    keeper, _, service = make_placement(placement=("1400x900+209+140", False),
-                                        width=1400, height=882, x=208, y=0)
+    what lets the pair converge on the coordinates that survive the round
+    trip exactly — at most a few pixels, over at most a few launches."""
+    keeper, _, service = make_placement(placement=("1408x882+411+154", False),
+                                        width=1408, height=881, x=410, y=153)
     try:
         assert keeper.flush() is True
     finally:
         keeper.stop()
 
-    assert service.saved[-1] == ("1400x882+208+0", False)
+    assert service.saved[-1] == ("1408x881+410+153", False)
 
 
 def test_a_first_run_remembers_where_it_opened():

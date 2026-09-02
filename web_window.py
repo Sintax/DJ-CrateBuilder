@@ -37,9 +37,9 @@ REMOTE_PORT = 8770
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 WINDOW_TITLE = "DJ-CrateBuilder"
-# Sized in device pixels, which are not CSS pixels: on a 125%-scaled display a
-# 1240px window is only ~995 CSS px of viewport, below the 1100px the layouts
-# are designed against. Ask for enough that a scaled display still clears it.
+# Sized in the logical pixels pywebview speaks, which are also the page's CSS
+# pixels: on a 125% display a 1560-wide window is 1950 device pixels and still
+# 1560 CSS px of viewport, clear of the 1100px the layouts are designed against.
 WINDOW_SIZE = (1560, 980)
 MIN_SIZE = (1280, 820)
 
@@ -704,15 +704,16 @@ def screen_rects():
     in the units pywebview's own window geometry speaks.
 
     The web port of DJ-CrateBuilder_v2.0.py's screen_work_areas(), with
-    pywebview's screen list standing in for EnumDisplayMonitors, plus one
-    conversion the monolith never needed. pywebview reports a SCREEN in
-    physical pixels but a WINDOW in device-independent ones: this machine's
-    125% primary measures 2048x1152 as a screen, while a window filling it
-    reports a width of 1638. Comparing a remembered window against an
-    unconverted screen would read every window on a scaled display as hanging
-    off the right-hand edge, and "fit" it by dragging it back each launch. So
-    each screen is divided by its OWN scale — which is also what keeps a
-    second monitor running at a different scale in the right place.
+    pywebview's screen list standing in for EnumDisplayMonitors. The list is
+    used as it comes: pywebview reports screens and windows in the SAME
+    logical units, and these rectangles are only ever compared against a
+    window's own reported x/y/width/height. Measured on this machine's 125%
+    primary: the screen reads 2048x1152 with a 1104-tall work area, and a
+    window maximized onto it reads 2062 wide — the screen plus its borders.
+    Dividing each screen by its scale on top of that, as this once did, had
+    the app believing the work area was 1638x883: a remembered
+    1408x882+411+154 was "fitted" to +230+1 on every launch, and no window
+    could be kept taller than 883 or anywhere but the top-left of the screen.
 
     Work areas rather than full bounds, for the monolith's reason: a window
     placed under the taskbar has a title bar the user cannot grab. Primary
@@ -728,7 +729,6 @@ def screen_rects():
     found = []
     for screen in screens:
         try:
-            scale = float(getattr(screen, "scale", 1) or 1)
             frame = getattr(screen, "frame", None)
             # .frame is the work area, but only the platforms that have one
             # populate it with a rectangle — fall back to the full bounds.
@@ -736,7 +736,7 @@ def screen_rects():
                 rect = (frame.X, frame.Y, frame.Width, frame.Height)
             except AttributeError:
                 rect = (screen.x, screen.y, screen.width, screen.height)
-            x, y, width, height = (int(value / scale) for value in rect)
+            x, y, width, height = (int(value) for value in rect)
             if width <= 0 or height <= 0:
                 continue
             found.append(((screen.x, screen.y) != (0, 0),
