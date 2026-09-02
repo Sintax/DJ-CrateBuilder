@@ -317,7 +317,7 @@ sudo apt remove dj-cratebuilder       # keeps config
 sudo apt purge  dj-cratebuilder       # also removes package config
 ```
 
-`prerm` deletes the venv it created. Config (`~/.dj_cratebuilder_config.json`)
+`prerm` deletes the venv it created. Config (`~/.cratebuilder/`)
 and downloaded MP3s in `~/Music/DJ-CrateBuilder/` are left alone either way.
 
 ---
@@ -351,7 +351,7 @@ leaves downloaded MP3s alone.
 
 | File | Path |
 |------|------|
-| Config | `~/.dj_cratebuilder_config.json` |
+| Config | `~/.cratebuilder/config.json` |
 | Activity log | `<install dir>/activity.log` |
 | Debug log | `<install dir>/debug.log` *(new in v1.3)* |
 | Downloads | `~/Music/DJ-CrateBuilder/` |

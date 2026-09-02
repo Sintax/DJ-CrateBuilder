@@ -392,7 +392,7 @@ See [docs/Packaging_Guide.md](docs/Packaging_Guide.md) for detailed instructions
 
 | File | Path |
 |------|------|
-| Config | `~/.dj_cratebuilder_config.json` |
+| Config | `~/.cratebuilder/config.json` *(older copies are shelved under `~/.cratebuilder/legacy/`)* |
 | Downloads database | `<install dir>/cratebuilder.db` |
 | Activity log | `<install dir>/activity.log` |
 | Debug log | `<install dir>/debug.log` |

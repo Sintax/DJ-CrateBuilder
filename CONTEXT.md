@@ -101,7 +101,9 @@ design conversations use these words exactly.
   predicate, polling the predicate in short slices so either source
   interrupts a backoff.
 - **Settings** — the single in-memory owner of the user config
-  (`~/.dj_cratebuilder_config.json`). One declared schema (key → default →
+  (`~/.cratebuilder/config.json`; the names it went by in the home directory
+  itself are tidied into `~/.cratebuilder/legacy/` on launch). One declared
+  schema (key → default →
   legacy migration) behind a generic `get`/`set`; every write persists the
   whole store atomically, so no writer can drop another writer's keys.
   Unknown keys found in the file are preserved on write but rejected by

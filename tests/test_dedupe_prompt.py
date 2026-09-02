@@ -94,8 +94,8 @@ def test_the_setting_is_on_by_default_and_persists(app, cb_mod, tmp_path):
     assert app._settings.get("dupe_check_enabled") is True
     assert app._dupe_check_enabled.get() is True
     app._dupe_check_enabled.set(False)
-    cfg = json.loads(
-        (tmp_path / ".dj_cratebuilder_config.json").read_text(encoding="utf-8"))
+    cfg = json.loads((tmp_path / ".cratebuilder" / "config.json")
+                     .read_text(encoding="utf-8"))
     assert cfg["dupe_check_enabled"] is False
 
 

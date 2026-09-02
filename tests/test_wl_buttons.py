@@ -61,7 +61,7 @@ def test_cover_art_toggle_persists_both_keys(tmp_path, app):
     app.update()
     app._cover_art_enabled.set(False)
     app.update()
-    cfg = json.loads((tmp_path / ".dj_cratebuilder_config.json")
+    cfg = json.loads((tmp_path / ".cratebuilder" / "config.json")
                      .read_text(encoding="utf-8"))
     assert cfg["cover_art_enabled"] is False
     assert cfg["cover_art_mode"] != "off"
