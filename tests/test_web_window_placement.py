@@ -10,6 +10,8 @@ service's pair of accessors, the screen-unit conversion pywebview forces on
 the way in, and the state machine deciding which placements are worth
 remembering at all.
 """
+import time
+
 import pytest
 
 from cratebuilder.service import CrateBuilderService
@@ -244,12 +246,22 @@ class FakeWindow:
             setattr(self.events, name, FakeEvent())
 
 
+def keep(window, service, **overrides):
+    """A WindowPlacement whose timers never fire within a test: the flush
+    interval and the settle delay are both an hour out, so every write is
+    driven by flush() and nothing here is testing the clock. The screens and
+    the minimum size are the harness's own — the fakes' frames sit on
+    ONE_SCREEN, and 600x400 is under every size a test picks."""
+    opts = dict(interval=3600, settle_delay=3600, min_size=(600, 400),
+                screens=lambda: ONE_SCREEN)
+    opts.update(overrides)
+    return web_window.WindowPlacement(window, service, **opts)
+
+
 def make_placement(placement=("", False), **window):
     service = StubService(placement)
     window = FakeWindow(**window)
-    # interval far past any test's life: the timer must never be what makes a
-    # write happen here, or these would be testing the clock.
-    keeper = web_window.WindowPlacement(window, service, interval=3600)
+    keeper = keep(window, service)
     keeper.start()
     return keeper, window, service
 
@@ -380,24 +392,127 @@ def test_a_minimized_window_reports_nothing_worth_keeping():
     assert service.saved == [("1000x700+60+45", False)]
 
 
-def test_the_flag_survives_a_session_that_never_touched_the_window():
-    """Opened maximized and closed maximized: the next launch must still
-    open maximized, even though nothing moved."""
-    keeper, _, service = make_placement(placement=("1000x700+60+45", True))
+def test_a_window_opened_maximized_keeps_the_size_it_had_before():
+    """Opened maximized, the live frame is the screen's — the one size this
+    must never store. The remembered geometry stays and so does the flag,
+    with nothing written for a session that never touched the window; the
+    next launch still opens maximized, over the size the user chose."""
+    keeper, _, service = make_placement(placement=("1000x700+60+45", True),
+                                        width=1927, height=1054, x=-7, y=-7)
     try:
+        assert keeper.flush() is False
+        keeper.on_moved(-7, -7)
+        keeper.on_resized(1927, 1054)
+        assert keeper.flush() is False
+
+        keeper.on_restored()
         keeper.on_resized(900, 600)
         keeper.on_moved(15, 25)
         keeper.flush()
     finally:
         keeper.stop()
 
-    assert service.saved[-1] == ("900x600+15+25", True)
+    assert service.saved == [("900x600+15+25", False)]
+
+
+def test_the_moved_of_a_minimize_arrives_before_the_minimized():
+    """The order pywebview delivers a minimize in, measured on Windows at
+    125%: `moved(-25600, -25600)` on one thread, then `minimized` and
+    `resized(159, 27)` on two more, 3 ms later. Judged as it arrived, the
+    move was recorded while the state still said normal — and the config
+    carried 159x27-25600-25600 as the user's window."""
+    keeper, _, service = make_placement(placement=("900x700+300+200", False),
+                                        width=900, height=700, x=300, y=200)
+    try:
+        keeper.on_moved(-25600, -25600)
+        keeper.on_minimized()
+        keeper.on_resized(159, 27)
+        assert keeper.flush() is False
+
+        keeper.on_moved(300, 200)               # the restore, same order
+        keeper.on_restored()
+        keeper.on_resized(900, 700)
+        assert keeper.flush() is False          # back exactly where it was
+    finally:
+        keeper.stop()
+
+    assert service.saved == []
+
+
+def test_the_resized_of_a_maximize_is_not_the_users_choice_either():
+    keeper, _, service = make_placement()
+    try:
+        keeper.on_moved(60, 45)
+        keeper.on_resized(1000, 700)
+        keeper.flush()
+
+        keeper.on_moved(-7, -7)                 # ahead of the state, as delivered
+        keeper.on_maximized()
+        keeper.on_resized(1927, 1054)
+        keeper.flush()
+    finally:
+        keeper.stop()
+
+    assert service.saved[-1] == ("1000x700+60+45", True)
+
+
+def test_a_frame_no_user_could_have_placed_is_refused_whatever_the_state_says():
+    """A flush that lands inside those few milliseconds sees the state the
+    window is leaving. The minimized frame gives itself away regardless:
+    smaller than the window's minimum, and on no screen."""
+    keeper, _, service = make_placement(placement=("900x700+300+200", False),
+                                        width=900, height=700, x=300, y=200)
+    try:
+        keeper.on_moved(-25600, -25600)
+        assert keeper.flush() is False
+        keeper.on_resized(159, 27)
+        assert keeper.flush() is False
+        keeper.on_moved(310, 210)               # a real move still lands
+        assert keeper.flush() is True
+    finally:
+        keeper.stop()
+
+    assert service.saved == [("900x700+310+210", False)]
+
+
+def test_screens_that_cannot_be_read_refuse_nothing_by_position():
+    service = StubService(("900x700+300+200", False))
+    keeper = keep(FakeWindow(900, 700, 300, 200), service, screens=lambda: [])
+    keeper.start()
+    try:
+        keeper.on_moved(-25600, -25600)
+        assert keeper.flush() is True           # nothing to judge it against
+        keeper.on_resized(159, 27)
+        assert keeper.flush() is False          # the minimum still holds
+    finally:
+        keeper.stop()
+
+    assert service.saved == [("900x700-25600-25600", False)]
+
+
+def test_a_move_that_settled_before_the_minimize_is_kept():
+    """The settle timer itself: a move left alone for the delay is recorded
+    while the window is still normal, so the minimize that follows cannot
+    take it back."""
+    service = StubService(("900x700+300+200", False))
+    keeper = keep(FakeWindow(900, 700, 300, 200), service, settle_delay=0.05)
+    keeper.start()
+    try:
+        keeper.on_moved(320, 220)
+        time.sleep(0.3)
+        keeper.on_minimized()
+        keeper.on_moved(-25600, -25600)
+        assert keeper.flush() is True
+    finally:
+        keeper.stop()
+
+    assert service.saved == [("900x700+320+220", False)]
 
 
 def test_a_failed_write_is_retried_rather_than_dropped():
     service = StubService()
     window = FakeWindow()
-    keeper = web_window.WindowPlacement(window, service, interval=3600)
+    keeper = keep(window, service)
     keeper.start()
     failed = []
 
@@ -450,7 +565,7 @@ def test_a_window_that_cannot_be_read_still_subscribes():
 
     service = StubService()
     window = Unreadable()
-    keeper = web_window.WindowPlacement(window, service, interval=3600)
+    keeper = keep(window, service)
     keeper.start()
     try:
         assert window.events.moved.handlers

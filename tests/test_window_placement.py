@@ -23,6 +23,22 @@ LAPTOP_ONLY = [(0, 0, 2048, 1104)]
 MIN = (640, 620)
 
 
+# ── on a screen at all ───────────────────────────────────────────────────────
+@pytest.mark.parametrize("rect,expected", [
+    ((100, 100, 800, 600), True),
+    ((2000, 1000, 800, 600), True),           # a corner is enough
+    ((1000, -900, 800, 600), True),           # the monitor above
+    ((-25600, -25600, 159, 27), False),       # where Windows parks a minimized window
+    ((4500, 0, 800, 600), False),             # right of everything
+])
+def test_window_on_screen(rect, expected):
+    assert util.window_on_screen(rect, THREE_SCREENS) is expected
+
+
+def test_window_on_screen_with_no_screens_is_never_true():
+    assert util.window_on_screen((100, 100, 800, 600), []) is False
+
+
 # ── parsing ──────────────────────────────────────────────────────────────────
 @pytest.mark.parametrize("text,expected", [
     ("850x950+120+80", (850, 950, 120, 80)),

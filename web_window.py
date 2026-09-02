@@ -49,6 +49,14 @@ MIN_SIZE = (1280, 820)
 # lose; closing the window flushes immediately.
 PLACEMENT_FLUSH_INTERVAL = 60.0
 
+# How long a value the window reported is held before it is judged, in
+# seconds. pywebview raises each event on a thread of its own, so the `moved`
+# and `resized` of one minimize arrive around — measured here, 3 ms ahead of —
+# the `minimized` that says what they are. Long after the last of them, the
+# state they belong to is known. A drag re-arms it on every step, so a moving
+# window is judged once it stops.
+PLACEMENT_SETTLE_DELAY = 0.25
+
 # The monolith's _on_window_close confirmation, word for word — the X button
 # and the tray's Close both run it before the app really quits.
 CLOSE_CONFIRM_TITLE = "Close DJ-CrateBuilder"
@@ -787,24 +795,40 @@ class WindowPlacement:
     three-part shape — capture as the window moves, flush on a slow timer,
     flush again on the way out — and the same rule about which states may be
     captured at all. A maximized window reports the size of the screen it
-    fills; a minimized or tray-hidden one reports where it last was. Writing
-    either back would mean the window never reopens at the size the user
-    actually chose, so only the normal state updates the geometry and being
-    maximized is remembered as its own flag.
+    fills; a minimized one reports the frame Windows parks it in, off every
+    screen. Writing either back would mean the window never reopens at the
+    size the user actually chose, so only the normal state updates the
+    geometry and being maximized is remembered as its own flag.
 
     pywebview supplies what tkinter's single <Configure> did not: `moved` and
     `resized` carry the new value, and `maximized`/`restored`/`minimized` say
     which state the window is in — so the state is never asked for, which
     matters because these arrive on threads that are not the UI thread and
-    could not ask.
+    could not ask. What it does not supply is order: every event runs its
+    handlers on a thread of its own, so the `moved` of a minimize reaches
+    this BEFORE the `minimized` that says what it is (measured here: 3 ms
+    before, with the `resized` alongside), and a handler that judged a value
+    by the state as it arrived recorded 159x27-25600-25600 — the minimized
+    frame — as the user's choice. So a value is held rather than recorded,
+    until PLACEMENT_SETTLE_DELAY after the last one arrived, and judged by
+    the state then. And one that describes no window a user could have
+    placed — smaller than the minimum, or on no screen — is refused whatever
+    the state says, for the flush that lands inside those milliseconds.
     """
 
-    def __init__(self, window, service, interval=PLACEMENT_FLUSH_INTERVAL):
+    def __init__(self, window, service, interval=PLACEMENT_FLUSH_INTERVAL,
+                 settle_delay=PLACEMENT_SETTLE_DELAY, min_size=MIN_SIZE,
+                 screens=screen_rects):
         self._window = window
         self._service = service
         self._interval = interval
+        self._settle_delay = settle_delay
+        self._min_size = min_size
+        self._screens = screens
         self._lock = threading.Lock()
         self._timer = None
+        self._settle_timer = None
+        self._pending = {}
         self._stopped = False
         self._state = "normal"
         self._size = None
@@ -833,19 +857,30 @@ class WindowPlacement:
         converges the same way, through the <Configure> its own restore fires.
         The conversion loses at most a pixel or two before it settles: the fixed
         points are the coordinates that survive the round trip exactly.
+
+        A window that opened maximized is seeded from what was remembered
+        instead: its live frame is the screen's, which is exactly the size
+        this must never store.
         """
         remembered = None
         try:
             remembered, _ = self._service.window_placement()
         except Exception:
             pass
-        try:
-            self._size = (int(self._window.width), int(self._window.height))
-            self._pos = (int(self._window.x), int(self._window.y))
-        except Exception:
-            pass
-        if self._geometry() not in (None, remembered):
-            self._dirty = True
+        if self._maximized:
+            parsed = util.parse_window_geometry(remembered)
+            if parsed:
+                width, height, x, y = parsed
+                self._size, self._pos = (width, height), (x, y)
+            self._state = "maximized"
+        else:
+            try:
+                self._size = (int(self._window.width), int(self._window.height))
+                self._pos = (int(self._window.x), int(self._window.y))
+            except Exception:
+                pass
+            if self._geometry() not in (None, remembered):
+                self._dirty = True
         self._window.events.moved += self.on_moved
         self._window.events.resized += self.on_resized
         self._window.events.maximized += self.on_maximized
@@ -855,10 +890,10 @@ class WindowPlacement:
 
     # ── the window telling us where it is ────────────────────────────────────
     def on_moved(self, x, y):
-        self._record(pos=(int(x), int(y)))
+        self._hold(pos=(int(x), int(y)))
 
     def on_resized(self, width, height):
-        self._record(size=(int(width), int(height)))
+        self._hold(size=(int(width), int(height)))
 
     def on_maximized(self):
         with self._lock:
@@ -885,16 +920,62 @@ class WindowPlacement:
                 self._maximized = False
                 self._dirty = True
 
-    def _record(self, pos=None, size=None):
-        """Capture a placement, if this is a state whose geometry means
-        anything. Does no I/O — see PLACEMENT_FLUSH_INTERVAL."""
+    def _hold(self, pos=None, size=None):
+        """Take a value the window reported, to be judged once the state it
+        belongs to has arrived. Does no I/O, and no judging either — see
+        _settle."""
         with self._lock:
-            if self._stopped or self._state != "normal":
+            if self._stopped:
                 return
-            if pos is not None and pos != self._pos:
-                self._pos, self._dirty = pos, True
-            if size is not None and size != self._size:
-                self._size, self._dirty = size, True
+            if pos is not None:
+                self._pending["pos"] = pos
+            if size is not None:
+                self._pending["size"] = size
+            if self._settle_timer is not None:
+                self._settle_timer.cancel()
+            timer = threading.Timer(self._settle_delay, self._settle)
+            timer.daemon = True
+            self._settle_timer = timer
+        timer.start()
+
+    def _settle(self):
+        """Record what was held, if the window is in a state whose geometry
+        means anything and the values describe a window a user could have
+        placed. Run by the settle timer, and by every flush ahead of its
+        write, so a close never waits on the timer. Does no I/O — see
+        PLACEMENT_FLUSH_INTERVAL."""
+        with self._lock:
+            timer, self._settle_timer = self._settle_timer, None
+            if timer is not None:
+                timer.cancel()
+            pending, self._pending = self._pending, {}
+            if self._stopped or self._state != "normal" or not pending:
+                return
+            pos = pending.get("pos", self._pos)
+            size = pending.get("size", self._size)
+            if (pos is not None and size is not None
+                    and not self._placeable(pos, size)):
+                return
+            if "pos" in pending and pending["pos"] != self._pos:
+                self._pos, self._dirty = pending["pos"], True
+            if "size" in pending and pending["size"] != self._size:
+                self._size, self._dirty = pending["size"], True
+
+    def _placeable(self, pos, size):
+        """Whether a frame is one the user could have put there: no smaller
+        than the window's minimum, and sharing some area with a screen —
+        when the screens can be read at all. Windows parks a minimized window
+        at -32000,-32000 in a 160x28 frame; nothing else looks like that."""
+        if size[0] < self._min_size[0] or size[1] < self._min_size[1]:
+            return False
+        try:
+            screens = self._screens() or []
+        except Exception:
+            screens = []
+        if not screens:
+            return True
+        return util.window_on_screen((pos[0], pos[1], size[0], size[1]),
+                                     screens)
 
     # ── writing it out ───────────────────────────────────────────────────────
     def _geometry(self):
@@ -911,6 +992,7 @@ class WindowPlacement:
 
         `_dirty` is cleared only on a successful write, so a failed one is
         retried by the next tick rather than being silently dropped."""
+        self._settle()
         with self._lock:
             if not self._dirty:
                 return False
@@ -939,13 +1021,18 @@ class WindowPlacement:
         """Last flush, then stand down — the window is closing.
 
         Wired ahead of `service.close` on the closing event, which pywebview
-        runs synchronously in the order handlers were added.
+        runs synchronously in the order handlers were added. What the window
+        reported and had not settled yet is judged now, before the door
+        closes on it.
         """
+        self._settle()
         with self._lock:
             self._stopped = True
             timer, self._timer = self._timer, None
-        if timer is not None:
-            timer.cancel()
+            settle, self._settle_timer = self._settle_timer, None
+        for armed in (timer, settle):
+            if armed is not None:
+                armed.cancel()
         self.flush()
 
 
