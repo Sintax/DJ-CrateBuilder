@@ -118,14 +118,20 @@ def test_settings_reject_unknown_key(service):
         service.settings_get("not_a_key")
 
 
-def test_settings_all_skips_keys_the_schema_lacks(service):
+def test_settings_all_serves_every_key_the_settings_screen_draws(service):
+    """A contract key the host cannot serve renders disabled, with a reason
+    that blames the host — a lie whenever the key is one the host could simply
+    have. So every key the screen draws is served: the schema's own keys, the
+    three remote_* toggles backed by cratebuilder_remote.json, and the three
+    notify_* toggles that used to be the only ones left out."""
+    from cratebuilder import ui_strings
     values = service.settings_all()
-    assert "skip_existing" in values
+    drawn = {e["key"] for e in ui_strings.SETTINGS_KEYS
+             if e.get("section") != "internal"
+             and e["type"] not in ("dict", "list")}
+    assert drawn <= set(values), sorted(drawn - set(values))
     assert "log_limit" in values          # bound to log_max_mb, which exists
-    # Contract-only keys with nowhere to live are still skipped; the three
-    # remote_* toggles are not among them any more — they are backed by
-    # cratebuilder_remote.json (see REMOTE_SETTINGS_KEYS).
-    assert "notify_scan_found" not in values
+    assert values["notify_scan_found"] is True
     assert values["remote_enabled"] is False
 
 

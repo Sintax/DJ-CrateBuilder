@@ -289,16 +289,21 @@ class WatchlistOps:
         self._emit("scan.line", {"ts": self._timestamp(), "level": level,
                                  "text": text})
 
-    def _notify(self, title, body, level="info"):
+    def _notify(self, title, body, level="info", kind=None):
         """One run's closing announcement, in the contract's notification
         shape. The pinned scan log already says this line by line; this is what
         reaches a client that is not looking at that screen — the bell panel on
-        3n, and the design's "scan found tracks" / "batch complete" entries."""
-        self._emit("notification", {
+        3n, and the design's "scan found tracks" / "batch complete" entries.
+        *kind* names the announcement for the Settings toggle that can mute
+        it (see CrateBuilderService._notification_muted)."""
+        payload = {
             "level": level, "title": title, "body": body,
             "at": datetime.now().isoformat(timespec="seconds"),
             "job": WATCHLIST_JOB,
-        })
+        }
+        if kind:
+            payload["kind"] = kind
+        self._emit("notification", payload)
 
     def _card(self, cid, **extra):
         row = self._db().get_watchlist_channel(cid)
@@ -432,7 +437,8 @@ class WatchlistOps:
         if self._failed:
             body += f", {_plural(self._failed, 'channel')} failed"
         self._notify("Watch List scan", body,
-                     level="warn" if self._failed else "info")
+                     level="warn" if self._failed else "info",
+                     kind="scan_found")
         return {"new": total_new, "channels": scanned}
 
     def _scan_channel(self, cid):

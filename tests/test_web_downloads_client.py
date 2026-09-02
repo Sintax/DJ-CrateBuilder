@@ -314,7 +314,7 @@ def _skip_harness(app_js, scenario):
         "skip": _slice(app_js, "  const SKIP_LOCKED_REASON =",
                        "  function renderDownloads()"),
         "save": _slice(app_js, "  async function save(key, value, el)",
-                       "  /* Controls the design draws"),
+                       "  /* ── database maintenance (3m long-job shell)"),
         "scenario": scenario,
     }
 
