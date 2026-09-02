@@ -1536,12 +1536,35 @@
     setDisabled(el, !!why, why ? { reason: tipPlus(ttKey, why) } : { ttKey });
   }
 
+  /* The Skip row — the monolith's skip_row on the Main tab. It shows the same
+     setting the Settings screen's Downloads section does, painted from the
+     host's stored value, and it is locked for the length of a download
+     exactly as _set_download_lock locks _skip_existing_cb and
+     _skip_mode_combo. The host refuses the write anyway
+     (DOWNLOAD_LOCKED_SETTINGS, for a batch or a Watch List job alike); this
+     is the control saying so before the click. */
+  const SKIP_LOCKED_REASON =
+    'A download is running, so the skip options are frozen until it ' +
+    'finishes — cancel the download, or wait for it to finish.';
+
+  function renderDownloadsSkip() {
+    const box = $('#dl-skip');
+    const mode = $('#dl-skipmode');
+    if (!box || !mode || !state) return;
+    syncSettingControls('skip_existing');
+    syncSettingControls('skip_mode');
+    const locked = dl.running || wl.running ? SKIP_LOCKED_REASON : '';
+    gateWrite(box, locked);
+    gateWrite(mode, locked, 'main.skip_mode');
+  }
+
   function renderDownloads() {
     renderDownloadsHeader();
     renderCurrent();
     renderOverall();
     renderPanelBatchMini();
     renderBatch();
+    renderDownloadsSkip();
   }
 
   /* ── modal shell (3m) ─────────────────────────────────────────────────────
@@ -4277,15 +4300,49 @@
     bindTips($('#screen-downloads'));
   }
 
+  /* One setting, drawn twice: 3b puts skip_existing and skip_mode on the
+     Downloads screen's Skip row AND in the Downloads section of Settings. The
+     monolith needs nothing for this — both of its widgets share one
+     BooleanVar — so here every control that names a key is repainted from
+     the host's stored value whenever any of them saves it, and the copies
+     cannot disagree. */
+  function paintSettingControl(el, value) {
+    if (el.type === 'checkbox') { el.checked = !!value; return; }
+    const current = value === undefined || value === null ? '' : String(value);
+    if (el.tagName === 'SELECT') {
+      /* The stored value wins over the markup's options, as control() does
+         for the grid: show the real value rather than a blank select. */
+      if (current && !Array.from(el.options).some((o) => o.value === current)) {
+        const opt = document.createElement('option');
+        opt.value = current;
+        opt.textContent = current;
+        el.insertBefore(opt, el.firstChild);
+      }
+      el.value = current;
+      return;
+    }
+    el.value = current;
+  }
+
+  function syncSettingControls(key) {
+    if (!state || !state.settings) return;
+    if (!Object.prototype.hasOwnProperty.call(state.settings, key)) return;
+    $$(`[data-key="${key}"]`).forEach((el) => paintSettingControl(el, state.settings[key]));
+  }
+
   async function save(key, value, el) {
     try {
       const res = await cbApi.call('settings.set', { key, value });
       state.settings[key] = res.value;
       toast(`Saved ${key}`);
+      syncSettingControls(key);
       applySettingsDependencies();
     } catch (err) {
       toast(err.userFacing ? err.message : `Could not save ${key}`, true);
       if (el && el.type === 'checkbox') el.checked = !el.checked;
+      // A refused select would otherwise keep showing the value the host
+      // never took.
+      syncSettingControls(key);
     }
   }
 
@@ -5692,6 +5749,13 @@
       if (cbApi.transport === 'local') dbReveal(path, 'folder');
       else dbCopyText(path, 'the save directory path');
     });
+
+    /* The Skip row writes the same two keys the Settings screen does, through
+       the same save() — which repaints every copy from the host's answer. */
+    $('#dl-skip').addEventListener('change',
+      () => save('skip_existing', $('#dl-skip').checked, $('#dl-skip')));
+    $('#dl-skipmode').addEventListener('change',
+      () => save('skip_mode', $('#dl-skipmode').value, $('#dl-skipmode')));
 
     // Actions the service does not implement yet stay visibly disabled, each
     // carrying the reason — never a dead control with no explanation.
