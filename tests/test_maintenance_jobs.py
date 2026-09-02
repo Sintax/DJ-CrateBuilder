@@ -1199,6 +1199,12 @@ def _settle_harness(app_js, body):
         _slice(app_js, "  const MAINT_TASKS = {", "  const MAINT_BUSY_REASON"),
         "const mt = { running: true, task: 'db.repair_tags', view: null, "
         "overall: null, current: null, note: null };",
+        # maintSettle re-gates the Artwork tab's Fetch button and hands a
+        # Folders Cleanup run to its own settle; neither is under test here.
+        "function dbGateArtworkFetch() {}",
+        "const CLEANUP_TASK = 'db.cleanup';",
+        "const cl = { view: null };",
+        "function cleanupFinished() {}",
         _slice(app_js, "  function maintPaint()", "  const SECTION_EXTRAS = {"),
         """
 function cell() {

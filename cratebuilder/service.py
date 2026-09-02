@@ -18,7 +18,7 @@ from cratebuilder import (activitylog, debuglog, rebuild, startup, ui_strings,
                           util, ydl)
 from cratebuilder import updater_core as ucore
 from cratebuilder.artwork import DEFAULT_COVER_ART_MODE, extract_cover
-from cratebuilder.batchresolve import platform_dir
+from cratebuilder.batchresolve import PLATFORM_SUBDIR, platform_dir
 from cratebuilder.batchrun import BatchRunner
 from cratebuilder.crate import CrateLayout
 from cratebuilder.db import DownloadsDatabase
@@ -319,6 +319,7 @@ OPENABLE_URL_SCHEMES = ("http", "https", "mailto")
 # about_info parses a 13k-line file, so the result is kept until the file
 # changes underneath it. Keyed by path -> (stat signature, payload).
 _ABOUT_CACHE = {}
+_COOKIE_HOWTO_CACHE = {}
 
 
 class CBError(Exception):
@@ -487,6 +488,16 @@ def _binding(key):
     same name, untranslated) for every key SETTINGS_BINDINGS doesn't call
     out."""
     return SETTINGS_BINDINGS.get(key, _simple_binding(key))
+
+
+def _genre_platform(value):
+    """The crate's platform key for a genre folder, from either spelling the
+    monolith's New Genre picker uses ("Soundcloud" included)."""
+    wanted = str(value or "").strip().lower()
+    for key in PLATFORM_SUBDIR:
+        if key.lower() == wanted:
+            return key
+    raise CBError("Choose a platform for the genre folder.")
 
 
 def _validate_base_dir(path):
@@ -739,6 +750,43 @@ def _about_copy(info):
     return out
 
 
+def cookie_howto_texts(script_path=None):
+    """COOKIE_HOWTO_TEXTS — the per-browser profile walkthroughs — read out of
+    the monolith as source text, for the reason about_info reads the FAQ that
+    way: one copy, and importing the script would build a Tk window. Returns
+    {browser: text}, or {} when the file cannot be read or holds no such dict.
+    Cached on the file's (mtime, size) signature like _ABOUT_CACHE."""
+    path = script_path or _monolith_path()
+    try:
+        stamp = os.stat(path)
+        signature = (stamp.st_mtime_ns, stamp.st_size)
+    except OSError:
+        return {}
+    cached = _COOKIE_HOWTO_CACHE.get(path)
+    if cached and cached[0] == signature:
+        return dict(cached[1])
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+    except (OSError, SyntaxError, ValueError):
+        return {}
+    texts = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) \
+                or not isinstance(node.value, ast.Dict):
+            continue
+        if not any(getattr(target, "id", None) == "COOKIE_HOWTO_TEXTS"
+                   for target in node.targets):
+            continue
+        for key, value in zip(node.value.keys, node.value.values):
+            if (isinstance(key, ast.Constant) and isinstance(key.value, str)
+                    and isinstance(value, ast.Constant)
+                    and isinstance(value.value, str)):
+                texts[key.value] = value.value
+    _COOKIE_HOWTO_CACHE[path] = (signature, dict(texts))
+    return texts
+
+
 def _about_faq(tree):
     """The [(question, answer), ...] literal `_build_about_tab` builds its
     accordion from, as the {q, a} rows the web About screen renders."""
@@ -806,6 +854,7 @@ class CrateBuilderService:
         self._batch_runner = None
         self._watchlist_ops = None
         self._maintenance_ops = None
+        self._cleanup_ops = None
         # How many Watch List genre-move retag threads are writing tags right
         # now. Guarded by self._lock, alongside the job registry it excludes.
         self._retags = 0
@@ -861,7 +910,30 @@ class CrateBuilderService:
     # ── events / jobs ─────────────────────────────────────────────────────────
 
     def emit(self, type, payload):
+        if type == "notification" and self._notification_muted(payload):
+            return
         self._emit.emit(type, payload)
+
+    def _notification_muted(self, payload):
+        """Settings ▸ Remote Access's three notification toggles, applied at
+        the one place every notification passes — so the bell, the toasts and
+        every paired device all hear the same thing, or nothing.
+
+        `kind` names the two announcements with a toggle of their own: the
+        Watch List scan's closing summary ("scan_found") and the batch's
+        ("batch_done"). "Notify on errors" covers every error-level
+        notification, whichever run raised it. Everything else — an update,
+        a maintenance summary — is always delivered.
+        """
+        payload = payload or {}
+        kind = payload.get("kind")
+        if kind == "scan_found":
+            return not self._settings.get("notify_scan_found")
+        if kind == "batch_done":
+            return not self._settings.get("notify_batch_done")
+        if payload.get("level") == "error":
+            return not self._settings.get("notify_errors")
+        return False
 
     def _job_running(self, category):
         with self._lock:
@@ -1133,7 +1205,18 @@ class CrateBuilderService:
                 lambda p: self.maintenance_start("db.fetch_artwork"),
             "db.maintenance_cancel": lambda p: self.maintenance_cancel(),
             "db.maintenance_skip": lambda p: self.maintenance_skip(),
+            "db.cleanup_start":
+                lambda p: self.cleanup_start(p.get("channel_ids")),
+            "db.cleanup_decide": lambda p: self.cleanup_decide(
+                p.get("action"), p.get("paths")),
+            "db.cleanup_cancel": lambda p: self.cleanup_cancel(),
+            "db.cleanup_pending": lambda p: self.cleanup_pending(),
             "about.info": lambda p: self.about(),
+            "cookies.howto": lambda p: self.cookies_howto(p.get("browser")),
+            "genres.create": lambda p: self.genres_create(p.get("name"),
+                                                          p.get("platform")),
+            "genres.remove": lambda p: self.genres_remove(p.get("name"),
+                                                          p.get("platform")),
             "fs.pick_folder": lambda p: self.pick_folder(),
             "fs.reveal": lambda p: self.fs_reveal(p.get("path"),
                                                   p.get("mode", "folder")),
@@ -1181,9 +1264,7 @@ class CrateBuilderService:
                         # run can reopen the right progress dialog. Read off
                         # the ops object only if one has ever been built —
                         # asking for it would construct one for nothing.
-                        "maintenance_task": (
-                            self._maintenance_ops.task
-                            if self._maintenance_ops is not None else None)},
+                        "maintenance_task": self._maintenance_task_name()},
             "settings": self.settings_all(),
             "settings_path": self._settings.path,
             # When the scheduler next fires, so a page that just loaded shows
@@ -1230,6 +1311,21 @@ class CrateBuilderService:
                              if version.get("build") is not None else ""),
             "can_open_urls": self.transport == LOCAL,
         }
+
+    def cookies_howto(self, browser):
+        """The dedicated-profile walkthrough for *browser* — what the tkinter
+        CookieHowToWindow shows, with its fallback: a browser without a page of
+        its own (Vivaldi) reads the Chrome one. Readable on both transports;
+        it is help text."""
+        texts = cookie_howto_texts()
+        name = str(browser or "").strip() or "Chrome"
+        text = texts.get(name) or texts.get("Chrome")
+        if not text:
+            raise CBError("The walkthrough could not be read from the app's "
+                          "own source.")
+        return {"browser": name,
+                "title": f"How-To: Setting Up a Dedicated {name} Profile",
+                "text": text}
 
     # ── library / database ────────────────────────────────────────────────────
 
@@ -1881,7 +1977,18 @@ class CrateBuilderService:
     # Tags is deliberately absent from that list: it only rewrites tags inside
     # files and never touches a row, so the monolith leaves it available mid
     # download and so does this.
-    _MAINTENANCE_NEEDS_IDLE = ("db.rebuild", "db.dedupe", "db.fetch_artwork")
+    _MAINTENANCE_NEEDS_IDLE = ("db.rebuild", "db.dedupe", "db.fetch_artwork",
+                               "db.cleanup")
+
+    def _maintenance_task_name(self):
+        """Which maintenance-slot job is running: one of the four, or Folders
+        Cleanup. Read off the ops objects only if one has ever been built —
+        asking for either would construct it for nothing."""
+        if self._cleanup_ops is not None and self._cleanup_ops.running:
+            return self._cleanup_ops.task
+        if self._maintenance_ops is not None:
+            return self._maintenance_ops.task
+        return None
 
     def _require_idle_library(self, task):
         """Unlocked like the other refusals — see the note above
@@ -1957,6 +2064,73 @@ class CrateBuilderService:
     def maintenance_skip(self):
         """Abandon the track the artwork backfill is fetching right now."""
         return self._maintenance.skip()
+
+    # ── Folders Cleanup ───────────────────────────────────────────────────────
+
+    @property
+    def _cleanup(self):
+        """Folders Cleanup, built on first use — deferred like maintenance,
+        since cleanuprun imports from this module."""
+        if self._cleanup_ops is None:
+            from cratebuilder.cleanuprun import CleanupOps
+            self._cleanup_ops = CleanupOps(
+                self._settings, self._db_for_write, self.emit,
+                log_line=self.log_line, debug=self._dbg)
+        return self._cleanup_ops
+
+    def cleanup_start(self, channel_ids):
+        """Run Folders Cleanup over *channel_ids* on the maintenance slot.
+
+        The eligibility the Database viewer's checkboxes already show is
+        judged again here, from the raw rows, so a client cannot tick a
+        channel the viewer greyed out — the monolith's dialog never faces
+        that, its ticks being its own.
+        """
+        from cratebuilder.cleanuprun import TASK, TITLE
+        cids = []
+        for value in channel_ids or []:
+            try:
+                cids.append(int(value))
+            except (TypeError, ValueError):
+                raise CBError(f"Not a channel id: {value!r}")
+        if not cids:
+            raise CBError("Tick at least one channel first.")
+        self._require_idle_library(TASK)
+        db = self._db()
+        if db is None:
+            raise CBError("There is no database yet, so there is nothing "
+                          "to clean.")
+        for cid in cids:
+            row = db.get_watchlist_channel(cid)
+            if row is None:
+                raise CBError(f"Channel {cid} is no longer in the Watch List.")
+            folder = self._channel_folder((row.get("platform") or "").strip(),
+                                          row.get("genre"),
+                                          row.get("display_name"))
+            eligible, reason = self._wl_cleanup_eligibility(row, folder)
+            if not eligible:
+                name = (row.get("display_name") or row.get("url")
+                        or f"channel {cid}")
+                raise CBError(f"{name}: {reason}")
+        job_id = self._start_job(MAINTENANCE_JOB, self._cleanup.run, cids,
+                                 title=TITLE,
+                                 guard=lambda: self._maintenance_guard(TASK))
+        return {"job_id": job_id, "task": TASK, "channels": len(cids)}
+
+    def cleanup_decide(self, action, paths):
+        """Answer the channel review the run is waiting on."""
+        return self._cleanup.decide(action, paths)
+
+    def cleanup_cancel(self):
+        """Stop after the channel in flight; confirmed deletions stay."""
+        return self._cleanup.cancel()
+
+    def cleanup_pending(self):
+        """The review awaiting an answer, for a page that reloaded mid-run.
+        Never builds the ops object: nothing pending is the answer then."""
+        pending = (self._cleanup_ops.pending_review()
+                   if self._cleanup_ops is not None else None)
+        return {"review": pending}
 
     # ── settings ──────────────────────────────────────────────────────────────
 
@@ -2302,6 +2476,50 @@ class CrateBuilderService:
             except OSError:
                 continue
         return sorted(found)
+
+    def genres_create(self, name, platform):
+        """Create <base>/<Platform>/<Genre> now — the monolith's _add_genre
+        without its dialog. A folder that already exists is reported, not
+        refused, exactly as that dialog's "Already Exists" box does."""
+        platform = _genre_platform(platform)
+        safe = util.safe_filename(name, strip=True)
+        if not safe:
+            raise CBError("That name isn't usable as a folder.")
+        target = os.path.join(
+            platform_dir(self._settings.get("base_dir"), platform), safe)
+        existed = os.path.isdir(target)
+        try:
+            os.makedirs(target, exist_ok=True)
+        except OSError as exc:
+            raise CBError(f"Unable to create the genre folder: {exc}\n\n"
+                          f"Path: {target}")
+        return {"genre": safe, "platform": platform, "existed": existed,
+                "genres": self.genres()}
+
+    def genres_remove(self, name, platform):
+        """Delete a genre folder — only an empty one, the monolith's
+        _remove_selected_genre rule: "(none)", a genre with no folder on disk
+        and any folder still holding channel folders are all refused, so this
+        can never destroy downloaded audio."""
+        platform = _genre_platform(platform)
+        picked = str(name or "").strip()
+        if not picked or picked == CrateLayout.NO_GENRE_VALUE:
+            raise CBError("Select a genre to remove first.")
+        gdir = os.path.join(
+            platform_dir(self._settings.get("base_dir"), platform), picked)
+        if not os.path.isdir(gdir):
+            raise CBError(f"No {platform} folder named '{picked}' exists.")
+        if os.listdir(gdir):
+            raise CBError(f"'{picked}' isn't empty — a genre folder can only "
+                          f"be removed once every channel folder inside it "
+                          f"has been moved out or deleted.")
+        try:
+            os.rmdir(gdir)
+        except OSError as exc:
+            raise CBError(f"Couldn't delete the folder: {exc}")
+        self.log_line(f"Removed empty genre folder: {gdir}")
+        return {"genre": picked, "platform": platform,
+                "genres": self.genres()}
 
     # ── logs ──────────────────────────────────────────────────────────────────
     # Both viewers (Activity/Debug) share this surface, keyed by the short name

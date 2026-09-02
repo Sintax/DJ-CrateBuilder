@@ -524,6 +524,7 @@ class BatchRunner:
         self._emit("notification", {
             "level": "warn" if (cancelled or self._errors) else "info",
             "title": "Batch cancelled" if cancelled else "Batch complete",
+            "kind": "batch_done",
             "body": f"{self._downloaded} downloaded, {self._skipped} skipped, "
                     f"{self._errors} failed",
             "at": datetime.now().isoformat(timespec="seconds"),

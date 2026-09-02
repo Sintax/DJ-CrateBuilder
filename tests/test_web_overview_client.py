@@ -55,6 +55,7 @@ const dl = { running: false, paused: false, current: null, overall: null };
 const wl = { running: false, current: null, overall: null, cards: [] };
 const mt = { running: false, task: null, current: null, overall: null };
 const MAINT_TASKS = { 'db.repair_tags': { run: 'Repair Tags' } };
+const CLEANUP_TASK = 'db.cleanup';
 %(job)s
 function pick() {
   const j = overviewJob();

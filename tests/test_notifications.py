@@ -46,6 +46,8 @@ def test_a_scan_announces_what_it_found(tmp_path):
     assert found[0]["title"] == "Watch List scan"
     assert "2 new" in found[0]["body"]
     assert "1 channel" in found[0]["body"]
+    # Named for the Settings toggle that can mute it.
+    assert found[0]["kind"] == "scan_found"
 
 
 def test_a_scan_that_found_nothing_still_announces(tmp_path):
@@ -328,6 +330,8 @@ def test_a_finished_batch_announces_its_tally(tmp_path):
     assert found[0]["level"] == "info"
     assert found[0]["title"] == "Batch complete"
     assert found[0]["body"] == "4 downloaded, 1 skipped, 0 failed"
+    # Named for the Settings toggle that can mute it.
+    assert found[0]["kind"] == "batch_done"
 
 
 def test_a_batch_with_failures_asks_to_be_looked_at(tmp_path):

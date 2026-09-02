@@ -502,7 +502,8 @@ def test_a_refused_settings_save_shows_the_hosts_own_words(tmp_path):
     with open(os.path.join(root, "web", "app.js"), encoding="utf-8") as fh:
         app_js = fh.read()
     start = app_js.index("  async function save(key, value, el)")
-    save_fn = app_js[start:app_js.index("  /* Controls the design draws", start)]
+    save_fn = app_js[start:app_js.index(
+        "  /* ── database maintenance (3m long-job shell)", start)]
 
     harness = """
 const toasts = [];

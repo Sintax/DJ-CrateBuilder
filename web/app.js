@@ -1159,7 +1159,8 @@
     }
     if (mt.running) {
       const spec = MAINT_TASKS[mt.task] || {};
-      return { key: 'maintenance', tag: spec.run || 'Maintenance',
+      const tag = mt.task === CLEANUP_TASK ? 'Folders Cleanup' : (spec.run || 'Maintenance');
+      return { key: 'maintenance', tag,
                current: mt.current, overall: mt.overall, href: '#settings',
                link: 'Open Settings →', pausable: false,
                pauseReason: 'A database maintenance job runs to the end or is ' +
@@ -1558,6 +1559,10 @@
     gateWrite(mode, locked, 'main.skip_mode');
   }
 
+  function renderDownloadsGenre() {
+    gateWrite($('#dl-newgenre'), '', 'main.new_genre');
+  }
+
   function renderDownloads() {
     renderDownloadsHeader();
     renderCurrent();
@@ -1565,6 +1570,7 @@
     renderPanelBatchMini();
     renderBatch();
     renderDownloadsSkip();
+    renderDownloadsGenre();
   }
 
   /* ── modal shell (3m) ─────────────────────────────────────────────────────
@@ -1750,8 +1756,6 @@
     'updates the database rows, and sets the Genre tag inside each file to ' +
     'match. You get a confirmation naming the track count first, and a failed ' +
     'database write rolls the move back.';
-  const WL_NO_HOST_ACTION = "Not wired up yet — creating and removing genre " +
-    "folders arrives with the host filesystem bridge.";
   /* The DB's own status vocabulary, in the words the card should say it in.
      An unmapped status renders as-is rather than being hidden — a status the
      frontend has not met is still worth showing. */
@@ -2091,30 +2095,192 @@
     return sel;
   }
 
-  /* The design's Genre row: the combo, + New and − Remove. Neither button has
-     a service method behind it (no genre folder is created or deleted from the
-     web frontend yet), so both render with the registry tooltip plus the
-     reason, rather than as dead controls. */
-  function genreRow(sel) {
+  /* ── New Genre / Remove Genre ─────────────────────────────────────────────
+     The monolith's _add_genre / _add_genre_for_platform and _remove_genre,
+     with the host doing the folder work (genres.create / genres.remove). One
+     form: the Downloads screen puts it in a modal of its own, while the
+     channel dialogs — modals already, and one dialog at a time is the rule —
+     fold it inline under their Genre row. */
+  const GENRE_PLATFORMS = ['YouTube', 'SoundCloud'];
+  const GENRE_PLATFORM_PROMPT = 'Choose Platform';
+
+  function platformFromUrl(url) {
+    const u = String(url || '');
+    if (/soundcloud\.com/i.test(u)) return 'SoundCloud';
+    if (/youtube\.com|youtu\.be/i.test(u)) return 'YouTube';
+    return '';
+  }
+
+  function refillGenreSelect(sel, value) {
+    sel.innerHTML = '';
+    Array.from(genreSelect(value).options).forEach((o) => sel.appendChild(o));
+    sel.value = value;
+  }
+
+  /* opts: {platform, onCreated(res), onCancel}. Without a platform the form
+     carries the monolith's picker, and OK stays shut until one is chosen. */
+  function newGenreForm(opts) {
+    const wrap = document.createElement('div');
+    wrap.className = 'cb-genre-form';
+    const name = document.createElement('input');
+    name.className = 'cb-in';
+    name.placeholder = 'Genre / category name';
+    wrap.appendChild(labelled(opts.platform
+      ? `Enter a genre / category name (under ${opts.platform}):`
+      : 'Enter a genre / category name:', name));
+    let picker = null;
+    if (!opts.platform) {
+      picker = document.createElement('select');
+      picker.className = 'cb-sel';
+      [GENRE_PLATFORM_PROMPT].concat(GENRE_PLATFORMS).forEach((p) => {
+        const o = document.createElement('option');
+        o.value = p;
+        o.textContent = p;
+        picker.appendChild(o);
+      });
+      wrap.appendChild(labelled('Platform for this genre folder:', picker));
+    }
+    const err = document.createElement('div');
+    err.className = 'cb-merr';
+    err.style.margin = '0';
+    err.hidden = true;
+    wrap.appendChild(err);
+
+    const chosen = () => opts.platform ||
+      (picker && GENRE_PLATFORMS.includes(picker.value) ? picker.value : '');
+    const ok = modalButton('OK', 'cb-btn--fill', submit);
+    const cancel = modalButton('Cancel', 'cb-btn--quiet',
+      () => opts.onCancel && opts.onCancel());
+    const sync = () => setDisabled(ok, !chosen(),
+      { reason: 'Choose a platform for the genre folder first.' });
+    if (picker) picker.addEventListener('change', sync);
+    sync();
+    const row = document.createElement('div');
+    row.className = 'cb-row';
+    row.style.gap = '8px';
+    row.append(ok, cancel);
+    wrap.appendChild(row);
+
+    async function submit() {
+      if (!chosen()) return;
+      err.hidden = true;
+      setDisabled(ok, true, { reason: 'Creating…' });
+      try {
+        const res = await cbApi.call('genres.create',
+          { name: name.value, platform: chosen() });
+        state.genres = res.genres || state.genres;
+        toast(res.existed
+          ? `'${res.genre}' already exists under ${res.platform}.`
+          : `Created the genre folder '${res.genre}' under ${res.platform}.`);
+        opts.onCreated(res);
+      } catch (ex) {
+        err.textContent = ex.userFacing ? ex.message
+          : 'The host could not create that folder.';
+        err.hidden = false;
+        sync();
+      }
+    }
+    name.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submit();
+      else if (e.key === 'Escape' && opts.onCancel) opts.onCancel();
+    });
+    wrap.focusName = () => name.focus();
+    return wrap;
+  }
+
+  function openNewGenre(opts) {
+    let form = null;
+    openModal({
+      title: 'New Genre',
+      width: 440,
+      body(body) {
+        form = newGenreForm({
+          platform: opts.platform,
+          onCancel: closeModal,
+          onCreated: (res) => { closeModal(); opts.onCreated(res); },
+        });
+        body.appendChild(form);
+      },
+      focus: () => form && form.querySelector('input'),
+    });
+  }
+
+  /* An inline yes/no under a dialog's row — the monolith's askyesno, where a
+     second modal cannot be opened over the first. */
+  function inlineConfirm(text, onYes, onNo) {
+    const wrap = document.createElement('div');
+    wrap.className = 'cb-genre-form';
+    wrap.appendChild(modalNote(text));
+    const row = document.createElement('div');
+    row.className = 'cb-row';
+    row.style.gap = '8px';
+    row.append(modalButton('Delete', 'cb-btn--warn', onYes),
+               modalButton('Keep', 'cb-btn--quiet', onNo));
+    wrap.appendChild(row);
+    return wrap;
+  }
+
+  /* The design's Genre row: the combo, + New and − Remove — the monolith's
+     Edit-dialog pair (_add_genre_for_platform / _remove_genre). Both act on
+     the platform the dialog knows, which *platformOf* answers: the channel's
+     own for Edit, the one the pasted URL names for Add. Without one, + New
+     asks with the picker and − Remove says what it needs. */
+  function genreRow(sel, platformOf) {
+    const wrap = document.createElement('div');
     const row = document.createElement('div');
     row.className = 'cb-row';
     row.style.gap = '8px';
     const add = document.createElement('button');
     add.className = 'cb-btn cb-btn--quiet cb-btn--sm';
     add.textContent = '+ New';
-    setDisabled(add, true, {
-      reason: (TOOLTIPS['main.new_genre'] ? TOOLTIPS['main.new_genre'] + '\n\n' : '') +
-        WL_NO_HOST_ACTION,
-    });
+    add.setAttribute('data-tt', 'main.new_genre');
     const drop = document.createElement('button');
     drop.className = 'cb-btn cb-btn--warn cb-btn--sm';
     drop.textContent = '− Remove';
-    setDisabled(drop, true, {
-      reason: (TOOLTIPS['db.genre_remove'] ? TOOLTIPS['db.genre_remove'] + '\n\n' : '') +
-        WL_NO_HOST_ACTION,
+    drop.setAttribute('data-tt', 'db.genre_remove');
+    let panel = null;
+    const closePanel = () => { if (panel) { panel.remove(); panel = null; } };
+    const showPanel = (el) => { closePanel(); panel = el; wrap.appendChild(el); };
+
+    add.addEventListener('click', () => {
+      if (panel) { closePanel(); return; }
+      const form = newGenreForm({
+        platform: platformOf() || '',
+        onCancel: closePanel,
+        onCreated: (res) => { closePanel(); refillGenreSelect(sel, res.genre); },
+      });
+      showPanel(form);
+      form.focusName();
+    });
+    drop.addEventListener('click', () => {
+      const platform = platformOf();
+      const genre = sel.value;
+      if (!genre || genre === '(none)') {
+        toast('Select a genre to remove first.', true);
+        return;
+      }
+      if (!platform) {
+        toast('Paste the channel URL first, so the platform is known.', true);
+        return;
+      }
+      showPanel(inlineConfirm(
+        `Delete the empty ${platform} genre folder '${genre}'? This cannot be undone.`,
+        async () => {
+          try {
+            const res = await cbApi.call('genres.remove', { name: genre, platform });
+            state.genres = res.genres || state.genres;
+            closePanel();
+            refillGenreSelect(sel, '(none)');
+            toast(`Removed the empty genre folder '${res.genre}'.`);
+          } catch (ex) {
+            toast(ex.userFacing ? ex.message
+              : 'The host could not remove that folder.', true);
+          }
+        }, closePanel));
     });
     row.append(sel, add, drop);
-    return row;
+    wrap.appendChild(row);
+    return wrap;
   }
 
   function openAddChannel() {
@@ -2129,7 +2295,8 @@
         urlEl.placeholder = 'https://www.youtube.com/@…   or   https://soundcloud.com/…';
         body.appendChild(labelled('Channel / Playlist URL', urlEl, WL_URL_HINT));
         genreEl = genreSelect('(none)');
-        body.appendChild(labelled('Genre', genreRow(genreEl)));
+        body.appendChild(labelled('Genre',
+          genreRow(genreEl, () => platformFromUrl(urlEl.value))));
       },
       foot(foot, api) {
         foot.appendChild(modalNote(
@@ -2267,7 +2434,8 @@
         body.appendChild(tools);
 
         genreEl = genreSelect((prefill && prefill.genre) || currentGenre);
-        body.appendChild(labelled('Genre', genreRow(genreEl)));
+        body.appendChild(labelled('Genre', genreRow(genreEl,
+          () => row.platform || platformFromUrl(urlEl.value))));
 
         /* The count lands with watchlist.details; until then the button says
            what it does without claiming a number it does not have. */
@@ -3642,6 +3810,7 @@
       st.loaded = true;
     } catch (_) { st.rows = []; st.total = 0; st.offset = 0; }
     dbRenderWatchlist();
+    dbGateCleanup();
   }
   /* Pages like the other two tabs rather than asking for the lot: a watch
      list is usually dozens of channels, but "usually" is not a bound, and a
@@ -3705,7 +3874,10 @@
           box.type = 'checkbox'; box.className = 'cb-cbx';
           box.checked = !!st.checked[row.id];
           if (!row.eligible) setDisabled(box, true, { reason: row.ineligible_reason });
-          else box.addEventListener('change', () => { st.checked[row.id] = box.checked; });
+          else box.addEventListener('change', () => {
+            st.checked[row.id] = box.checked;
+            dbGateCleanup();
+          });
           td.appendChild(box);
         } else if (id === 'channel') {
           td.style.fontWeight = '500'; td.textContent = row.channel;
@@ -3795,11 +3967,8 @@
     // 3h's toolbar has no search box (channel count is small enough that the
     // sortable columns are the whole navigation story) — matching the design
     // exactly rather than adding a control it doesn't have.
-    const cleanup = $('#db-wl-cleanup');
-    setDisabled(cleanup, true, {
-      reason: (TOOLTIPS['db.folders_cleanup'] ? TOOLTIPS['db.folders_cleanup'] + '\n\n' : '') +
-        'Not wired up yet — destructive actions need their own sign-off, out of scope for this task.',
-    });
+    $('#db-wl-cleanup').addEventListener('click', cleanupConfirm);
+    dbGateCleanup();
     $('#db-wl-refresh').addEventListener('click', dbWatchlistReload);
   }
 
@@ -3984,19 +4153,306 @@
     // 3i's toolbar has no Export CSV button (matching the design) — the
     // service's db.export_csv still accepts table:"artwork" for a future
     // screen that wants it.
-    setDisabled($('#db-art-fetch'), true, {
-      reason: (TOOLTIPS['settings.fetch_artwork'] ? TOOLTIPS['settings.fetch_artwork'] + '\n\n' : '') +
-        "Not wired up yet — maintenance jobs arrive with the web frontend's job runner.",
-    });
-    setDisabled($('#db-art-reembed'), true, {
-      reason: (TOOLTIPS['db.reembed_artwork'] ? TOOLTIPS['db.reembed_artwork'] + '\n\n' : '') +
-        "Not wired up yet — maintenance jobs arrive with the web frontend's job runner.",
-    });
+    $('#db-art-fetch').addEventListener('click', () => maintConfirm('db.fetch_artwork'));
+    dbGateArtworkFetch();
     $('#db-art-copy-thumb').addEventListener('click', () => {
       const row = dbState.artwork.selected;
       if (!row) { toast('Select a track first.', true); return; }
       dbCopyText(row.thumb_url, 'thumbnail URL');
     });
+  }
+
+  /* The Artwork tab's Fetch Missing Artwork is the same job the Settings card
+     starts — the monolith's _fetch_art_btn is one button reached from both —
+     and it is shut for the same reason while any maintenance job holds the
+     slot. */
+  function dbGateArtworkFetch() {
+    const b = $('#db-art-fetch');
+    if (!b) return;
+    gateWrite(b, mt.running ? MAINT_BUSY_REASON : '', 'settings.fetch_artwork');
+  }
+
+  /* ── Folders Cleanup ‹Smart› (3h) ──────────────────────────────────────────
+     The monolith's _FoldersCleanupSession and its review window, driven by
+     the host's cleanuprun: the ticked channels go up in one db.cleanup_start,
+     the host scans each in turn and publishes `cleanup.channel` as it goes,
+     and every channel with something to remove arrives as a `cleanup.review`
+     the dialog answers with db.cleanup_decide — confirm (the ticked paths),
+     skip, or cancel. Nothing leaves the disk without that answer. The run
+     holds the maintenance slot, so job.finished for 'maintenance' settles
+     it, through maintSettle. */
+  const CLEANUP_TASK = 'db.cleanup';
+  const cl = { view: null, review: null, lines: [] };
+
+  function dbCheckedChannels() {
+    const st = dbState.watchlist;
+    return Object.keys(st.checked).filter((id) => st.checked[id]).map(Number);
+  }
+
+  function dbGateCleanup() {
+    const b = $('#db-wl-cleanup');
+    if (!b) return;
+    const reason = mt.running ? MAINT_BUSY_REASON
+      : !dbCheckedChannels().length ? 'Tick at least one channel first.' : '';
+    gateWrite(b, reason, 'db.folders_cleanup');
+  }
+
+  function cleanupFmtSize(n) {
+    n = n || 0;
+    const units = ['B', 'KB', 'MB', 'GB'];
+    for (let i = 0; i < units.length; i += 1) {
+      if (n < 1024 || i === units.length - 1) {
+        return i === 0 ? `${Math.round(n)} B` : `${n.toFixed(1)} ${units[i]}`;
+      }
+      n /= 1024;
+    }
+    return '';
+  }
+
+  function cleanupFmtDate(ts) {
+    if (!ts) return '';
+    try { return new Date(ts * 1000).toISOString().slice(0, 10); } catch (_) { return ''; }
+  }
+
+  async function cleanupConfirm() {
+    const ids = dbCheckedChannels();
+    if (!ids.length) { toast('Tick at least one channel first.', true); return; }
+    openModal({
+      title: '🧹 Folders Cleanup ‹Smart›',
+      width: 520,
+      body(body) {
+        body.appendChild(modalNote(TOOLTIPS['db.folders_cleanup'] || ''));
+        body.appendChild(modalNote(
+          `${num(ids.length)} ticked channel${ids.length === 1 ? '' : 's'} will be ` +
+          'scanned, one at a time. You review and confirm every deletion per ' +
+          'channel before anything is removed.'));
+      },
+      foot(foot, api) {
+        const go = modalButton('Start Cleanup', 'cb-btn--warn', async () => {
+          api.busy(true);
+          try {
+            await call('db.cleanup_start', { channel_ids: ids });
+          } catch (_) { api.busy(false); return; }   // call() toasted the reason
+          cleanupBegin();
+        }, 'db.folders_cleanup');
+        const later = modalButton('Not now', 'cb-btn--quiet', api.close);
+        later.style.marginLeft = 'auto';
+        foot.append(go, later);
+      },
+    });
+  }
+
+  function cleanupBegin() {
+    mt.running = true;
+    mt.task = CLEANUP_TASK;
+    mt.note = null;
+    cl.lines = [];
+    cl.review = null;
+    cleanupOpenDialog();
+    renderSettings();
+    dbGateArtworkFetch();
+    dbGateCleanup();
+  }
+
+  function cleanupOpenDialog() {
+    const refs = {};
+    openModal({
+      title: '🧹 Folders Cleanup ‹Smart›',
+      tag: { text: 'Running', cls: 'cb-tag--fill' },
+      width: 760,
+      onClose() { cl.view = null; },
+      body(body) {
+        refs.status = document.createElement('div');
+        refs.status.className = 'cb-maint__item';
+        refs.status.textContent = 'Starting…';
+        refs.panel = document.createElement('div');
+        refs.log = document.createElement('div');
+        refs.log.className = 'cb-cleanup-log';
+        body.append(refs.status, refs.panel, refs.log);
+      },
+      foot(foot, api) {
+        refs.note = modalNote('Closing this window leaves the run going — ' +
+          'reopen it from Settings ▸ Downloads Database.');
+        refs.cancel = modalButton('Cancel', 'cb-btn--warn',
+          () => call('db.cleanup_cancel').catch(() => {}));
+        refs.cancel.style.marginLeft = 'auto';
+        refs.close = modalButton('Close', 'cb-btn--quiet', api.close);
+        refs.close.hidden = true;
+        foot.append(refs.note, refs.cancel, refs.close);
+      },
+    });
+    cl.view = { refs, modal: $('.cb-modal') };
+    cleanupPaint();
+    /* A dialog reopened mid-run, or a page reloaded mid-run: the host still
+       holds the review it is waiting on. */
+    if (cl.review) cleanupShowReview(cl.review);
+    else {
+      call('db.cleanup_pending').then((res) => {
+        if (res && res.review && cl.view) cleanupShowReview(res.review);
+      }).catch(() => {});
+    }
+  }
+
+  function cleanupPaint() {
+    if (!cl.view) return;
+    const { refs } = cl.view;
+    refs.log.innerHTML = '';
+    cl.lines.forEach((text) => {
+      const row = document.createElement('div');
+      row.textContent = text;
+      refs.log.appendChild(row);
+    });
+    refs.log.scrollTop = refs.log.scrollHeight;
+  }
+
+  /* One channel's outcome, as the run reaches it — the monolith's progress
+     box while scanning, and its activity-log line once decided. */
+  function cleanupOnChannel(p) {
+    if (!p) return;
+    const pos = `(${num((p.index || 0) + 1)} of ${num(p.total || 0)})`;
+    let line = null;
+    if (p.phase === 'scanning') {
+      if (cl.view) cl.view.refs.status.textContent = `Scanning  ${p.name}…  ${pos}`;
+    } else if (p.phase === 'done') {
+      line = `${p.name}: ${num(p.removed || 0)} removed, ${num(p.kept || 0)} kept` +
+        (p.errors ? `, ${num(p.errors)} error${p.errors === 1 ? '' : 's'}` : '');
+    } else {
+      line = `${p.name}: ${p.phase}${p.note ? ` — ${p.note}` : ''}`;
+    }
+    if (line) cl.lines.push(line);
+    if (p.phase !== 'scanning') {
+      cl.review = null;
+      if (cl.view) cl.view.refs.panel.innerHTML = '';
+    }
+    cleanupPaint();
+  }
+
+  /* The review window: every flagged file with a checkbox — strong rows (in
+     your library, gone from the channel) start ticked, weak rows (no record
+     it was ever there) start clear — and the three ways out. *decide* is
+     called with (action, paths). */
+  function cleanupReviewPanel(review, decide) {
+    const wrap = document.createElement('div');
+    wrap.className = 'cb-cleanup-review';
+    const checked = {};
+    review.flagged.forEach((f) => { checked[f.full_path] = f.confidence === 'strong'; });
+    const selected = () => Object.keys(checked).filter((p) => checked[p]);
+
+    const head = document.createElement('div');
+    head.className = 'cb-row';
+    head.style.cssText = 'gap:8px;flex-wrap:wrap';
+    const n = review.flagged.length;
+    head.appendChild(modalNote(
+      `${num(n)} file${n === 1 ? '' : 's'} on disk ${n === 1 ? 'is' : 'are'} ` +
+      `no longer on “${review.name}”. Ticked files go to the Recycle Bin.`));
+    const boxes = [];
+    const setAll = (on) => boxes.forEach((b) => {
+      b.checked = on;
+      checked[b.dataset.path] = on;
+    });
+    const all = modalButton('Select All', 'cb-btn--quiet', () => setAll(true));
+    all.style.marginLeft = 'auto';
+    const none = modalButton('Deselect All', 'cb-btn--quiet', () => setAll(false));
+    head.append(all, none);
+    wrap.appendChild(head);
+
+    const list = document.createElement('div');
+    list.className = 'cb-cleanup-list';
+    review.flagged.forEach((f) => {
+      const row = document.createElement('label');
+      row.className = 'cb-cleanup-row' + (f.confidence === 'weak' ? ' is-weak' : '');
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.className = 'cb-cbx';
+      box.checked = checked[f.full_path];
+      box.dataset.path = f.full_path;
+      box.addEventListener('change', () => { checked[f.full_path] = box.checked; });
+      boxes.push(box);
+      const file = document.createElement('span');
+      file.className = 'cb-cleanup-row__file';
+      file.textContent = f.filename;
+      file.title = f.full_path;
+      const meta = document.createElement('span');
+      meta.className = 'cb-cleanup-row__meta';
+      meta.textContent = `${cleanupFmtSize(f.size_bytes)}  ${cleanupFmtDate(f.mtime)}`;
+      const why = document.createElement('span');
+      why.className = 'cb-cleanup-row__meta';
+      why.textContent = f.reason || '';
+      row.append(box, file, meta, why);
+      list.appendChild(row);
+    });
+    wrap.appendChild(list);
+
+    const foot = document.createElement('div');
+    foot.className = 'cb-row';
+    foot.style.cssText = 'gap:8px;flex-wrap:wrap';
+    foot.appendChild(modalButton('Confirm Deletions', 'cb-btn--warn',
+      () => decide('confirm', selected())));
+    if ((review.total || 0) > 1) {
+      foot.appendChild(modalButton('Skip Channel', 'cb-btn--quiet',
+        () => decide('skip', [])));
+    }
+    const cancel = modalButton((review.total || 0) > 1 ? 'Cancel Scans' : 'Cancel Scan',
+      'cb-btn--quiet', () => decide('cancel', []));
+    cancel.style.marginLeft = 'auto';
+    foot.appendChild(cancel);
+    wrap.appendChild(foot);
+    wrap.selected = selected;
+    return wrap;
+  }
+
+  function cleanupShowReview(review) {
+    cl.review = review;
+    if (!cl.view) return;
+    const { refs } = cl.view;
+    refs.status.textContent =
+      `Review  ${review.name}  (${num((review.index || 0) + 1)} of ${num(review.total || 0)})`;
+    refs.panel.innerHTML = '';
+    refs.panel.appendChild(cleanupReviewPanel(review, cleanupDecide));
+  }
+
+  async function cleanupDecide(action, paths) {
+    try {
+      await call('db.cleanup_decide', { action, paths });
+    } catch (_) { return; }            // call() already toasted the reason
+    cl.review = null;
+    if (cl.view) {
+      cl.view.refs.panel.innerHTML = '';
+      cl.view.refs.status.textContent = action === 'confirm' ? 'Removing…' : 'Moving on…';
+    }
+  }
+
+  /* The host released the slot: settle the dialog the way maintSettle does,
+     auto-untick as _finish_folders_cleanup does, and reload the table from
+     disk/DB reality. */
+  function cleanupFinished(payload) {
+    dbState.watchlist.checked = {};
+    if (dbState.watchlist.loaded) dbWatchlistReload();
+    dbGateCleanup();
+    cl.review = null;
+    if (!cl.view) return;
+    const { refs, modal } = cl.view;
+    const failed = !!(payload && payload.ok === false);
+    const cancelled = !failed && !!(mt.note && mt.note.cancelled);
+    const tag = modal && modal.querySelector('.cb-tag');
+    if (tag) {
+      tag.textContent = failed ? 'Failed' : (cancelled ? 'Cancelled' : 'Finished');
+      tag.className = 'cb-tag ' +
+        (failed ? 'cb-tag--err' : (cancelled ? 'cb-tag--grey' : 'cb-tag--ok'));
+    }
+    refs.status.textContent = failed ? ((payload && payload.error) || 'The run failed.')
+      : ((mt.note && mt.note.body) || 'Finished.');
+    refs.status.classList.add('is-summary');
+    if (failed) refs.status.classList.add('is-failed');
+    refs.panel.innerHTML = '';
+    refs.cancel.hidden = true;
+    refs.note.hidden = true;
+    refs.close.hidden = false;
+  }
+
+  function subscribeCleanupEvents() {
+    cbApi.on('cleanup.channel', cleanupOnChannel);
+    cbApi.on('cleanup.review', (p) => { if (p) cleanupShowReview(p); });
   }
 
   /* ── tabs + open/close ─────────────────────────────────────────────────── */
@@ -4038,8 +4494,10 @@
   }
 
   /* ── settings ──────────────────────────────────────────────────────────── */
-  const NOT_AVAILABLE_REASON = 'This option is not wired into the web frontend yet — ' +
-                               'change it in the desktop app for now.';
+  /* Only reachable when the host is older than this bundle — every key the
+     screen draws is served by a current host (tests/test_service.py). */
+  const NOT_AVAILABLE_REASON = 'This option is not served by the host build ' +
+                               'you are connected to — update the host.';
 
   function control(entry, value, available) {
     const wrap = document.createElement('div');
@@ -4260,6 +4718,16 @@
       cookiesOn ? 'Switch Method to Browser Profile first.' : cookiesReason);
     set('cookie_file', !cookiesOn || !isFileMethod,
       cookiesOn ? 'Switch Method to Cookie File first.' : cookiesReason);
+    /* The How-To button names the browser the walkthrough is for, and is
+       greyed with the rest of the card while cookies are off — the monolith's
+       _update_howto_label and its cookies-toggle greying. */
+    const howto = $('#cookie-howto');
+    if (howto) {
+      howto.textContent =
+        `📖 How-To: Setting Up a Dedicated ${val('cookies_browser') || 'Chrome'} Profile`;
+      setDisabled(howto, !cookiesOn, cookiesOn
+        ? { ttKey: 'settings.firefox_profile_howto' } : { reason: cookiesReason });
+    }
 
     // Run App on Startup writes the host's own registry — local window only.
     const remoteMount = state.host.transport !== 'local';
@@ -4344,19 +4812,6 @@
       // never took.
       syncSettingControls(key);
     }
-  }
-
-  /* Controls the design draws on screen 3j that have no schema key at all —
-     they navigate to, or drive, a screen a later task builds. Rendered
-     visibly (the layout stays complete) but disabled with the reason, per
-     the same rule that governs every other not-yet-wired control. */
-  function stubButton(label, cls, ttKey, reason) {
-    const b = document.createElement('button');
-    b.className = `cb-btn cb-btn--sm ${cls || ''}`.trim();
-    b.textContent = label;
-    setDisabled(b, true,
-      { reason: (ttKey && TOOLTIPS[ttKey] ? TOOLTIPS[ttKey] + '\n\n' : '') + reason });
-    return b;
   }
 
   /* ── database maintenance (3m long-job shell) ─────────────────────────────
@@ -4512,6 +4967,7 @@
     mt.note = null;
     maintOpenProgress(task);
     renderSettings();
+    dbGateArtworkFetch();
   }
 
   function maintOpenProgress(task) {
@@ -4609,8 +5065,11 @@
      `cancelled` comes from the run's own notification, where the run computed
      it. Everything else is a finish. */
   function maintSettle(payload) {
+    const wasCleanup = mt.task === CLEANUP_TASK || !!cl.view;
     mt.running = false;
     mt.task = null;
+    dbGateArtworkFetch();
+    if (wasCleanup) { cleanupFinished(payload); return; }
     if (!mt.view) return;
     const { refs, modal } = mt.view;
     const failed = !!(payload && payload.ok === false);
@@ -4780,9 +5239,10 @@
         back.className = 'cb-btn cb-btn--sm';
         back.textContent = '⏳ Show progress';
         back.addEventListener('click', () => {
+          if (mt.task === CLEANUP_TASK) { if (!cl.view) cleanupOpenDialog(); return; }
           if (!mt.view && MAINT_TASKS[mt.task]) maintOpenProgress(mt.task);
         });
-        setDisabled(back, !MAINT_TASKS[mt.task], {
+        setDisabled(back, !MAINT_TASKS[mt.task] && mt.task !== CLEANUP_TASK, {
           reason: 'The host has not said which job is running.',
           ttText: 'Reopen the progress window for the job running now.',
         });
@@ -4934,19 +5394,63 @@
       });
     },
 
+    /* The monolith's How-To row: a label naming the selected browser and a
+       VIEW button that opens CookieHowToWindow, greyed while cookies are off.
+       One button here, relabelled by applySettingsDependencies as the Browser
+       select changes. Help text, so it stays live on a read-only session. */
     'Browser Cookies': (card) => {
       const row = document.createElement('div');
       row.className = 'cb-row';
       row.style.cssText = 'gap:8px;flex-wrap:wrap';
-      row.append(
-        stubButton('Test authentication', 'cb-btn--quiet', null,
-          'Not wired up yet — cookie testing arrives with the web frontend\'s download service.'),
-        stubButton('How-To: dedicated Firefox profile ↗', 'cb-btn--quiet',
-          'settings.firefox_profile_howto',
-          'Not wired up yet — this walkthrough arrives with the web frontend\'s help screens.'));
+      const howto = document.createElement('button');
+      howto.className = 'cb-btn cb-btn--quiet cb-btn--sm';
+      howto.id = 'cookie-howto';
+      howto.addEventListener('click',
+        () => openCookieHowto(state.settings.cookies_browser));
+      row.appendChild(readOnlyOk(howto));
       card.appendChild(row);
     },
   };
+
+  /* CookieHowToWindow: the walkthrough the host reads out of the desktop
+     app's own source, with the same five line treatments its Text widget
+     tags — title, divider, step, url, IMPORTANT. */
+  function howtoLineClass(line) {
+    const s = line.trim();
+    if (s.startsWith('══')) return 'is-divider';
+    if (s.startsWith('Setting Up')) return 'is-title';
+    if (s.startsWith('Step ')) return 'is-step';
+    if (s.startsWith('https://')) return 'is-url';
+    if (s.startsWith('IMPORTANT:')) return 'is-important';
+    return '';
+  }
+
+  async function openCookieHowto(browser) {
+    let page;
+    try {
+      page = await call('cookies.howto', { browser });
+    } catch (_) { return; }          // call() already toasted the reason
+    openModal({
+      title: `📖 ${page.title}`,
+      width: 720,
+      body(body) {
+        const box = document.createElement('div');
+        box.className = 'cb-howto';
+        String(page.text || '').split('\n').forEach((line) => {
+          const row = document.createElement('div');
+          row.className = ('cb-howto__line ' + howtoLineClass(line)).trim();
+          row.textContent = line || ' ';
+          box.appendChild(row);
+        });
+        body.appendChild(box);
+      },
+      foot(foot, api) {
+        const close = modalButton('Close', 'cb-btn--quiet', api.close);
+        close.style.marginLeft = 'auto';
+        foot.appendChild(close);
+      },
+    });
+  }
 
   /* Section-level help, keyed by the section name the contract's settings keys
      group under. These are the registry's `?` strings — about a whole card,
@@ -5757,16 +6261,18 @@
     $('#dl-skipmode').addEventListener('change',
       () => save('skip_mode', $('#dl-skipmode').value, $('#dl-skipmode')));
 
-    // Actions the service does not implement yet stay visibly disabled, each
-    // carrying the reason — never a dead control with no explanation.
-    [['#dl-newgenre', 'Creating a genre folder is not wired up in the web ' +
-      'frontend — add the genre from the desktop app, or download into it ' +
-      'once and it appears here.'],
-    ].forEach(([sel, why]) => {
-      const el = $(sel);
-      if (!el) return;
-      setDisabled(el, true, { reason: tipPlus(el.getAttribute('data-tt'), why) });
-    });
+    /* The monolith's _add_genre: name and platform, the folder made on OK,
+       then the Main tab switched to that platform with the new genre
+       selected so the save preview lines up. */
+    $('#dl-newgenre').addEventListener('click', () => openNewGenre({
+      onCreated: (res) => {
+        renderGenres();
+        $$('#dl-platform > span').forEach((seg) => {
+          seg.classList.toggle('is-on', seg.dataset.platform === res.platform);
+        });
+        $('#dl-genre').value = res.genre;
+      },
+    }));
   }
 
   function wireWatchlist() {
@@ -6034,6 +6540,7 @@
       subscribeDownloadEvents();
       subscribeSessionEvents();
       subscribeUpdateEvents();
+      subscribeCleanupEvents();
     }
     renderBell();
     await refresh();

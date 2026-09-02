@@ -424,6 +424,53 @@ input[type="radio"].cb-cbx {
   border-radius: 6px; padding: 9px 11px;
 }
 
+/* Cookie How-To — the monolith's CookieHowToWindow: the walkthrough as it is
+   written, monospaced, with the five line treatments its Text widget tags. */
+.cb-howto {
+  font: 12px/1.55 var(--cb-mono); white-space: pre-wrap; color: var(--cb-muted);
+  background: var(--cb-bg-deep); border: 1px solid var(--cb-line);
+  border-radius: var(--cb-radius-sm); padding: 12px 16px;
+  max-height: 60vh; overflow: auto;
+}
+.cb-howto__line.is-title { color: var(--cb-text); font-weight: 700; font-size: 13px; }
+.cb-howto__line.is-divider { color: var(--cb-dim); }
+.cb-howto__line.is-step { color: var(--cb-warn); font-weight: 700; }
+.cb-howto__line.is-url { color: var(--cb-ok); }
+.cb-howto__line.is-important { color: var(--cb-err); font-weight: 700; }
+
+/* New Genre — the monolith's dialog, folded inline under a dialog's Genre row
+   (one modal at a time) or wrapped in a modal of its own on the Downloads
+   screen. */
+.cb-genre-form {
+  display: flex; flex-direction: column; gap: 10px; margin-top: 8px;
+  padding: 10px 12px; border: 1px solid var(--cb-line-soft);
+  border-radius: var(--cb-radius-sm); background: var(--cb-surface-alt);
+}
+
+/* Folders Cleanup — the per-channel review (the monolith's
+   _CleanupReviewWindow) and the run's outcome log, inside the 3m shell. */
+.cb-cleanup-log {
+  display: flex; flex-direction: column; gap: 3px;
+  font-size: 11.5px; color: var(--cb-muted); max-height: 26vh; overflow: auto;
+}
+.cb-cleanup-review { display: flex; flex-direction: column; gap: 10px; }
+.cb-cleanup-list {
+  max-height: 44vh; overflow: auto;
+  border: 1px solid var(--cb-line-soft); border-radius: var(--cb-radius-sm);
+  padding: 0 10px;
+}
+.cb-cleanup-row {
+  display: flex; align-items: center; gap: 10px; padding: 6px 0;
+  border-bottom: 1px solid var(--cb-line-row); font-size: 12px; cursor: pointer;
+}
+.cb-cleanup-row:last-child { border-bottom: none; }
+.cb-cleanup-row.is-weak { color: var(--cb-muted); }
+.cb-cleanup-row__file {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-family: var(--cb-mono);
+}
+.cb-cleanup-row__meta { font-size: 11px; color: var(--cb-dim); white-space: nowrap; }
+
 /* ── remote transport (3k) ───────────────────────────────────────────────────
    The offline shell's own bar has to stay usable while everything else is
    inert — theme.css's .cb-offline kills pointer events on every control, and
