@@ -119,8 +119,9 @@ class Settings:
     every read from memory. Every write persists the WHOLE store atomically
     (temp file + os.replace), so no writer can drop another writer's keys.
     Unknown keys found in the file ride along on every write but are rejected
-    by get/set with KeyError. Thread-safe; write failures are swallowed like
-    the old save_config, with the in-memory store staying consistent."""
+    by get/set with KeyError; keys a past build retired are dropped instead
+    (_RETIRED_KEYS). Thread-safe; write failures are swallowed like the old
+    save_config, with the in-memory store staying consistent."""
 
     def __init__(self, path=None):
         self._explicit_path = path is not None
@@ -191,20 +192,9 @@ class Settings:
         return self._data.get(key, self._defaults[key])
 
     def _load(self):
-        """Read the config, falling back to the pre-rename file — tidied into
-        legacy/ by now. A successful legacy read is copied forward
-        immediately, as the old load_config did, so the file only has to be
-        found once."""
-        from_legacy = False
         data = _read_json(self._path)
-        if data is None and not self._explicit_path:
-            data = _read_json(util._legacy_config_path())
-            from_legacy = data is not None
         data = data if isinstance(data, dict) else {}
         _migrate(data)
-        if from_legacy:
-            self._data = data
-            self._persist()
         return data
 
     def _persist(self):
@@ -233,11 +223,25 @@ def _read_json(path):
         return None
 
 
+# Keys the file carried from builds long gone, which nothing reads any more:
+# the interval under its old name (copied forward first), a schedule anchor
+# the app stopped honouring when the schedule began counting from launch, a
+# one-time prompt, and the bookkeeping of a dedupe prompt that went with it.
+_RETIRED_KEYS = (
+    "auto_check_hours",
+    "watchlist_last_check",
+    "watchlist_import_prompted",
+    "dedupe_prompt_build",
+    "dedupe_prompt_count",
+)
+
+
 def _migrate(data):
     """Apply the legacy config migrations to *data* in place: auto_check_hours
     seeding auto_download_interval, the skip_mode value renames, and the
-    cover_art_mode 'off' tri-state split. (The legacy file-rename probe lives
-    in Settings._load.)"""
+    cover_art_mode 'off' tri-state split — then drop the keys no build reads
+    any more, so the file carries what the app uses and nothing it once did.
+    The migrations reach disk on the first write, like every other."""
     if "auto_download_interval" not in data and "auto_check_hours" in data:
         data["auto_download_interval"] = data["auto_check_hours"]
 
@@ -252,3 +256,6 @@ def _migrate(data):
             data.setdefault("cover_art_enabled", False)
             mode = DEFAULT_COVER_ART_MODE
         data["cover_art_mode"] = mode
+
+    for key in _RETIRED_KEYS:
+        data.pop(key, None)

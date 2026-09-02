@@ -101,13 +101,14 @@ design conversations use these words exactly.
   predicate, polling the predicate in short slices so either source
   interrupts a backoff.
 - **Settings** — the single in-memory owner of the user config
-  (`~/.cratebuilder/config.json`; the names it went by in the home directory
-  itself are tidied into `~/.cratebuilder/legacy/` on launch). One declared
-  schema (key → default →
-  legacy migration) behind a generic `get`/`set`; every write persists the
-  whole store atomically, so no writer can drop another writer's keys.
-  Unknown keys found in the file are preserved on write but rejected by
-  `get`/`set`. `run_at_startup` is stored like any key; the Windows registry
+  (`~/.cratebuilder/config.json`; on launch the newest of the names it went
+  by in the home directory itself is moved in, and the rest removed — the
+  folder holds one config, not a history). One declared schema (key →
+  default → legacy migration) behind a generic `get`/`set`; every write
+  persists the whole store atomically, so no writer can drop another
+  writer's keys. Unknown keys found in the file are preserved on write but
+  rejected by `get`/`set`; keys a past build retired are dropped on the
+  first write. `run_at_startup` is stored like any key; the Windows registry
   remains its source of truth at the UI layer.
 - **Snapshot** — a frozen, Tk-free, per-concern record handed to worker
   threads instead of live Tk variables: `CookieConfig` (what a `YdlSession`

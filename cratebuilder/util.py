@@ -5,6 +5,7 @@ No tkinter imports — safe to unit-test in isolation.
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -215,19 +216,22 @@ def ensure_usable_tempdir(base_dir=None):
 
 # ── Config persistence ────────────────────────────────────────────────────────
 # Everything the app keeps behind the scenes in the user's profile lives in one
-# hidden folder, so the home directory itself carries nothing of ours.
+# hidden folder, so the home directory itself carries nothing of ours — and
+# the folder holds one config, not a history of them.
 CONFIG_DIR_NAME = ".cratebuilder"
 CONFIG_NAME = "config.json"
-LEGACY_SUBDIR = "legacy"
 # The names the config went by before the folder, all in the home directory
-# itself, newest first. tidy_home_config moves them in: the newest becomes
-# config.json unless one is already there, the rest are shelved under legacy/
-# — kept, never deleted — so a home directory is tidied once and never read
-# from again.
+# itself, newest first. tidy_home_config moves the newest one present in as
+# config.json and removes the rest: each rename copied its predecessor
+# forward when it happened, so a file that is not the seed has nothing left
+# to say. The oldest predates every key and never seeds anything.
 HOME_CONFIG_NAME = ".dj_cratebuilder_config.json"
 LEGACY_CONFIG_NAME = ".yt_dj_cratebuilder_config.json"
 OLDEST_CONFIG_NAME = ".audio_downloader_config.json"
 HOME_CONFIG_NAMES = (HOME_CONFIG_NAME, LEGACY_CONFIG_NAME, OLDEST_CONFIG_NAME)
+SEED_CONFIG_NAMES = (HOME_CONFIG_NAME, LEGACY_CONFIG_NAME)
+# Where build 67 shelved the older names instead. Removed along with them.
+RETIRED_SHELF = "legacy"
 
 
 def config_dir():
@@ -238,53 +242,54 @@ def _config_path():
     return os.path.join(config_dir(), CONFIG_NAME)
 
 
-def _legacy_config_path():
-    """Where the pre-rename config sits once tidied in — the one place a
-    missing config.json is still seeded from."""
-    return os.path.join(config_dir(), LEGACY_SUBDIR, LEGACY_CONFIG_NAME.lstrip("."))
-
-
-def _shelf_path(name):
-    """A free path under legacy/ for a file called *name*: the dot dropped,
-    and a counter if a shelved copy is already there."""
-    stem, ext = os.path.splitext(name.lstrip("."))
-    folder = os.path.join(config_dir(), LEGACY_SUBDIR)
-    candidate = os.path.join(folder, stem + ext)
-    counter = 1
-    while os.path.exists(candidate):
-        counter += 1
-        candidate = os.path.join(folder, f"{stem}-{counter}{ext}")
-    return candidate
+def _mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
 
 
 def tidy_home_config():
-    """Move the app's files out of the home directory into config_dir().
+    """Move the config out of the home directory into config_dir(), and
+    remove what else the app ever left there.
 
-    The previous config becomes config.json when there is none yet; an older
-    name, or a previous config found after config.json already exists (an
-    older build ran in between and wrote a fresh one), is shelved under
-    legacy/ rather than deleted. Touches nothing when the home directory
-    holds none of them, and never raises — a tidy-up that cannot be done is
-    simply not done. Returns the (source, destination) moves made."""
+    The newest of the old names present becomes config.json. When one is
+    already there — an older build ran after the move and wrote its own —
+    the newer of the two by modification time is kept, since that is the one
+    holding what the user last set, and the other goes. Everything else of
+    ours in the home directory is superseded and removed, and so is the
+    legacy/ shelf one earlier build kept the older names in. Touches nothing
+    when there is nothing to do, and never raises — a tidy-up that cannot be
+    done is simply not done. Returns the (source, destination) moves made,
+    with a destination of None for a removal."""
     home = os.path.expanduser("~")
-    present = [name for name in HOME_CONFIG_NAMES
+    present = [os.path.join(home, name) for name in HOME_CONFIG_NAMES
                if os.path.isfile(os.path.join(home, name))]
-    if not present:
+    shelf = os.path.join(config_dir(), RETIRED_SHELF)
+    if not present and not os.path.isdir(shelf):
         return []
-    moves = []
-    for name in present:
-        source = os.path.join(home, name)
-        if name == HOME_CONFIG_NAME and not os.path.exists(_config_path()):
-            destination = _config_path()
-        else:
-            destination = _shelf_path(name)
+    config = _config_path()
+    seed = next((path for path in present
+                 if os.path.basename(path) in SEED_CONFIG_NAMES), None)
+    if seed is not None and _mtime(config) >= _mtime(seed):
+        seed = None
+    done = []
+    for path in present:
         try:
-            os.makedirs(os.path.dirname(destination), exist_ok=True)
-            os.replace(source, destination)
+            if path == seed:
+                os.makedirs(config_dir(), exist_ok=True)
+                os.replace(path, config)
+                done.append((path, config))
+            else:
+                os.remove(path)
+                done.append((path, None))
         except OSError:
             continue
-        moves.append((source, destination))
-    return moves
+    if os.path.isdir(shelf):
+        shutil.rmtree(shelf, ignore_errors=True)
+        if not os.path.isdir(shelf):
+            done.append((shelf, None))
+    return done
 
 
 def default_base_dir():
@@ -300,16 +305,6 @@ def load_config():
         try:
             with open(p, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
-            pass
-    # Seed from the pre-rename config, tidied into legacy/ above.
-    old_p = _legacy_config_path()
-    if os.path.exists(old_p):
-        try:
-            with open(old_p, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            save_config(data)   # write to new location
-            return data
         except Exception:
             pass
     return {}
