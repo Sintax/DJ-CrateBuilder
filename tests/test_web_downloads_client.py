@@ -6,7 +6,8 @@ cannot pass just because someone reformatted the line it names.
 
 Covers the two things a running job used to get wrong here: the panel changing
 height the moment a download started, and a run the page did not start itself
-never arming anything at all.
+never arming anything at all — and the Skip row, which 3b draws on this screen
+as well as in Settings and which used to be wired to nothing at all.
 """
 import json
 import os
@@ -238,3 +239,199 @@ def test_the_running_line_is_kept_in_view_without_moving_the_page(app_js):
     body = _slice(app_js, "  function renderQueueLog()",
                   "  /* Every write control funnels through here")
     assert body.count("scrollQueueLogToActive(log)") == 2
+
+
+# ── the Skip row is the same setting the Settings screen shows ───────────────
+# skip_existing and skip_mode are drawn twice — the Downloads screen's Skip row
+# and the Downloads section of Settings. The row used to be filled from nothing
+# and wired to nothing: unchecked whatever the host held, and a click that
+# changed nothing. Both copies now paint from the host's stored value, write
+# through the same save(), and follow each other.
+
+_SKIP_HARNESS = """
+const registry = [];
+function el(id, tag, type, key) {
+  const e = { id, tagName: tag, type: type || '', checked: false, value: '',
+              options: [], disabled: false, reason: '', dataset: {}, attrs: {},
+              setAttribute(k, v) { this.attrs[k] = v; },
+              removeAttribute(k) { delete this.attrs[k]; },
+              insertBefore(opt) { this.options.unshift(opt); },
+              get firstChild() { return this.options[0] || null; } };
+  if (key) e.dataset.key = key;
+  registry.push(e);
+  return e;
+}
+function option(text) { return { value: text, textContent: text }; }
+const MODES = ['In Database ~ In Folder', 'In Folder Only', 'In Database Only'];
+const els = {
+  'dl-skip': el('dl-skip', 'INPUT', 'checkbox', 'skip_existing'),
+  'dl-skipmode': el('dl-skipmode', 'SELECT', 'select-one', 'skip_mode'),
+};
+MODES.forEach((m) => els['dl-skipmode'].options.push(option(m)));
+// The Settings grid's copies of the same two keys.
+const gridBox = el('grid-skip', 'INPUT', 'checkbox', 'skip_existing');
+const gridMode = el('grid-mode', 'SELECT', 'select-one', 'skip_mode');
+MODES.forEach((m) => gridMode.options.push(option(m)));
+function $(sel) { return els[sel.slice(1)] || null; }
+function $$(sel) {
+  const m = /\\[data-key="([^"]+)"\\]/.exec(sel);
+  return m ? registry.filter((e) => e.dataset.key === m[1]) : [];
+}
+const document = {
+  createElement: (tag) => ({ tagName: tag.toUpperCase(), value: '', textContent: '' }),
+};
+function gateWrite(e, reason) { e.disabled = !!reason; e.reason = reason || ''; }
+const toasts = [];
+function toast(text, isError) { toasts.push({ text, isError: !!isError }); }
+function applySettingsDependencies() {}
+const dl = { running: false };
+const wl = { running: false };
+const state = { settings: { skip_existing: false, skip_mode: 'In Folder Only' } };
+const calls = [];
+let refuse = null;
+const cbApi = { call: async (method, params) => {
+  calls.push({ method, params });
+  if (refuse) { const err = new Error(refuse); err.userFacing = true; throw err; }
+  return { value: params.value };
+} };
+%(helpers)s
+%(skip)s
+%(save)s
+const box = $('#dl-skip');
+const mode = $('#dl-skipmode');
+function copies() {
+  return { row: { checked: box.checked, mode: mode.value },
+           grid: { checked: gridBox.checked, mode: gridMode.value } };
+}
+%(scenario)s
+"""
+
+
+def _skip_harness(app_js, scenario):
+    return _SKIP_HARNESS % {
+        "helpers": _slice(app_js, "  function paintSettingControl(",
+                          "  async function save("),
+        "skip": _slice(app_js, "  const SKIP_LOCKED_REASON =",
+                       "  function renderDownloads()"),
+        "save": _slice(app_js, "  async function save(key, value, el)",
+                       "  /* Controls the design draws"),
+        "scenario": scenario,
+    }
+
+
+def test_the_skip_row_shows_the_stored_setting(app_js, tmp_path):
+    """Painted from state.settings on every render — the row used to sit
+    unchecked whatever the host actually held."""
+    r = _run_node(tmp_path, "dlskip_show.mjs", _skip_harness(app_js, """
+renderDownloadsSkip();
+const off = copies();
+state.settings.skip_existing = true;
+state.settings.skip_mode = 'In Database Only';
+renderDownloadsSkip();
+const on = copies();
+// A stored value the markup does not list is still shown, as the grid does.
+state.settings.skip_mode = 'Somewhere Else';
+renderDownloadsSkip();
+const odd = { mode: mode.value, first: mode.options[0].value };
+console.log(JSON.stringify({ off, on, odd }));
+"""))
+
+    assert r["off"] == {"row": {"checked": False, "mode": "In Folder Only"},
+                        "grid": {"checked": False, "mode": "In Folder Only"}}
+    assert r["on"] == {"row": {"checked": True, "mode": "In Database Only"},
+                       "grid": {"checked": True, "mode": "In Database Only"}}
+    assert r["odd"] == {"mode": "Somewhere Else", "first": "Somewhere Else"}
+
+
+def test_a_change_on_either_screen_saves_once_and_moves_the_other_copy(app_js, tmp_path):
+    """Both copies write the same key through the same save(), and the copy
+    that was not clicked follows the host's answer."""
+    r = _run_node(tmp_path, "dlskip_save.mjs", _skip_harness(app_js, """
+renderDownloadsSkip();
+(async () => {
+  box.checked = true;                                   // the click
+  await save('skip_existing', box.checked, box);
+  const fromRow = { call: calls[0], stored: state.settings.skip_existing,
+                    copies: copies() };
+  mode.value = 'In Database Only';
+  await save('skip_mode', mode.value, mode);
+  const modeFromRow = { call: calls[1], copies: copies() };
+  gridBox.checked = false;                              // the grid's turn
+  await save('skip_existing', gridBox.checked, gridBox);
+  const fromGrid = { call: calls[2], copies: copies() };
+  console.log(JSON.stringify({ fromRow, modeFromRow, fromGrid, n: calls.length }));
+})();
+"""))
+
+    assert r["fromRow"]["call"] == {"method": "settings.set",
+                                    "params": {"key": "skip_existing", "value": True}}
+    assert r["fromRow"]["stored"] is True
+    assert r["fromRow"]["copies"]["grid"]["checked"] is True
+    assert r["modeFromRow"]["call"]["params"] == {"key": "skip_mode",
+                                                  "value": "In Database Only"}
+    assert r["modeFromRow"]["copies"]["grid"]["mode"] == "In Database Only"
+    assert r["fromGrid"]["copies"]["row"]["checked"] is False
+    assert r["n"] == 3
+
+
+def test_a_refused_change_snaps_both_copies_back_to_the_stored_value(app_js, tmp_path):
+    """The host refuses these keys mid-run. A refused checkbox already flipped
+    back; a refused select used to keep showing the value the host never
+    took."""
+    r = _run_node(tmp_path, "dlskip_refused.mjs", _skip_harness(app_js, """
+renderDownloadsSkip();
+refuse = 'A download is running, so the skip mode is frozen until it finishes.';
+(async () => {
+  mode.value = 'In Database Only';
+  await save('skip_mode', mode.value, mode);
+  box.checked = true;
+  await save('skip_existing', box.checked, box);
+  console.log(JSON.stringify({ copies: copies(), toasts,
+                               stored: state.settings }));
+})();
+"""))
+
+    assert r["copies"] == {"row": {"checked": False, "mode": "In Folder Only"},
+                           "grid": {"checked": False, "mode": "In Folder Only"}}
+    assert r["stored"] == {"skip_existing": False, "skip_mode": "In Folder Only"}
+    assert all(t["isError"] for t in r["toasts"]) and len(r["toasts"]) == 2
+
+
+def test_the_skip_row_is_locked_for_the_length_of_a_download(app_js, tmp_path):
+    """_set_download_lock's two widgets, and the host's own rule: a batch or a
+    Watch List job alike freezes DOWNLOAD_LOCKED_SETTINGS."""
+    r = _run_node(tmp_path, "dlskip_lock.mjs", _skip_harness(app_js, """
+function snap() {
+  return { box: [box.disabled, box.reason], mode: [mode.disabled, mode.reason] };
+}
+renderDownloadsSkip();
+const idle = snap();
+dl.running = true;
+renderDownloadsSkip();
+const batch = snap();
+dl.running = false; wl.running = true;
+renderDownloadsSkip();
+const watch = snap();
+wl.running = false;
+renderDownloadsSkip();
+console.log(JSON.stringify({ idle, batch, watch, again: snap(),
+                             reason: SKIP_LOCKED_REASON }));
+"""))
+
+    assert r["idle"] == {"box": [False, ""], "mode": [False, ""]}
+    assert r["batch"] == {"box": [True, r["reason"]], "mode": [True, r["reason"]]}
+    assert r["watch"] == r["batch"]
+    assert r["again"] == r["idle"]
+    assert "download is running" in r["reason"]
+
+
+def test_the_skip_row_is_wired_and_rendered(app_js, index_html):
+    """The markup carries the keys, the controls write through save(), and the
+    Downloads render path paints the row — the three things that were missing."""
+    assert 'id="dl-skip" data-key="skip_existing"' in index_html
+    assert 'id="dl-skipmode" data-key="skip_mode"' in index_html
+    assert "$('#dl-skip').addEventListener('change'" in app_js
+    assert "save('skip_existing', $('#dl-skip').checked" in app_js
+    assert "save('skip_mode', $('#dl-skipmode').value" in app_js
+    body = _slice(app_js, "  function renderDownloads()", "  /* ── modal shell")
+    assert "renderDownloadsSkip();" in body

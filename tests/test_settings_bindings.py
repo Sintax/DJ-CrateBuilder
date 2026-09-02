@@ -508,6 +508,7 @@ def test_a_refused_settings_save_shows_the_hosts_own_words(tmp_path):
 const toasts = [];
 function toast(text, isError) { toasts.push({ text, isError: !!isError }); }
 function applySettingsDependencies() {}
+function syncSettingControls() {}
 const state = { settings: { bitrate_quality: '192 kbps' } };
 const REFUSAL = 'A download is running, so the output quality is frozen '
   + 'until it finishes.';
