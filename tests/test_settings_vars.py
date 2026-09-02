@@ -63,7 +63,11 @@ def test_save_settings_preserves_unrelated_keys(tmp_path, make_app):
     app.update()
     app._settings_dir_var.set(str(tmp_path / "Music"))
     app._save_settings()
-    saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+    # An older build's file: app init tidied it into the folder, and that is
+    # where every write lands now.
+    saved = json.loads((tmp_path / ".cratebuilder" / "config.json")
+                       .read_text(encoding="utf-8"))
+    assert not cfg_path.exists()
     assert saved["url_history"] == ["https://example.com/watch?v=abc"]
     assert saved["__unrelated_sentinel__"] == "must-survive"
     assert saved["base_dir"] == str(tmp_path / "Music")

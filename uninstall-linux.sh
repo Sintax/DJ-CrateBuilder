@@ -6,7 +6,9 @@
 INSTALL_DIR="$HOME/.local/share/DJ-CrateBuilder"
 BIN_LINK="$HOME/.local/bin/dj-cratebuilder"
 DESKTOP_FILE="$HOME/.local/share/applications/dj-cratebuilder.desktop"
-CONFIG_FILE="$HOME/.dj_cratebuilder_config.json"
+CONFIG_DIR="$HOME/.cratebuilder"
+# Where the config lived before the folder — cleared too, if still there.
+OLD_CONFIG_FILE="$HOME/.dj_cratebuilder_config.json"
 
 echo ""
 echo "  DJ-CrateBuilder — Uninstall"
@@ -23,9 +25,10 @@ fi
 [ -f "$DESKTOP_FILE" ]  && rm -f "$DESKTOP_FILE"   && echo "  ✓ Removed desktop entry"
 
 echo ""
-read -p "  Also remove config file? [y/N] " rmconfig
+read -p "  Also remove the config folder ($CONFIG_DIR)? [y/N] " rmconfig
 if [[ "$rmconfig" == [yY] ]]; then
-    [ -f "$CONFIG_FILE" ] && rm -f "$CONFIG_FILE" && echo "  ✓ Removed $CONFIG_FILE"
+    [ -d "$CONFIG_DIR" ]      && rm -rf "$CONFIG_DIR"      && echo "  ✓ Removed $CONFIG_DIR"
+    [ -f "$OLD_CONFIG_FILE" ] && rm -f "$OLD_CONFIG_FILE"  && echo "  ✓ Removed $OLD_CONFIG_FILE"
 fi
 
 echo ""

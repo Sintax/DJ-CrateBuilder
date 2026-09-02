@@ -214,21 +214,87 @@ def ensure_usable_tempdir(base_dir=None):
 
 
 # ── Config persistence ────────────────────────────────────────────────────────
-CONFIG_NAME = ".dj_cratebuilder_config.json"
+# Everything the app keeps behind the scenes in the user's profile lives in one
+# hidden folder, so the home directory itself carries nothing of ours.
+CONFIG_DIR_NAME = ".cratebuilder"
+CONFIG_NAME = "config.json"
+LEGACY_SUBDIR = "legacy"
+# The names the config went by before the folder, all in the home directory
+# itself, newest first. tidy_home_config moves them in: the newest becomes
+# config.json unless one is already there, the rest are shelved under legacy/
+# — kept, never deleted — so a home directory is tidied once and never read
+# from again.
+HOME_CONFIG_NAME = ".dj_cratebuilder_config.json"
 LEGACY_CONFIG_NAME = ".yt_dj_cratebuilder_config.json"
+OLDEST_CONFIG_NAME = ".audio_downloader_config.json"
+HOME_CONFIG_NAMES = (HOME_CONFIG_NAME, LEGACY_CONFIG_NAME, OLDEST_CONFIG_NAME)
+
+
+def config_dir():
+    return os.path.join(os.path.expanduser("~"), CONFIG_DIR_NAME)
+
 
 def _config_path():
-    return os.path.join(os.path.expanduser("~"), CONFIG_NAME)
+    return os.path.join(config_dir(), CONFIG_NAME)
+
 
 def _legacy_config_path():
-    return os.path.join(os.path.expanduser("~"), LEGACY_CONFIG_NAME)
+    """Where the pre-rename config sits once tidied in — the one place a
+    missing config.json is still seeded from."""
+    return os.path.join(config_dir(), LEGACY_SUBDIR, LEGACY_CONFIG_NAME.lstrip("."))
+
+
+def _shelf_path(name):
+    """A free path under legacy/ for a file called *name*: the dot dropped,
+    and a counter if a shelved copy is already there."""
+    stem, ext = os.path.splitext(name.lstrip("."))
+    folder = os.path.join(config_dir(), LEGACY_SUBDIR)
+    candidate = os.path.join(folder, stem + ext)
+    counter = 1
+    while os.path.exists(candidate):
+        counter += 1
+        candidate = os.path.join(folder, f"{stem}-{counter}{ext}")
+    return candidate
+
+
+def tidy_home_config():
+    """Move the app's files out of the home directory into config_dir().
+
+    The previous config becomes config.json when there is none yet; an older
+    name, or a previous config found after config.json already exists (an
+    older build ran in between and wrote a fresh one), is shelved under
+    legacy/ rather than deleted. Touches nothing when the home directory
+    holds none of them, and never raises — a tidy-up that cannot be done is
+    simply not done. Returns the (source, destination) moves made."""
+    home = os.path.expanduser("~")
+    present = [name for name in HOME_CONFIG_NAMES
+               if os.path.isfile(os.path.join(home, name))]
+    if not present:
+        return []
+    moves = []
+    for name in present:
+        source = os.path.join(home, name)
+        if name == HOME_CONFIG_NAME and not os.path.exists(_config_path()):
+            destination = _config_path()
+        else:
+            destination = _shelf_path(name)
+        try:
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            os.replace(source, destination)
+        except OSError:
+            continue
+        moves.append((source, destination))
+    return moves
+
 
 def default_base_dir():
     """The crate root a fresh install downloads into. Resolved live so a
     changed home directory is honoured."""
     return os.path.join(os.path.expanduser("~"), "Music", "DJ-CrateBuilder")
 
+
 def load_config():
+    tidy_home_config()
     p = _config_path()
     if os.path.exists(p):
         try:
@@ -236,8 +302,8 @@ def load_config():
                 return json.load(f)
         except Exception:
             pass
-    # Migrate from old config name if it exists
-    old_p = os.path.join(os.path.expanduser("~"), ".yt_dj_cratebuilder_config.json")
+    # Seed from the pre-rename config, tidied into legacy/ above.
+    old_p = _legacy_config_path()
     if os.path.exists(old_p):
         try:
             with open(old_p, "r", encoding="utf-8") as f:
@@ -248,8 +314,10 @@ def load_config():
             pass
     return {}
 
+
 def save_config(data):
     try:
+        os.makedirs(config_dir(), exist_ok=True)
         with open(_config_path(), "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
     except Exception:

@@ -78,7 +78,7 @@ def _isolate_service_paths(request, monkeypatch, _service_sandbox):
 
     Every service/DB fixture in the suite passes explicit tmp paths today, but
     nothing stopped the next test from writing `CrateBuilderService()` bare —
-    which would read the developer's real ~/.dj_cratebuilder_config.json, probe
+    which would read the developer's real ~/.cratebuilder/config.json, probe
     the real cratebuilder.db beside the checkout, and (through `remote_state`)
     write the real cratebuilder_remote.json. Two seams close all of it: HOME /
     USERPROFILE, which is what `util.config_path` and `util.default_base_dir`
@@ -221,8 +221,11 @@ def make_app(cb_mod, tmp_path, monkeypatch):
     Isolation applied before any app is built (and active for the whole
     test): see _isolate_runtime.
 
-    To pre-seed a config, write tmp_path/'.dj_cratebuilder_config.json'
-    BEFORE calling make_app() — load_config() resolves '~' at call time.
+    To pre-seed a config, write tmp_path/'.cratebuilder/config.json' BEFORE
+    calling make_app() — Settings resolves '~' at construction. Writing the
+    old home-directory name, tmp_path/'.dj_cratebuilder_config.json', works
+    too: that is an older build's config, and app init tidies it into the
+    folder exactly as it would a real one.
 
     quiet=True (the default) suppresses ambient startup side effects; pass
     quiet=False for a production-faithful init. Extra kwargs pass through

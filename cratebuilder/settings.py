@@ -1,4 +1,4 @@
-"""Settings: single in-memory owner of ~/.dj_cratebuilder_config.json."""
+"""Settings: single in-memory owner of ~/.cratebuilder/config.json."""
 import copy
 import json
 import os
@@ -124,6 +124,10 @@ class Settings:
 
     def __init__(self, path=None):
         self._explicit_path = path is not None
+        if path is None:
+            # The default store is the one the home directory is tidied into;
+            # an explicit path (every test's) leaves the home directory alone.
+            util.tidy_home_config()
         self._path = path if path is not None else util._config_path()
         self._defaults = _schema_defaults()
         self._lock = threading.Lock()
@@ -187,9 +191,10 @@ class Settings:
         return self._data.get(key, self._defaults[key])
 
     def _load(self):
-        """Read the config, falling back to the pre-rename file name. A
-        successful legacy read is copied forward immediately, as the old
-        load_config did, so the file only has to be found once."""
+        """Read the config, falling back to the pre-rename file — tidied into
+        legacy/ by now. A successful legacy read is copied forward
+        immediately, as the old load_config did, so the file only has to be
+        found once."""
         from_legacy = False
         data = _read_json(self._path)
         if data is None and not self._explicit_path:
@@ -207,6 +212,7 @@ class Settings:
         write must never crash the app (matching the old save_config)."""
         tmp = self._path + ".tmp"
         try:
+            os.makedirs(os.path.dirname(self._path) or ".", exist_ok=True)
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self._data, f, indent=2)
             os.replace(tmp, self._path)

@@ -139,14 +139,17 @@ def test_file_rename_probe_reads_legacy_file(tmp_path, monkeypatch):
     legacy = tmp_path / ".yt_dj_cratebuilder_config.json"
     legacy.write_text(json.dumps({"limit_minutes": 42}), encoding="utf-8")
     s = Settings()
-    assert s.path == str(tmp_path / ".dj_cratebuilder_config.json")
+    assert s.path == str(tmp_path / ".cratebuilder" / "config.json")
     assert s.get("limit_minutes") == 42
     # Copied forward at load, as the old load_config did, so the rename only
-    # has to be discovered once. The legacy file is left where it is.
+    # has to be discovered once. The legacy file is shelved into the folder —
+    # kept, but out of the home directory.
     assert _read_file(s.path) == {"limit_minutes": 42}
     s.set("skip_existing", False)
     assert _read_file(s.path) == {"limit_minutes": 42, "skip_existing": False}
-    assert _read_file(str(legacy)) == {"limit_minutes": 42}
+    shelved = tmp_path / ".cratebuilder" / "legacy" / "yt_dj_cratebuilder_config.json"
+    assert _read_file(str(shelved)) == {"limit_minutes": 42}
+    assert not legacy.exists()
 
 
 def test_file_rename_probe_skipped_for_explicit_path(tmp_path, monkeypatch):
@@ -155,6 +158,80 @@ def test_file_rename_probe_skipped_for_explicit_path(tmp_path, monkeypatch):
     legacy.write_text(json.dumps({"limit_minutes": 42}), encoding="utf-8")
     s = Settings(path=str(tmp_path / "elsewhere.json"))
     assert s.get("limit_minutes") == 8
+    # An explicit path — every test's — leaves the home directory alone.
+    assert legacy.exists()
+    assert not (tmp_path / ".cratebuilder").exists()
+
+
+# ── The home directory is tidied into ~/.cratebuilder ────────────────────────
+
+def _home(tmp_path, monkeypatch, **files):
+    monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path))
+    for name, data in files.items():
+        (tmp_path / name).write_text(json.dumps(data), encoding="utf-8")
+    return tmp_path
+
+
+def test_the_previous_config_moves_into_the_folder_as_config_json(tmp_path, monkeypatch):
+    """The whole point: nothing of ours is left in the home directory."""
+    home = _home(tmp_path, monkeypatch,
+                 **{".dj_cratebuilder_config.json": {"limit_minutes": 17}})
+    s = Settings()
+    assert s.path == str(home / ".cratebuilder" / "config.json")
+    assert s.get("limit_minutes") == 17
+    assert _read_file(s.path) == {"limit_minutes": 17}
+    assert not (home / ".dj_cratebuilder_config.json").exists()
+    assert not (home / ".cratebuilder" / "legacy").exists()
+
+
+def test_every_older_name_is_shelved_not_deleted(tmp_path, monkeypatch):
+    home = _home(tmp_path, monkeypatch, **{
+        ".dj_cratebuilder_config.json": {"limit_minutes": 17},
+        ".yt_dj_cratebuilder_config.json": {"limit_minutes": 42},
+        ".audio_downloader_config.json": {"base_dir": "C:/old"},
+    })
+    moves = util.tidy_home_config()
+    assert [os.path.basename(src) for src, _ in moves] == [
+        ".dj_cratebuilder_config.json", ".yt_dj_cratebuilder_config.json",
+        ".audio_downloader_config.json"]
+    legacy = home / ".cratebuilder" / "legacy"
+    assert _read_file(str(home / ".cratebuilder" / "config.json")) == {"limit_minutes": 17}
+    assert _read_file(str(legacy / "yt_dj_cratebuilder_config.json")) == {"limit_minutes": 42}
+    assert _read_file(str(legacy / "audio_downloader_config.json")) == {"base_dir": "C:/old"}
+    assert not any(name.startswith(".") and "config" in name
+                   for name in os.listdir(home))
+    # The oldest name is shelved, never read: it predates every key.
+    assert Settings().get("limit_minutes") == 17
+
+
+def test_a_config_json_already_there_wins_over_a_stray_home_file(tmp_path, monkeypatch):
+    """An older build run after the tidy writes a fresh default config into
+    the home directory. It must not replace the real one — it is shelved,
+    and a second stray gets a counter rather than clobbering the first."""
+    home = _home(tmp_path, monkeypatch)
+    (home / ".cratebuilder").mkdir()
+    (home / ".cratebuilder" / "config.json").write_text(
+        json.dumps({"limit_minutes": 17}), encoding="utf-8")
+    for n in (1, 2):
+        (home / ".dj_cratebuilder_config.json").write_text(
+            json.dumps({"limit_minutes": 8, "stray": n}), encoding="utf-8")
+        assert Settings().get("limit_minutes") == 17
+    legacy = home / ".cratebuilder" / "legacy"
+    assert _read_file(str(legacy / "dj_cratebuilder_config.json"))["stray"] == 1
+    assert _read_file(str(legacy / "dj_cratebuilder_config-2.json"))["stray"] == 2
+    assert not (home / ".dj_cratebuilder_config.json").exists()
+
+
+def test_a_clean_home_directory_is_left_exactly_as_it_is(tmp_path, monkeypatch):
+    home = _home(tmp_path, monkeypatch)
+    assert util.tidy_home_config() == []
+    assert not (home / ".cratebuilder").exists()
+    # The folder appears with the first write, not the first read.
+    s = Settings()
+    assert not (home / ".cratebuilder").exists()
+    s.set("skip_existing", False)
+    assert _read_file(str(home / ".cratebuilder" / "config.json")) == {
+        "skip_existing": False}
 
 
 def test_auto_check_hours_seeds_auto_download_interval(cfg_path):

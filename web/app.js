@@ -5465,7 +5465,7 @@
   function renderSettings() {
     const grid = $('#settings-grid');
     grid.innerHTML = '';
-    $('#cfg-path').textContent = state.settings_path || '~/.dj_cratebuilder_config.json';
+    $('#cfg-path').textContent = state.settings_path || '~/.cratebuilder/config.json';
 
     const sections = [];
     SETTINGS_KEYS.forEach((entry) => {
