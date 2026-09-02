@@ -911,6 +911,13 @@ def _overlap(a, b):
     return wide * tall if wide > 0 and tall > 0 else 0
 
 
+def window_on_screen(rect, screens):
+    """Whether an (x, y, w, h) window shares any area with one of *screens*
+    — the test fit_window_geometry makes before trusting a remembered
+    position, on its own for a caller that sees positions as they happen."""
+    return any(_overlap(rect, screen) for screen in screens)
+
+
 def fit_window_geometry(remembered, screens, min_size=(640, 620)):
     """Where a remembered window should actually open, given the monitors that
     exist right now. Returns a Tk geometry string, or None to let the caller
