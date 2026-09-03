@@ -722,7 +722,9 @@ class MainWindow(FakeWindow):
     position WindowPlacement seeds itself from, and the native confirmation
     dialog WindowClose asks its question over."""
 
-    def __init__(self, geometry=(1200, 800, 40, 30)):
+    def __init__(self, geometry=(1400, 900, 40, 30)):
+        # No smaller than MIN_SIZE: a frame below it is one the real window
+        # cannot have, and WindowPlacement refuses it as such.
         super().__init__()
         self.width, self.height, self.x, self.y = geometry
         self.confirm_answer = True
