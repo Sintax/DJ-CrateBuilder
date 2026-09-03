@@ -4,8 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DJ-CrateBuilder</title>
+<script>
+  /* The stored theme, applied before the stylesheets load, so a dark page
+     never flashes light on its way up. app.js's applyTheme keeps the same
+     key; a store that refuses (private mode) leaves the page light. */
+  try {
+    if (localStorage.getItem('cb_theme') === 'dark') {
+      document.documentElement.setAttribute('data-theme', 'dark');
+    }
+  } catch (e) { /* light */ }
+</script>
 <link rel="stylesheet" href="theme.css">
 <link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="theme-dark.css">
 </head>
 <body>
 
@@ -44,7 +55,7 @@
 
     <div class="cb-panel__foot">
       <div class="cb-row" id="host-status" tabindex="0" data-tt="remote.host_status"
-           style="gap:8px;font-size:12px;color:#6B7280">
+           style="gap:8px;font-size:12px;color:var(--cb-log-ts)">
         <span class="cb-dot" id="host-dot"></span>
         <span class="cb-mono" id="host-label" style="font-size:11px">connecting…</span>
       </div>
@@ -198,7 +209,7 @@
       <div class="cb-row" style="gap:12px;flex-wrap:wrap">
         <label class="cb-row" style="gap:8px;cursor:pointer">
           <input type="checkbox" class="cb-cbx" id="dl-skip" data-key="skip_existing">
-          <span style="font-size:13px;color:#24262B">Skip files already downloaded</span>
+          <span style="font-size:13px;color:var(--cb-text)">Skip files already downloaded</span>
         </label>
         <select class="cb-sel" id="dl-skipmode" data-key="skip_mode">
           <option>In Database ~ In Folder</option>
@@ -254,7 +265,7 @@
       </div>
       <div class="cb-row" style="gap:8px;flex-wrap:wrap">
         <button class="cb-btn cb-btn--fill" id="wl-add" data-tt="wl.add_channel">+ Add Channel</button>
-        <button class="cb-btn" id="wl-links" style="border-color:#CC7A00;color:#A66300"
+        <button class="cb-btn" id="wl-links" style="border-color:var(--cb-attn-line);color:var(--cb-warn)"
                 data-tt="wl.check_links">🛠 Check Links</button>
         <button class="cb-btn" id="wl-dl-all" data-tt="wl.download_all_new">⬇ Download All New</button>
         <button class="cb-btn" id="wl-scan" data-tt="wl.scan_all">🔍 Scan for new</button>

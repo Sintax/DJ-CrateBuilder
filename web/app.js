@@ -434,7 +434,7 @@
     bar.className = 'cb-offline-bar';
     bar.id = 'cb-offline-bar';
     const dot = document.createElement('span');
-    dot.style.cssText = 'width:8px;height:8px;border-radius:50%;background:#B4B9C3;flex:none';
+    dot.style.cssText = 'width:8px;height:8px;border-radius:50%;background:var(--cb-dot-read);flex:none';
     const text = document.createElement('span');
     text.innerHTML = 'Host offline — showing the last state received ' +
       '<span class="cb-mono" id="cb-offline-at"></span>';
@@ -586,6 +586,41 @@
       }
     });
     codeIn.focus();
+  }
+
+  /* ── appearance ──────────────────────────────────────────────────────────
+     Light or dark, per device. The choice belongs to the screen it is read
+     on, not to the host: a phone on the sofa and the app window on the host
+     machine each keep their own, the way the database viewer's column widths
+     do (HANDOFF §2) — so it lives in localStorage, never in config.json, and
+     a read-only remote session can still change it. index.html applies the
+     stored value inline before first paint, so a dark page never flashes
+     light on its way up; this is the same rule for a change made while the
+     page is open. theme-dark.css answers the attribute. */
+
+  const THEME_KEY = 'cb_theme';
+  const THEMES = ['light', 'dark'];
+
+  function storedTheme() {
+    try {
+      const raw = localStorage.getItem(THEME_KEY);
+      return THEMES.includes(raw) ? raw : 'light';
+    } catch (_) { return 'light'; }
+  }
+
+  function applyTheme(name) {
+    const theme = THEMES.includes(name) ? name : 'light';
+    if (theme === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+    else document.documentElement.removeAttribute('data-theme');
+    try {
+      localStorage.setItem(THEME_KEY, theme);
+    } catch (_) { /* storage refused — the choice lasts this page load */ }
+    $$('#settings-theme > span').forEach((seg) => {
+      const on = seg.dataset.theme === theme;
+      seg.classList.toggle('is-on', on);
+      seg.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
+    return theme;
   }
 
   /* ── notifications (3n) ───────────────────────────────────────────────────
@@ -3138,7 +3173,7 @@
     btn.textContent = st.wrap ? 'Wrap: On' : 'Wrap: Off';
     btn.style.borderColor = st.wrap ? 'var(--cb-ok)' : '';
     btn.style.color = st.wrap ? 'var(--cb-ok)' : '';
-    btn.style.background = st.wrap ? 'rgba(18,122,62,.06)' : '';
+    btn.style.background = st.wrap ? 'var(--cb-ok-wash)' : '';
   }
 
   async function logDownload(kind) {
@@ -5462,10 +5497,64 @@
     'Remote Access': 'remote.access_section',
   };
 
+  /* The Appearance card: the one Settings control that writes to this device
+     rather than to the host (see applyTheme), drawn ahead of the contract's
+     sections. Its options are spans in a .cb-seg like the Downloads screen's
+     platform switch, with the radio role and keys the mockup's hover-only
+     control lacks. readOnlyOk keeps them live in a read-only remote session,
+     where renderSettings disables every host-bound control. */
+  function appearanceCard() {
+    const card = document.createElement('div');
+    card.className = 'cb-card cb-set-card';
+
+    const head = document.createElement('div');
+    head.className = 'cb-row';
+    head.innerHTML = '<span class="cb-sect"></span>';
+    head.firstChild.textContent = 'Appearance';
+    card.appendChild(head);
+
+    const row = document.createElement('div');
+    row.className = 'cb-set-row';
+    const lab = document.createElement('span');
+    lab.className = 'cb-lab';
+    lab.textContent = 'Theme';
+    const seg = document.createElement('div');
+    seg.className = 'cb-seg';
+    seg.id = 'settings-theme';
+    seg.setAttribute('role', 'radiogroup');
+    seg.setAttribute('aria-label', 'Theme');
+    const current = storedTheme();
+    [['light', 'Light'], ['dark', 'Dark']].forEach(([name, label]) => {
+      const opt = document.createElement('span');
+      opt.dataset.theme = name;
+      opt.textContent = label;
+      opt.setAttribute('role', 'radio');
+      opt.setAttribute('aria-checked', name === current ? 'true' : 'false');
+      opt.tabIndex = 0;
+      if (name === current) opt.classList.add('is-on');
+      const pick = () => applyTheme(name);
+      opt.addEventListener('click', pick);
+      opt.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); }
+      });
+      seg.appendChild(readOnlyOk(opt));
+    });
+    row.append(lab, seg);
+    card.appendChild(row);
+
+    const hint = document.createElement('div');
+    hint.className = 'cb-mut';
+    hint.style.fontSize = '11px';
+    hint.textContent = 'Kept on this device — the app window and each browser choose their own.';
+    card.appendChild(hint);
+    return card;
+  }
+
   function renderSettings() {
     const grid = $('#settings-grid');
     grid.innerHTML = '';
     $('#cfg-path').textContent = state.settings_path || '~/.cratebuilder/config.json';
+    grid.appendChild(appearanceCard());
 
     const sections = [];
     SETTINGS_KEYS.forEach((entry) => {

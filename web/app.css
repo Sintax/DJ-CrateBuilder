@@ -18,6 +18,14 @@
      contrast on it), and the same orange one step darker for hover. */
   --cb-fix-ink: #1A1A1A;
   --cb-fix-hover: #F08000;
+  /* theme.css's secondary ink, which it paints as a literal (#4B4F59 on
+     .cb-lab, .cb-nav, .cb-seg and .cb-btn--quiet); named here for the rules
+     below that share it, so theme-dark.css has one token to answer. */
+  --cb-text-2: #4B4F59;
+  /* The read-notification dot: --cb-quiet one step darker. */
+  --cb-dot-read: #B4B9C3;
+  /* --cb-ok at 6% — the log viewer's wrap toggle while it is on. */
+  --cb-ok-wash: rgba(18, 122, 62, .06);
 }
 
 html, body { height: 100%; }
@@ -81,7 +89,7 @@ body { overflow: hidden; }
   gap: 14px; align-items: start;
 }
 .cb-grid-ov > *, .cb-grid-3 > * { min-width: 0; }
-.cb-ov-line { font-size: 12.5px; color: #4B4F59; }
+.cb-ov-line { font-size: 12.5px; color: var(--cb-text-2); }
 /* .cb-card sets overflow-wrap:anywhere so a long path cannot widen the grid —
    which would otherwise break the LABEL one letter per line once the value
    claims the row. The label never wraps; the value truncates and carries the
@@ -123,7 +131,7 @@ body { overflow: hidden; }
   width: 6px; height: 6px; border-radius: 50%; margin-top: 6px; flex: none;
   background: var(--cb-accent);
 }
-.cb-notif__row.is-read .cb-notif__dot { background: #B4B9C3; }
+.cb-notif__row.is-read .cb-notif__dot { background: var(--cb-dot-read); }
 .cb-notif__body { min-width: 0; }
 .cb-notif__text { font-size: 12.5px; color: var(--cb-text); }
 .cb-notif__when { font: 400 10.5px var(--cb-mono); color: var(--cb-muted); }
@@ -151,7 +159,7 @@ body { overflow: hidden; }
 .cb-faq__chev { color: var(--cb-line); font-size: 11px; flex: none; }
 .cb-faq__a {
   padding: 0 12px 11px 32px; border-bottom: 1px solid var(--cb-line-soft);
-  font-size: 12px; line-height: 1.65; color: #4B4F59; white-space: pre-line;
+  font-size: 12px; line-height: 1.65; color: var(--cb-text-2); white-space: pre-line;
 }
 .cb-foot-link { color: var(--cb-muted); text-decoration: none; }
 .cb-foot-link:hover { color: var(--cb-line); text-decoration: underline; }
