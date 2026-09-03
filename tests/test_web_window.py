@@ -109,7 +109,10 @@ def test_a_disabled_host_does_not_print_a_pairing_code(tmp_path, capsys,
     monkeypatch.setattr(web_server.uvicorn, "Server",
                         lambda config: type("S", (), {"run": lambda s: started.setdefault("ran", True)})())
     monkeypatch.setattr(web_server, "build_service",
-                        lambda data_dir: type("Svc", (), {"remote_state": state})())
+                        lambda data_dir: type("Svc", (), {
+                            "remote_state": state,
+                            "populate_watchlist_from_folders": lambda self: 0,
+                        })())
     monkeypatch.setattr(web_server, "create_app", lambda *a, **k: object())
 
     web_server.main(["--port", "0", "--pair", "--data-dir", str(tmp_path)])
@@ -128,16 +131,23 @@ def test_host_allow_is_persisted_by_the_entry_point(tmp_path, capsys, monkeypatc
     import web_server
 
     state = RemoteState(str(tmp_path / "remote.json"))
+    filled = []
     monkeypatch.setattr(web_server.uvicorn, "Server",
                         lambda config: type("S", (), {"run": lambda s: None})())
     monkeypatch.setattr(web_server, "build_service",
-                        lambda data_dir: type("Svc", (), {"remote_state": state})())
+                        lambda data_dir: type("Svc", (), {
+                            "remote_state": state,
+                            "populate_watchlist_from_folders":
+                                lambda self: filled.append(1),
+                        })())
     monkeypatch.setattr(web_server, "create_app", lambda *a, **k: object())
 
     web_server.main(["--port", "0", "--data-dir", str(tmp_path),
                      "--host-allow", "https://cb.example.com/",
                      "--host-allow", "booth.tailnet.ts.net"])
     assert state.extra_hosts() == ["cb.example.com", "booth.tailnet.ts.net"]
+    # The headless host owes the same first-run fill the window does.
+    assert filled == [1]
     assert "cb.example.com" in capsys.readouterr().out
 
 
@@ -747,6 +757,7 @@ class MainService(RecordingService):
         self.timers = 0
         self.startup_scans = 0
         self.auto_dl_timers = 0
+        self.populates = 0
         self.on_update_restart = None
         self.placement = placement
         self.saved_placements = []
@@ -763,6 +774,10 @@ class MainService(RecordingService):
 
     def start_auto_download_timer(self):
         self.auto_dl_timers += 1
+
+    def populate_watchlist_from_folders(self):
+        self.populates += 1
+        return 0
 
     def window_placement(self):
         return self.placement
@@ -869,6 +884,22 @@ def test_main_arms_the_auto_download_scheduler_once_the_loop_is_up(monkeypatch):
     started()
 
     assert service.auto_dl_timers == 1
+    close_the_window(window)
+
+
+def test_main_fills_an_empty_watch_list_before_the_window_exists(monkeypatch):
+    """The monolith's after(1200, _watchlist_populate_from_folders), which the
+    web port never inherited. Before create_window, so the first
+    watchlist.list the page asks for already holds the rows — and before
+    started() arms the startup scan, which arms nothing for an empty list."""
+    service, window, _, started, _ = run_main(monkeypatch)
+
+    assert service.populates == 1
+    assert service.startup_scans == 0
+
+    started()
+
+    assert service.populates == 1
     close_the_window(window)
 
 

@@ -1070,6 +1070,11 @@ def main():
     # Explicit, like start_remote_mount() below — a constructed service does
     # not arm its own auto-check timer (cratebuilder/service.py's __init__).
     service.start_update_timer()
+    # First run: an empty Watch List is filled from the crate folders before
+    # the window exists, so the first watchlist.list the page asks for already
+    # holds the rows — and before started() arms the startup scan, which arms
+    # nothing for an empty list. The monolith's after(1200, …).
+    service.populate_watchlist_from_folders()
     if service.remote_state.get_flag("enabled"):
         try:
             start_remote_mount(service, lan="--lan" in sys.argv,

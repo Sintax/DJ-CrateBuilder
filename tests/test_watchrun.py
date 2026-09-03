@@ -16,8 +16,8 @@ from cratebuilder.db import DownloadsDatabase
 from cratebuilder.download import Outcome
 from cratebuilder.service import CBError, CrateBuilderService
 from cratebuilder.settings import Settings
-from cratebuilder.sidecar import read_channel_sidecar
-from cratebuilder.watchrun import WatchlistOps
+from cratebuilder.sidecar import CHANNEL_SIDECAR_NAME, read_channel_sidecar
+from cratebuilder.watchrun import WatchlistOps, discover_channel_folders
 from cratebuilder.ydl import ChannelIdentity, YdlOffline, YdlPermanent
 
 
@@ -1251,3 +1251,121 @@ def _drain(service, timeout=5.0):
     while service._job_running("watchlist") and _time.monotonic() < deadline:
         _time.sleep(0.01)
     assert not service._job_running("watchlist")
+
+
+# ── First run: the Watch List from the folders already on disk ──────────────
+# The monolith's _watchlist_populate_from_folders, armed at after(1200, …) in
+# its __init__: an empty Watch List is filled from base/<Platform>/<Genre>/
+# <Channel>/, one row per channel folder — under its sidecar's link when the
+# folder carries one, parked as needs_resolve when it does not. The web port
+# never had it, so a reinstall that lost cratebuilder.db (the v1.3 uninstaller
+# wiped the whole install folder) left every crate folder with no way back.
+
+def _crate_folder(harness, name, genre="House", platform="YouTube", **sidecar):
+    folder = harness.folder(name, genre, platform)
+    os.makedirs(folder, exist_ok=True)
+    if sidecar:
+        with open(os.path.join(folder, CHANNEL_SIDECAR_NAME), "w",
+                  encoding="utf-8") as fh:
+            json.dump(sidecar, fh)
+    return folder
+
+
+def test_discover_walks_platform_then_genre_then_channel_and_skips_files(tmp_path):
+    harness = Harness(tmp_path, FakeSession())
+    _crate_folder(harness, "Late Adds", genre="(none)")
+    _crate_folder(harness, "Deep House Daily")
+    _crate_folder(harness, "Berlin Sets", genre="Techno", platform="SoundCloud")
+    crate = str(tmp_path / "crate")
+    with open(os.path.join(crate, "YouTube", "notes.txt"), "w") as fh:
+        fh.write("not a genre")
+    with open(os.path.join(crate, "YouTube", "House", "loose.mp3"), "w") as fh:
+        fh.write("not a channel")
+
+    found = discover_channel_folders(crate)
+
+    assert [(platform, genre, name) for platform, genre, name, _ in found] == [
+        ("YouTube", "House", "Deep House Daily"),
+        ("YouTube", "(none)", "Late Adds"),
+        ("SoundCloud", "Techno", "Berlin Sets"),
+    ]
+    assert found[0][3] == harness.folder("Deep House Daily")
+    assert discover_channel_folders(str(tmp_path / "nowhere")) == []
+    assert discover_channel_folders("") == []
+
+
+def test_populate_fills_an_empty_watch_list_from_the_folders(tmp_path):
+    harness = Harness(tmp_path, FakeSession())
+    _crate_folder(harness, "Deep House Daily",
+                  channel_id="UCabc",
+                  channel_url="https://www.youtube.com/channel/UCabc/videos",
+                  display_name="Deep House Daily")
+    _crate_folder(harness, "Fresh Finds", genre="Techno")
+
+    assert harness.ops.populate_from_folders() == 2
+
+    rows = {r["display_name"]: r
+            for r in harness.db.get_all_watchlist_channels()}
+    daily, fresh = rows["Deep House Daily"], rows["Fresh Finds"]
+    assert (daily["url"], daily["channel_id"], daily["status"]) == (
+        "https://www.youtube.com/channel/UCabc/videos", "UCabc", "idle")
+    assert (fresh["url"], fresh["channel_id"], fresh["status"]) == (
+        "unresolved://YouTube/Techno/Fresh Finds", None, "needs_resolve")
+    assert {r["auto_added"] for r in rows.values()} == {1}
+    assert {r["genre"] for r in rows.values()} == {"House", "Techno"}
+    assert {c["id"] for c in harness.emit.of("watchlist.card")} == {
+        daily["id"], fresh["id"]}
+    assert harness.emit.lines(watchrun.LINE_DONE) == [
+        "DONE Populated 2 channel(s) from existing folders"]
+    assert harness.log == ["📂 Populated 2 channel(s) from existing folders"]
+    assert harness.emit.of("state.patch") == [{"counts": {"downloads": 1}}]
+
+
+def test_populate_builds_the_link_from_a_sidecar_that_only_has_the_id(tmp_path):
+    harness = Harness(tmp_path, FakeSession())
+    _crate_folder(harness, "Deep House Daily", channel_id="UCabc")
+
+    harness.ops.populate_from_folders()
+
+    (row,) = harness.db.get_all_watchlist_channels()
+    assert row["url"] == "https://www.youtube.com/channel/UCabc/videos"
+    assert row["display_name"] == "Deep House Daily"      # the folder's name
+    assert row["status"] == "idle"
+
+
+def test_populate_leaves_a_watch_list_that_has_rows_alone(tmp_path):
+    """A list with rows is the user's: a channel they removed from it must not
+    creep back in from its folder on the next launch."""
+    harness = Harness(tmp_path, FakeSession())
+    cid = harness.add_channel()
+    _crate_folder(harness, "Fresh Finds")
+
+    assert harness.ops.populate_from_folders() == 0
+
+    assert [r["id"] for r in harness.db.get_all_watchlist_channels()] == [cid]
+    assert harness.emit.events == []
+    assert harness.log == []
+
+
+def test_populate_counts_only_the_rows_it_could_add(tmp_path):
+    """Two folders whose sidecars name the same channel: UNIQUE(url) admits
+    one, and the other is passed over rather than aborting the fill."""
+    harness = Harness(tmp_path, FakeSession())
+    for name in ("Deep House Daily", "Deep House Daily (old)"):
+        _crate_folder(harness, name, channel_id="UCabc")
+    _crate_folder(harness, "Fresh Finds")
+
+    assert harness.ops.populate_from_folders() == 2
+
+    names = sorted(r["display_name"]
+                   for r in harness.db.get_all_watchlist_channels())
+    assert names == ["Deep House Daily", "Fresh Finds"]
+
+
+def test_populate_with_no_crate_says_nothing(tmp_path):
+    harness = Harness(tmp_path, FakeSession())
+
+    assert harness.ops.populate_from_folders() == 0
+
+    assert harness.emit.events == []
+    assert harness.log == []

@@ -8,6 +8,12 @@ from cratebuilder.util import today_yyyymmdd, classify_ydl_error
 
 CHANNEL_SIDECAR_NAME = "cratebuilder.json"
 
+# The url a watchlist row carries while it has no link yet: a unique sentinel
+# per Platform/Genre/Channel folder, so UNIQUE(url) holds and nothing bogus is
+# ever scanned. The monolith and cratebuilder.db keep their own copies of the
+# literal (neither may import the other); this one is the package's.
+UNRESOLVED_URL_PREFIX = "unresolved://"
+
 
 def channel_url_from_id(channel_id):
     """Build the canonical, spaceless scan URL from a YouTube channel_id."""
@@ -85,7 +91,7 @@ def is_unresolved_channel(ch):
     channel) may move a row into that state."""
     url = (ch.get("url") or "")
     if (ch.get("status") == "needs_resolve"
-            or url.startswith("unresolved://")
+            or url.startswith(UNRESOLVED_URL_PREFIX)
             or " " in url):
         return True
     platform = (ch.get("platform") or "YouTube")

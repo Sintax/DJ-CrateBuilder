@@ -101,6 +101,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     service = build_service(args.data_dir)
+    # The same first-run fill the desktop window does (web_window.main): an
+    # empty Watch List takes its rows from the crate folders before any
+    # browser can ask for it.
+    service.populate_watchlist_from_folders()
     state = service.remote_state
 
     if args.host_allow:
