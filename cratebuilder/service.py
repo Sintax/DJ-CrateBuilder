@@ -3073,6 +3073,31 @@ class CrateBuilderService:
         except Exception:
             return False
 
+    def populate_watchlist_from_folders(self):
+        """Fill an empty Watch List from the crate folders already on disk —
+        the monolith's first-run step, after(1200, _watchlist_populate_from_
+        folders), which the web port never inherited: a reinstall that lost
+        cratebuilder.db (the v1.3 uninstaller wiped the install folder) left
+        every channel folder behind with no way back into the Watch List.
+
+        The window and the headless server each call this once at launch,
+        ahead of start_startup_scan — which arms nothing for an empty list,
+        so the rows have to be there first. Synchronous and in-process, like
+        the window-placement calls: it reads folders and writes rows, nothing
+        more, so no transport rule applies. A list with rows is left alone
+        without the writer ever being built, and a machine with no crate and
+        no database gets neither. Never raises — a launch step that failed
+        would otherwise take the window down for a Watch List that was empty
+        anyway. Returns how many rows were added.
+        """
+        try:
+            db = self._db()
+            if db is not None and db.get_all_watchlist_channels():
+                return 0
+            return self._watchlist.populate_from_folders()
+        except Exception:
+            return 0
+
     def start_startup_scan(self):
         """Arm the launch scan of every watched channel, so the cards show
         current new-track counts without the user pressing anything.

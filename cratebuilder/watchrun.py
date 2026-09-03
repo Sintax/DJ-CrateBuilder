@@ -9,7 +9,8 @@ from datetime import datetime
 from cratebuilder import genrefix
 from cratebuilder import links as cb_links
 from cratebuilder import util
-from cratebuilder.batchresolve import TrackSpec, entry_url, platform_dir
+from cratebuilder.batchresolve import (PLATFORM_SUBDIR, TrackSpec, entry_url,
+                                       platform_dir)
 from cratebuilder.batchrun import BatchRunner
 from cratebuilder.crate import (ChannelCrate, CrateLayout, SkipMode,
                                 classify_scan_entries)
@@ -17,9 +18,10 @@ from cratebuilder.crate import (ChannelCrate, CrateLayout, SkipMode,
 # WatchlistOps through a deferred import inside its own accessor — so importing
 # it from here is a one-way dependency, not a cycle.
 from cratebuilder.service import WATCHLIST_JOB, CBError, watchlist_card
-from cratebuilder.sidecar import (canonical_channel_url, channel_id_from_url,
-                                  channel_url_from_id, classify_scan_error,
-                                  is_unresolved_channel, watch_fetch_url,
+from cratebuilder.sidecar import (UNRESOLVED_URL_PREFIX, canonical_channel_url,
+                                  channel_id_from_url, channel_url_from_id,
+                                  classify_scan_error, is_unresolved_channel,
+                                  read_channel_sidecar, watch_fetch_url,
                                   write_channel_sidecar)
 from cratebuilder.ydl import (YdlOffline, YdlPermanent, YdlSession,
                               YdlUnclassified, network_is_reachable)
@@ -109,6 +111,33 @@ def count_audio_files(path):
                    if os.path.splitext(name)[1].lower() in AUDIO_EXTS)
     except OSError:
         return 0
+
+
+def _subdirs(path):
+    """(name, path) for every directory directly under *path*, sorted; nothing
+    for a path that is missing or cannot be listed."""
+    try:
+        names = sorted(os.listdir(path))
+    except OSError:
+        return []
+    return [(name, os.path.join(path, name)) for name in names
+            if os.path.isdir(os.path.join(path, name))]
+
+
+def discover_channel_folders(base_dir):
+    """Every channel folder under base/<Platform>/<Genre>/<Channel>/, as
+    (platform, genre, folder name, path) in the order the monolith walks them:
+    platform by platform, genres and channels sorted. Files at either level
+    are passed over, and the genre reads back the way genre_value spells it."""
+    if not base_dir:
+        return []
+    found = []
+    for platform in PLATFORM_SUBDIR:
+        for genre_dir, genre_path in _subdirs(platform_dir(base_dir, platform)):
+            genre = CrateLayout.genre_value(genre_dir)
+            for channel_dir, path in _subdirs(genre_path):
+                found.append((platform, genre, channel_dir, path))
+    return found
 
 
 def track_specs(row, save_dir, entries, row_id=None):
@@ -860,6 +889,67 @@ class WatchlistOps:
         self._card(new_id)
         self._patch_counts()
         return {"channel_id": new_id}
+
+    def populate_from_folders(self):
+        """Fill an EMPTY Watch List from the crate folders already on disk —
+        the monolith's first-run _watchlist_populate_from_folders, at launch.
+
+        One row per base/<Platform>/<Genre>/<Channel>/ folder: under the
+        sidecar's link, idle, when the folder carries a cratebuilder.json that
+        names the channel; parked as needs_resolve under a unique unresolved://
+        sentinel when it does not, so UNIQUE(url) holds and nothing bogus is
+        ever scanned — Fix Link resolves it from there. Every row is
+        auto_added. A list that already has rows is the user's and is left
+        alone: a channel they removed must not creep back in from its folder.
+
+        Walks the folders before opening the database, so a machine with no
+        crate yet never gets a database written just for looking. Returns how
+        many rows were added; a folder the database refuses (two sidecars
+        naming one channel) is passed over, not fatal."""
+        found = discover_channel_folders(self._settings.get("base_dir"))
+        if not found:
+            return 0
+        db = self._db()
+        if db.get_all_watchlist_channels():
+            return 0
+        added = []
+        for platform, genre, channel_dir, path in found:
+            sidecar = read_channel_sidecar(path) or {}
+            channel_id = sidecar.get("channel_id") or None
+            url = sidecar.get("channel_url") or channel_url_from_id(channel_id)
+            if url:
+                new_id = db.add_watchlist_channel(
+                    url=url, channel_id=channel_id,
+                    display_name=sidecar.get("display_name") or channel_dir,
+                    platform=platform, genre=genre, auto_added=True,
+                    status="idle")
+                note = "from sidecar"
+            else:
+                new_id = db.add_watchlist_channel(
+                    url=f"{UNRESOLVED_URL_PREFIX}{platform}/{genre}/"
+                        f"{channel_dir}",
+                    display_name=channel_dir, platform=platform, genre=genre,
+                    auto_added=True, status="needs_resolve")
+                note = "needs_resolve"
+            if new_id is None:
+                continue
+            added.append(new_id)
+            if self._debug is not None:
+                self._debug.info(f"WL FOLDER-POPULATE | {channel_dir!r}  "
+                                 f"platform={platform}  genre={genre}  "
+                                 f"({note})")
+        if not added:
+            return 0
+        for new_id in added:
+            self._card(new_id)
+        text = f"Populated {len(added)} channel(s) from existing folders"
+        self._line(LINE_DONE, f"DONE {text}")
+        # The monolith shows this in the Watch List's own log, which is on
+        # screen from launch. Here that log is push-only and nothing is
+        # subscribed yet when this runs, so the activity log carries it too.
+        self._log_line(f"📂 {text}")
+        self._patch_counts()
+        return len(added)
 
     def remove(self, cid):
         """Drop the watchlist row. Files and folders are untouched."""
