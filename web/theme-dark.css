@@ -1,0 +1,97 @@
+/* DJ-CrateBuilder web UI — the dark theme, as an overlay.
+   theme.css is the design's drop-in and stays untouched; this file re-declares
+   its tokens for a dark ground under one attribute, plus the handful of
+   component rules where theme.css and app.css paint a literal rather than a
+   token. index.html sets data-theme="dark" on <html> before first paint (from
+   localStorage) and app.js's applyTheme toggles it live; with the attribute
+   absent, nothing in this file applies.
+
+   The palette follows the desktop app's own dark look (DJ-CrateBuilder_v2.0.py:
+   BG #0f0f0f, SURFACE #1a1a1a, TEXT #f0f0f0, YT_RED #ff3b3b): near-black
+   ground, the red line lifted so a 1px hairline still reads on it and red text
+   on a card clears 4.5:1, and the solid fill left at #E00000 so white text on it
+   keeps its own 4.5:1. Dim tokens go the other way from theme.css's rule: the
+   dimming that fails on near-white fails again on near-black, so muted text is
+   LIGHTER than the desktop app's TEXT_DIM (#888), not darker. */
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --cb-bg: #0F0F11;
+  --cb-bg-deep: #08080A;
+  --cb-surface: #1A1A1D;
+  --cb-surface-alt: #151517;
+  --cb-line: #E84A4A;
+  --cb-line-soft: rgba(232, 74, 74, .30);
+  --cb-line-row: rgba(232, 74, 74, .22);
+  --cb-accent: #E00000;
+  --cb-accent-hover: #F21414;
+  --cb-accent-wash: rgba(232, 74, 74, .12);
+  --cb-text: #ECEDF0;
+  --cb-muted: #A1A6B2;
+  --cb-dim: #9A9FAB;
+  --cb-placeholder: #7C8190;
+  --cb-quiet: #34363D;
+  --cb-quiet-hover: #26272C;
+
+  --cb-ok: #3DC46E;
+  --cb-warn: #E9A93B;
+  --cb-err: #FF5C5C;
+  --cb-unresolved: #FF9A3D;
+
+  --cb-log-ts: #8A909C;
+  --cb-log-downloaded: #3DC46E;
+  --cb-log-skipped: #E9A93B;
+  --cb-log-error: #FF5C5C;
+  --cb-log-default: #C9CCD3;
+  --cb-log-debug: #8A909C;
+  --cb-log-warning: #E9A93B;
+  --cb-log-hit: #5A4A0E;
+  --cb-log-hit-current: #B85F00;
+
+  --cb-shadow: 0 1px 2px rgba(0, 0, 0, .5);
+  --cb-shadow-pop: 0 8px 26px rgba(0, 0, 0, .65);
+
+  /* app.css's own declarations, re-derived the same way for this ground. */
+  --cb-scrim: rgba(0, 0, 0, .62);
+  --cb-attn-line: #D98A1E;
+  --cb-attn-wash: rgba(255, 154, 61, .12);
+  --cb-fix-hover: #FFB060;
+  --cb-text-2: #C9CCD3;
+  --cb-dot-read: #4A4E58;
+  --cb-ok-wash: rgba(61, 196, 110, .14);
+}
+
+/* theme.css paints these with literals — its secondary ink #4B4F59, hover
+   tints and red washes tuned for near-white — so they are restated here
+   against the dark tokens, by the same selectors one attribute more specific.
+   Where theme.css layers a state on the same element (.is-on, :hover), the
+   state is restated too, or the lift in specificity would flatten it. */
+:root[data-theme="dark"] .cb-lab,
+:root[data-theme="dark"] .cb-nav,
+:root[data-theme="dark"] .cb-seg > *,
+:root[data-theme="dark"] .cb-btn--quiet { color: var(--cb-text-2); }
+:root[data-theme="dark"] .cb-seg > .is-on { color: #fff; }
+:root[data-theme="dark"] .cb-nav:hover { color: var(--cb-text); }
+:root[data-theme="dark"] .cb-nav.is-on,
+:root[data-theme="dark"] .cb-nav.is-on:hover { color: var(--cb-line); }
+:root[data-theme="dark"] .cb-sel {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='7' viewBox='0 0 10 7'><path d='M1 1l4 4 4-4' fill='none' stroke='%23C9CCD3' stroke-width='1.4'/></svg>");
+}
+:root[data-theme="dark"] ::selection { background: rgba(232, 74, 74, .38); }
+:root[data-theme="dark"] .cb-btn:active { background: rgba(232, 74, 74, .22); }
+/* theme.css fills the warn button with --cb-line, which is a hairline colour
+   here and too light to carry white text; the accent is the fill that does. */
+:root[data-theme="dark"] .cb-btn--warn { background: var(--cb-accent); border-color: var(--cb-accent); }
+:root[data-theme="dark"] .cb-tag--grey { color: var(--cb-muted); }
+:root[data-theme="dark"] .cb-tag--attn {
+  border-color: var(--cb-attn-line); color: #F2B35A; background: var(--cb-attn-wash);
+}
+:root[data-theme="dark"] .cb-pathbar { color: var(--cb-dim); }
+:root[data-theme="dark"] .cb-table tbody tr:hover td { background: #212125; }
+:root[data-theme="dark"] .cb-bar { border-color: rgba(232, 74, 74, .35); }
+:root[data-theme="dark"] .cb-bar__fill--overall { background: rgba(224, 0, 0, .55); }
+:root[data-theme="dark"] .cb-menu > *:hover { background: rgba(232, 74, 74, .14); }
+:root[data-theme="dark"] .cb-tt__pop,
+:root[data-theme="dark"] .cb-tip { box-shadow: 0 6px 20px rgba(0, 0, 0, .6); }
+:root[data-theme="dark"] .cb-modal { box-shadow: 0 18px 50px rgba(0, 0, 0, .7); }

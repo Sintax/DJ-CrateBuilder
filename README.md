@@ -342,6 +342,7 @@ For faster downloads and fewer "login required" errors, you can authenticate wit
 | Run at Windows startup | Off | Launch DJ-CrateBuilder automatically when you log in |
 | Minimize to system tray | Off | Closing the window hides it to the tray and keeps the Watch List running |
 | Remote Access | Off | Allow paired devices to control the app from a browser |
+| Theme | Light | Light or dark for the web UI, remembered per device — the app window and each paired browser choose their own |
 
 All settings auto-save and persist between sessions.
 
