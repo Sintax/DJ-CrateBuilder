@@ -22,6 +22,7 @@ import json
 import os
 import sys
 import threading
+import time
 
 import bottle
 import webview
@@ -818,7 +819,7 @@ class WindowPlacement:
 
     def __init__(self, window, service, interval=PLACEMENT_FLUSH_INTERVAL,
                  settle_delay=PLACEMENT_SETTLE_DELAY, min_size=MIN_SIZE,
-                 screens=screen_rects):
+                 screens=None):
         self._window = window
         self._service = service
         self._interval = interval
@@ -828,6 +829,7 @@ class WindowPlacement:
         self._lock = threading.Lock()
         self._timer = None
         self._settle_timer = None
+        self._settle_at = 0.0
         self._pending = {}
         self._stopped = False
         self._state = "normal"
@@ -923,7 +925,8 @@ class WindowPlacement:
     def _hold(self, pos=None, size=None):
         """Take a value the window reported, to be judged once the state it
         belongs to has arrived. Does no I/O, and no judging either — see
-        _settle."""
+        _settle. One timer serves a whole burst: a drag reports every step,
+        and each pushes the deadline out rather than starting a thread."""
         with self._lock:
             if self._stopped:
                 return
@@ -931,23 +934,36 @@ class WindowPlacement:
                 self._pending["pos"] = pos
             if size is not None:
                 self._pending["size"] = size
-            if self._settle_timer is not None:
-                self._settle_timer.cancel()
-            timer = threading.Timer(self._settle_delay, self._settle)
-            timer.daemon = True
-            self._settle_timer = timer
-        timer.start()
+            self._settle_at = time.monotonic() + self._settle_delay
+            if self._settle_timer is None:
+                self._arm_settle(self._settle_delay)
 
-    def _settle(self):
+    def _arm_settle(self, delay):
+        self._settle_timer = threading.Timer(delay, self._settle, args=(True,))
+        self._settle_timer.daemon = True
+        self._settle_timer.start()
+
+    def _settle(self, from_timer=False):
         """Record what was held, if the window is in a state whose geometry
         means anything and the values describe a window a user could have
-        placed. Run by the settle timer, and by every flush ahead of its
-        write, so a close never waits on the timer. Does no I/O — see
+        placed. Run by the settle timer once the window has been quiet for
+        the delay — a timer that finds the deadline moved waits out the rest,
+        and one a flush overtook does nothing — and by every flush ahead of
+        its write, so a close never waits on the timer. Does no I/O — see
         PLACEMENT_FLUSH_INTERVAL."""
         with self._lock:
-            timer, self._settle_timer = self._settle_timer, None
-            if timer is not None:
-                timer.cancel()
+            if from_timer:
+                if self._settle_timer is not threading.current_thread():
+                    return
+                self._settle_timer = None
+                remaining = self._settle_at - time.monotonic()
+                if remaining > 0 and not self._stopped:
+                    self._arm_settle(remaining)
+                    return
+            else:
+                timer, self._settle_timer = self._settle_timer, None
+                if timer is not None:
+                    timer.cancel()
             pending, self._pending = self._pending, {}
             if self._stopped or self._state != "normal" or not pending:
                 return
@@ -956,10 +972,8 @@ class WindowPlacement:
             if (pos is not None and size is not None
                     and not self._placeable(pos, size)):
                 return
-            if "pos" in pending and pending["pos"] != self._pos:
-                self._pos, self._dirty = pending["pos"], True
-            if "size" in pending and pending["size"] != self._size:
-                self._size, self._dirty = pending["size"], True
+            if (pos, size) != (self._pos, self._size):
+                self._pos, self._size, self._dirty = pos, size, True
 
     def _placeable(self, pos, size):
         """Whether a frame is one the user could have put there: no smaller
@@ -969,7 +983,7 @@ class WindowPlacement:
         if size[0] < self._min_size[0] or size[1] < self._min_size[1]:
             return False
         try:
-            screens = self._screens() or []
+            screens = (self._screens or screen_rects)() or []
         except Exception:
             screens = []
         if not screens:
@@ -1029,10 +1043,8 @@ class WindowPlacement:
         with self._lock:
             self._stopped = True
             timer, self._timer = self._timer, None
-            settle, self._settle_timer = self._settle_timer, None
-        for armed in (timer, settle):
-            if armed is not None:
-                armed.cancel()
+        if timer is not None:
+            timer.cancel()
         self.flush()
 
 

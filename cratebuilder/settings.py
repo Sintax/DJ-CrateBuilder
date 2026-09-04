@@ -124,7 +124,6 @@ class Settings:
     save_config, with the in-memory store staying consistent."""
 
     def __init__(self, path=None):
-        self._explicit_path = path is not None
         if path is None:
             # The default store is the one the home directory is tidied into;
             # an explicit path (every test's) leaves the home directory alone.

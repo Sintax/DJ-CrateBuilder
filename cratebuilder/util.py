@@ -266,8 +266,6 @@ def tidy_home_config():
     present = [os.path.join(home, name) for name in HOME_CONFIG_NAMES
                if os.path.isfile(os.path.join(home, name))]
     shelf = os.path.join(config_dir(), RETIRED_SHELF)
-    if not present and not os.path.isdir(shelf):
-        return []
     config = _config_path()
     seed = next((path for path in present
                  if os.path.basename(path) in SEED_CONFIG_NAMES), None)
@@ -946,16 +944,15 @@ def fit_window_geometry(remembered, screens, min_size=(640, 620)):
     width, height, x, y = parsed
     min_w, min_h = min_size
 
-    best = max(screens, key=lambda s: _overlap((x, y, width, height), s))
-    if not _overlap((x, y, width, height), best):
-        best = screens[0]
-        sx, sy, sw, sh = best
+    rect = (x, y, width, height)
+    if not window_on_screen(rect, screens):
+        sx, sy, sw, sh = screens[0]
         width = max(min_w, min(width, sw))
         height = max(min_h, min(height, sh))
         return format_window_geometry(
             width, height, sx + (sw - width) // 2, sy + (sh - height) // 2)
 
-    sx, sy, sw, sh = best
+    sx, sy, sw, sh = max(screens, key=lambda s: _overlap(rect, s))
     width = max(min_w, min(width, sw))
     height = max(min_h, min(height, sh))
     x = min(max(x, sx), sx + sw - width)

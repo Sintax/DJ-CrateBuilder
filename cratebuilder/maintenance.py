@@ -7,7 +7,8 @@ from datetime import datetime
 
 from cratebuilder import artwork as cb_artwork
 from cratebuilder import genrefix, rebuild, tagging
-from cratebuilder.batchresolve import PLATFORM_SUBDIR, platform_dir
+from cratebuilder.batchresolve import (PLATFORM_SUBDIR, channel_folders,
+                                       platform_dir)
 from cratebuilder.crate import CrateLayout
 from cratebuilder.service import MAINTENANCE_JOB, CBError
 from cratebuilder.sidecar import channel_url_from_id, read_channel_sidecar
@@ -285,7 +286,7 @@ class MaintenanceOps:
                 folders = self._channel_folders()
                 total = len(folders)
                 self._overall(TASK_REBUILD, 0, total)
-                for platform, genre, channel_path in folders:
+                for platform, genre, _, channel_path in folders:
                     if self._cancel.is_set():
                         break
                     self._current(TASK_REBUILD,
@@ -326,33 +327,19 @@ class MaintenanceOps:
             self._end()
 
     def _channel_folders(self):
-        """Every (platform, genre, path) channel folder under the crate root.
+        """Every (platform, genre, name, path) channel folder under the crate
+        root — the package's one walk, strict.
 
         Walked ahead of the scan so the bar is determinate — three listdirs
         deep is cheap next to reading a tag out of every file, and it is the
         same traversal the scan then repeats one level lower.
 
-        Every OSError here propagates, deliberately: a genre folder that
+        Strict, so every OSError propagates, deliberately: a genre folder that
         cannot be listed means its channels never enter the scan at all, and
         the clear that follows would erase exactly those channels' history.
         A platform root that simply is not there is not an error — the crate
         may only ever have held YouTube downloads."""
-        found = []
-        base = self._base_dir()
-        for platform in PLATFORMS:
-            proot = platform_dir(base, platform)
-            if not os.path.isdir(proot):
-                continue
-            for genre_dir in sorted(os.listdir(proot)):
-                genre_path = os.path.join(proot, genre_dir)
-                if not os.path.isdir(genre_path):
-                    continue
-                genre = CrateLayout.genre_value(genre_dir)
-                for channel_dir in sorted(os.listdir(genre_path)):
-                    channel_path = os.path.join(genre_path, channel_dir)
-                    if os.path.isdir(channel_path):
-                        found.append((platform, genre, channel_path))
-        return found
+        return channel_folders(self._base_dir(), strict=True)
 
     def _scan_channel(self, platform, genre, channel_path, art_snapshot):
         """One channel folder's tracks as downloads rows, read from disk.

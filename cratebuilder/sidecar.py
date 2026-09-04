@@ -10,8 +10,9 @@ CHANNEL_SIDECAR_NAME = "cratebuilder.json"
 
 # The url a watchlist row carries while it has no link yet: a unique sentinel
 # per Platform/Genre/Channel folder, so UNIQUE(url) holds and nothing bogus is
-# ever scanned. The monolith and cratebuilder.db keep their own copies of the
-# literal (neither may import the other); this one is the package's.
+# ever scanned. The monolith keeps its own copy (the package never imports
+# it), and so does cratebuilder.db (which imports nothing from the package);
+# this one is the package's.
 UNRESOLVED_URL_PREFIX = "unresolved://"
 
 

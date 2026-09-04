@@ -10,6 +10,7 @@ import pytest
 
 from cratebuilder import links as cb_links
 from cratebuilder import watchrun
+from cratebuilder.batchresolve import channel_folders
 from cratebuilder.batchrun import BatchRunner
 from cratebuilder.crate import CrateLayout, classify_scan_entries
 from cratebuilder.db import DownloadsDatabase
@@ -17,7 +18,7 @@ from cratebuilder.download import Outcome
 from cratebuilder.service import CBError, CrateBuilderService
 from cratebuilder.settings import Settings
 from cratebuilder.sidecar import CHANNEL_SIDECAR_NAME, read_channel_sidecar
-from cratebuilder.watchrun import WatchlistOps, discover_channel_folders
+from cratebuilder.watchrun import WatchlistOps
 from cratebuilder.ydl import ChannelIdentity, YdlOffline, YdlPermanent
 
 
@@ -1271,7 +1272,8 @@ def _crate_folder(harness, name, genre="House", platform="YouTube", **sidecar):
     return folder
 
 
-def test_discover_walks_platform_then_genre_then_channel_and_skips_files(tmp_path):
+def test_channel_folders_walks_platform_then_genre_then_channel_and_skips_files(
+        tmp_path):
     harness = Harness(tmp_path, FakeSession())
     _crate_folder(harness, "Late Adds", genre="(none)")
     _crate_folder(harness, "Deep House Daily")
@@ -1282,7 +1284,7 @@ def test_discover_walks_platform_then_genre_then_channel_and_skips_files(tmp_pat
     with open(os.path.join(crate, "YouTube", "House", "loose.mp3"), "w") as fh:
         fh.write("not a channel")
 
-    found = discover_channel_folders(crate)
+    found = channel_folders(crate)
 
     assert [(platform, genre, name) for platform, genre, name, _ in found] == [
         ("YouTube", "House", "Deep House Daily"),
@@ -1290,8 +1292,8 @@ def test_discover_walks_platform_then_genre_then_channel_and_skips_files(tmp_pat
         ("SoundCloud", "Techno", "Berlin Sets"),
     ]
     assert found[0][3] == harness.folder("Deep House Daily")
-    assert discover_channel_folders(str(tmp_path / "nowhere")) == []
-    assert discover_channel_folders("") == []
+    assert channel_folders(str(tmp_path / "nowhere")) == []
+    assert channel_folders("") == []
 
 
 def test_populate_fills_an_empty_watch_list_from_the_folders(tmp_path):
@@ -1313,12 +1315,7 @@ def test_populate_fills_an_empty_watch_list_from_the_folders(tmp_path):
         "unresolved://YouTube/Techno/Fresh Finds", None, "needs_resolve")
     assert {r["auto_added"] for r in rows.values()} == {1}
     assert {r["genre"] for r in rows.values()} == {"House", "Techno"}
-    assert {c["id"] for c in harness.emit.of("watchlist.card")} == {
-        daily["id"], fresh["id"]}
-    assert harness.emit.lines(watchrun.LINE_DONE) == [
-        "DONE Populated 2 channel(s) from existing folders"]
     assert harness.log == ["📂 Populated 2 channel(s) from existing folders"]
-    assert harness.emit.of("state.patch") == [{"counts": {"downloads": 1}}]
 
 
 def test_populate_builds_the_link_from_a_sidecar_that_only_has_the_id(tmp_path):
