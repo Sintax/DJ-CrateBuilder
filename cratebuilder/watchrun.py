@@ -9,7 +9,7 @@ from datetime import datetime
 from cratebuilder import genrefix
 from cratebuilder import links as cb_links
 from cratebuilder import util
-from cratebuilder.batchresolve import (PLATFORM_SUBDIR, TrackSpec, entry_url,
+from cratebuilder.batchresolve import (TrackSpec, channel_folders, entry_url,
                                        platform_dir)
 from cratebuilder.batchrun import BatchRunner
 from cratebuilder.crate import (ChannelCrate, CrateLayout, SkipMode,
@@ -111,33 +111,6 @@ def count_audio_files(path):
                    if os.path.splitext(name)[1].lower() in AUDIO_EXTS)
     except OSError:
         return 0
-
-
-def _subdirs(path):
-    """(name, path) for every directory directly under *path*, sorted; nothing
-    for a path that is missing or cannot be listed."""
-    try:
-        names = sorted(os.listdir(path))
-    except OSError:
-        return []
-    return [(name, os.path.join(path, name)) for name in names
-            if os.path.isdir(os.path.join(path, name))]
-
-
-def discover_channel_folders(base_dir):
-    """Every channel folder under base/<Platform>/<Genre>/<Channel>/, as
-    (platform, genre, folder name, path) in the order the monolith walks them:
-    platform by platform, genres and channels sorted. Files at either level
-    are passed over, and the genre reads back the way genre_value spells it."""
-    if not base_dir:
-        return []
-    found = []
-    for platform in PLATFORM_SUBDIR:
-        for genre_dir, genre_path in _subdirs(platform_dir(base_dir, platform)):
-            genre = CrateLayout.genre_value(genre_dir)
-            for channel_dir, path in _subdirs(genre_path):
-                found.append((platform, genre, channel_dir, path))
-    return found
 
 
 def track_specs(row, save_dir, entries, row_id=None):
@@ -906,50 +879,44 @@ class WatchlistOps:
         crate yet never gets a database written just for looking. Returns how
         many rows were added; a folder the database refuses (two sidecars
         naming one channel) is passed over, not fatal."""
-        found = discover_channel_folders(self._settings.get("base_dir"))
+        found = channel_folders(self._settings.get("base_dir"))
         if not found:
             return 0
         db = self._db()
         if db.get_all_watchlist_channels():
             return 0
-        added = []
+        added = 0
         for platform, genre, channel_dir, path in found:
             sidecar = read_channel_sidecar(path) or {}
             channel_id = sidecar.get("channel_id") or None
             url = sidecar.get("channel_url") or channel_url_from_id(channel_id)
             if url:
-                new_id = db.add_watchlist_channel(
-                    url=url, channel_id=channel_id,
-                    display_name=sidecar.get("display_name") or channel_dir,
-                    platform=platform, genre=genre, auto_added=True,
-                    status="idle")
-                note = "from sidecar"
+                display_name = sidecar.get("display_name") or channel_dir
+                status, note = "idle", "from sidecar"
             else:
-                new_id = db.add_watchlist_channel(
-                    url=f"{UNRESOLVED_URL_PREFIX}{platform}/{genre}/"
-                        f"{channel_dir}",
-                    display_name=channel_dir, platform=platform, genre=genre,
-                    auto_added=True, status="needs_resolve")
-                note = "needs_resolve"
-            if new_id is None:
+                url = (f"{UNRESOLVED_URL_PREFIX}{platform}/{genre}/"
+                       f"{channel_dir}")
+                display_name = channel_dir
+                status = note = "needs_resolve"
+            if db.add_watchlist_channel(
+                    url=url, channel_id=channel_id, display_name=display_name,
+                    platform=platform, genre=genre, auto_added=True,
+                    status=status) is None:
                 continue
-            added.append(new_id)
+            added += 1
             if self._debug is not None:
                 self._debug.info(f"WL FOLDER-POPULATE | {channel_dir!r}  "
                                  f"platform={platform}  genre={genre}  "
                                  f"({note})")
-        if not added:
-            return 0
-        for new_id in added:
-            self._card(new_id)
-        text = f"Populated {len(added)} channel(s) from existing folders"
-        self._line(LINE_DONE, f"DONE {text}")
-        # The monolith shows this in the Watch List's own log, which is on
-        # screen from launch. Here that log is push-only and nothing is
-        # subscribed yet when this runs, so the activity log carries it too.
-        self._log_line(f"📂 {text}")
-        self._patch_counts()
-        return len(added)
+        if added:
+            # Both callers run this before the window or the server exists,
+            # so nothing is subscribed: no card or patch goes out, and the
+            # page's first watchlist.list reads the rows instead. The line
+            # the monolith showed in the Watch List's own log goes to the
+            # activity log, which keeps it.
+            self._log_line(
+                f"📂 Populated {added} channel(s) from existing folders")
+        return added
 
     def remove(self, cid):
         """Drop the watchlist row. Files and folders are untouched."""

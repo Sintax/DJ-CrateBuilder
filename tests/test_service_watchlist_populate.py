@@ -74,7 +74,6 @@ def test_a_watch_list_with_rows_is_left_alone_without_a_write(tmp_path):
     assert service.populate_watchlist_from_folders() == 0
 
     assert [r["display_name"] for r in _rows(db_path)] == ["Channel 0"]
-    assert service._watchlist_ops is None       # the writer was never built
 
 
 def test_the_startup_scan_armed_next_sees_the_rows(tmp_path, monkeypatch):

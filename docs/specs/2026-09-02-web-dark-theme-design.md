@@ -60,8 +60,9 @@ nothing here adds one.
 
 ### The control
 
-An **Appearance** card, drawn ahead of the contract's sections in Settings, with
-one row: *Theme* and a `.cb-seg` segmented control — Light | Dark — built the
+An **Appearance** section, seeded ahead of the contract's in Settings and filled
+through the `SECTION_EXTRAS` hook the other cards use, with one row: *Theme* and
+a `.cb-seg` segmented control — Light | Dark — built the
 way the Downloads screen's platform switch is, plus the radio role, a tab stop
 and Enter/Space that the mockup's hover-only control lacks. A hint line says the
 choice is kept on this device. The options are marked `readOnlyOk`, so the
@@ -70,7 +71,7 @@ read-only sweep `renderSettings` runs over host-bound controls leaves them live.
 ## Testing
 
 `tests/test_web_theme_client.py`: `storedTheme`, `applyTheme` and
-`appearanceCard` sliced out of `app.js` and run in Node against a stub document
+`appearanceRows` sliced out of `app.js` and run in Node against a stub document
 and store (the default, the switch, an unknown value, a store that refuses);
 `index.html`'s script and stylesheet order; the storage key shared by page and
 script; `theme.css` identical to the design's copy; every colour token in the

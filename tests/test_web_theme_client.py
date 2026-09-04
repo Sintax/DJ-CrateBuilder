@@ -1,7 +1,7 @@
 """web/app.js, index.html and theme-dark.css: the dark theme, client-side.
 
 Same method as tests/test_web_about_client.py — storedTheme, applyTheme and
-appearanceCard are sliced out of app.js verbatim and run in Node against a
+appearanceRows are sliced out of app.js verbatim and run in Node against a
 stub document and localStorage. The rest is structural: the stylesheet order
 index.html declares, the pre-paint script agreeing with app.js on the storage
 key, theme.css still being the design's untouched drop-in, every token
@@ -62,14 +62,11 @@ function makeEl(tag) {
     addEventListener(name, fn) { el.listeners[name] = fn; },
     setAttribute(k, v) { el.attrs[k] = String(v); },
     removeAttribute(k) { delete el.attrs[k]; },
-    get firstChild() { return el.children[0]; },
-    set innerHTML(_) { el.children = [makeEl('span')]; },
   };
   return el;
 }
 const document = { createElement: makeEl, documentElement: makeEl('html') };
 let segs = [];
-const $$ = () => segs;
 function readOnlyOk(el) { el.dataset.readOk = '1'; return el; }
 %(slices)s
 function snapshot() {
@@ -89,16 +86,16 @@ out.dark = snapshot();
 applyTheme('bogus');
 out.bogus = snapshot();
 applyTheme('dark');
-const card = appearanceCard();
-const seg = card.children[1].children[1];
+const card = makeEl('div');
+appearanceRows(card);
+const seg = card.children[0].children[1];
 segs = seg.children;
 out.card = {
-  title: card.children[0].firstChild.textContent,
   role: seg.attrs.role, id: seg.id,
   options: segs.map((s) => [s.dataset.theme, s.textContent, s.attrs.role,
                             s.attrs['aria-checked'], s.tabIndex,
                             s.dataset.readOk, s.classList.contains('is-on')]),
-  hint: card.children[2].textContent,
+  hint: card.children[1].textContent,
 };
 segs[0].listeners.click();
 out.clickedLight = snapshot();
@@ -123,7 +120,7 @@ def result(tmp_path_factory):
     app_js = _read("app.js")
     slices = (_slice(app_js, "  const THEME_KEY = ",
                      "  /* ── notifications (3n)")
-              + _slice(app_js, "  function appearanceCard() {",
+              + _slice(app_js, "  function appearanceRows(card) {",
                        "  function renderSettings() {"))
     script = tmp_path_factory.mktemp("theme") / "theme_harness.cjs"
     script.write_text(_HARNESS % {"slices": slices}, encoding="utf-8")
@@ -150,13 +147,18 @@ def test_an_unknown_value_falls_back_to_light(result):
 
 def test_the_card_draws_two_radio_options_reading_the_stored_theme(result):
     card = result["card"]
-    assert (card["title"], card["role"], card["id"]) == (
-        "Appearance", "radiogroup", "settings-theme")
+    assert (card["role"], card["id"]) == ("radiogroup", "settings-theme")
     assert card["options"] == [
         ["light", "Light", "radio", "false", 0, "1", False],
         ["dark", "Dark", "radio", "true", 0, "1", True],
     ]
     assert "this device" in card["hint"]
+
+
+def test_the_section_is_seeded_first_and_filled_like_the_other_extras():
+    app_js = _read("app.js")
+    assert "const sections = [{ name: 'Appearance', items: [] }];" in app_js
+    assert "'Appearance': appearanceRows," in app_js
 
 
 def test_a_click_or_a_key_switches_the_theme_and_repaints_the_control(result):

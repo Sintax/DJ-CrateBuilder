@@ -71,6 +71,42 @@ def platform_dir(base_dir, platform):
     return os.path.join(base_dir, PLATFORM_SUBDIR.get(platform, platform))
 
 
+def _subdirs(path, strict):
+    """(name, path) for every directory directly under *path*, sorted. A
+    path that is not a directory yields nothing; one that cannot be listed
+    yields nothing either, unless *strict*, when the OSError propagates."""
+    if not os.path.isdir(path):
+        return []
+    try:
+        names = sorted(os.listdir(path))
+    except OSError:
+        if strict:
+            raise
+        return []
+    return [(name, os.path.join(path, name)) for name in names
+            if os.path.isdir(os.path.join(path, name))]
+
+
+def channel_folders(base_dir, strict=False):
+    """Every channel folder under base/<Platform>/<Genre>/<Channel>/, as
+    (platform, genre, folder name, path): platform by platform, genres and
+    channels sorted, files at either level passed over, and the genre read
+    back the way genre_value spells it. A platform root that is not there is
+    skipped — the crate may only ever have held YouTube downloads. A folder
+    that cannot be listed is skipped too, unless *strict*, for a caller that
+    must not act on a partial walk."""
+    if not base_dir:
+        return []
+    found = []
+    for platform in PLATFORM_SUBDIR:
+        for genre_dir, genre_path in _subdirs(platform_dir(base_dir, platform),
+                                              strict):
+            genre = CrateLayout.genre_value(genre_dir)
+            for channel_dir, path in _subdirs(genre_path, strict):
+                found.append((platform, genre, channel_dir, path))
+    return found
+
+
 def fetch_failure_reason(exc):
     """A failed probe as the one sentence the queue row shows, keyed off the
     verdict YdlSession already reached rather than re-reading the message."""

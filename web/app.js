@@ -615,11 +615,6 @@
     try {
       localStorage.setItem(THEME_KEY, theme);
     } catch (_) { /* storage refused — the choice lasts this page load */ }
-    $$('#settings-theme > span').forEach((seg) => {
-      const on = seg.dataset.theme === theme;
-      seg.classList.toggle('is-on', on);
-      seg.setAttribute('aria-checked', on ? 'true' : 'false');
-    });
     return theme;
   }
 
@@ -5185,6 +5180,8 @@
   }
 
   const SECTION_EXTRAS = {
+    'Appearance': appearanceRows,
+
     'Default Save Directory': (card) => {
       const row = card.querySelector('[data-key="base_dir"]')?.closest('.cb-set-row');
       if (row) {
@@ -5497,22 +5494,15 @@
     'Remote Access': 'remote.access_section',
   };
 
-  /* The Appearance card: the one Settings control that writes to this device
-     rather than to the host (see applyTheme), drawn ahead of the contract's
-     sections. Its options are spans in a .cb-seg like the Downloads screen's
-     platform switch, with the radio role and keys the mockup's hover-only
-     control lacks. readOnlyOk keeps them live in a read-only remote session,
-     where renderSettings disables every host-bound control. */
-  function appearanceCard() {
-    const card = document.createElement('div');
-    card.className = 'cb-card cb-set-card';
-
-    const head = document.createElement('div');
-    head.className = 'cb-row';
-    head.innerHTML = '<span class="cb-sect"></span>';
-    head.firstChild.textContent = 'Appearance';
-    card.appendChild(head);
-
+  /* The Appearance section: the one Settings control that writes to this
+     device rather than to the host (see applyTheme). renderSettings seeds
+     the section ahead of the contract's, with no keys, and this fills its
+     card the way the other SECTION_EXTRAS do. The options are spans in a
+     .cb-seg like the Downloads screen's platform switch, with the radio role
+     and keys the mockup's hover-only control lacks. readOnlyOk keeps them
+     live in a read-only remote session, where renderSettings disables every
+     host-bound control. */
+  function appearanceRows(card) {
     const row = document.createElement('div');
     row.className = 'cb-set-row';
     const lab = document.createElement('span');
@@ -5523,22 +5513,26 @@
     seg.id = 'settings-theme';
     seg.setAttribute('role', 'radiogroup');
     seg.setAttribute('aria-label', 'Theme');
-    const current = storedTheme();
+    const opts = [];
+    const paint = (theme) => opts.forEach((opt) => {
+      const on = opt.dataset.theme === theme;
+      opt.classList.toggle('is-on', on);
+      opt.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
     [['light', 'Light'], ['dark', 'Dark']].forEach(([name, label]) => {
       const opt = document.createElement('span');
       opt.dataset.theme = name;
       opt.textContent = label;
       opt.setAttribute('role', 'radio');
-      opt.setAttribute('aria-checked', name === current ? 'true' : 'false');
       opt.tabIndex = 0;
-      if (name === current) opt.classList.add('is-on');
-      const pick = () => applyTheme(name);
+      const pick = () => paint(applyTheme(name));
       opt.addEventListener('click', pick);
       opt.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); }
       });
-      seg.appendChild(readOnlyOk(opt));
+      opts.push(seg.appendChild(readOnlyOk(opt)));
     });
+    paint(storedTheme());
     row.append(lab, seg);
     card.appendChild(row);
 
@@ -5547,16 +5541,14 @@
     hint.style.fontSize = '11px';
     hint.textContent = 'Kept on this device — the app window and each browser choose their own.';
     card.appendChild(hint);
-    return card;
   }
 
   function renderSettings() {
     const grid = $('#settings-grid');
     grid.innerHTML = '';
     $('#cfg-path').textContent = state.settings_path || '~/.cratebuilder/config.json';
-    grid.appendChild(appearanceCard());
 
-    const sections = [];
+    const sections = [{ name: 'Appearance', items: [] }];
     SETTINGS_KEYS.forEach((entry) => {
       if (entry.section === 'internal' || entry.type === 'dict' || entry.type === 'list') return;
       if (entry.platform && entry.platform !== state.platform && entry.platform === 'win32'

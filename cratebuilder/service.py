@@ -26,7 +26,7 @@ from cratebuilder.events import Coalescer, EventBus
 from cratebuilder.links import LINKS_FILE_NAME
 from cratebuilder.remoteauth import REMOTE_FILE_NAME, RemoteState
 from cratebuilder.settings import Settings
-from cratebuilder.sidecar import is_unresolved_channel
+from cratebuilder.sidecar import UNRESOLVED_URL_PREFIX, is_unresolved_channel
 
 MAIN_SCRIPT = "DJ-CrateBuilder_v2.0.py"
 DB_NAME = "cratebuilder.db"
@@ -1711,24 +1711,18 @@ class CrateBuilderService:
             return False, "Folder empty — nothing to clean."
         return True, ""
 
-    # The monolith's UNRESOLVED_URL_PREFIX (DJ-CrateBuilder_v2.0.py) and
-    # cratebuilder.db's private _UNRESOLVED_URL_PREFIX — a duplicate literal,
-    # not an import, same "monolith depends on cratebuilder, never the
-    # reverse" reasoning db.py already applies to its own copy. Needed here,
-    # not db.query_watchlist_rows(): that helper already blanks a sentinel
-    # url to "" before returning, which would hide the signal
+    # Reads db.get_all_watchlist_channels() (raw rows), not
+    # db.query_watchlist_rows(): that helper already blanks a sentinel url
+    # to "" before returning, which would hide the signal
     # is_unresolved_channel needs from _wl_cleanup_eligibility — so this
-    # table reads db.get_all_watchlist_channels() (raw rows) and does its
-    # own blanking after eligibility has already been judged.
-    _UNRESOLVED_URL_PREFIX = "unresolved://"
-
+    # table does its own blanking after eligibility has already been judged.
     def _map_watchlist_row(self, row):
         platform = (row.get("platform") or "").strip()
         folder = self._channel_folder(platform, row.get("genre"),
                                       row.get("display_name"))
         eligible, reason = self._wl_cleanup_eligibility(row, folder)
         raw_url = row.get("url") or ""
-        unresolved_link = raw_url.startswith(self._UNRESOLVED_URL_PREFIX)
+        unresolved_link = raw_url.startswith(UNRESOLVED_URL_PREFIX)
         return {
             "id": row.get("id"),
             "channel": row.get("display_name") or raw_url or "Channel",
@@ -3091,8 +3085,7 @@ class CrateBuilderService:
         anyway. Returns how many rows were added.
         """
         try:
-            db = self._db()
-            if db is not None and db.get_all_watchlist_channels():
+            if self._watchlist_rows():
                 return 0
             return self._watchlist.populate_from_folders()
         except Exception:
