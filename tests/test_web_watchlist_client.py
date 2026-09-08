@@ -190,7 +190,7 @@ const wl = { running: false, cards: [], current: null, overall: null };
 %(gate)s
 %(toolbar)s
 function snap() {
-  return ['wl-add', 'wl-links', 'wl-dl-all', 'wl-scan', 'wl-cancel', 'quick-scan']
+  return ['wl-add', 'wl-links', 'wl-dl-all', 'wl-scan', 'wl-cancel']
     .reduce((out, id) => {
       const e = $('#' + id);
       out[id] = { off: e.disabled, why: e.attrs['data-tt-text'] || null,
@@ -242,23 +242,21 @@ def _toolbar_source(app_js):
 
 
 def test_a_running_batch_closes_the_scan_controls_with_the_3c_reason(app_js, tmp_path):
-    """3c: a scan and a batch cannot share the host's yt-dlp session. Both the
-    panel quick action and the Watch List's own Scan button close, and the
-    reason is the registry's, not a paraphrase written here."""
+    """3c: a scan and a batch cannot share the host's yt-dlp session. The
+    Watch List's Scan button closes, and the reason is the registry's, not a
+    paraphrase written here."""
     r = _run_node(tmp_path, "wltoolbar.mjs", _toolbar_source(app_js))
     assert r["idle"]["wl-scan"] == {"off": False, "why": None, "tt": "wl.scan_all"}
-    assert r["idle"]["quick-scan"]["off"] is False
-    for key in ("wl-scan", "quick-scan"):
-        assert r["batching"][key]["off"] is True
-        # A closed control still says what it does before saying why it is off.
-        assert r["batching"][key]["why"] == "TT-SCAN\n\nBATCH-CONFLICT"
+    assert r["batching"]["wl-scan"]["off"] is True
+    # A closed control still says what it does before saying why it is off.
+    assert r["batching"]["wl-scan"]["why"] == "TT-SCAN\n\nBATCH-CONFLICT"
     # Downloading is a separate job category from a batch and keeps running.
     assert r["batching"]["wl-dl-all"]["off"] is False
 
 
 def test_a_running_watch_list_job_arms_cancel_and_closes_the_starts(app_js, tmp_path):
     r = _run_node(tmp_path, "wltoolbar.mjs", _toolbar_source(app_js))
-    for key in ("wl-add", "wl-links", "wl-dl-all", "wl-scan", "quick-scan"):
+    for key in ("wl-add", "wl-links", "wl-dl-all", "wl-scan"):
         assert r["scanning"][key]["off"] is True, key
         assert r["scanning"][key]["why"], key
     assert r["scanning"]["wl-cancel"]["off"] is False
@@ -300,8 +298,7 @@ def test_a_read_only_remote_session_closes_every_write_control(app_js, tmp_path)
     same place — the host's own one-line reason on every write control, Cancel
     included (a device that may not start may not stop someone else either)."""
     r = _run_node(tmp_path, "wltoolbar.mjs", _toolbar_source(app_js))
-    for key in ("wl-add", "wl-links", "wl-dl-all", "wl-scan", "wl-cancel",
-                "quick-scan"):
+    for key in ("wl-add", "wl-links", "wl-dl-all", "wl-scan", "wl-cancel"):
         assert r["readOnly"][key]["off"] is True, key
         assert r["readOnly"][key]["why"].endswith("HOST-READ-ONLY"), key
 
