@@ -1768,12 +1768,10 @@
      close for the same reason, so they say it in the same words. */
   const WL_NOTHING_PENDING = 'No new tracks pending across any channels. Run ' +
     '🔍 Scan for new first.';
-  /* Cancellation lands between channels — it cannot interrupt a channel
-     listing already in flight — so nothing here promises an immediate stop. */
-  const WL_CANCEL_ALL_NOTE = 'Cancelling — the channel in flight finishes what ' +
-    'it is on, then the run stops.';
-  const WL_CANCEL_ONE_NOTE = 'Cancelling — this channel stops once the work ' +
-    'already in flight finishes.';
+  /* Cancellation is immediate: a channel listing runs in a child process the
+     cancel kills mid-flight, and a download aborts at its next chunk. */
+  const WL_CANCEL_ALL_NOTE = 'Stopping the Watch List run now.';
+  const WL_CANCEL_ONE_NOTE = 'Stopping this channel now.';
   const WL_URL_HINT = 'Paste the channel (…/@handle or …/channel/UC…) or a ' +
     'playlist URL.';
   /* 3m's Edit dialog adds the "leave it alone" half; on Add there is no
@@ -5651,6 +5649,9 @@
      apply — a modal's field refs while a download/verify/stage is running. */
   const aboutUpdate = {
     status: null, result: null, checking: false, view: null,
+    // Set by the update confirm's Stop Watch List and install while it waits
+    // for the Watch List's job.finished; that handler calls and clears it.
+    onWatchlistStopped: null,
   };
 
   const ABOUT_UPDATER_NOTE =
@@ -5914,8 +5915,7 @@
     b.textContent = '■ Stop Watch List activity';
     b.setAttribute('data-tt-text',
       'A Watch List scan or download is running, and the update cannot '
-      + 'install until it stops. This cancels the run — the channel in '
-      + 'flight finishes what it is on first.');
+      + 'install until it stops. This stops the run now.');
     b.addEventListener('click', async () => {
       setDisabled(b, true, { reason: WL_CANCEL_ALL_NOTE });
       b.textContent = '■ Stopping…';
@@ -5927,59 +5927,182 @@
     return b;
   }
 
-  function aboutConfirmUpdate() {
+  /* Once the Watch List has been stopped for an update, how long the user
+     gets to change their mind before the download begins. */
+  const UPDATE_COUNTDOWN_SECONDS = 5;
+
+  function aboutConfirmUpdate(errorText) {
     const result = aboutUpdate.result;
     if (!result || !result.available) return;
-    openModal({
+    /* One modal, four states: choose (install, or stop the Watch List first),
+       stopping (Cancel All sent, waiting for the Watch List's job.finished),
+       countdown (the update is about to begin; Cancel still works), and back
+       to choose after a Cancel. Whatever is pending — the countdown timer,
+       the job.finished hook — is dropped when the modal closes, however it
+       closes. */
+    const refs = { timer: null, hook: null, state: null, foot: null };
+
+    function dropPending() {
+      if (refs.timer) { clearInterval(refs.timer); refs.timer = null; }
+      if (aboutUpdate.onWatchlistStopped === refs.hook) {
+        aboutUpdate.onWatchlistStopped = null;
+      }
+      refs.hook = null;
+    }
+
+    function status(text) {
+      refs.state.replaceChildren();
+      if (!text) return;
+      const node = document.createElement('div');
+      node.className = 'cb-warnbox';
+      node.textContent = text;
+      refs.state.appendChild(node);
+    }
+
+    function paintFoot(mode) {
+      paintFootButtons(mode);
+      bindTips(refs.foot);   // focus tooltips for buttons added after open
+    }
+
+    function paintFootButtons(mode) {
+      refs.foot.replaceChildren();
+      if (mode === 'countdown') {
+        const cancel = modalButton('Cancel', 'cb-btn--quiet', () => {
+          dropPending();
+          status(`Update cancelled — you're still on build `
+            + `${result.current_build}. The Watch List run has already `
+            + 'been stopped.');
+          paintFoot('choose');
+        });
+        cancel.style.marginLeft = 'auto';
+        refs.foot.appendChild(cancel);
+        return;
+      }
+      const go = modalButton('Download and install', 'cb-btn--warn',
+        () => aboutStartApply(), 'about.update_now');
+      const later = modalButton('Not now', 'cb-btn--quiet', () => closeModal());
+      later.style.marginLeft = 'auto';
+      if (!wl.running && mode !== 'stopping') {
+        refs.foot.append(go, later);
+        return;
+      }
+      /* The host refuses update.apply while a Watch List run holds its job
+         slot (an update swaps every file under the app and restarts it), so
+         the plain install is closed and the one-click remedy sits beside it. */
+      const stop = modalButton('■ Stop Watch List and install', 'cb-btn--warn',
+        () => stopThenInstall());
+      if (mode === 'stopping') {
+        stop.textContent = '■ Stopping…';
+        setDisabled(stop, true, { reason: WL_CANCEL_ALL_NOTE });
+      } else {
+        stop.setAttribute('data-tt-text',
+          'Stops the Watch List run now, then counts down a few seconds '
+          + 'before the update begins — you can still cancel during the '
+          + 'countdown.');
+      }
+      setDisabled(go, true, {
+        reason: 'A Watch List scan or download is running. Use Stop Watch '
+          + 'List and install.',
+      });
+      refs.foot.append(stop, go, later);
+    }
+
+    async function stopThenInstall() {
+      paintFoot('stopping');
+      status('Stopping the Watch List run…');
+      refs.hook = beginCountdown;
+      aboutUpdate.onWatchlistStopped = refs.hook;
+      try {
+        await call('watchlist.cancel_all');
+      } catch (_) {
+        // call() already toasted the reason.
+        dropPending();
+        status('');
+        paintFoot('choose');
+        return;
+      }
+      /* The run may already be over — it ended on its own before the click,
+         so no job.finished is coming for the hook. */
+      if (!wl.running && aboutUpdate.onWatchlistStopped === refs.hook) {
+        aboutUpdate.onWatchlistStopped = null;
+        beginCountdown();
+      }
+    }
+
+    function beginCountdown() {
+      refs.hook = null;
+      let left = UPDATE_COUNTDOWN_SECONDS;
+      refs.state.replaceChildren();
+      const note = modalNote('');
+      const bar = document.createElement('div');
+      bar.className = 'cb-bar';
+      const fill = document.createElement('div');
+      fill.className = 'cb-bar__fill';
+      bar.appendChild(fill);
+      refs.state.append(note, bar);
+      const paint = () => {
+        note.textContent = `Watch List stopped. Update starts in ${left}…`;
+        fill.style.width =
+          Math.round(left * 100 / UPDATE_COUNTDOWN_SECONDS) + '%';
+      };
+      paint();
+      paintFoot('countdown');
+      refs.timer = setInterval(() => {
+        left -= 1;
+        if (left > 0) { paint(); return; }
+        dropPending();
+        aboutStartApply();
+      }, 1000);
+    }
+
+    const api = openModal({
       title: 'Update available',
       width: 480,
+      onClose: dropPending,
       body(body) {
         body.appendChild(modalNote(
           `Build ${result.latest_build} is available — you're on `
           + `${result.current_build}.`));
         if (result.notes) body.appendChild(modalNote(result.notes));
         body.appendChild(aboutAvWarningNode());
+        refs.state = document.createElement('div');
+        body.appendChild(refs.state);
         /* Captured when the modal opens — the one moment that matters: the
            user is about to press install, and the host would refuse it. */
         if (wl.running) {
-          const warn = document.createElement('div');
-          warn.className = 'cb-warnbox';
-          warn.textContent =
-            'A Watch List scan or download is running. The update cannot '
-            + 'install until it finishes or is stopped.';
-          body.appendChild(warn);
-          const row = document.createElement('div');
-          row.className = 'cb-row';
-          row.style.cssText = 'margin-top:8px;justify-content:flex-end';
-          row.appendChild(aboutStopWatchlistButton());
-          body.appendChild(row);
+          status('A Watch List scan or download is running. The update '
+            + 'cannot install until it stops — Stop Watch List and install '
+            + 'stops it now, then gives you a few seconds to change your '
+            + 'mind before the update begins.');
         }
       },
       foot(foot) {
-        const go = modalButton('Download and install', 'cb-btn--warn',
-          async () => {
-            /* Opened BEFORE the call, not after it resolves: _start_job
-               starts the worker thread as soon as update.apply is invoked
-               server-side, so a fast link can have update.progress and even
-               update.restarting land before this promise settles. Opening
-               the confirm modal's replacement first (openModal closes
-               whatever's open) means aboutUpdate.view already exists to
-               catch them instead of dropping them on the floor. */
-            aboutBeginApply();
-            try {
-              await call('update.apply');
-            } catch (_) {
-              // call() already toasted the reason.
-              aboutUpdate.view = null;
-              closeModal();
-            }
-          }, 'about.update_now');
-        const later = modalButton('Not now', 'cb-btn--quiet',
-          () => closeModal());
-        later.style.marginLeft = 'auto';
-        foot.append(go, later);
+        refs.foot = foot;
+        paintFoot('choose');
       },
     });
+    if (errorText) api.error(errorText);
+  }
+
+  /* The install itself. The progress modal is opened BEFORE the call, not
+     after it resolves: _start_job starts the worker thread as soon as
+     update.apply is invoked server-side, so a fast link can have
+     update.progress and even update.restarting land before this promise
+     settles. Opening the confirm modal's replacement first (openModal closes
+     whatever's open) means aboutUpdate.view already exists to catch them
+     instead of dropping them on the floor. A refusal — the Watch List's
+     scheduler took the job slot back in the gap, say — reopens the confirm
+     with the host's reason, so the user is not left with a toast that has
+     already gone. */
+  async function aboutStartApply() {
+    aboutBeginApply();
+    try {
+      await call('update.apply');
+    } catch (err) {
+      aboutUpdate.view = null;
+      aboutConfirmUpdate(err && err.userFacing ? err.message
+        : 'The host could not start the update.');
+    }
   }
 
   /* Step two: the progress modal, painted from update.progress until
@@ -6517,6 +6640,13 @@
         wl.overall = null;
         wl.rows = [];
         wl.skipping = {};
+        // An update confirm that pressed Stop Watch List and install is
+        // waiting on exactly this; it moves on to its countdown.
+        if (aboutUpdate.onWatchlistStopped) {
+          const stopped = aboutUpdate.onWatchlistStopped;
+          aboutUpdate.onWatchlistStopped = null;
+          stopped();
+        }
       } else if (job === 'maintenance') {
         maintSettle(p);
       } else if (job === 'update') {

@@ -326,6 +326,7 @@ function isBatchProgress(p) { return !p || !p.job || p.job === 'batch'; }
 function wlPaintProgress() {}
 function maintPaint() {}
 function maintSettle() { mt.running = false; calls.push('settle'); }
+const aboutUpdate = { onWatchlistStopped: null };
 function wlApplyCard() {}
 function wlLogAppend(e) { calls.push('log:' + (e.text || '')); }
 function renderCurrent() {}
@@ -467,6 +468,7 @@ function isBatchProgress(p) { return !p || !p.job || p.job === 'batch'; }
 function wlPaintProgress() {}
 function maintPaint() {}
 function maintSettle() {}
+const aboutUpdate = { onWatchlistStopped: null };
 function wlApplyCard() {}
 function wlLogAppend() {}
 function renderCurrent() { painted.push('current'); }
@@ -683,15 +685,17 @@ def test_smart_edit_closes_the_edit_dialog_before_opening_fix_link(app_js):
     assert handler.index("closeModal()") < handler.index("openFixLink(row)")
 
 
-# ── cancellation never promises an immediate stop ────────────────────────────
+# ── cancellation is immediate, and the copy says so ─────────────────────────
 
-def test_cancel_copy_never_claims_an_immediate_stop(app_js):
-    """Cancellation takes effect between channels — it cannot interrupt a
-    listing already in flight. Every cancel affordance says so."""
+def test_cancel_copy_no_longer_promises_a_slow_stop(app_js):
+    """The listing runs in the scan worker, which Cancel kills mid-flight, and
+    a download aborts at its next chunk — so the old "the channel in flight
+    finishes first" wording would now be wrong. Every cancel note says the
+    stop is happening now."""
     notes = _slice(app_js, "  const WL_CANCEL_ALL_NOTE", "  const WL_URL_HINT")
-    assert "finishes" in notes
-    for forbidden in ("immediately", "at once", "right away", "stops now"):
-        assert forbidden not in notes.lower()
+    assert "finishes" not in notes
+    assert "in flight" not in notes
+    assert notes.count("now") >= 2
 
 
 # ── every descriptive tooltip comes from the generated registry ──────────────

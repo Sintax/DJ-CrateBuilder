@@ -32,7 +32,10 @@ design conversations use these words exactly.
   rule runs in the child, whose network view is the one the failure happened
   in. Cancellation kills the child mid-listing. Reached via
   `python -m cratebuilder.scanproc` from source and `--scan-worker` on the
-  frozen exe (intercepted before the single-instance guard).
+  frozen exe (intercepted before the single-instance guard). Both the
+  tkinter app's `_scan_list_channel` and the web service's
+  `WatchlistOps._list_channel` list through it, so Cancel All is immediate
+  in either UI.
 - **CrateLayout** — the single answer to "where does this track live?": the
   channel folder path and the track's file name. Pure naming — it never
   creates a folder (callers still do that), and its only disk access is

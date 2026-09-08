@@ -40,11 +40,21 @@ intercepted at the very top of the monolith's `__main__` block, before the
 single-instance guard (which would otherwise make the worker poke the
 running window and exit answerless) and before any Tk root exists.
 
-The app's `_scan_list_channel(url, cid)` is the one caller; it snapshots the
-live cookie vars (same as `_ydl_session()`) and composes Cancel All with the
-per-card ✕ into the predicate. If the worker cannot even start (`OSError`
-from the spawn — blocked exe, broken install) it falls back to the
+The tkinter app's `_scan_list_channel(url, cid)` was the one caller; it
+snapshots the live cookie vars (same as `_ydl_session()`) and composes Cancel
+All with the per-card ✕ into the predicate. If the worker cannot even start
+(`OSError` from the spawn — blocked exe, broken install) it falls back to the
 in-process listing: one laggy scan beats a Watch List that cannot scan.
+
+**2026-09-07 — the web service is the second caller.** `WatchlistOps` (the
+service behind the web UI) had kept listing in-process, which is why its
+Cancel All could only land between channels. `WatchlistOps._list_channel`
+now takes the same route — `scanproc.list_channel_isolated` with the run's
+own `_cancelled(cid)` as the predicate, the same `OSError` fallback — for both
+the scan and a forced download's re-listing, so a Cancel All from the web UI
+kills the channel in flight. The function is injected (`list_isolated=`) so
+the service's `FakeSession` tests keep running in-process; `service.py`
+passes the real one.
 
 ## Deliberately not
 

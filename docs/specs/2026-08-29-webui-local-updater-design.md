@@ -70,6 +70,31 @@ So a download, a maintenance run, a tag-repair sweep, a genre-move retag, or a
 Watch List scan — every path that writes into the app's files, the downloads table,
 or a track's ID3 frames — is refused for as long as `UPDATE_JOB` holds its slot.
 
+#### Stop Watch List and install (added 2026-09-07)
+
+The refusal in the other direction used to leave the user with a two-step remedy:
+a Stop button that only took effect between channels, then a second press of
+install once they noticed the run had ended. Two changes make it one click:
+
+- Cancel All is now immediate for the web service — the listing goes through the
+  scan worker and is killed mid-flight (see the scan-subprocess note); a download
+  already aborted at its next chunk.
+- The confirm modal, opened with a Watch List run live, closes the plain
+  "Download and install" (with the reason) and offers **■ Stop Watch List and
+  install**. It sends `watchlist.cancel_all`, shows "Stopping…", and waits for the
+  Watch List's `job.finished` (a hook on `aboutUpdate.onWatchlistStopped`, cleared
+  before it is called so it can never fire twice; if the run had already ended on
+  its own, the hook is fired after the cancel resolves instead). Then a
+  five-second countdown ("Watch List stopped. Update starts in 5…") with a Cancel
+  button; at zero the existing progress modal + `update.apply` path runs unchanged.
+  Cancel, Escape, ✕ and the backdrop all drop the timer and the hook. A refusal
+  from `update.apply` (the scheduler took the slot back in the gap) reopens the
+  confirm with the host's reason rather than closing on a toast.
+
+The countdown appears only on this stop-then-install path: pressing install on an
+idle app is already a decision, and a delay there would be noise. The idle guard
+itself (`_require_idle_for_update`) is unchanged.
+
 ### FFmpeg piggyback stays tkinter-only
 
 The monolith's automatic-check path also decides an independent FFmpeg swap off the
