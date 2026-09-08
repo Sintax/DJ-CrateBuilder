@@ -1123,11 +1123,10 @@
     gateWrite($('#dl-pause'), watching ? WL_NO_PAUSE_REASON
       : (dl.running ? '' : 'No download is running.'),
       'main.pause_batch');
-    gateWrite($('#quick-add'), '', 'main.batch_add');
     gateWrite($('#dl-add'), '', 'main.batch_add');
     $('#dl-progress').style.opacity = v.running ? '1' : '.6';
-    /* The panel's Scan-all quick action and the Watch List's own scan controls
-       both close while a batch owns the host's yt-dlp session (3c). */
+    /* The Watch List's scan controls close while a batch owns the host's
+       yt-dlp session (3c). */
     renderWatchlistToolbar();
   }
 
@@ -2012,8 +2011,6 @@
       (dl.running ? TOOLTIPS['main.scan_batch_conflict']
                   : (wl.running ? WL_BUSY_REASON : ''));
 
-    const quick = $('#quick-scan');
-    if (quick) wlGate(quick, scanReason, 'wl.scan_all');
     wlGate($('#wl-scan'), scanReason, 'wl.scan_all');
 
     wlGate($('#wl-add'), blocked || (wl.running ? WL_BUSY_REASON : ''),
@@ -6234,10 +6231,6 @@
     wireLogScreen('activity');
     wireLogScreen('debug');
 
-    $('#quick-add').addEventListener('click', () => addToBatch($('#quick-url')));
-    $('#quick-url').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') addToBatch($('#quick-url'));
-    });
     $('#dl-add').addEventListener('click', () => addToBatch($('#dl-url')));
     $('#dl-url').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') addToBatch($('#dl-url'));
@@ -6358,7 +6351,6 @@
 
   function wireWatchlist() {
     const scanAll = () => wlRun('watchlist.scan_all', {}, 'Scanning every channel…');
-    $('#quick-scan').addEventListener('click', () => { show('watchlist'); scanAll(); });
     $('#wl-scan').addEventListener('click', scanAll);
     $('#wl-add').addEventListener('click', openAddChannel);
     $('#wl-links').addEventListener('click', runCheckLinks);
