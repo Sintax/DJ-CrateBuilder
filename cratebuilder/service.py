@@ -16,6 +16,7 @@ from datetime import datetime
 
 from cratebuilder import (activitylog, debuglog, rebuild, startup, ui_strings,
                           util, ydl)
+from cratebuilder import scanproc
 from cratebuilder import updater_core as ucore
 from cratebuilder.artwork import DEFAULT_COVER_ART_MODE, extract_cover
 from cratebuilder.batchresolve import PLATFORM_SUBDIR, platform_dir
@@ -1383,7 +1384,8 @@ class CrateBuilderService:
                 counts=self.counts, flush=self._emit.flush,
                 ffmpeg_dir=bundled_ffmpeg_dir(), debug=self._dbg,
                 claim_tag_writes=self.claim_tag_writes,
-                release_tag_writes=self.release_tag_writes)
+                release_tag_writes=self.release_tag_writes,
+                list_isolated=scanproc.list_channel_isolated)
         return self._watchlist_ops
 
     def reset_stale_watchlist_rows(self):

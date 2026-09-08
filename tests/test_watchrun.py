@@ -9,6 +9,7 @@ import sqlite3
 import pytest
 
 from cratebuilder import links as cb_links
+from cratebuilder import scanproc
 from cratebuilder import watchrun
 from cratebuilder.batchresolve import channel_folders
 from cratebuilder.batchrun import BatchRunner
@@ -117,7 +118,7 @@ class FakeDownloader:
 class Harness:
     """One WatchlistOps plus the fakes it was built from."""
 
-    def __init__(self, tmp_path, session=None, spawn=None):
+    def __init__(self, tmp_path, session=None, spawn=None, list_isolated=None):
         self.tmp_path = tmp_path
         self.plans = []
         self.outcomes = {}
@@ -136,7 +137,8 @@ class Harness:
             counts=lambda: {"downloads": 1},
             spawn=spawn or (lambda fn: fn()),
             network_probe=lambda: True,
-            now=lambda: 0.0)
+            now=lambda: 0.0,
+            list_isolated=list_isolated)
 
     def _runner(self, settings, db, emit, **kwargs):
         return BatchRunner(settings, db, emit,
@@ -445,6 +447,118 @@ def test_cancelling_a_run_stops_before_the_next_channel(tmp_path):
     assert harness.row(second)["status"] == "idle"
     assert any(line.startswith("SCAN Cancelled")
                for line in harness.emit.lines(watchrun.LINE_DEFAULT))
+
+
+# ── The listing runs in the scan worker, so a cancel lands mid-listing ──────
+class FakeIsolated:
+    """Stands in for scanproc.list_channel_isolated: records each call, polls
+    the cancel predicate once the way the real parent does between its
+    quarter-second waits, and answers with the harness's listing — or raises
+    what it was told to."""
+
+    def __init__(self, harness, error=None, on_call=None):
+        self.harness = harness
+        self.error = error
+        self.on_call = on_call
+        self.calls = []
+
+    def __call__(self, url, cookies=None, ignore_no_formats=False,
+                 should_cancel=None, debug=None):
+        self.calls.append(url)
+        if self.on_call:
+            self.on_call()
+        if self.error:
+            raise self.error
+        if should_cancel and should_cancel():
+            raise scanproc.ScanCancelled(url)
+        return [dict(e) for e in self.harness.session.listing]
+
+
+def _worker_harness(tmp_path, **kwargs):
+    harness = Harness(tmp_path, FakeSession(listing=_entries("A", "B")))
+    fake = FakeIsolated(harness, **kwargs)
+    harness.ops = WatchlistOps(
+        harness.settings, lambda: harness.db, harness.emit,
+        links_path=harness.links_path,
+        session_factory=lambda cookies=None: harness.session,
+        runner_factory=harness._runner, log_line=harness.log.append,
+        counts=lambda: {"downloads": 1}, spawn=lambda fn: fn(),
+        network_probe=lambda: True, now=lambda: 0.0, list_isolated=fake)
+    return harness, fake
+
+
+def test_the_scan_lists_through_the_worker_not_the_in_process_session(tmp_path):
+    """The worker is what makes a cancel immediate (and keeps the UI thread
+    free): the scan must go through it, never straight to the session."""
+    harness, fake = _worker_harness(tmp_path)
+    cid = harness.add_channel()
+
+    harness.ops.run_scan([cid])
+
+    assert len(fake.calls) == 1 and "UCabc" in fake.calls[0]
+    assert harness.session.listed == []
+    assert harness.row(cid)["pending_new_count"] == 2
+
+
+def test_cancelling_mid_listing_stops_the_scan_on_the_spot(tmp_path):
+    """Cancel All arriving while the worker is still listing kills the listing
+    there and then: the channel is left exactly as it was — no scan result,
+    no pending tracks — and the run reports it cancelled, not failed."""
+    harness, fake = _worker_harness(tmp_path)
+    fake.on_call = harness.ops.cancel_all
+    cid = harness.add_channel()
+
+    harness.ops.run_scan([cid])
+
+    row = harness.row(cid)
+    assert row["status"] == "idle"
+    assert row["pending_new_count"] == 0
+    assert row["last_scanned_timestamp"] in (None, 0)
+    lines = harness.emit.lines()
+    assert any("scan cancelled" in line for line in lines)
+    assert not any(line.startswith("ERROR") for line in lines)
+    assert harness.session.listed == []
+
+
+def test_a_worker_that_cannot_start_falls_back_to_listing_in_process(tmp_path):
+    """A blocked exe or broken install must not leave a Watch List that cannot
+    scan at all — the listing runs in-process instead (the monolith's rule)."""
+    harness, fake = _worker_harness(tmp_path, error=OSError("blocked"))
+    cid = harness.add_channel()
+
+    harness.ops.run_scan([cid])
+
+    assert len(fake.calls) == 1
+    assert len(harness.session.listed) == 1
+    assert harness.row(cid)["pending_new_count"] == 2
+
+
+def test_a_forced_download_lists_through_the_same_worker(tmp_path):
+    """Force Download re-lists the whole channel before downloading; that
+    listing is the same long yt-dlp crawl a scan is, so it takes the same
+    cancellable route."""
+    harness, fake = _worker_harness(tmp_path)
+    cid = harness.add_channel()
+
+    harness.ops.run_download([cid], force=True)
+
+    assert len(fake.calls) == 1
+    assert harness.session.listed == []
+    assert sorted(p.title for p in harness.plans) == ["A", "B"]
+
+
+def test_cancelling_a_forced_listing_is_not_a_failure(tmp_path):
+    harness, fake = _worker_harness(tmp_path)
+    fake.on_call = harness.ops.cancel_all
+    cid = harness.add_channel()
+
+    harness.ops.run_download([cid], force=True)
+
+    assert harness.plans == []
+    assert harness.row(cid)["status"] == "idle"
+    assert not any(line.startswith("ERROR") for line in harness.emit.lines())
+    note = harness.emit.of("notification")[-1]
+    assert note["level"] == "info"
 
 
 # ── Download ─────────────────────────────────────────────────────────────────

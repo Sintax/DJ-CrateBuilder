@@ -8,6 +8,7 @@ from datetime import datetime
 
 from cratebuilder import genrefix
 from cratebuilder import links as cb_links
+from cratebuilder import scanproc
 from cratebuilder import util
 from cratebuilder.batchresolve import (TrackSpec, channel_folders, entry_url,
                                        platform_dir)
@@ -187,7 +188,8 @@ class WatchlistOps:
                  ffmpeg_dir=None, log_line=None, counts=None, flush=None,
                  spawn=_daemon, network_probe=network_is_reachable,
                  now=time.monotonic, timestamp=None, debug=None,
-                 claim_tag_writes=None, release_tag_writes=None):
+                 claim_tag_writes=None, release_tag_writes=None,
+                 list_isolated=None):
         self._settings = settings
         self._db_factory = db_factory
         self._emit = emit
@@ -196,6 +198,9 @@ class WatchlistOps:
         self._runner_factory = runner_factory
         self._ffmpeg_dir = ffmpeg_dir
         self._debug = debug
+        # scanproc.list_channel_isolated in the app; None lists in-process,
+        # which is what every FakeSession test wants.
+        self._list_isolated = list_isolated
         self._log_line = log_line or (lambda text: None)
         self._counts = counts
         self._flush = flush or (lambda: None)
@@ -239,6 +244,29 @@ class WatchlistOps:
         """A read-only yt-dlp session carrying the cookie policy as it stands
         right now — built per operation, like every other session in the app."""
         return self._session_factory(cookies=self._settings.cookie_config())
+
+    def _list_channel(self, url, cid):
+        """A channel's listing, answered by the scan worker when one is wired.
+
+        A flat-extraction is a long yt-dlp crawl; run in a child process the
+        cancel predicate is polled while it goes and kills it mid-listing,
+        raising ScanCancelled — the only way Cancel All can land on the channel
+        in flight instead of waiting it out. The monolith's own
+        _scan_list_channel, ported: if the worker cannot even start, the
+        listing falls back in-process — one uncancellable scan beats a Watch
+        List that cannot scan at all."""
+        if self._list_isolated is None:
+            return self._session().list_channel(url)
+        try:
+            return self._list_isolated(
+                url, cookies=self._settings.cookie_config(),
+                should_cancel=lambda: self._cancelled(cid),
+                debug=self._debug.info if self._debug else None)
+        except OSError as exc:
+            if self._debug:
+                self._debug.error(
+                    f"SCAN WORKER SPAWN FAIL | {exc} — listing in-process")
+            return self._session().list_channel(url)
 
     def _row(self, cid):
         row = self._db().get_watchlist_channel(cid)
@@ -472,8 +500,10 @@ class WatchlistOps:
         # scan and download crawl the channel identically.
         url = watch_fetch_url(platform, row.get("url") or "")
         try:
-            entries = [e for e in self._session().list_channel(url)
+            entries = [e for e in self._list_channel(url, cid)
                        if isinstance(e, dict)]
+        except scanproc.ScanCancelled:
+            return self._scan_cancelled(db, cid, name)
         except Exception as exc:
             self._scan_failed(db, row, name, exc)
             return None
@@ -725,8 +755,12 @@ class WatchlistOps:
             url = watch_fetch_url(row.get("platform") or "YouTube",
                                   row.get("url") or "")
             try:
-                entries = [e for e in self._session().list_channel(url)
+                entries = [e for e in self._list_channel(url, cid)
                            if isinstance(e, dict)]
+            except scanproc.ScanCancelled:
+                self._line(LINE_DEFAULT, f"SCAN {name} — cancelled")
+                self._queue_row(cid, index, "skipped", "cancelled", name=name)
+                return 0
             except Exception as exc:
                 self._failed += 1
                 self._line(LINE_ERROR, f"ERROR {name} — {str(exc)[:120]}")
