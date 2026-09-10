@@ -6,8 +6,8 @@ cannot pass just because someone reformatted the line it names.
 
 Covers the update-blocked remedy: while a known-available build is stuck
 behind a live Watch List run (the host refuses update.apply with
-UPDATE_NEEDS_IDLE_JOBS), the card and the confirm modal offer the stop —
-never just the refusal.
+UPDATE_NEEDS_IDLE_JOBS), Download and install stops the run itself — the
+user never has to press a separate Stop and notice when it has finished.
 """
 import json
 import os
@@ -71,11 +71,10 @@ function makeEl(tag) {
   };
 }
 const document = { createElement: makeEl };
-function findStop(el) {
-  if (el.textContent && el.textContent.indexOf('Stop Watch List') !== -1
-      && el.tag === 'button') return el;
-  for (const c of el.children) { const hit = findStop(c); if (hit) return hit; }
-  return null;
+function buttons(el) {
+  let out = el.tag === 'button' ? [el] : [];
+  for (const c of el.children) out = out.concat(buttons(c));
+  return out;
 }
 %(slices)s
 function renderWith(result, running, transport) {
@@ -84,24 +83,17 @@ function renderWith(result, running, transport) {
   cbApi.transport = transport || 'local';
   const host = makeEl('div');
   renderAboutUpdates(host);
-  return !!findStop(host);
+  const all = buttons(host);
+  const update = all.find((b) => b.textContent.indexOf('Update Now') !== -1);
+  return { labels: all.map((b) => b.textContent),
+           updateOn: !!update && !update.disabled };
 }
 const AVAILABLE = { reachable: true, valid: true, available: true,
                     current_build: 64, latest_build: 65, can_self_update: true };
-const CURRENT = Object.assign({}, AVAILABLE, { available: false });
 async function main() {
-  const blocked = renderWith(AVAILABLE, true);
-  const idleRun = renderWith(AVAILABLE, false);
-  const noBuild = renderWith(CURRENT, true);
-  const remote = renderWith(AVAILABLE, true, 'remote');
-
-  cbApi.transport = 'local';
-  const b = aboutStopWatchlistButton();
-  await b.listeners.click();
   console.log(JSON.stringify({
-    blocked, idleRun, noBuild, remote,
-    cls: b.className, clicked: calls, off: !!b.disabled,
-    label: b.textContent, toasted: toasts.length > 0,
+    blocked: renderWith(AVAILABLE, true),
+    idle: renderWith(AVAILABLE, false),
   }));
 }
 main();
@@ -109,61 +101,44 @@ main();
 
 
 def _slices(app_js):
-    return (_slice(app_js, "  function aboutStopWatchlistButton()",
-                   "  /* Once the Watch List has been stopped")
-            + _slice(app_js, "  function renderAboutUpdates(host)",
-                     "  async function aboutOpen()"))
+    return _slice(app_js, "  function renderAboutUpdates(host)",
+                  "  async function aboutOpen()")
 
 
-def test_the_stop_button_appears_only_while_a_build_waits_behind_a_run(
-        app_js, tmp_path):
-    """Available build + live Watch List run is the one state the remedy is
-    for. No build, no run, or a remote session (whose update controls are
-    disabled anyway) must not grow the extra button."""
+def test_the_card_never_grows_a_separate_stop_button(app_js, tmp_path):
+    """A live Watch List run must not close Update Now or add a Stop beside
+    it: the confirm modal's own install does the stopping, so a card-level
+    Stop would be a second step whose completion the user has to notice."""
     r = _run_node(tmp_path, "aboutstop.mjs",
                   _HARNESS % {"slices": _slices(app_js)})
 
-    assert r["blocked"] is True
-    assert r["idleRun"] is False
-    assert r["noBuild"] is False
-    assert r["remote"] is False
+    for state in ("blocked", "idle"):
+        assert r[state]["updateOn"] is True
+        assert not [l for l in r[state]["labels"] if "Stop" in l]
+    assert "aboutStopWatchlistButton" not in app_js
 
 
-def test_the_stop_button_sends_the_watch_lists_own_cancel(app_js, tmp_path):
-    """One cancel, the same RPC the Watch List toolbar sends — and the button
-    settles into a disabled 'Stopping…' so a second click cannot double-send
-    while the run stops."""
-    r = _run_node(tmp_path, "aboutstop2.mjs",
-                  _HARNESS % {"slices": _slices(app_js)})
-
-    assert r["clicked"] == ["watchlist.cancel_all"]
-    assert r["cls"] == "cb-btn cb-btn--warn cb-btn--sm"
-    assert r["off"] is True
-    assert "Stopping" in r["label"]
-    assert r["toasted"] is True
-
-
-def test_the_update_confirm_modal_offers_the_one_click_remedy(app_js):
+def test_the_update_confirm_modal_stops_the_run_from_install_itself(app_js):
     """The modal is where the refusal actually bites — the user is one click
-    from install. With a run live at open it carries the warning, closes the
-    plain install, and offers Stop Watch List and install in its place."""
+    from install. With a run live at open it carries the warning, and the one
+    install button sends the Watch List's own cancel before counting down."""
     body = _slice(app_js, "  function aboutConfirmUpdate(",
                   "  /* Step two: the progress modal")
     assert "wl.running" in body
-    assert "Stop Watch List and install" in body
+    assert "Stop Watch List and install" not in body
     assert "watchlist.cancel_all" in body
     assert "cannot install" in body
 
 
-def test_refresh_repaints_about_so_the_button_tracks_the_run(app_js):
+def test_refresh_repaints_about_so_the_card_tracks_the_run(app_js):
     """job.started and job.finished both resync through refresh(); without
-    renderAbout() there the stop button would outlive the run it stops."""
+    renderAbout() there the Updates card would show stale run state."""
     body = _slice(app_js, "  async function refresh()",
                   "  function isBatchProgress(")
     assert "renderAbout();" in body
 
 
-# ── Stop Watch List and install: stop → countdown → install ─────────────────
+# ── Download and install during a run: stop → countdown → install ───────────
 # The confirm modal's own functions run in Node against a stub modal and faked
 # timers; the Watch List's job.finished is simulated by watchlistFinished(),
 # whose real counterpart is pinned structurally in the last test.
@@ -265,39 +240,41 @@ def _flow(app_js, tmp_path, name, running, script):
     return _run_node(tmp_path, name, source)
 
 
-def test_with_a_run_live_the_stop_button_stops_then_counts_down_then_installs(
+def test_with_a_run_live_install_stops_it_then_counts_down_then_installs(
         app_js, tmp_path):
-    """One click: Cancel All goes out, the modal says it is stopping, the Watch
-    List's job.finished starts a five-second countdown, and only when it
-    reaches zero does the progress modal open and update.apply go out."""
+    """One click on the only install button: Cancel All goes out, the button
+    itself says it is stopping, the Watch List's job.finished starts a
+    five-second countdown, and only when it reaches zero does the progress
+    modal open and update.apply go out. No separate Stop button anywhere."""
     r = _flow(app_js, tmp_path, "flow1.mjs", True, """
   aboutConfirmUpdate();
-  const stop = btn(modal.foot, 'Stop Watch List and install');
   const go = btn(modal.foot, 'Download and install');
-  const before = { stop: !!stop, goOff: go.disabled, goWhy: go.reason,
-                   warned: texts(modal.body) };
-  await stop.listeners.click();
+  const before = { stop: !!btn(modal.foot, 'Stop Watch List'), goOff: go.disabled,
+                   tip: go.attrs['data-tt-text'] || '', warned: texts(modal.body) };
+  await go.listeners.click();
   const stopping = { calls: calls.slice(), label: btn(modal.foot, 'Stopping').textContent,
                      off: btn(modal.foot, 'Stopping').disabled,
+                     goGone: !btn(modal.foot, 'Download and install'),
                      hooked: typeof aboutUpdate.onWatchlistStopped === 'function',
                      status: texts(modal.body), began };
   watchlistFinished();
   const countdown = { text: texts(modal.body), cancel: !!btn(modal.foot, 'Cancel'),
                       goGone: !btn(modal.foot, 'Download and install'),
-                      stopGone: !btn(modal.foot, 'Stop Watch List'), began };
+                      stopGone: !btn(modal.foot, 'Stopping'), began };
   tick(4);
   const almost = { text: texts(modal.body), began, applied: calls.includes('update.apply') };
   tick(1);
   console.log(JSON.stringify({ before, stopping, countdown, almost,
                                done: { began, calls, timers: liveTimers() } }));
 """)
-    assert r["before"]["stop"] is True
-    assert r["before"]["goOff"] is True
-    assert "Stop Watch List and install" in r["before"]["goWhy"]
+    assert r["before"]["stop"] is False
+    assert r["before"]["goOff"] is False
+    assert "Stops the Watch List run first" in r["before"]["tip"]
     assert "cannot install" in r["before"]["warned"]
 
     assert r["stopping"]["calls"] == ["watchlist.cancel_all"]
     assert r["stopping"]["off"] is True and "Stopping" in r["stopping"]["label"]
+    assert r["stopping"]["goGone"] is True
     assert r["stopping"]["hooked"] is True
     assert "Stopping the Watch List run" in r["stopping"]["status"]
     assert r["stopping"]["began"] == 0
@@ -318,21 +295,22 @@ def test_with_a_run_live_the_stop_button_stops_then_counts_down_then_installs(
 def test_cancel_during_the_countdown_never_installs(app_js, tmp_path):
     r = _flow(app_js, tmp_path, "flow2.mjs", True, """
   aboutConfirmUpdate();
-  await btn(modal.foot, 'Stop Watch List and install').listeners.click();
+  await btn(modal.foot, 'Download and install').listeners.click();
   watchlistFinished();
   tick(2);
   btn(modal.foot, 'Cancel').listeners.click();
   tick(10);
   const go = btn(modal.foot, 'Download and install');
   console.log(JSON.stringify({ began, calls, text: texts(modal.body),
-    goBack: !!go && !go.disabled, stopGone: !btn(modal.foot, 'Stop Watch List'),
+    goBack: !!go && !go.disabled, plain: !!go && !go.attrs['data-tt-text'],
     timers: liveTimers(), hooked: aboutUpdate.onWatchlistStopped !== null }));
 """)
     assert r["began"] == 0
     assert r["calls"] == ["watchlist.cancel_all"]
     assert "Update cancelled" in r["text"] and "still on build 64" in r["text"]
-    # The run is already stopped, so the plain install is open again.
-    assert r["goBack"] is True and r["stopGone"] is True
+    # The run is already stopped, so install is back to its plain, immediate
+    # form — no stop-first tooltip.
+    assert r["goBack"] is True and r["plain"] is True
     assert r["timers"] == 0 and r["hooked"] is False
 
 
@@ -341,7 +319,7 @@ def test_closing_the_modal_during_the_countdown_drops_it(app_js, tmp_path):
     not keep counting toward an install behind a modal that is gone."""
     r = _flow(app_js, tmp_path, "flow3.mjs", True, """
   aboutConfirmUpdate();
-  await btn(modal.foot, 'Stop Watch List and install').listeners.click();
+  await btn(modal.foot, 'Download and install').listeners.click();
   watchlistFinished();
   closeModal();
   tick(10);
@@ -358,13 +336,13 @@ def test_with_nothing_running_install_is_immediate_with_no_countdown(
     install on an idle app has already decided."""
     r = _flow(app_js, tmp_path, "flow4.mjs", False, """
   aboutConfirmUpdate();
-  const hasStop = !!btn(modal.foot, 'Stop Watch List');
   const go = btn(modal.foot, 'Download and install');
+  const plain = !go.attrs['data-tt-text'];
   await go.listeners.click();
-  console.log(JSON.stringify({ hasStop, goOff: go.disabled, began, calls,
+  console.log(JSON.stringify({ plain, goOff: go.disabled, began, calls,
                                timers: timers.length }));
 """)
-    assert r["hasStop"] is False and r["goOff"] is False
+    assert r["plain"] is True and r["goOff"] is False
     assert r["began"] == 1 and r["calls"] == ["update.apply"]
     assert r["timers"] == 0
 
@@ -372,11 +350,11 @@ def test_with_nothing_running_install_is_immediate_with_no_countdown(
 def test_a_run_that_ended_on_its_own_before_the_click_still_counts_down(
         app_js, tmp_path):
     """No job.finished is coming for the hook when the run was already over
-    by the time Stop was pressed — the countdown must start regardless."""
+    by the time install was pressed — the countdown must start regardless."""
     r = _flow(app_js, tmp_path, "flow5.mjs", True, """
   aboutConfirmUpdate();
   wl.running = false;   // the scan finished between open and click
-  await btn(modal.foot, 'Stop Watch List and install').listeners.click();
+  await btn(modal.foot, 'Download and install').listeners.click();
   console.log(JSON.stringify({ text: texts(modal.body), timers: liveTimers(),
                                hooked: aboutUpdate.onWatchlistStopped !== null }));
 """)
