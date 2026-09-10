@@ -101,24 +101,143 @@ const on = { text: howto.textContent, off: howto.disabled, tt: howto.opts.ttKey 
 state.settings.cookies_browser = 'Brave';
 applySettingsDependencies();
 const brave = howto.textContent;
+state.settings.cookies_browser = 'Chrome';
+applySettingsDependencies();
+const chrome = howto.textContent;
 state.settings.use_cookies = false;
 applySettingsDependencies();
 const off = { off: howto.disabled, reason: howto.opts.reason };
-console.log(JSON.stringify({ on, brave, off }));
+console.log(JSON.stringify({ on, brave, chrome, off }));
 """
+
+
+def _unreadable_browsers(app_js):
+    return _slice(app_js, "  const UNREADABLE_BROWSERS = {",
+                  "  /* The gate on Use Browser Cookies.")
 
 
 def test_the_howto_button_names_the_browser_and_greys_with_cookies_off(app_js, tmp_path):
     """The monolith's _update_howto_label and its cookies-toggle greying."""
     r = _run_node(tmp_path, "howto.mjs", _HOWTO_HARNESS % {
-        "fn": _slice(app_js, "  function applySettingsDependencies()",
-                     "  /* One setting, drawn twice"),
+        "fn": _unreadable_browsers(app_js)
+        + _slice(app_js, "  function applySettingsDependencies()",
+                 "  /* One setting, drawn twice"),
     })
 
     assert r["on"] == {"text": "📖 How-To: Setting Up a Dedicated Firefox Profile",
                        "off": False, "tt": "settings.firefox_profile_howto"}
     assert r["brave"] == "📖 How-To: Setting Up a Dedicated Brave Profile"
+    assert r["chrome"] == "📖 How-To: Using Chrome Cookies via a Cookie File"
     assert r["off"] == {"off": True, "reason": "Turn on Use Browser Cookies first."}
+
+
+# ── turning Browser Cookies on is gated ──────────────────────────────────────
+
+def test_the_cookies_box_hands_its_tick_to_the_gate(app_js):
+    """Ticking Use Browser Cookies must not save straight away: the box goes
+    back to off and the gate dialog decides. Unticking stays a plain save,
+    and every other checkbox is untouched."""
+    body = _slice(app_js, "    if (entry.type === 'bool') {",
+                  "    if (entry.key === 'limit_minutes') {")
+    assert "if (entry.key === 'use_cookies' && box.checked) {" in body
+    assert "box.checked = false;\n          openCookieGate(box);\n          return;" in body
+    assert "save(entry.key, box.checked, box);" in body
+
+
+def test_chrome_is_greyed_in_the_browser_list_with_its_reason(app_js):
+    body = _slice(app_js, "    if (entry.type === 'enum') {",
+                  "    } else if (entry.type === 'int') {")
+    assert "if (entry.key === 'cookies_browser' && UNREADABLE_BROWSERS[o]) {" in body
+    assert "opt.disabled = true;" in body
+    assert "opt.title = UNREADABLE_BROWSERS[o].reason;" in body
+    assert "Chrome: {" in _unreadable_browsers(app_js)
+
+
+_GATE_HARNESS = """
+const state = { settings: { cookies_browser: %(browser)r } };
+const saves = [], howto = [];
+let opened = null, closes = 0;
+function mkEl() {
+  const e = { children: [], style: {}, className: '', textContent: '' };
+  e.appendChild = (c) => { e.children.push(c); return c; };
+  e.append = (...c) => { e.children.push(...c); };
+  return e;
+}
+async function save(key, value, el) { saves.push([key, value, el.checked]); }
+function modalNote(text) { const p = mkEl(); p.textContent = text; return p; }
+function modalButton(label, cls, onClick) {
+  return { label, cls, onClick, style: {} };
+}
+function closeModal() { closes += 1; if (opened && opened.onClose) opened.onClose(); }
+function openCookieHowto(browser) { howto.push(browser); closeModal(); }
+function openModal(opts) {
+  opened = opts;
+  opened.bodyEl = mkEl(); opened.footEl = mkEl();
+  opts.body(opened.bodyEl, {}); opts.foot(opened.footEl, {});
+  return {};
+}
+%(fn)s
+const box = { checked: false };
+openCookieGate(box);
+const texts = opened.bodyEl.children.map((c) => c.textContent);
+const buttons = opened.footEl.children.map((b) => b.label);
+const press = (label) => opened.footEl.children.find((b) => b.label === label).onClick();
+const out = { texts, buttons, checkedOnOpen: box.checked,
+              warned: texts.some((t) => t.includes('currently set to')),
+              guideLeft: opened.footEl.children[1].style.marginLeft };
+press(%(press)r);
+out.checked = box.checked; out.saves = saves; out.howto = howto; out.closes = closes;
+console.log(JSON.stringify(out));
+"""
+
+
+def _gate(app_js, tmp_path, browser, press):
+    fn = _unreadable_browsers(app_js) + _slice(
+        app_js, "  function openCookieGate(box) {", "  /* Section-level help")
+    return _run_node(tmp_path, "gate.mjs",
+                     _GATE_HARNESS % {"browser": browser, "press": press, "fn": fn})
+
+
+def test_the_gate_opens_with_the_box_off_and_three_choices(app_js, tmp_path):
+    r = _gate(app_js, tmp_path, "Firefox", "Keep cookies off")
+    assert r["checkedOnOpen"] is False
+    assert r["buttons"] == ["Keep cookies off", "Open the setup guide",
+                            "Got it, turn it on"]
+    assert r["guideLeft"] == "auto"
+    assert r["texts"][0].startswith("This is not a quick fix.")
+    assert any("setup guide" in t for t in r["texts"])
+    assert any("Chrome cannot be read directly" in t for t in r["texts"])
+    assert r["warned"] is False
+
+
+def test_keeping_cookies_off_saves_nothing(app_js, tmp_path):
+    r = _gate(app_js, tmp_path, "Firefox", "Keep cookies off")
+    assert r["checked"] is False
+    assert r["saves"] == []
+    assert r["closes"] == 1
+
+
+def test_got_it_turns_cookies_on_through_the_ordinary_save(app_js, tmp_path):
+    r = _gate(app_js, tmp_path, "Firefox", "Got it, turn it on")
+    assert r["checked"] is True
+    assert r["saves"] == [["use_cookies", True, True]]
+    assert r["howto"] == []
+
+
+def test_the_guide_button_turns_cookies_on_and_opens_the_browsers_guide(app_js, tmp_path):
+    """Asking for the guide is committing: cookies go on, then the walkthrough
+    for the selected browser replaces the gate. Closing the gate that way must
+    not undo the tick."""
+    r = _gate(app_js, tmp_path, "Brave", "Open the setup guide")
+    assert r["checked"] is True
+    assert r["saves"] == [["use_cookies", True, True]]
+    assert r["howto"] == ["Brave"]
+
+
+def test_a_chrome_selection_is_called_out_in_red(app_js, tmp_path):
+    r = _gate(app_js, tmp_path, "Chrome", "Keep cookies off")
+    assert r["warned"] is True
+    assert any("currently set to Chrome" in t for t in r["texts"])
 
 
 # ── the New Genre form and the Genre row ─────────────────────────────────────
