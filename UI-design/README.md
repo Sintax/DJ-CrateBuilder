@@ -1,6 +1,6 @@
 # DJ-CrateBuilder — Web / Remote UI redesign
 
-Everything needed to implement the web control surface for DJ-CrateBuilder v1.3.
+Everything needed to implement the web control surface for DJ-CrateBuilder v2.0.
 Read this file first, then `HANDOFF.md` for the engineering detail and
 `ui-contract.json` for the exact API surface, settings keys and tooltip strings.
 

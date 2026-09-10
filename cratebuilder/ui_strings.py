@@ -59,6 +59,7 @@ TOOLTIPS = {
     'main.open_folder': "Reveal the save directory in the host machine's file manager. Local host only.",
     'main.pause_batch': 'Hold the batch after the current track finishes. Resume picks up at the next URL.',
     'main.platform_help': 'Platform is detected from the URL you paste; this only sets which folder tree the download is filed under when a link is ambiguous.',
+    'main.quick_url': 'Paste a YouTube or SoundCloud link — single track, playlist or whole channel. Enter queues it with the genre picked on Downloads.',
     'main.refresh': 'Reload every panel from the host.',
     'main.row_down': 'Move this URL down in the queue',
     'main.row_remove': 'Remove this URL from the queue',

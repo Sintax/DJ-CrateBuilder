@@ -2,7 +2,7 @@
 
 Frozen, cratebuilder/service.py itself resolves inside PyInstaller's
 _internal/ — fine for locating this file, but the wrong root for both user
-data (which must land beside the installed exe, where every existing 1.3
+data (which must land beside the installed exe, where every existing
 install already keeps cratebuilder.db) and the bundled monolith (which
 --add-data places at sys._MEIPASS). These guard that every reader of either
 agrees with that, and that from-source behavior is unchanged.

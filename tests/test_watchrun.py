@@ -1373,7 +1373,7 @@ def _drain(service, timeout=5.0):
 # its __init__: an empty Watch List is filled from base/<Platform>/<Genre>/
 # <Channel>/, one row per channel folder — under its sidecar's link when the
 # folder carries one, parked as needs_resolve when it does not. The web port
-# never had it, so a reinstall that lost cratebuilder.db (the v1.3 uninstaller
+# never had it, so a reinstall that lost cratebuilder.db (an older uninstaller
 # wiped the whole install folder) left every crate folder with no way back.
 
 def _crate_folder(harness, name, genre="House", platform="YouTube", **sidecar):

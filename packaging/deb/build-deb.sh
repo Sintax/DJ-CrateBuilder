@@ -21,7 +21,7 @@ SCRIPT_NAME="DJ-CrateBuilder_v2.0.py"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 
-# Package version mirrors the app's own version.build (e.g. 1.3.24): read
+# Package version mirrors the app's own version.build (e.g. 2.0.73): read
 # APP_BUILD straight from the source so the .deb filename, the About screen,
 # and update-linux.json all speak the same number. An optional CLI arg
 # overrides the derived build (used only for one-off manual builds).

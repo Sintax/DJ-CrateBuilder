@@ -74,7 +74,7 @@ ABOUT_DESCRIPTION   = "Vibe-Coded entirely with Claude-AI"
 GITHUB_URL        = "https://github.com/Sintax/DJ-CrateBuilder"
 GITHUB_ISSUES_URL = "https://github.com/Sintax/DJ-CrateBuilder/issues/new"
 # Raw manifest for the in-app updater. Lives on a dedicated `nightly` branch so
-# `main` and the tagged v1.3 release are never touched by a nightly push.
+# `main` and the tagged v2.0 release are never touched by a nightly push.
 UPDATE_MANIFEST_URL = (
     "https://raw.githubusercontent.com/Sintax/DJ-CrateBuilder/"
     "nightly/update.json"
@@ -91,7 +91,7 @@ UPDATE_MANIFEST_URL_LINUX = (
 UPDATE_BTN_CHECK  = "  ⟳  Check for updates  "
 UPDATE_BTN_UPDATE = "  ⟳  Update Now  "
 
-# Full version string shown to the user, e.g. "1.3.1".
+# Full version string shown to the user, e.g. "2.0.73".
 APP_VERSION_FULL = f"{APP_VERSION}.{APP_BUILD}"
 
 # ── Add or remove lines below to customize the About tab content. ──────────
@@ -8871,7 +8871,7 @@ class MP3DownloaderApp(tk.Tk):
              "is found, and the app also checks quietly in the background on the interval beside it. Updates come "
              "from the nightly channel on the project's GitHub repository and are SHA-256 verified before anything is "
              "installed; most are small delta payloads containing only the files that changed. The display version "
-             "stays pinned at 1.3 and only the build number advances. Installing one closes the app, swaps the files, "
+             "stays pinned at 2.0 and only the build number advances. Installing one closes the app, swaps the files, "
              "and relaunches. Running from source instead of the installer? There's nothing to self-update — git pull "
              "the latest changes."),
         ]
