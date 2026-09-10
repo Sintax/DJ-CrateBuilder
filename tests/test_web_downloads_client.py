@@ -435,3 +435,181 @@ def test_the_skip_row_is_wired_and_rendered(app_js, index_html):
     assert "save('skip_mode', $('#dl-skipmode').value" in app_js
     body = _slice(app_js, "  function renderDownloads()", "  /* ── modal shell")
     assert "renderDownloadsSkip();" in body
+
+
+# ── a link with no genre is asked about before it joins the queue ────────────
+# The Main tab's "No Genre Selected" ask, and its "Start runs the URL box"
+# shortcut, both went missing in the v2.0 rewrite: a link filed under (none)
+# went straight into _No Genre with no word said, and Start stayed grey until
+# the user also pressed Add. Both are back, sharing one add path.
+
+_ADD_HARNESS = """
+const els = {
+  '#dl-url': { value: '', focused: false, focus() { this.focused = true; } },
+  '#dl-genre': { value: '(none)', focused: false, focus() { this.focused = true; } },
+  '#dl-platform .is-on': { dataset: { platform: 'YouTube' } },
+};
+function $(sel) { return els[sel] || null; }
+const state = { batch: [] };
+const calls = [], toasts = [], notes = [];
+let painted = 0;
+function renderBatch() { painted += 1; }
+function toast(text, isError) { toasts.push({ text, isError: !!isError }); }
+async function call(method, params) {
+  calls.push({ method, params });
+  return method === 'batch.list' ? [{ id: 1, url: params && params.url }] : {};
+}
+function modalNote(text) { notes.push(text); return { text }; }
+function modalButton(label, cls, onClick) {
+  return { label, cls, onClick, style: {} };
+}
+let dialog = null;
+function openModal(opts) {
+  const foot = { buttons: [], append(...b) { this.buttons.push(...b); } };
+  const body = { appendChild() {} };
+  dialog = { opts, foot };
+  opts.body(body, {});
+  opts.foot(foot, {});
+}
+function closeModal() {
+  const d = dialog; dialog = null;
+  if (d && d.opts.onClose) d.opts.onClose();
+}
+function press(label) {
+  dialog.foot.buttons.find((b) => b.label === label).onClick();
+}
+%(add)s
+%(scenario)s
+"""
+
+
+def _add_harness(app_js, scenario):
+    return _ADD_HARNESS % {
+        "add": _slice(app_js, "  const NO_GENRE_VALUE =", "  function wire()"),
+        "scenario": scenario,
+    }
+
+
+def test_a_link_with_a_genre_is_added_without_a_word(app_js, tmp_path):
+    r = _run_node(tmp_path, "dladd_genre.mjs", _add_harness(app_js, """
+(async () => {
+  els['#dl-url'].value = '  https://x/y  ';
+  els['#dl-genre'].value = 'Techno';
+  const added = await addToBatch();
+  console.log(JSON.stringify({ added, asked: !!dialog, calls, painted,
+                               box: els['#dl-url'].value, toasts }));
+})();
+"""))
+    assert r["added"] is True
+    assert r["asked"] is False
+    assert r["calls"][0] == {"method": "batch.add",
+                             "params": {"url": "https://x/y", "genre": "Techno",
+                                        "platform": "YouTube"}}
+    assert r["calls"][1]["method"] == "batch.list"
+    assert r["painted"] == 1 and r["box"] == ""
+    assert r["toasts"] == [{"text": "Added to batch", "isError": False}]
+
+
+def test_a_link_with_no_genre_waits_on_the_gate(app_js, tmp_path):
+    """Nothing reaches the host until the user answers; backing out — the
+    button, Escape, ✕ or the dim all land in onClose the same way — adds
+    nothing, keeps the link in the box, and hands focus to the genre list."""
+    r = _run_node(tmp_path, "dladd_gate.mjs", _add_harness(app_js, """
+(async () => {
+  els['#dl-url'].value = 'https://x/y';
+  const pending = addToBatch();
+  const opened = { title: dialog.opts.title, notes: notes.slice(),
+                   buttons: dialog.foot.buttons.map((b) => b.label),
+                   callsSoFar: calls.length };
+  press('Pick a genre first');
+  const backedOut = { added: await pending, calls: calls.length,
+                      box: els['#dl-url'].value,
+                      genreFocused: els['#dl-genre'].focused };
+  els['#dl-genre'].focused = false;
+  const again = addToBatch();
+  press('Add without one');
+  const wentAhead = { added: await again, calls: calls.map((c) => c.method),
+                      genre: calls[0].params.genre, box: els['#dl-url'].value,
+                      genreFocused: els['#dl-genre'].focused };
+  console.log(JSON.stringify({ opened, backedOut, wentAhead }));
+})();
+"""))
+    assert r["opened"]["title"] == "No genre picked"
+    assert r["opened"]["callsSoFar"] == 0
+    assert r["opened"]["buttons"] == ["Pick a genre first", "Add without one"]
+    assert any("_No Genre" in n for n in r["opened"]["notes"])
+    assert r["backedOut"] == {"added": False, "calls": 0, "box": "https://x/y",
+                              "genreFocused": True}
+    assert r["wentAhead"]["added"] is True
+    assert r["wentAhead"]["calls"] == ["batch.add", "batch.list"]
+    assert r["wentAhead"]["genre"] == "(none)"
+    assert r["wentAhead"]["box"] == ""
+    assert r["wentAhead"]["genreFocused"] is False
+
+
+def test_an_empty_box_is_refused_before_any_gate(app_js, tmp_path):
+    r = _run_node(tmp_path, "dladd_empty.mjs", _add_harness(app_js, """
+(async () => {
+  els['#dl-url'].value = '   ';
+  const added = await addToBatch();
+  console.log(JSON.stringify({ added, asked: !!dialog, calls: calls.length, toasts }));
+})();
+"""))
+    assert r == {"added": False, "asked": False, "calls": 0,
+                 "toasts": [{"text": "Paste a YouTube or SoundCloud link first.",
+                             "isError": True}]}
+
+
+# ── Start wakes up on a pasted link, and takes it along ──────────────────────
+
+_START_GATE_HARNESS = """
+function node() {
+  return { children: [], textContent: '', className: '', style: {},
+           innerHTML: '', appendChild(c) { this.children.push(c); } };
+}
+const document = { createElement: node };
+const els = { '#dl-rows': node(), '#dl-count': node(),
+              '#dl-url': { value: '' } };
+function $(sel) { return els[sel] || node(); }
+function dlView() { return { kind: 'batch' }; }
+const dl = { running: false, rows: {} };
+const state = { batch: [] };
+const gates = [];
+function setStartDisabled(off, why) { gates.push([!!off, why]); }
+function gateWrite() {}
+function renderQueueLog() {}
+%(pending)s
+%(batch)s
+const out = {};
+renderBatch(); out.blank = gates.pop();
+els['#dl-url'].value = '  https://x/y ';
+renderBatch(); out.pasted = gates.pop();
+els['#dl-url'].value = '   ';
+renderBatch(); out.cleared = gates.pop();
+console.log(JSON.stringify(out));
+"""
+
+
+def test_start_is_open_the_moment_a_link_is_pasted(app_js, tmp_path):
+    """The empty-queue branch reads the box: text in it opens Start, clearing
+    it closes Start again with the same reason as before."""
+    r = _run_node(tmp_path, "dlstart_gate.mjs", _START_GATE_HARNESS % {
+        "pending": _slice(app_js, "  function pendingUrl()",
+                          "  /* The Main tab's \"No Genre Selected\" ask"),
+        "batch": _slice(app_js, "  function renderBatch()",
+                        "  /* One line of the queue log"),
+    })
+    why = "Add a link to the queue before starting a download."
+    assert r["blank"] == [True, why]
+    assert r["pasted"] == [False, why]
+    assert r["cleared"] == [True, why]
+
+
+def test_start_adds_the_pasted_link_before_it_starts(app_js):
+    """Typing repaints the empty queue, and Start runs the shared add path
+    first — so a backed-out genre gate starts nothing."""
+    assert "$('#dl-url').addEventListener('input'" in app_js
+    start = _slice(app_js, "$('#dl-start').addEventListener('click'",
+                   "$('#dl-cancel').addEventListener('click'")
+    assert "if (pendingUrl() && !(await addToBatch())) return;" in start
+    assert start.index("addToBatch()") < start.index("call('download.start')")

@@ -1378,7 +1378,7 @@
       empty.style.cssText = 'font-size:12px;padding:8px 0';
       empty.textContent = "No URLs in batch — paste a link above and press '+ Add to Batch'";
       host.appendChild(empty);
-      setStartDisabled(true, 'Add a link to the queue before starting a download.');
+      setStartDisabled(!pendingUrl(), 'Add a link to the queue before starting a download.');
       gateWrite($('#dl-clear'), running
         ? 'The queue is locked while a download is running. Cancel it first, or skip the row instead.'
         : '', 'main.batch_clear');
@@ -6398,24 +6398,77 @@
   }
 
   /* ── wiring ────────────────────────────────────────────────────────────── */
-  async function addToBatch(inputEl) {
-    const url = inputEl.value.trim();
-    if (!url) { toast('Paste a YouTube or SoundCloud link first.', true); return; }
+  const NO_GENRE_VALUE = '(none)';
+
+  function pendingUrl() {
+    const box = $('#dl-url');
+    return box ? (box.value || '').trim() : '';
+  }
+
+  /* The Main tab's "No Genre Selected" ask, restored: a link filed under
+     (none) lands in _No Genre, and moving it out later means moving the files
+     too, so the add waits on this answer. Resolves true only when the user
+     said go — Escape, ✕ and a click on the dim all count as "pick a genre
+     first", the safe reading. Nothing is remembered on purpose. */
+  function openNoGenreGate() {
+    return new Promise((resolve) => {
+      let decided = false;
+      openModal({
+        title: 'No genre picked',
+        width: 480,
+        body(body) {
+          body.appendChild(modalNote(
+            'This link has no genre, so anything it downloads lands in a ' +
+            'folder called "_No Genre".'));
+          body.appendChild(modalNote(
+            'Picking a genre now keeps the crate tidy — changing it later ' +
+            'means moving the files as well.'));
+        },
+        foot(foot) {
+          const pick = modalButton('Pick a genre first', 'cb-btn--quiet', closeModal);
+          const go = modalButton('Add without one', 'cb-btn--fill', () => {
+            decided = true;
+            closeModal();
+          });
+          go.style.marginLeft = 'auto';
+          foot.append(pick, go);
+        },
+        onClose() {
+          if (!decided) $('#dl-genre').focus();
+          resolve(decided);
+        },
+      });
+    });
+  }
+
+  /* True once the link is in the queue; false when nothing was added — an
+     empty box, or the user backing out of the genre gate. Start relies on
+     the answer to know whether to go ahead. */
+  async function addToBatch() {
+    const url = pendingUrl();
+    if (!url) { toast('Paste a YouTube or SoundCloud link first.', true); return false; }
+    if ($('#dl-genre').value === NO_GENRE_VALUE && !(await openNoGenreGate())) return false;
     const platform = $('#dl-platform .is-on')?.dataset.platform || '';
     await call('batch.add', { url, genre: $('#dl-genre').value, platform });
-    inputEl.value = '';
+    $('#dl-url').value = '';
     state.batch = await call('batch.list');
     renderBatch();
     toast('Added to batch');
+    return true;
   }
 
   function wire() {
     wireLogScreen('activity');
     wireLogScreen('debug');
 
-    $('#dl-add').addEventListener('click', () => addToBatch($('#dl-url')));
+    $('#dl-add').addEventListener('click', () => addToBatch());
     $('#dl-url').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') addToBatch($('#dl-url'));
+      if (e.key === 'Enter') addToBatch();
+    });
+    /* A pasted link is enough for Start, as it was on the Main tab — the
+       empty-queue branch of renderBatch reads the box. */
+    $('#dl-url').addEventListener('input', () => {
+      if (!(state.batch || []).length) renderBatch();
     });
 
     $('#dl-clear').addEventListener('click', async () => {
@@ -6465,6 +6518,9 @@
 
     $('#dl-start').addEventListener('click', async () => {
       try {
+        /* A link still sitting in the box rides along — one click, as the
+           Main tab did — and a backed-out genre gate starts nothing. */
+        if (pendingUrl() && !(await addToBatch())) return;
         await call('download.start');
         dl.running = true;
         dl.paused = false;
