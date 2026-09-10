@@ -4,7 +4,7 @@
 
 **Goal:** Make cover art work when "Keep original format" is on, stop Rebuild Database from Files orphaning and duplicating artwork, and land five UI cleanups across the Watch List, About, Settings and Main tabs.
 
-**Architecture:** Two new pure-logic units go into `cratebuilder/` (`rebuild.py`, plus new functions in `artwork.py` and `tagging.py`) so the container dispatch and the rebuild resolution rules are headless-testable. The monolith `DJ-CrateBuilder_v1.3.py` keeps all tkinter and threading and is edited in place — no extraction. Cover art gains a per-container dispatcher; WebM is losslessly remuxed to Opus because Matroska attachments are unwritable by mutagen.
+**Architecture:** Two new pure-logic units go into `cratebuilder/` (`rebuild.py`, plus new functions in `artwork.py` and `tagging.py`) so the container dispatch and the rebuild resolution rules are headless-testable. The monolith `DJ-CrateBuilder_v2.0.py` keeps all tkinter and threading and is edited in place — no extraction. Cover art gains a per-container dispatcher; WebM is losslessly remuxed to Opus because Matroska attachments are unwritable by mutagen.
 
 **Tech Stack:** Python 3.10+, tkinter, mutagen 1.48.0 (already a runtime dep — `mutagen.mp4`, `mutagen.oggopus`, `mutagen.flac.Picture` all verified importable), Pillow, FFmpeg (bundled in packaged builds, on PATH from source), pytest.
 
@@ -82,7 +82,7 @@ git commit -m "chore: share container extension tuples and ffmpeg test helpers"
 
 ## Global Constraints
 
-- **Do not bump `APP_VERSION`** — it stays `"1.3"`. **Do not bump `APP_BUILD`** — it is owned by `scripts/release.py`.
+- **Do not bump `APP_VERSION`** — it stays `"2.0"`. **Do not bump `APP_BUILD`** — it is owned by `scripts/release.py`.
 - **No tkinter imports in `cratebuilder/`.** That package is a pure-logic boundary keeping tests headless.
 - **No `cratebuilder.db` schema change.** All three artwork columns (`artwork_path`, `artwork_embedded`, `thumbnail_url`) already exist from the v4 migration at `cratebuilder/db.py:67-69`. `SCHEMA_VERSION` stays `3` in the constant and is not touched.
 - **Never raise from artwork or tagging code.** Every function in `cratebuilder/artwork.py` and `cratebuilder/tagging.py` returns `False`/`None` on failure. An artwork failure must never fail a download.
@@ -103,7 +103,7 @@ git commit -m "chore: share container extension tuples and ffmpeg test helpers"
 | `cratebuilder/artwork.py` | Add per-container cover embedding + WebM remux + dispatcher. Existing `embed_cover()` untouched. | 1, 2 |
 | `cratebuilder/tagging.py` | Add MP4 and Vorbis-comment text tagging beside the existing ID3 path. | 3 |
 | `cratebuilder/rebuild.py` | **New.** Audio extension set, `video_id` recovery from tags, local-only artwork resolution. | 5 |
-| `DJ-CrateBuilder_v1.3.py` | Wire the above into the download path and the rebuild button; all five UI changes. | 4, 6, 7, 8, 9 |
+| `DJ-CrateBuilder_v2.0.py` | Wire the above into the download path and the rebuild button; all five UI changes. | 4, 6, 7, 8, 9 |
 | `tests/test_artwork.py` | Extended — per-container round-trips, dispatcher table. | 1, 2 |
 | `tests/test_tagging.py` | Extended — MP4/Vorbis text tags. | 3 |
 | `tests/test_rebuild.py` | **New.** Recovery, resolution branches, and the no-write/no-delete guarantee. | 5 |
@@ -690,9 +690,9 @@ git commit -m "feat(tagging): write title/encoder/source tags to MP4 and Ogg"
 ## Task 4: Wire multi-format artwork into the download path
 
 **Files:**
-- Modify: `DJ-CrateBuilder_v1.3.py:4539-4584` (`_harvest_cover_art`)
-- Modify: `DJ-CrateBuilder_v1.3.py:8940-8965` (the download call site)
-- Modify: `DJ-CrateBuilder_v1.3.py` around `:9022-9065` (the retry call site — verify the exact lines before editing)
+- Modify: `DJ-CrateBuilder_v2.0.py:4539-4584` (`_harvest_cover_art`)
+- Modify: `DJ-CrateBuilder_v2.0.py:8940-8965` (the download call site)
+- Modify: `DJ-CrateBuilder_v2.0.py` around `:9022-9065` (the retry call site — verify the exact lines before editing)
 
 **Interfaces:**
 - Consumes: `cb_artwork.embed_cover_any(path, jpg, ffmpeg_dir) -> (str, bool)` from Task 2; `cb_tagging.write_track_tags_any(...)` from Task 3.
@@ -702,7 +702,7 @@ This task has **no automated test** — it is monolith glue verified by launchin
 
 - [ ] **Step 1: Change `_harvest_cover_art` to use the dispatcher**
 
-In `DJ-CrateBuilder_v1.3.py`, replace the body from line 4574 (`embedded = cb_artwork.embed_cover(audio_path, art_path)`) through line 4581 (`return art_path, embedded`) with:
+In `DJ-CrateBuilder_v2.0.py`, replace the body from line 4574 (`embedded = cb_artwork.embed_cover(audio_path, art_path)`) through line 4581 (`return art_path, embedded`) with:
 
 ```python
             final_path, embedded = cb_artwork.embed_cover_any(
@@ -732,7 +732,7 @@ Update the two early returns at lines 4557 and 4562 and 4567 and 4572 to `return
 
 - [ ] **Step 2: Update the primary download call site**
 
-At `DJ-CrateBuilder_v1.3.py:8949-8950`, replace:
+At `DJ-CrateBuilder_v2.0.py:8949-8950`, replace:
 
 ```python
                     _art_path, _art_embedded = self._harvest_cover_art(
@@ -756,14 +756,14 @@ Find the second `_harvest_cover_art` call (near `:9022-9065`). Apply the identic
 Run this to locate every call site and confirm none was missed:
 
 ```bash
-grep -n "_harvest_cover_art" DJ-CrateBuilder_v1.3.py
+grep -n "_harvest_cover_art" DJ-CrateBuilder_v2.0.py
 ```
 
 Expected: the `def` plus exactly two call sites, both now unpacking three values.
 
 - [ ] **Step 4: Switch tagging to the dispatcher**
 
-At `DJ-CrateBuilder_v1.3.py:8945`, `self._tag_track(_real_path, item_title, item_url)` runs *before* the artwork harvest, when the file may still be `.webm`. Inside `_tag_track`, change the `cb_tagging.write_track_tags(...)` call to `cb_tagging.write_track_tags_any(...)`.
+At `DJ-CrateBuilder_v2.0.py:8945`, `self._tag_track(_real_path, item_title, item_url)` runs *before* the artwork harvest, when the file may still be `.webm`. Inside `_tag_track`, change the `cb_tagging.write_track_tags(...)` call to `cb_tagging.write_track_tags_any(...)`.
 
 Then, in `_harvest_cover_art`, after a remux has occurred, re-tag the new file — the Ogg container does not inherit the WebM tags:
 
@@ -780,13 +780,13 @@ This requires `_harvest_cover_art` to accept `source_url`. Add it as a keyword p
 Run: `python -m pytest -q`
 Expected: `264 passed, 1 failed` — the baseline 249 plus the 15 tests added by Tasks 1-3 (5 + 6 + 4). Task 4 adds no tests of its own. Any *new* failure is a regression from this task.
 
-Run: `python DJ-CrateBuilder_v1.3.py`
+Run: `python DJ-CrateBuilder_v2.0.py`
 Expected: the app launches, all four tabs render. Close it.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add DJ-CrateBuilder_v1.3.py
+git add DJ-CrateBuilder_v2.0.py
 git commit -m "feat(download): embed cover art for non-MP3 keep-original files"
 ```
 
@@ -1110,8 +1110,8 @@ git commit -m "feat(rebuild): add video-id recovery and local artwork resolution
 ## Task 6: Wire rebuild into the monolith, on a background thread
 
 **Files:**
-- Modify: `DJ-CrateBuilder_v1.3.py:11539-11617` (`_rebuild_db_from_files`)
-- Modify: `DJ-CrateBuilder_v1.3.py:6222-6226` (the help tooltip, which says ".mp3 files")
+- Modify: `DJ-CrateBuilder_v2.0.py:11539-11617` (`_rebuild_db_from_files`)
+- Modify: `DJ-CrateBuilder_v2.0.py:6222-6226` (the help tooltip, which says ".mp3 files")
 
 **Interfaces:**
 - Consumes: `cratebuilder.rebuild.AUDIO_EXTS`, `recover_video_id`, `index_artwork_dir`, `resolve_artwork` from Task 5.
@@ -1121,7 +1121,7 @@ No automated test — this is monolith glue. Verified by launching the app and c
 
 - [ ] **Step 1: Add the import**
 
-Find the existing `from cratebuilder import ...` / `import cratebuilder.x as cb_x` block near the top of `DJ-CrateBuilder_v1.3.py` (the same block that provides `cb_artwork`). Add the module alongside it, matching whatever style that block uses:
+Find the existing `from cratebuilder import ...` / `import cratebuilder.x as cb_x` block near the top of `DJ-CrateBuilder_v2.0.py` (the same block that provides `cb_artwork`). Add the module alongside it, matching whatever style that block uses:
 
 ```python
 from cratebuilder import rebuild as cb_rebuild
@@ -1181,18 +1181,18 @@ Update the method docstring: it currently says ".mp3 files" — change to "audio
 3. `clear_all_downloads()`, `backfill_downloads(rows)`, `refresh_watchlist_totals()`, the `showinfo` and the `self._dbg.info` line are marshalled back to the main thread via `self.after(0, ...)`.
 4. `self._rebuild_db_btn.config(state="disabled")` before starting and `state="normal"` in the completion callback, so the button cannot be double-clicked.
 
-Follow the threading and progress-dialog shape already used by `_fetch_missing_artwork` at `DJ-CrateBuilder_v1.3.py:11481` — read that method first and mirror it rather than inventing a new pattern.
+Follow the threading and progress-dialog shape already used by `_fetch_missing_artwork` at `DJ-CrateBuilder_v2.0.py:11481` — read that method first and mirror it rather than inventing a new pattern.
 
 - [ ] **Step 4: Update the button help text**
 
-At `DJ-CrateBuilder_v1.3.py:6222-6226`, change `"Scans the .mp3 files already in your library folders"` to `"Scans the audio files already in your library folders"`, and append a sentence: `"Cover art already on disk is reused, never re-downloaded."`
+At `DJ-CrateBuilder_v2.0.py:6222-6226`, change `"Scans the .mp3 files already in your library folders"` to `"Scans the audio files already in your library folders"`, and append a sentence: `"Cover art already on disk is reused, never re-downloaded."`
 
 - [ ] **Step 5: Verify**
 
 Run: `python -m pytest -q`
 Expected: `275 passed, 1 failed` — 264 after Task 4, plus the 11 tests Task 5 added in `tests/test_rebuild.py`. Task 6 adds no tests of its own. Confirm the count went up and the failure list did not.
 
-Run: `python DJ-CrateBuilder_v1.3.py`, go to Settings, click **Rebuild Database from Files**, confirm the dialog, and check that:
+Run: `python DJ-CrateBuilder_v2.0.py`, go to Settings, click **Rebuild Database from Files**, confirm the dialog, and check that:
 1. The UI stays responsive while it runs.
 2. The completion dialog reports a plausible track count.
 3. Opening the Database Viewer shows cover art still attached to tracks that had it.
@@ -1201,7 +1201,7 @@ Run: `python DJ-CrateBuilder_v1.3.py`, go to Settings, click **Rebuild Database 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add DJ-CrateBuilder_v1.3.py
+git add DJ-CrateBuilder_v2.0.py
 git commit -m "fix(rebuild): preserve artwork and index non-MP3 audio files"
 ```
 
@@ -1210,14 +1210,14 @@ git commit -m "fix(rebuild): preserve artwork and index non-MP3 audio files"
 ## Task 7: Watch List card — Cancel colour and button tooltips
 
 **Files:**
-- Modify: `DJ-CrateBuilder_v1.3.py:207` (add a constant)
-- Modify: `DJ-CrateBuilder_v1.3.py:9622-9673` (`_watchlist_fill_card` button block)
+- Modify: `DJ-CrateBuilder_v2.0.py:207` (add a constant)
+- Modify: `DJ-CrateBuilder_v2.0.py:9622-9673` (`_watchlist_fill_card` button block)
 
 **Interfaces:** none — UI only. No automated test; tooltip hover and live enabled-state cannot be asserted headlessly. Report as manually verified.
 
 - [ ] **Step 1: Add the module-level constant**
 
-At `DJ-CrateBuilder_v1.3.py`, immediately after line 207 (`WL_CANCEL_IDLE = "#5e1414"`), add:
+At `DJ-CrateBuilder_v2.0.py`, immediately after line 207 (`WL_CANCEL_IDLE = "#5e1414"`), add:
 
 ```python
 WL_CANCEL_ACTIVE = YT_DARK   # live cancel on a card — matches the toolbar
@@ -1273,7 +1273,7 @@ Read lines 9622-9673 in full before editing; the exact lambda text above must ma
 Run: `python -m pytest -q`
 Expected: unchanged from Task 6.
 
-Run: `python DJ-CrateBuilder_v1.3.py`, open the **Watch List** tab. Confirm:
+Run: `python DJ-CrateBuilder_v2.0.py`, open the **Watch List** tab. Confirm:
 1. Hovering Scan, Force Download and Edit each shows a tooltip after ~500ms.
 2. No question-mark icons were added to the cards.
 3. Starting a scan makes a red Cancel button appear on that card, and clicking it stops the scan.
@@ -1281,7 +1281,7 @@ Run: `python DJ-CrateBuilder_v1.3.py`, open the **Watch List** tab. Confirm:
 - [ ] **Step 5: Commit**
 
 ```bash
-git add DJ-CrateBuilder_v1.3.py
+git add DJ-CrateBuilder_v2.0.py
 git commit -m "feat(watchlist): live red cancel button and card button tooltips"
 ```
 
@@ -1290,8 +1290,8 @@ git commit -m "feat(watchlist): live red cancel button and card button tooltips"
 ## Task 8: About tab cleanup
 
 **Files:**
-- Modify: `DJ-CrateBuilder_v1.3.py:80-84` (`ABOUT_FIELDS`)
-- Modify: `DJ-CrateBuilder_v1.3.py:7364-7376` and `:7417-7423`
+- Modify: `DJ-CrateBuilder_v2.0.py:80-84` (`ABOUT_FIELDS`)
+- Modify: `DJ-CrateBuilder_v2.0.py:7364-7376` and `:7417-7423`
 
 **Interfaces:** none — UI only.
 
@@ -1317,8 +1317,8 @@ Cut the `self._github_btn` creation and its tooltip (lines 7364-7370) out of `bt
 
 - [ ] **Step 4: Verify**
 
-Run: `python DJ-CrateBuilder_v1.3.py`, open the **About** tab. Confirm:
-1. "Application  DJ-CrateBuilder v1.3" no longer appears twice — only the title heading remains.
+Run: `python DJ-CrateBuilder_v2.0.py`, open the **About** tab. Confirm:
+1. "Application  DJ-CrateBuilder v2.0" no longer appears twice — only the title heading remains.
 2. "View on GitHub" now sits directly above "Submit Issues / Suggestions" in the left column.
 3. The right column contains only the update box, top-aligned with no stray gap.
 4. The two-column layout has not collapsed.
@@ -1326,7 +1326,7 @@ Run: `python DJ-CrateBuilder_v1.3.py`, open the **About** tab. Confirm:
 - [ ] **Step 5: Commit**
 
 ```bash
-git add DJ-CrateBuilder_v1.3.py
+git add DJ-CrateBuilder_v2.0.py
 git commit -m "style(about): drop redundant app row, group link buttons left"
 ```
 
@@ -1335,9 +1335,9 @@ git commit -m "style(about): drop redundant app row, group link buttons left"
 ## Task 9: Settings and Main tab layout
 
 **Files:**
-- Modify: `DJ-CrateBuilder_v1.3.py:5715-5716`, `:5755-5790` (Settings)
-- Modify: `DJ-CrateBuilder_v1.3.py:5414-5431` (Main tab genre row)
-- Modify: `DJ-CrateBuilder_v1.3.py:5436-5437`, `:5755` (stale comments)
+- Modify: `DJ-CrateBuilder_v2.0.py:5715-5716`, `:5755-5790` (Settings)
+- Modify: `DJ-CrateBuilder_v2.0.py:5414-5431` (Main tab genre row)
+- Modify: `DJ-CrateBuilder_v2.0.py:5436-5437`, `:5755` (stale comments)
 
 **Interfaces:** none — UI only.
 
@@ -1414,14 +1414,14 @@ Lines 5436-5437 and 5755 both claim Skip / Open Folder were relocated *out* of t
 Run: `python -m pytest -q`
 Expected: unchanged from Task 6. Note `tests/test_tabs.py` and `tests/test_settings_vars.py` construct the app — if either newly fails, a widget reference was broken.
 
-Run: `python DJ-CrateBuilder_v1.3.py`. Confirm:
+Run: `python DJ-CrateBuilder_v2.0.py`. Confirm:
 1. **Settings** — the section reads "File Output"; Cover Art appears above Skip; "Skip files already downloaded" is no longer bold-white and matches its neighbours; no Open Folder button remains on the Skip row.
 2. **Main** — the genre line has 📂 Genre then 📂 Root right-aligned. Clicking Genre opens the selected genre's folder; with genre "(none)" it opens `_No Genre`. Clicking Root opens the platform root.
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git add DJ-CrateBuilder_v1.3.py
+git add DJ-CrateBuilder_v2.0.py
 git commit -m "style(settings): rename File Output, reorder rows, move folder buttons"
 ```
 
@@ -1430,7 +1430,7 @@ git commit -m "style(settings): rename File Output, reorder rows, move folder bu
 ## Final verification
 
 - [ ] Run the full suite: `python -m pytest -q`. Expected `275 passed, 1 failed` (249 baseline + 26 new: 5 + 6 + 4 + 11), where the single failure is the pre-existing `test_new_settings_defaults` registry issue documented in Global Constraints. **Report the actual output, not the expected output.** If the count differs, say so and investigate rather than rounding to the expectation.
-- [ ] Launch `python DJ-CrateBuilder_v1.3.py` and walk all four tabs once.
+- [ ] Launch `python DJ-CrateBuilder_v2.0.py` and walk all four tabs once.
 - [ ] Confirm `git log --oneline` shows nine task commits plus the spec commit on `feat/artwork-and-ui-pass`.
 - [ ] **Do not push, tag, or open a PR.** Report completion and wait for an explicit ask.
 - [ ] Report honestly which items were verified by test, which by manual launch, and which could not be verified (the Task 4 end-to-end download in particular, if no network or FFmpeg was available).

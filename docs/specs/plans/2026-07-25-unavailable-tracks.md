@@ -34,7 +34,7 @@
 | `cratebuilder/sidecar.py` | Modify | `classify_scan_entries` gains `is_unavailable` and a third `"unavailable"` bucket |
 | `tests/test_unavailable.py` | Create | All DB-side tests for the new table and predicate |
 | `tests/test_scan_classifier.py` | Modify | New bucket coverage + fix the now-stale exact-dict assertion |
-| `DJ-CrateBuilder_v1.3.py` | Modify | Write point in `_process_one_url`; scan integration in `_watchlist_scan_channel`; Forget button in `_watchlist_edit_channel` |
+| `DJ-CrateBuilder_v2.0.py` | Modify | Write point in `_process_one_url`; scan integration in `_watchlist_scan_channel`; Forget button in `_watchlist_edit_channel` |
 
 ---
 
@@ -749,7 +749,7 @@ git commit -m "feat(sidecar): add unavailable bucket to classify_scan_entries"
 ### Task 5: Record permanent failures during downloads
 
 **Files:**
-- Modify: `DJ-CrateBuilder_v1.3.py:9822-9825` (inside `_process_one_url`)
+- Modify: `DJ-CrateBuilder_v2.0.py:9822-9825` (inside `_process_one_url`)
 
 **Interfaces:**
 - Consumes: `DownloadsDatabase.record_unavailable` from Task 1
@@ -758,7 +758,7 @@ git commit -m "feat(sidecar): add unavailable bucket to classify_scan_entries"
 
 - [ ] **Step 1: Add the write**
 
-In `DJ-CrateBuilder_v1.3.py`, find this block in `_process_one_url` (immediately
+In `DJ-CrateBuilder_v2.0.py`, find this block in `_process_one_url` (immediately
 after the `_perm = classify_permanent_failure(clean)` cascade, around line 9822):
 
 ```python
@@ -791,7 +791,7 @@ from the per-entry loop at lines 9257 / 9274.
 
 - [ ] **Step 2: Verify the file still compiles**
 
-Run: `python -m py_compile DJ-CrateBuilder_v1.3.py`
+Run: `python -m py_compile DJ-CrateBuilder_v2.0.py`
 Expected: no output (success)
 
 - [ ] **Step 3: Run the full suite**
@@ -802,7 +802,7 @@ Expected: PASS
 - [ ] **Step 4: Commit**
 
 ```bash
-git add DJ-CrateBuilder_v1.3.py
+git add DJ-CrateBuilder_v2.0.py
 git commit -m "feat(watchlist): record permanently-failed tracks during downloads"
 ```
 
@@ -811,7 +811,7 @@ git commit -m "feat(watchlist): record permanently-failed tracks during download
 ### Task 6: Suppress remembered tracks during a scan
 
 **Files:**
-- Modify: `DJ-CrateBuilder_v1.3.py:11948-11997` (inside `_watchlist_scan_channel._do_scan`)
+- Modify: `DJ-CrateBuilder_v2.0.py:11948-11997` (inside `_watchlist_scan_channel._do_scan`)
 
 **Interfaces:**
 - Consumes: `DownloadsDatabase.get_suppressed_reasons` (Task 2) and the
@@ -886,7 +886,7 @@ late-binding closures elsewhere, but this one must capture the value.
 
 - [ ] **Step 3: Verify the file still compiles**
 
-Run: `python -m py_compile DJ-CrateBuilder_v1.3.py`
+Run: `python -m py_compile DJ-CrateBuilder_v2.0.py`
 Expected: no output (success)
 
 - [ ] **Step 4: Run the full suite**
@@ -897,7 +897,7 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add DJ-CrateBuilder_v1.3.py
+git add DJ-CrateBuilder_v2.0.py
 git commit -m "feat(watchlist): exclude permanently-unavailable tracks from scans"
 ```
 
@@ -919,7 +919,7 @@ git commit -m "feat(watchlist): exclude permanently-unavailable tracks from scan
 > below describe the original, unfixed shape and are kept only for the record.
 
 **Files:**
-- Modify: `DJ-CrateBuilder_v1.3.py:11471-11480` (dialog height) and `:11651` (new row before the verify-state notice, inside `_watchlist_edit_channel`)
+- Modify: `DJ-CrateBuilder_v2.0.py:11471-11480` (dialog height) and `:11651` (new row before the verify-state notice, inside `_watchlist_edit_channel`)
 - (amended) Modify: `cratebuilder/sidecar.py` + `tests/test_sidecar.py` (the `canonical_channel_url` helper), and the Task 5 write site's `channel_url=` argument
 
 **Interfaces:**
@@ -1001,7 +1001,7 @@ should not repaint on mouse-over.
 
 - [ ] **Step 3: Verify the file still compiles**
 
-Run: `python -m py_compile DJ-CrateBuilder_v1.3.py`
+Run: `python -m py_compile DJ-CrateBuilder_v2.0.py`
 Expected: no output (success)
 
 - [ ] **Step 4: Run the full suite**
@@ -1011,7 +1011,7 @@ Expected: PASS
 
 - [ ] **Step 5: Visually verify the dialog**
 
-Run: `python DJ-CrateBuilder_v1.3.py`
+Run: `python DJ-CrateBuilder_v2.0.py`
 Open the Watch List, click **Edit** on any channel, and confirm:
 - the dialog is not clipped — Save and Cancel are still fully visible at the bottom;
 - the new button reads `Forget unavailable tracks (0)` and is greyed/unclickable
@@ -1023,7 +1023,7 @@ cannot be verified visually, say so explicitly rather than asserting it works.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add DJ-CrateBuilder_v1.3.py
+git add DJ-CrateBuilder_v2.0.py
 git commit -m "feat(watchlist): add Forget unavailable tracks to the Edit dialog"
 ```
 

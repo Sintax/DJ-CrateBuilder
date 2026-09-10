@@ -28,10 +28,10 @@ The same guard exists in `cratebuilder/tagging.py:39` for `write_track_tags()`.
 
 The chain, in order:
 
-1. `DJ-CrateBuilder_v1.3.py:8858` — with **Keep original format** on, the `FFmpegExtractAudio` postprocessor is skipped. The file stays in whatever container the platform served: `.webm` (Opus) or `.m4a` (AAC) from YouTube, `.mp3` or `.webm` from SoundCloud.
-2. `DJ-CrateBuilder_v1.3.py:8852` — `writethumbnail` is still set, so the raw image **is** downloaded.
-3. `DJ-CrateBuilder_v1.3.py:4569` — `ingest_thumbnail()` still runs, so `.artwork/<video_id>.jpg` **is** written.
-4. `DJ-CrateBuilder_v1.3.py:4574` — `embed_cover()` returns `False`. Logged as `COVER SIDECAR | ... saved, not embedded`.
+1. `DJ-CrateBuilder_v2.0.py:8858` — with **Keep original format** on, the `FFmpegExtractAudio` postprocessor is skipped. The file stays in whatever container the platform served: `.webm` (Opus) or `.m4a` (AAC) from YouTube, `.mp3` or `.webm` from SoundCloud.
+2. `DJ-CrateBuilder_v2.0.py:8852` — `writethumbnail` is still set, so the raw image **is** downloaded.
+3. `DJ-CrateBuilder_v2.0.py:4569` — `ingest_thumbnail()` still runs, so `.artwork/<video_id>.jpg` **is** written.
+4. `DJ-CrateBuilder_v2.0.py:4574` — `embed_cover()` returns `False`. Logged as `COVER SIDECAR | ... saved, not embedded`.
 
 The art is not missing. It is in the hidden `.artwork/` folder, never written into the file.
 
@@ -69,7 +69,7 @@ New functions in `cratebuilder/artwork.py` — Tk-free, unit-testable:
 
 `embed_cover()` keeps its exact current signature and MP3-only behaviour. Existing callers and `tests/test_artwork.py` are untouched.
 
-`_harvest_cover_art()` (`DJ-CrateBuilder_v1.3.py:4539-4584`) calls `embed_cover_any()` instead of `embed_cover()`, and returns the possibly-changed audio path so `add_download()` records the real `.opus` filename rather than the stale `.webm` one.
+`_harvest_cover_art()` (`DJ-CrateBuilder_v2.0.py:4539-4584`) calls `embed_cover_any()` instead of `embed_cover()`, and returns the possibly-changed audio path so `add_download()` records the real `.opus` filename rather than the stale `.webm` one.
 
 Vorbis-comment and MP4 text tagging is added to `cratebuilder/tagging.py` alongside the ID3 path, so `write_track_tags` is not silently a no-op for these files. This matters for Task 2, which recovers `video_id` from the source-URL tag.
 
@@ -93,7 +93,7 @@ Rebuild loses artwork association and causes duplicate JPEGs on disk.
 
 ### Root cause
 
-`_rebuild_db_from_files()` (`DJ-CrateBuilder_v1.3.py:11539-11617`) has three defects:
+`_rebuild_db_from_files()` (`DJ-CrateBuilder_v2.0.py:11539-11617`) has three defects:
 
 1. **`video_id` is always `None`** (`:11593`). Rebuild cannot recover ids from filenames, so it writes `None` for every row. Sidecars are named `<video_id>.jpg`, so a later artwork backfill re-keys the track by filename stem via `artwork_key()`'s fallback, fails to find `dQw4w9WgXcQ.jpg`, re-fetches, and writes a **second byte-identical JPEG** as `<filename-stem>.jpg` in the same folder. **This is the duplication source.**
 2. **Only `.mp3` files are indexed** (`:11580`). A "Keep original format" library rebuilds to an empty database. Directly collides with Task 1.
@@ -135,7 +135,7 @@ New module `cratebuilder/rebuild.py` — pure logic, Tk-free, so the walk and th
 
 ### 3a. Cancel button colour
 
-The per-card Cancel button (`DJ-CrateBuilder_v1.3.py:9645-9657`) uses a function-local literal `WL_CARD_CANCEL = "#78350f"` (dark orange) and is hardcoded `state="disabled"` — `_watchlist_cancel_card()` at `:9227` exists but is unreachable from the card.
+The per-card Cancel button (`DJ-CrateBuilder_v2.0.py:9645-9657`) uses a function-local literal `WL_CARD_CANCEL = "#78350f"` (dark orange) and is hardcoded `state="disabled"` — `_watchlist_cancel_card()` at `:9227` exists but is unreachable from the card.
 
 Three different colour languages exist for Cancel across the app:
 
@@ -215,7 +215,7 @@ Existing comments at `:5436-5437` and `:5755` note that Skip / Open Folder were 
 | `tests/test_rebuild.py` (new) | `recover_video_id` from a tagged file and from an `.artwork` filename match. `resolve_artwork` returns each of the five resolution branches. **Asserts no file is written or deleted** — the core guarantee. `AUDIO_EXTS` filtering. |
 | `tests/test_tagging.py` (extended) | MP4 and Vorbis text tags round-trip; MP3 path unchanged. |
 
-### Manual — `python DJ-CrateBuilder_v1.3.py`
+### Manual — `python DJ-CrateBuilder_v2.0.py`
 
 Tasks 3, 4 and 5 are tkinter layout and hover behaviour. They are verified by launching the app and confirming visually. Two things **cannot** be asserted headlessly and will not be claimed as tested: the tooltip hover popups, and the card Cancel button's enabled state during a live scan. These are reported as manually verified or not verified — never as passing tests.
 
@@ -225,7 +225,7 @@ An end-to-end check for Task 1 requires a real download with **Keep original for
 
 ## Out of scope
 
-- Any change to `APP_VERSION` (stays `"1.3"`) or `APP_BUILD` (owned by `scripts/release.py`).
+- Any change to `APP_VERSION` (stays `"2.0"`) or `APP_BUILD` (owned by `scripts/release.py`).
 - Any `cratebuilder.db` schema change. All three artwork columns already exist from the v4 migration (`cratebuilder/db.py:67-69`); `SCHEMA_VERSION` is not bumped.
 - Content-hash deduplication of artwork across different `video_id`s. Reuse-by-key is sufficient once `video_id` recovery lands.
 - A "clear artwork cache" button — considered and rejected above.

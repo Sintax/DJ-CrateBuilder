@@ -325,7 +325,7 @@ git commit -m "feat(updater): install ffmpeg from verified zip with rollback"
 ### Task 4: GUI wiring on the About-tab update check (manual verify)
 
 **Files:**
-- Modify: `DJ-CrateBuilder_v1.3.py` — `_on_check_result` (line ~7149) and a new helper `_maybe_update_ffmpeg`
+- Modify: `DJ-CrateBuilder_v2.0.py` — `_on_check_result` (line ~7149) and a new helper `_maybe_update_ffmpeg`
 
 **Interfaces:**
 - Consumes: `ucore.ffmpeg_update_action`, `ucore.read_ffmpeg_version`, `ucore.write_ffmpeg_version`, `ucore.install_ffmpeg_from_zip`, `ucore.download`, `bundled_ffmpeg_dir`
@@ -403,13 +403,13 @@ git commit -m "feat(updater): install ffmpeg from verified zip with rollback"
 
 - [ ] **Step 4: Launch smoke test**
 
-Run: `python DJ-CrateBuilder_v1.3.py`
+Run: `python DJ-CrateBuilder_v2.0.py`
 Expected: app starts, About tab renders, "Check for updates" still works (from source `is_frozen()` is False, so the ffmpeg path no-ops — confirms it doesn't break the existing flow). State this is the limit of source-side verification; the swap itself is frozen-only.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add DJ-CrateBuilder_v1.3.py
+git add DJ-CrateBuilder_v2.0.py
 git commit -m "feat(updater): apply skip-proof FFmpeg updates on the update check"
 ```
 

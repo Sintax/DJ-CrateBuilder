@@ -164,7 +164,7 @@ Read first: `cratebuilder/download.py` (TrackPlan / Outcome / Sink /
 SkipOrCancel / TrackDownloader), `cratebuilder/crate.py` (CrateLayout,
 ChannelCrate, skip_decision, SkipMode, classify_scan_entries,
 is_unreleased_entry), `cratebuilder/ydl.py` (YdlSession), and the monolith's
-`_batch_worker` (`DJ-CrateBuilder_v1.3.py` around line 10061) to mirror its
+`_batch_worker` (`DJ-CrateBuilder_v2.0.py` around line 10061) to mirror its
 per-entry loop semantics — but implement headlessly in the package, do NOT
 move or call monolith code.
 

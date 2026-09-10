@@ -34,7 +34,7 @@ on.
 `update_apply` refuses with the monolith's exact wording
 ("Build N is available, but you're running from source...") when
 `ucore.can_self_update()` is false. On Linux it refuses unconditionally with a link to
-the `linux-v1.3` release, regardless of `can_self_update()`: the tkinter Linux path
+the `linux-v2.0` release, regardless of `can_self_update()`: the tkinter Linux path
 installs the `.deb` via `pkexec apt-get`, a privileged GUI prompt that has no meaning
 in a browser tab, and the `.deb` payload doesn't ship the web UI in the first place.
 Porting that flow was explicitly out of scope for this pass.

@@ -105,7 +105,7 @@ uvicorn needs `--collect-submodules`.
 
 ## Status — what shipped
 
-Everything below is on `feat/webui-v2`. `APP_VERSION` stays `"1.3"` and the
+Everything below is on `feat/webui-v2`. `APP_VERSION` stays `"2.0"` and the
 tkinter app is byte-identical to `main`'s: nothing here changes the shipping app.
 
 **Screens.** All fourteen design ids. Downloads runs a real batch with current

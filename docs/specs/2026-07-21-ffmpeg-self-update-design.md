@@ -133,7 +133,7 @@ The existing FFmpeg exclusion from *app* payloads stays exactly as-is. FFmpeg no
 
 - **Unit (pure, `updater_core`):** marker read/write; block validation (valid, missing fields, bad sha, non-dict); version-diff decision (equal, differ, absent-marker-adopt); swap apply + rollback with an injected copy failure (mirrors the `apply_update` `_copyfn` test pattern).
 - **Release script:** `--dry-run` covers version derivation + zip + manifest merge without network. (Local/untracked — verified on the maintainer's machine, not in CI.)
-- **UI:** manual `python DJ-CrateBuilder_v1.3.py` launch to confirm the About-tab messaging renders; the swap path itself is Windows-frozen-only and stated as not visually verifiable from source.
+- **UI:** manual `python DJ-CrateBuilder_v2.0.py` launch to confirm the About-tab messaging renders; the swap path itself is Windows-frozen-only and stated as not visually verifiable from source.
 
 ---
 
@@ -142,7 +142,7 @@ The existing FFmpeg exclusion from *app* payloads stays exactly as-is. FFmpeg no
 **Committable (tracked, on the branch):**
 
 - `cratebuilder/updater_core.py` — new pure functions: `validate_ffmpeg_block`, `ffmpeg_update_available`, `read_ffmpeg_version`, `write_ffmpeg_version`, `apply_ffmpeg_update` (download→verify→extract→swap→marker, with rollback).
-- `DJ-CrateBuilder_v1.3.py` — wire the `ffmpeg` block into the existing About-tab update check; idle/busy guard; UI messaging; call into `updater_core`.
+- `DJ-CrateBuilder_v2.0.py` — wire the `ffmpeg` block into the existing About-tab update check; idle/busy guard; UI messaging; call into `updater_core`.
 - `tests/test_updater_core.py` (or a new `tests/test_ffmpeg_update.py`) — unit tests for all new pure functions.
 
 **Local only (gitignored, main checkout):**
