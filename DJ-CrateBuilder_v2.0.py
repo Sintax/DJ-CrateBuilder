@@ -1381,25 +1381,28 @@ COOKIE_HOWTO_TEXTS = {
 Setting Up a Dedicated Chrome Profile for DJ-CrateBuilder
 ══════════════════════════════════════════════════════════
 
-Step 1 — Open Chrome Profile Manager
+  IMPORTANT: Chrome cannot be read directly. Since Chrome 127 its
+  cookies are locked with "app-bound encryption", which only Chrome
+  itself can unlock. The Browser Profile method therefore fails for
+  every Chrome profile, however carefully it is set up. Two ways
+  around it:
+
+    A. Switch Browser to Firefox and follow the Firefox guide.
+    B. Keep Chrome, but hand the app a cookie FILE exported from
+       a dedicated profile — the steps below.
+
+Step 1 — Create a Dedicated Chrome Profile
 
   Open Chrome and click your profile icon in the top-right corner
   (the small circular image next to the three-dot menu).
   In the dropdown, click "Add" at the bottom of the profile list.
+  Click "Continue without an account", name the profile something
+  recognizable like "DJ-CrateBuilder", and click "Done."
 
-Step 2 — Create the Profile
+  A new Chrome window opens using the new profile — its own
+  cookies, history and logins, isolated from your personal one.
 
-  Click "Continue without an account" for now.
-  Give the profile a recognizable name like "DJ-CrateBuilder"
-  or "YT-Download." Pick a distinct color or icon so you can
-  easily identify it. Click "Done."
-
-  A new Chrome window opens using the new profile. This is a
-  completely separate browser environment — its own cookies,
-  history, bookmarks, and saved logins, entirely isolated
-  from your personal profile.
-
-Step 3 — Create the Throwaway Google Account
+Step 2 — Create the Throwaway Google Account
 
   In the new profile window, go to:
       https://accounts.google.com/signup
@@ -1407,7 +1410,7 @@ Step 3 — Create the Throwaway Google Account
   Create a new Google account using a throwaway email.
   Complete the signup process.
 
-Step 4 — Log into YouTube
+Step 3 — Log into YouTube
 
   Still in the DJ-CrateBuilder profile window, go to:
       https://www.youtube.com
@@ -1416,38 +1419,36 @@ Step 4 — Log into YouTube
   Watch a video or two briefly and accept any terms prompts.
   This establishes a valid session with cookies.
 
-Step 5 — Find Your Profile Name
+Step 4 — Install a Cookie Export Extension
 
-  Open a new tab in the DJ-CrateBuilder profile and type:
-      chrome://version
+  In the same profile window, open the Chrome Web Store and
+  install "Get cookies.txt LOCALLY":
+      https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc
 
-  Look for the line labeled "Profile Path." It will show
-  something like:
+  Any extension that exports a Netscape-format cookies.txt will
+  do; this one keeps the data on your machine.
 
-      C:\\Users\\YourName\\AppData\\Local\\Google\\Chrome\\User Data\\Profile 2
+Step 5 — Export the Cookies
 
-  The profile name is the last folder in that path.
-  In this example, it is:  Profile 2
+  Go back to youtube.com, click the extension's icon, and
+  choose Export. Save the file somewhere permanent, e.g.:
 
-  IMPORTANT: The display name you chose ("DJ-CrateBuilder")
-  is NOT the folder name. You need the actual folder name
-  from this path (e.g. "Profile 2", "Profile 3", etc.)
+      C:\\Users\\YourName\\Documents\\DJ-CrateBuilder\\cookies.txt
 
-Step 6 — Close the Profile Window
+  IMPORTANT: Export while youtube.com is the active tab, so the
+  file holds the YouTube session and not another site's.
 
-  You can close this Chrome window. The profile and its
-  cookies persist permanently. You don't need to keep it
-  open for the app to read the cookies. Switch back to your
-  personal Chrome profile and browse normally.
+Step 6 — Configure the App
 
-Step 7 — Configure the App
+  In DJ-CrateBuilder Settings → Browser Cookies:
+    ✓  Use Browser Cookies
+       Method:       Cookie File
+       Cookie file:  the path you saved in Step 5
 
-  In DJ-CrateBuilder Settings → Download Behavior:
-    ✓  Enable "Browser Cookie Authentication"
-       Browser:  Chrome
-       Profile:  Profile 2  (or whatever chrome://version showed)
+  You can close the Chrome window. The app reads the file, not
+  the browser, so Chrome need not be running.
 
-Step 8 — When Cookies Expire
+Step 7 — When Cookies Expire
 
   Every few weeks or months, the session cookies will expire.
   You'll know because the app will start getting "login required"
@@ -1456,9 +1457,9 @@ Step 8 — When Cookies Expire
     1. Click your Chrome profile icon
     2. Switch to the DJ-CrateBuilder profile
     3. Go to youtube.com — make sure you're still signed in
-    4. Close the window and continue as normal
+    4. Export again with the extension, overwriting the same file
 
-  The cookies refresh automatically when you visit the site.
+  The app picks up the new file on its next download.
 """,
 
     "Firefox": """\

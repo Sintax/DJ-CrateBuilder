@@ -26,6 +26,19 @@ def test_the_texts_are_the_desktop_apps_own():
         assert "Step 1" in text
 
 
+def test_the_chrome_guide_is_the_cookie_file_route():
+    """Chrome's cookie store is app-bound encrypted (Chrome 127+), so the
+    Browser Profile method cannot read it: its guide says so up front and
+    walks the export-a-file route instead, ending on Method: Cookie File."""
+    text = cookie_howto_texts()["Chrome"]
+    head = text.split("Step 1")[0]
+    assert "IMPORTANT: Chrome cannot be read directly" in head
+    assert "app-bound encryption" in head
+    assert "Firefox" in head
+    assert "Method:       Cookie File" in text
+    assert "chrome://version" not in text
+
+
 def test_the_walkthrough_names_the_browser_asked_for(service):
     page = service.call("cookies.howto", {"browser": "Firefox"})
     assert page["browser"] == "Firefox"

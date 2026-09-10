@@ -4547,7 +4547,16 @@
       box.className = 'cb-cbx';
       box.checked = !!value;
       mark(box);
-      box.addEventListener('change', () => save(entry.key, box.checked, box));
+      box.addEventListener('change', () => {
+        /* Turning cookies ON is held back for the gate dialog to decide;
+           the box goes back to off until it does. Turning them off is plain. */
+        if (entry.key === 'use_cookies' && box.checked) {
+          box.checked = false;
+          openCookieGate(box);
+          return;
+        }
+        save(entry.key, box.checked, box);
+      });
       const text = document.createElement('span');
       text.className = 'cb-lab';
       text.textContent = entry.label;
@@ -4582,6 +4591,14 @@
         const opt = document.createElement('option');
         opt.value = o;
         opt.textContent = o;
+        if (entry.key === 'cookies_browser' && UNREADABLE_BROWSERS[o]) {
+          /* Greyed, not dropped: a stored choice must still show as what it
+             is, and the reason travels on the option itself — a native
+             select has no other hover surface. */
+          opt.disabled = true;
+          opt.textContent = `${o} — ${UNREADABLE_BROWSERS[o].short}`;
+          opt.title = UNREADABLE_BROWSERS[o].reason;
+        }
         input.appendChild(opt);
       });
       if (current) input.value = current;
@@ -4748,8 +4765,10 @@
        _update_howto_label and its cookies-toggle greying. */
     const howto = $('#cookie-howto');
     if (howto) {
-      howto.textContent =
-        `📖 How-To: Setting Up a Dedicated ${val('cookies_browser') || 'Chrome'} Profile`;
+      const browser = val('cookies_browser') || 'Firefox';
+      howto.textContent = UNREADABLE_BROWSERS[browser]
+        ? `📖 How-To: Using ${browser} Cookies via a Cookie File`
+        : `📖 How-To: Setting Up a Dedicated ${browser} Profile`;
       setDisabled(howto, !cookiesOn, cookiesOn
         ? { ttKey: 'settings.firefox_profile_howto' } : { reason: cookiesReason });
     }
@@ -5476,6 +5495,80 @@
         close.style.marginLeft = 'auto';
         foot.appendChild(close);
       },
+    });
+  }
+
+  /* Browsers the Browser Profile method cannot read at all. Chrome locks its
+     cookie store with app-bound encryption (Chrome 127+) that only Chrome can
+     unlock, so every profile fails the same way — the Chrome guide is the
+     cookie-file route instead. Keyed by the Browser option's own text. */
+  const UNREADABLE_BROWSERS = {
+    Chrome: {
+      short: 'not supported (encrypted cookies)',
+      reason: 'Chrome locks its cookies with app-bound encryption that only ' +
+              'Chrome can unlock, so the app cannot read a Chrome profile. ' +
+              'Pick Firefox, or switch Method to Cookie File and follow the ' +
+              'Chrome guide.',
+    },
+  };
+
+  /* The gate on Use Browser Cookies. Ticking that box is a commitment the
+     card's tooltips cannot convey — a dedicated browser profile signed into a
+     throwaway account, or an exported cookie file, before a single track
+     benefits — so the tick is held back until this dialog says so. Closing it
+     any other way leaves cookies off. Nothing is remembered on purpose:
+     turning cookies on is rare enough that the reminder is cheap every time. */
+  function openCookieGate(box) {
+    const browser = (state && state.settings && state.settings.cookies_browser)
+      || 'Firefox';
+    const blocked = UNREADABLE_BROWSERS[browser];
+    let decided = false;
+    const turnOn = () => {
+      decided = true;
+      box.checked = true;
+      return save('use_cookies', true, box);
+    };
+    openModal({
+      title: 'Before you turn on Browser Cookies',
+      width: 560,
+      body(body) {
+        body.appendChild(modalNote(
+          'This is not a quick fix. YouTube only serves some tracks to a ' +
+          'signed-in browser, and for the app to borrow that sign-in you ' +
+          'need a dedicated browser profile — or an exported cookie file — ' +
+          'set up exactly as the guide describes.'));
+        body.appendChild(modalNote(
+          'Follow the setup guide for the browser you pick under Browser. ' +
+          'It walks through creating a throwaway profile, signing into ' +
+          'YouTube with it, and telling the app where to find it.'));
+        body.appendChild(modalNote(
+          'Chrome cannot be read directly: it encrypts its cookies in a way ' +
+          'only Chrome can unlock, so it is greyed out in the Browser list. ' +
+          'Use Firefox, or export a cookie file from Chrome and switch ' +
+          'Method to Cookie File.'));
+        if (blocked) {
+          const warn = modalNote(
+            `Your Browser is currently set to ${browser}, which will not ` +
+            'work as a Browser Profile. Pick Firefox, or switch Method to ' +
+            'Cookie File.');
+          warn.style.cssText = 'color:var(--cb-err);font-weight:600';
+          body.appendChild(warn);
+        }
+      },
+      foot(foot) {
+        const keepOff = modalButton('Keep cookies off', 'cb-btn--quiet', closeModal);
+        const guide = modalButton('Open the setup guide', 'cb-btn--quiet', () => {
+          turnOn();
+          openCookieHowto(browser);
+        });
+        guide.style.marginLeft = 'auto';
+        const go = modalButton('Got it, turn it on', 'cb-btn--fill', () => {
+          turnOn();
+          closeModal();
+        });
+        foot.append(keepOff, guide, go);
+      },
+      onClose() { if (!decided) box.checked = false; },
     });
   }
 
