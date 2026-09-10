@@ -77,7 +77,7 @@ def _fake_download(_unused=None, contents=b"zip-bytes"):
 def test_check_reports_available_when_manifest_is_newer(service, monkeypatch):
     monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: MANIFEST)
     monkeypatch.setattr(service_mod, "version_info",
-                        lambda script_path=None: {"version": "1.3", "build": 50})
+                        lambda script_path=None: {"version": "2.0", "build": 50})
     result = service.update_check()
     assert result["reachable"] is True
     assert result["valid"] is True
@@ -91,7 +91,7 @@ def test_check_reports_current_when_not_newer(service, monkeypatch):
     monkeypatch.setattr(service_mod.ucore, "fetch_manifest",
                         lambda url: {**MANIFEST, "build": 5})
     monkeypatch.setattr(service_mod, "version_info",
-                        lambda script_path=None: {"version": "1.3", "build": 50})
+                        lambda script_path=None: {"version": "2.0", "build": 50})
     result = service.update_check()
     assert result["reachable"] is True
     assert result["valid"] is True
@@ -158,7 +158,7 @@ def test_apply_raises_cberror_when_manifest_url_cannot_be_read(
 def test_apply_refuses_from_source(service, monkeypatch):
     monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: MANIFEST)
     monkeypatch.setattr(service_mod, "version_info",
-                        lambda script_path=None: {"version": "1.3", "build": 1})
+                        lambda script_path=None: {"version": "2.0", "build": 1})
     monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
     monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: False)
     with pytest.raises(CBError, match="running from source"):
@@ -168,7 +168,7 @@ def test_apply_refuses_from_source(service, monkeypatch):
 def test_apply_refuses_on_linux(service, monkeypatch):
     monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: MANIFEST)
     monkeypatch.setattr(service_mod, "version_info",
-                        lambda script_path=None: {"version": "1.3", "build": 1})
+                        lambda script_path=None: {"version": "2.0", "build": 1})
     monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: True)
     with pytest.raises(CBError, match="linux-v2.0"):
         service.update_apply()
@@ -178,7 +178,7 @@ def test_apply_refuses_no_update_available(service, monkeypatch):
     monkeypatch.setattr(service_mod.ucore, "fetch_manifest",
                         lambda url: {**MANIFEST, "build": 1})
     monkeypatch.setattr(service_mod, "version_info",
-                        lambda script_path=None: {"version": "1.3", "build": 50})
+                        lambda script_path=None: {"version": "2.0", "build": 50})
     with pytest.raises(CBError, match="latest build"):
         service.update_apply()
 
@@ -207,7 +207,7 @@ def test_remote_transport_refuses_update_methods(tmp_path):
 def test_apply_refuses_while_batch_running(service, monkeypatch):
     monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: MANIFEST)
     monkeypatch.setattr(service_mod, "version_info",
-                        lambda script_path=None: {"version": "1.3", "build": 1})
+                        lambda script_path=None: {"version": "2.0", "build": 1})
     monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
     monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
     with service._lock:
@@ -223,7 +223,7 @@ def test_apply_refuses_while_batch_running(service, monkeypatch):
 def test_batch_refuses_while_update_running(service, monkeypatch):
     monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: MANIFEST)
     monkeypatch.setattr(service_mod, "version_info",
-                        lambda script_path=None: {"version": "1.3", "build": 1})
+                        lambda script_path=None: {"version": "2.0", "build": 1})
     monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
     monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
     with service._lock:
@@ -316,7 +316,7 @@ def test_rebuild_unaffected_by_the_reorder(service):
 def test_apply_happy_path(service, monkeypatch):
     monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: MANIFEST)
     monkeypatch.setattr(service_mod, "version_info",
-                        lambda script_path=None: {"version": "1.3", "build": 1})
+                        lambda script_path=None: {"version": "2.0", "build": 1})
     monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
     monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
     monkeypatch.setattr(service_mod.ucore, "download", _fake_download(None))
@@ -383,7 +383,7 @@ def test_restart_callback_raising_does_not_purge_the_handoff(service, monkeypatc
     itself succeeded."""
     monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: MANIFEST)
     monkeypatch.setattr(service_mod, "version_info",
-                        lambda script_path=None: {"version": "1.3", "build": 1})
+                        lambda script_path=None: {"version": "2.0", "build": 1})
     monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
     monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
     monkeypatch.setattr(service_mod.ucore, "download", _fake_download(None))
@@ -427,7 +427,7 @@ def test_restart_callback_raising_does_not_purge_the_handoff(service, monkeypatc
 def test_apply_checksum_mismatch_purges_workspace(service, monkeypatch):
     monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: MANIFEST)
     monkeypatch.setattr(service_mod, "version_info",
-                        lambda script_path=None: {"version": "1.3", "build": 1})
+                        lambda script_path=None: {"version": "2.0", "build": 1})
     monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
     monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
     monkeypatch.setattr(service_mod.ucore, "download", _fake_download(None))
@@ -525,7 +525,7 @@ def test_closed_service_cannot_be_rearmed_by_a_fire_in_flight(service):
 def test_timer_fire_emits_available_only_when_newer(service, monkeypatch):
     monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: MANIFEST)
     monkeypatch.setattr(service_mod, "version_info",
-                        lambda script_path=None: {"version": "1.3", "build": 1})
+                        lambda script_path=None: {"version": "2.0", "build": 1})
     waiter = _Waiter(service)
     service._update_timer_fire()
     available = waiter.of_type("update.available")
@@ -541,7 +541,7 @@ def test_timer_fire_silent_when_current(service, monkeypatch):
     monkeypatch.setattr(service_mod.ucore, "fetch_manifest",
                         lambda url: {**MANIFEST, "build": 1})
     monkeypatch.setattr(service_mod, "version_info",
-                        lambda script_path=None: {"version": "1.3", "build": 50})
+                        lambda script_path=None: {"version": "2.0", "build": 50})
     waiter = _Waiter(service)
     service._update_timer_fire()
     assert waiter.of_type("update.available") == []

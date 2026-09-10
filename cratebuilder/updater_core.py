@@ -6,7 +6,7 @@ into this module so the moving parts live in one tested place.
 
 The "nightly build" channel works like this:
   * The app ships a fixed integer ``APP_BUILD`` (e.g. 7) alongside the pinned
-    display version ("1.3").
+    display version ("2.0").
   * GitHub hosts a small ``update.json`` manifest on a dedicated ``nightly``
     branch. It names the newest build number and a download URL + SHA-256.
   * The app fetches the manifest, and if its build is higher, downloads the

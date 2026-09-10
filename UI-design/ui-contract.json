@@ -1,7 +1,7 @@
 {
-  "$comment": "DJ-CrateBuilder web UI contract. Design source: 'CrateBuilder Remote v3.dc.html'. Tooltip strings marked source:'py' are verbatim from DJ-CrateBuilder_v1.3.py at the given line; source:'new' are remote-only controls with no desktop equivalent.",
+  "$comment": "DJ-CrateBuilder web UI contract. Design source: 'CrateBuilder Remote v3.dc.html'. Tooltip strings marked source:'py' are verbatim from DJ-CrateBuilder_v2.0.py at the given line; source:'new' are remote-only controls with no desktop equivalent.",
   "version": "1.0",
-  "app": { "name": "DJ-CrateBuilder", "display_version": "1.3", "db_schema": 7 },
+  "app": { "name": "DJ-CrateBuilder", "display_version": "2.0", "db_schema": 7 },
 
   "transport": {
     "facade": "web/api.js exports cbApi.call(method, params) -> Promise, cbApi.on(event, handler) -> unsubscribe",
@@ -143,7 +143,7 @@
   ],
 
   "tooltips": {
-    "$note": "Move these into cratebuilder/ui_strings.py as TOOLTIPS and have BOTH UIs read from it. py_line is the current location in DJ-CrateBuilder_v1.3.py.",
+    "$note": "Move these into cratebuilder/ui_strings.py as TOOLTIPS and have BOTH UIs read from it. py_line is the current location in DJ-CrateBuilder_v2.0.py.",
 
     "main.batch_add": { "text": "Queue the link in the URL field above, tagged with the genre you picked. Pressing Enter in the URL field does the same thing.", "source": "py", "py_line": 5313, "screen": "3b" },
     "main.batch_help": { "text": "Paste a link, pick a genre, press Add to Batch.\nRepeat to stack as many links as you want — each can have its own genre.\nUse the ▲ ▼ buttons on a row to reorder it, or ✕ to remove it; 'Clear All' empties the whole queue.\nWhen you press 'Start Downloads', every link in the queue is processed top to bottom.", "source": "py", "py_line": 5296, "screen": "3b" },
@@ -241,7 +241,7 @@
   },
 
   "about": {
-    "$comment": "ABOUT_FIELDS at DJ-CrateBuilder_v1.3.py:100; values at :70-72. Avatar from about_avatar_path() — assets/about_avatar.png, 44x44.",
+    "$comment": "ABOUT_FIELDS at DJ-CrateBuilder_v2.0.py:100; values at :70-72. Avatar from about_avatar_path() — assets/about_avatar.png, 44x44.",
     "created_by": "Corrupt Sintax",
     "contact_email": "CorruptSintax@Gmail.com",
     "description": "Vibe-Coded entirely with Claude-AI",

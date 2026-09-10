@@ -1,4 +1,4 @@
-# DJ-CrateBuilder v1.3 — Packaging Guide
+# DJ-CrateBuilder v2.0 — Packaging Guide
 
 Supported install flows:
 
@@ -120,10 +120,10 @@ from source uses the plain name above.
 
 # NIGHTLY BUILD CHANNEL (in-app updates)
 
-The app ships a pinned display version (`1.3`) plus an incrementing
-`APP_BUILD` integer, shown together in the About tab as `v1.3.<build>`. Small
+The app ships a pinned display version (`2.0`) plus an incrementing
+`APP_BUILD` integer, shown together in the About screen as `v2.0.<build>`. Small
 fixes go out as **nightly builds** that bump only the build number — no new
-installer, no version jump, and **`main` / the tagged v1.3 release are never
+installer, no version jump, and **`main` / the tagged v2.0 release are never
 touched.**
 
 How it works:
@@ -147,7 +147,7 @@ python scripts/release.py --init
 
 This creates the orphan `nightly` branch (holding only `update.json`) using git
 plumbing — it **never switches your branch or touches your working tree** — and
-pushes it. Do this once. (Already done for v1.3; you only need it on a fresh
+pushes it. Do this once. (Already done for v2.0; you only need it on a fresh
 clone or if the branch is ever deleted.)
 
 ### Publishing a nightly build — one command
@@ -353,7 +353,7 @@ leaves downloaded MP3s alone.
 |------|------|
 | Config | `~/.cratebuilder/config.json` |
 | Activity log | `<install dir>/activity.log` |
-| Debug log | `<install dir>/debug.log` *(new in v1.3)* |
+| Debug log | `<install dir>/debug.log` |
 | Downloads | `~/Music/DJ-CrateBuilder/` |
 
 The **debug log** is new — it captures yt-dlp options, cookie config, and full error tracebacks. Users can view it from the Settings tab → Debug Log section. It's the primary tool for diagnosing the cookie-authentication formatting errors this release targets.

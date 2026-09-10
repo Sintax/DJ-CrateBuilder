@@ -73,7 +73,6 @@ Version 2.0 is a ground-up interface rework: the app is now a modern web UI runn
 - **Overview dashboard.** One screen answers "what is the app doing right now": current job, Watch List status, notifications, recent activity, and host info.
 - **Database viewer.** Browse everything you've downloaded, grouped by platform / genre / channel, with search and CSV export.
 - **Activity & debug logs in-app.** Both logs get proper viewers with filtering — no more digging for files.
-- **Seamless upgrade.** v1.3 installs update straight to 2.0 through the normal in-app updater, keeping your database, config, and library exactly where they are.
 
 ---
 
@@ -206,9 +205,9 @@ advances between nightly updates. Update files come straight from the official
 [GitHub repository](https://github.com/Sintax/DJ-CrateBuilder) and are SHA-256
 verified before anything is installed.
 
-**Upgrading from v1.3?** Nothing to do — the same updater channel carries 2.0,
-so your existing install offers it as a normal update and keeps your database,
-config, and music library untouched.
+**Already installed?** Nothing to do — the in-app updater offers each new
+build as a normal update and keeps your database, config, and music library
+untouched.
 
 The app isn't code-signed, so Windows SmartScreen may show a warning on first
 install/run — click **More info → Run anyway**; this is expected for

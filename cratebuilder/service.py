@@ -591,7 +591,7 @@ def watchlist_card(row, **extra):
 
 
 def repo_root():
-    """The directory holding the v1.3 script — the app's runtime data dir.
+    """The directory holding the monolith script — the app's runtime data dir.
 
     Resolved from this file rather than sys.argv[0]: the web frontend is
     launched by its own entry point, which would otherwise point
@@ -609,7 +609,7 @@ def app_dir():
 
     From source, that's beside the monolith script, as always. Frozen,
     it's the install root next to DJ-CrateBuilder.exe — where every
-    existing 1.3 install already keeps cratebuilder.db — never repo_root(),
+    existing install already keeps cratebuilder.db — never repo_root(),
     which resolves inside `_internal/` under PyInstaller and would orphan
     that data on upgrade. util.runtime_data_dir's not-writable fallback
     still applies either way.
@@ -682,7 +682,7 @@ def app_icon_path():
 def version_info(script_path=None):
     """APP_VERSION / APP_BUILD read from the monolith as text.
 
-    Parsed rather than imported: importing the v1.3 script builds a Tk window,
+    Parsed rather than imported: importing the monolith builds a Tk window,
     which would drag the whole service into the gui test lane for two constants.
     """
     path = script_path or _monolith_path()
@@ -701,7 +701,7 @@ def about_info(script_path=None):
     """The About screen's content, read out of the monolith as source text.
 
     Parsed with `ast` for the reason version_info is parsed at all: importing
-    the v1.3 script builds a Tk window. The author fields and the two GitHub
+    the monolith builds a Tk window. The author fields and the two GitHub
     URLs are module constants; the FAQ is a local list inside
     `_build_about_tab`, so there is nothing importable even if that were free —
     and thirty questions copied into a second file drift within a release.
@@ -3073,7 +3073,7 @@ class CrateBuilderService:
         """Fill an empty Watch List from the crate folders already on disk —
         the monolith's first-run step, after(1200, _watchlist_populate_from_
         folders), which the web port never inherited: a reinstall that lost
-        cratebuilder.db (the v1.3 uninstaller wiped the install folder) left
+        cratebuilder.db (an older uninstaller wiped the install folder) left
         every channel folder behind with no way back into the Watch List.
 
         The window and the headless server each call this once at launch,

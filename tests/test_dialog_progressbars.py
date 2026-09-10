@@ -21,7 +21,7 @@ from cratebuilder import updater_core as ucore
 DIALOG_STYLE = "Dialog.Horizontal.TProgressbar"
 
 MANIFEST = {
-    "version": "1.3", "build": 99,
+    "version": "2.0", "build": 99,
     "url": "https://example.invalid/build-99.zip", "sha256": "5" * 64,
 }
 
