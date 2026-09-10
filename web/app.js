@@ -629,7 +629,7 @@
      No OS integration (the brief is explicit): this is the in-page bell, and
      the toast that already fires stays as it was. */
 
-  const NOTE_LIMIT = 50;
+  const NOTE_LIMIT = 20;
   const NOTE_STORE = 'cb_notifications';
 
   const notes = { items: [], panel: null };

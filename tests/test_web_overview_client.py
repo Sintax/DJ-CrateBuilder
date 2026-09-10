@@ -153,7 +153,7 @@ console.log(JSON.stringify(out));
 
 def _notes_source(app_js):
     return _NOTES_HARNESS % {
-        "notes": _slice(app_js, "  const NOTE_LIMIT = 50;",
+        "notes": _slice(app_js, "  const NOTE_LIMIT = 20;",
                         "  function closeNotifications()")
         + _slice(app_js, "  function noteJumpFor(n)",
                  "  function renderNotifications()"),
@@ -163,12 +163,12 @@ def _notes_source(app_js):
 def test_the_bell_keeps_a_capped_newest_first_list(app_js, tmp_path):
     r = _run_node(tmp_path, "ovnotes.mjs", _notes_source(app_js))
     assert r["startsEmpty"] == 0
-    assert r["capped"] == 50
+    assert r["capped"] == 20
     assert r["newestFirst"] == "T59"
-    assert r["unread"] == 50
+    assert r["unread"] == 20
     assert r["unreadAfterMark"] == 0
     assert r["painted"] is True
-    assert r["badgeCaps"] == "50"
+    assert r["badgeCaps"] == "20"
 
 
 def test_notifications_survive_a_reload_and_a_broken_store(app_js, tmp_path):
@@ -176,8 +176,8 @@ def test_notifications_survive_a_reload_and_a_broken_store(app_js, tmp_path):
     and a private window can refuse it outright — an unreadable store is an
     empty list, never an exception on the way to first paint."""
     r = _run_node(tmp_path, "ovnotes.mjs", _notes_source(app_js))
-    assert r["persisted"] == 50
-    assert r["reloaded"] == 50
+    assert r["persisted"] == 20
+    assert r["reloaded"] == 20
     assert r["corruptStore"] == 0
 
 
