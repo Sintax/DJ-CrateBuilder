@@ -1,9 +1,9 @@
 {
   "version": "2.0",
-  "build": 71,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.71.zip",
-  "sha256": "2380dd4b8b152a44ee9129f0aeef431fe564f4504b422a7a5301cf74306716c0",
-  "notes": "*** IMPORTANT -- STOP ALL WATCH LIST SCANS BEFORE YOU UPDATE ***\nIF A SCAN IS STILL RUNNING, THIS UPDATE WILL SILENTLY ROLL BACK AND\nOFFER ITSELF AGAIN ON THE NEXT CHECK -- AN ENDLESS UPDATE LOOP.\nBEFORE YOU CLICK YES: OPEN THE WATCH LIST TAB, PRESS CANCEL, AND WAIT\nUNTIL NO CHANNEL CARD STILL SAYS \"SCANNING\".\n\nDownload and install now stops a running Watch List scan itself \u2014 no separate Stop button to press and wait on.",
+  "build": 72,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.72.zip",
+  "sha256": "7cce9ad156a6022348f8e6b95dddefd3cdaf7bdec6c2bcc21ba9d698e810a747",
+  "notes": "*** IMPORTANT -- STOP ALL WATCH LIST SCANS BEFORE YOU UPDATE ***\nIF A SCAN IS STILL RUNNING, THIS UPDATE WILL SILENTLY ROLL BACK AND\nOFFER ITSELF AGAIN ON THE NEXT CHECK -- AN ENDLESS UPDATE LOOP.\nBEFORE YOU CLICK YES: OPEN THE WATCH LIST TAB, PRESS CANCEL, AND WAIT\nUNTIL NO CHANNEL CARD STILL SAYS \"SCANNING\".\n\nTest build \u2014 no changes from build 71. Published to exercise the update flow.",
   "base": 65,
   "ffmpeg": {
     "version": "9.0.1-essentials_build-www.gyan.dev+72a489ec",
