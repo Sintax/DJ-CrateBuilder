@@ -79,9 +79,12 @@ install once they noticed the run had ended. Two changes make it one click:
 - Cancel All is now immediate for the web service — the listing goes through the
   scan worker and is killed mid-flight (see the scan-subprocess note); a download
   already aborted at its next chunk.
-- The confirm modal, opened with a Watch List run live, closes the plain
-  "Download and install" (with the reason) and offers **■ Stop Watch List and
-  install**. It sends `watchlist.cancel_all`, shows "Stopping…", and waits for the
+- The confirm modal, opened with a Watch List run live, keeps the one
+  **Download and install** button and makes it do the stopping itself (revised
+  2026-09-10: the earlier separate "Stop Watch List and install" button, and the
+  card-level "Stop Watch List activity" button beside Update Now, left the user
+  to notice when the stop had finished — a second step the install can absorb).
+  It sends `watchlist.cancel_all`, shows "Stopping…", and waits for the
   Watch List's `job.finished` (a hook on `aboutUpdate.onWatchlistStopped`, cleared
   before it is called so it can never fire twice; if the run had already ended on
   its own, the hook is fired after the cancel resolves instead). Then a

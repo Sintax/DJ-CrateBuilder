@@ -5998,28 +5998,6 @@
     return warn;
   }
 
-  /* The host refuses update.apply while a Watch List run holds its job slot
-     (an update swaps every file under the app and restarts it). While a build
-     is waiting behind one, this is the remedy offered next to the refusal:
-     the same cancel the Watch List toolbar's own button sends. */
-  function aboutStopWatchlistButton() {
-    const b = document.createElement('button');
-    b.className = 'cb-btn cb-btn--warn cb-btn--sm';
-    b.textContent = '■ Stop Watch List activity';
-    b.setAttribute('data-tt-text',
-      'A Watch List scan or download is running, and the update cannot '
-      + 'install until it stops. This stops the run now.');
-    b.addEventListener('click', async () => {
-      setDisabled(b, true, { reason: WL_CANCEL_ALL_NOTE });
-      b.textContent = '■ Stopping…';
-      try {
-        await call('watchlist.cancel_all');
-        toast(WL_CANCEL_ALL_NOTE);
-      } catch (_) { /* call() already toasted the reason */ }
-    });
-    return b;
-  }
-
   /* Once the Watch List has been stopped for an update, how long the user
      gets to change their mind before the download begins. */
   const UPDATE_COUNTDOWN_SECONDS = 5;
@@ -6027,12 +6005,12 @@
   function aboutConfirmUpdate(errorText) {
     const result = aboutUpdate.result;
     if (!result || !result.available) return;
-    /* One modal, four states: choose (install, or stop the Watch List first),
-       stopping (Cancel All sent, waiting for the Watch List's job.finished),
-       countdown (the update is about to begin; Cancel still works), and back
-       to choose after a Cancel. Whatever is pending — the countdown timer,
-       the job.finished hook — is dropped when the modal closes, however it
-       closes. */
+    /* One modal, four states: choose (install — stopping the Watch List
+       first if a run is live), stopping (Cancel All sent, waiting for the
+       Watch List's job.finished), countdown (the update is about to begin;
+       Cancel still works), and back to choose after a Cancel. Whatever is
+       pending — the countdown timer, the job.finished hook — is dropped when
+       the modal closes, however it closes. */
     const refs = { timer: null, hook: null, state: null, foot: null };
 
     function dropPending() {
@@ -6071,33 +6049,29 @@
         refs.foot.appendChild(cancel);
         return;
       }
+      /* The host refuses update.apply while a Watch List run holds its job
+         slot (an update swaps every file under the app and restarts it). The
+         install button stops the run itself rather than sending the user to
+         a separate Stop first — there is no second step for them to notice
+         has finished. Decided when the button is painted: a run that ends
+         on its own between open and click still gets the countdown, since
+         stopThenInstall handles that case. */
+      const blocked = wl.running || mode === 'stopping';
       const go = modalButton('Download and install', 'cb-btn--warn',
-        () => aboutStartApply(), 'about.update_now');
+        () => (blocked ? stopThenInstall() : aboutStartApply()),
+        blocked ? null : 'about.update_now');
       const later = modalButton('Not now', 'cb-btn--quiet', () => closeModal());
       later.style.marginLeft = 'auto';
-      if (!wl.running && mode !== 'stopping') {
-        refs.foot.append(go, later);
-        return;
-      }
-      /* The host refuses update.apply while a Watch List run holds its job
-         slot (an update swaps every file under the app and restarts it), so
-         the plain install is closed and the one-click remedy sits beside it. */
-      const stop = modalButton('■ Stop Watch List and install', 'cb-btn--warn',
-        () => stopThenInstall());
       if (mode === 'stopping') {
-        stop.textContent = '■ Stopping…';
-        setDisabled(stop, true, { reason: WL_CANCEL_ALL_NOTE });
-      } else {
-        stop.setAttribute('data-tt-text',
-          'Stops the Watch List run now, then counts down a few seconds '
+        go.textContent = '■ Stopping…';
+        setDisabled(go, true, { reason: WL_CANCEL_ALL_NOTE });
+      } else if (blocked) {
+        go.setAttribute('data-tt-text',
+          'Stops the Watch List run first, then counts down a few seconds '
           + 'before the update begins — you can still cancel during the '
           + 'countdown.');
       }
-      setDisabled(go, true, {
-        reason: 'A Watch List scan or download is running. Use Stop Watch '
-          + 'List and install.',
-      });
-      refs.foot.append(stop, go, later);
+      refs.foot.append(go, later);
     }
 
     async function stopThenInstall() {
@@ -6164,9 +6138,9 @@
            user is about to press install, and the host would refuse it. */
         if (wl.running) {
           status('A Watch List scan or download is running. The update '
-            + 'cannot install until it stops — Stop Watch List and install '
-            + 'stops it now, then gives you a few seconds to change your '
-            + 'mind before the update begins.');
+            + 'cannot install until it stops — Download and install stops '
+            + 'it for you, then gives you a few seconds to change your mind '
+            + 'before the update begins.');
         }
       },
       foot(foot) {
@@ -6352,14 +6326,6 @@
       }
     }
     upRow.append(checkBtn, updateBtn);
-    /* The remedy beside the refusal: while a known-available build is stuck
-       behind a live Watch List run, the card offers the stop, not just the
-       reason. renderAbout() is re-run from refresh(), which every
-       job.started/job.finished resyncs through, so the button appears and
-       leaves with the run itself. */
-    if (isLocal && result && result.available && wl.running) {
-      upRow.appendChild(aboutStopWatchlistButton());
-    }
 
     const every = document.createElement('select');
     every.className = 'cb-sel';
@@ -6733,8 +6699,8 @@
         wl.overall = null;
         wl.rows = [];
         wl.skipping = {};
-        // An update confirm that pressed Stop Watch List and install is
-        // waiting on exactly this; it moves on to its countdown.
+        // An update confirm that pressed Download and install during a run
+        // is waiting on exactly this; it moves on to its countdown.
         if (aboutUpdate.onWatchlistStopped) {
           const stopped = aboutUpdate.onWatchlistStopped;
           aboutUpdate.onWatchlistStopped = null;
