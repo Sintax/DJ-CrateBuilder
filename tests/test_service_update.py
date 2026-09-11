@@ -11,6 +11,7 @@ import time
 import pytest
 
 from cratebuilder import service as service_mod
+from cratebuilder import util
 from cratebuilder.db import DownloadsDatabase
 from cratebuilder.service import (LOCAL, REMOTE, CBError, CrateBuilderService,
                                   UPDATE_JOB)
@@ -570,6 +571,57 @@ def test_remote_service_arms_no_timer(tmp_path):
         assert remote._update_timer is None
     finally:
         remote.close()
+
+
+def test_startup_check_arms_a_short_timer(service):
+    """The launch check fires seconds after the window is up, not a whole
+    interval later."""
+    service.start_startup_update_check()
+    assert service._update_timer is not None
+    assert service._next_update_check_ts - time.time() <= \
+        service_mod.STARTUP_UPDATE_CHECK_DELAY
+    service.close()
+
+
+def test_startup_check_noop_on_remote(tmp_path):
+    svc = CrateBuilderService(transport=REMOTE,
+                              settings=Settings(path=str(tmp_path / "c.json")),
+                              db_path=str(tmp_path / "db.sqlite"))
+    try:
+        svc.start_startup_update_check()
+        assert svc._update_timer is None
+    finally:
+        svc.close()
+
+
+def test_startup_fire_waits_for_a_running_job(service, monkeypatch):
+    """A startup scan still running at the three-second mark must not turn
+    the launch check into a six-hour wait: it looks again shortly."""
+    called = []
+    monkeypatch.setattr(service, "update_check", lambda: called.append(1))
+    with service._lock:
+        service._jobs["watchlist"] = 1
+    try:
+        service._startup_update_check_fire()
+    finally:
+        with service._lock:
+            service._jobs.pop("watchlist", None)
+    assert called == []
+    assert service._update_timer is not None
+    assert service._next_update_check_ts - time.time() <= \
+        service_mod.STARTUP_UPDATE_CHECK_RETRY
+
+
+def test_startup_fire_checks_then_hands_over_to_the_interval(service, monkeypatch):
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: MANIFEST)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 1})
+    waiter = _Waiter(service)
+    service._startup_update_check_fire()
+    assert [a["build"] for a in waiter.of_type("update.available")] == [99]
+    secs = util.interval_label_to_seconds(
+        service._settings.get("update_check_interval"))
+    assert service._next_update_check_ts - time.time() > secs - 5
 
 
 def test_close_cancels_the_timer(service):

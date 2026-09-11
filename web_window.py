@@ -1147,6 +1147,9 @@ def main():
         # create_window so its first "next run" reaches a subscribed bridge.
         # The schedule counts from now, so nothing downloads at launch.
         service.start_auto_download_timer()
+        # The launch check for a newer build, armed here so what it finds
+        # reaches the page — the monolith's after(3000, …) from a built UI.
+        service.start_startup_update_check()
         if start_minimized:
             tray.start_minimized()
 

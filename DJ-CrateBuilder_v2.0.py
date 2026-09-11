@@ -6297,7 +6297,7 @@ class MP3DownloaderApp(tk.Tk):
         autoadd_row = ttk.Frame(outer)
         autoadd_row.pack(fill="x", pady=(2, 4))
         self._auto_add_cb = ttk.Checkbutton(
-            autoadd_row, text="Auto-add channels to Watch List after downloading",
+            autoadd_row, text="Auto-add channels to Watch List on first download",
             variable=self._auto_add_to_watchlist,
             style="S.Opt.TCheckbutton")
         self._auto_add_cb.pack(side="left")
