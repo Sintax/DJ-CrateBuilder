@@ -452,3 +452,13 @@ def test_the_host_footer_row_carries_the_registry_s_own_explainer(index_html):
 
 def test_the_overview_bell_carries_its_registry_tooltip(index_html):
     assert 'data-tt="main.notifications"' in index_html
+
+
+def test_acting_on_a_notification_marks_that_entry_read(app_js):
+    """The jump link used to leave the entry bold and the bell unchanged; a
+    click on it now reads the entry before the screen changes."""
+    row = _slice(app_js, "  function noteRow(n)", "  function ovLine(label, value)")
+    click = _slice(row, "link.addEventListener('click'", "meta.appendChild(link)")
+    assert "n.read = true;" in click
+    assert "saveNotes();" in click and "renderBell();" in click
+    assert click.index("n.read = true;") < click.index("show(jump[1])")

@@ -821,6 +821,11 @@
       link.className = 'cb-notif__link';
       link.textContent = jump[0];
       link.addEventListener('click', () => {
+        /* Acting on an entry is reading it — the bell drops by one without a
+           trip back to Mark all read. */
+        n.read = true;
+        saveNotes();
+        renderBell();
         closeNotifications();
         show(jump[1]);
       });
