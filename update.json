@@ -1,9 +1,9 @@
 {
   "version": "2.0",
-  "build": 76,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.76.zip",
-  "sha256": "5c5dcc93d17e755d4c98ebe981874dac386622a0850ee9aaeeda1f4cb589dabd",
-  "notes": "*** IMPORTANT -- STOP ALL WATCH LIST SCANS BEFORE YOU UPDATE ***\nIF A SCAN IS STILL RUNNING, THIS UPDATE WILL SILENTLY ROLL BACK AND\nOFFER ITSELF AGAIN ON THE NEXT CHECK -- AN ENDLESS UPDATE LOOP.\nBEFORE YOU CLICK YES: OPEN THE WATCH LIST TAB, PRESS CANCEL, AND WAIT\nUNTIL NO CHANNEL CARD STILL SAYS \"SCANNING\".\n\nExport and import a shareable Watch List; genre tags coloured by platform; notifications mark read when their link is used.",
+  "build": 77,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.77.zip",
+  "sha256": "f95e44c9d3a7cfcff06e83a2cec0a4e7e2ee2be37c777e0750d5e84bb5d2b546",
+  "notes": "*** IMPORTANT -- STOP ALL WATCH LIST SCANS BEFORE YOU UPDATE ***\nIF A SCAN IS STILL RUNNING, THIS UPDATE WILL SILENTLY ROLL BACK AND\nOFFER ITSELF AGAIN ON THE NEXT CHECK -- AN ENDLESS UPDATE LOOP.\nBEFORE YOU CLICK YES: OPEN THE WATCH LIST TAB, PRESS CANCEL, AND WAIT\nUNTIL NO CHANNEL CARD STILL SAYS \"SCANNING\".\n\nUpdate check now runs shortly after launch; genre tag colour tidy-up; clearer auto-add-to-Watch-List wording.",
   "base": 65,
   "ffmpeg": {
     "version": "9.0.1-essentials_build-www.gyan.dev+72a489ec",
