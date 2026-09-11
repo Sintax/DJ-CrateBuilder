@@ -762,21 +762,14 @@ def test_the_watch_list_controls_carry_their_registry_keys(app_js, index_html):
     assert sorted(expected - used) == []
 
 
-def test_the_genre_tag_wears_its_platforms_colour(app_js):
-    """Each card's genre tag is keyed by platform — YouTube red, SoundCloud
-    orange — with a plain tag for anything the map does not name. Both
-    classes exist in app.css against tokens the dark sheet restates."""
-    assert ("const PLATFORM_TAG_CLASS = { YouTube: 'cb-tag--yt', "
-            "SoundCloud: 'cb-tag--sc' };") in app_js
+def test_the_genre_tag_matches_the_platform_tags_grey(app_js):
+    """Each card's genre tag wears the same quiet grey as the platform tag
+    beside it — no red or platform colouring."""
     card = _slice(app_js, "  function wlCardNode(row)", "  function wlCurrentLine(row)")
-    assert "tagNode(row.genre || '(none)', PLATFORM_TAG_CLASS[row.platform] || '')" in card
+    assert "tagNode(row.genre || '(none)', 'cb-tag--grey')" in card
+    assert "PLATFORM_TAG_CLASS" not in app_js
     with open(os.path.join(ROOT, "web", "app.css"), encoding="utf-8") as fh:
-        app_css = fh.read()
-    with open(os.path.join(ROOT, "web", "theme-dark.css"), encoding="utf-8") as fh:
-        dark_css = fh.read()
-    for cls, token in (("cb-tag--yt", "--cb-yt"), ("cb-tag--sc", "--cb-sc")):
-        assert f".{cls} {{ border-color: var({token}); color: var({token});" in app_css
-        assert f"  {token}: #" in app_css and f"  {token}: #" in dark_css
+        assert "cb-tag--yt" not in fh.read()
 
 
 def test_the_share_buttons_are_wired_to_the_local_only_file_methods(app_js, index_html):
