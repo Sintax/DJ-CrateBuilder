@@ -134,7 +134,7 @@ SETTINGS_KEYS = [
     {'key': 'start_minimized', 'label': 'Start App Minimized to System Tray', 'type': 'bool', 'default': False, 'platform': 'win32', 'section': 'Automation / Startup'},
     {'key': 'minimize_to_tray', 'label': 'Minimize to System Tray', 'type': 'bool', 'default': False, 'platform': 'win32', 'section': 'Automation / Startup', 'tooltip': 'settings.minimize_to_tray'},
     {'key': 'watchlist_scan_on_startup', 'label': 'Scan Watch List for new uploads when the app starts', 'type': 'bool', 'default': True, 'section': 'Automation / Startup'},
-    {'key': 'auto_add_to_watchlist', 'label': 'Auto-add channels to Watch List after downloading', 'type': 'bool', 'default': True, 'section': 'Automation / Startup'},
+    {'key': 'auto_add_to_watchlist', 'label': 'Auto-add channels to Watch List on first download', 'type': 'bool', 'default': True, 'section': 'Automation / Startup'},
     {'key': 'auto_dl_interval', 'label': 'Auto-download Watch-List channels every', 'type': 'enum', 'options': ['Off', '6 hours', '12 hours', '1 day', '2 days'], 'default': '1 day', 'section': 'Automation / Startup', 'tooltip': 'settings.auto_dl_interval'},
     {'key': 'limit_enabled', 'label': 'Enable', 'type': 'bool', 'default': True, 'section': 'Time / Length Limiter', 'tooltip': 'settings.limiter'},
     {'key': 'limit_minutes', 'label': 'Max Length', 'type': 'int', 'min': 1, 'max': 180, 'default': 8, 'unit': 'min', 'section': 'Time / Length Limiter'},

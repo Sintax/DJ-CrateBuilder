@@ -757,6 +757,7 @@ class MainService(RecordingService):
         self.timers = 0
         self.startup_scans = 0
         self.auto_dl_timers = 0
+        self.startup_update_checks = 0
         self.populates = 0
         self.on_update_restart = None
         self.placement = placement
@@ -774,6 +775,9 @@ class MainService(RecordingService):
 
     def start_auto_download_timer(self):
         self.auto_dl_timers += 1
+
+    def start_startup_update_check(self):
+        self.startup_update_checks += 1
 
     def populate_watchlist_from_folders(self):
         self.populates += 1
@@ -884,6 +888,20 @@ def test_main_arms_the_auto_download_scheduler_once_the_loop_is_up(monkeypatch):
     started()
 
     assert service.auto_dl_timers == 1
+    close_the_window(window)
+
+
+def test_main_arms_the_launch_update_check_once_the_loop_is_up(monkeypatch):
+    """The first check used to be a whole interval away — six hours by
+    default. Armed here, not beside start_update_timer, so the result's
+    events find a subscribed bridge."""
+    service, window, _, started, _ = run_main(monkeypatch)
+
+    assert service.startup_update_checks == 0
+
+    started()
+
+    assert service.startup_update_checks == 1
     close_the_window(window)
 
 

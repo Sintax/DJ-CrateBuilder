@@ -122,6 +122,13 @@ run (`_closed`, checked inside the same locked section `_arm_update_timer` uses,
 fire already past its own lock hold when `close()` lands can't resurrect a timer
 afterwards).
 
+There is also a launch check (added 2026-09-11): `start_startup_update_check()`, called
+from the window's `started()` callback like the startup scan and for the same reason,
+arms one silent check `STARTUP_UPDATE_CHECK_DELAY` (3 s — the monolith's
+`after(3000, …)`) after the UI is up. A job still running at that moment (the startup
+scan, usually) makes it look again `STARTUP_UPDATE_CHECK_RETRY` later rather than skip
+to the first interval tick; once it has run, the interval timer carries on from there.
+
 Per ADR 0001, no clock abstraction is injected; a test wanting a fast fire uses a short
 interval (or calls `_update_timer_fire()` directly, as most of this pass's tests do). A
 fire that lands while any job is running is skipped but still re-arms — installing

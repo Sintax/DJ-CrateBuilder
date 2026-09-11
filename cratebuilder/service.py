@@ -248,6 +248,13 @@ _BUILD_RE = re.compile(r"^APP_BUILD\s*=\s*(\d+)", re.M)
 # auto-run interval, which does).
 UPDATE_CHECK_OPTIONS = ["1 hour", "3 hours", "6 hours", "12 hours", "1 day"]
 
+# The launch check: the monolith's after(3000, _auto_check_for_updates),
+# measured from a UI that is already built. When a job (the startup scan,
+# usually) is still running at that moment the check waits this long and
+# looks again rather than giving up until the first interval tick.
+STARTUP_UPDATE_CHECK_DELAY = 3.0
+STARTUP_UPDATE_CHECK_RETRY = 30.0
+
 # The two manifest URL constants, read out of the monolith the same way
 # version_info() reads APP_VERSION/APP_BUILD — one copy, no drift. Unlike
 # those two, each is built from adjacent string literals rather than one
@@ -3110,6 +3117,18 @@ class CrateBuilderService:
         """
         self._arm_update_timer()
 
+    def start_startup_update_check(self):
+        """Arm the launch check — one silent check a few seconds from now,
+        after which the interval timer takes over from that check.
+
+        Called from the window's started() callback rather than beside
+        `start_update_timer`, for the startup scan's reason: the result
+        travels as events, and they need a subscribed bridge to land on.
+        Same REMOTE / closed no-ops as the interval timer.
+        """
+        self._arm_update_timer(STARTUP_UPDATE_CHECK_DELAY,
+                               self._startup_update_check_fire)
+
     def window_placement(self):
         """Where the last session left the window, as (geometry, maximized).
 
@@ -3459,8 +3478,9 @@ class CrateBuilderService:
         with self._lock:
             return self._closed
 
-    def _arm_update_timer(self):
-        """(Re)arm the silent auto-check timer from the current interval.
+    def _arm_update_timer(self, secs=None, fire=None):
+        """(Re)arm the silent auto-check timer from the current interval —
+        or, for the launch check, from the *secs* and *fire* handed in.
 
         LOCAL only — a remote browser must never make this host poll GitHub
         on its own behalf, matching update.*'s LOCAL_ONLY gate. Per ADR 0001
@@ -3479,17 +3499,38 @@ class CrateBuilderService:
                 return
             if self._update_timer is not None:
                 self._update_timer.cancel()
-            secs = util.interval_label_to_seconds(
-                self._settings.get("update_check_interval"))
+            if secs is None:
+                secs = util.interval_label_to_seconds(
+                    self._settings.get("update_check_interval"))
             if not secs:
                 self._update_timer = None
                 self._next_update_check_ts = None
                 return
-            timer = threading.Timer(secs, self._update_timer_fire)
+            timer = threading.Timer(secs, fire or self._update_timer_fire)
             timer.daemon = True
             self._update_timer = timer
             self._next_update_check_ts = time.time() + secs
             timer.start()
+
+    def _take_update_timer_slot(self):
+        """Clear the fired timer under the lock and report whether a job is
+        running — the first step both fires share."""
+        with self._lock:
+            self._update_timer = None
+            return bool(self._jobs)
+
+    def _startup_update_check_fire(self):
+        """The launch check. A job still running (the startup scan, most
+        likely) means look again shortly rather than skip to the first
+        interval tick — the point of a launch check is to happen at launch.
+        Once it has run, the ordinary interval timer carries on from here.
+        """
+        if self._take_update_timer_slot():
+            self._arm_update_timer(STARTUP_UPDATE_CHECK_RETRY,
+                                   self._startup_update_check_fire)
+            return
+        self._silent_update_check()
+        self._arm_update_timer()
 
     def _update_timer_fire(self):
         """One scheduled silent check, then re-arm for the next interval.
@@ -3500,31 +3541,32 @@ class CrateBuilderService:
         announced, exactly like the monolith's automatic check with nobody
         watching the window.
         """
-        with self._lock:
-            self._update_timer = None
-            busy = bool(self._jobs)
-        if not busy:
-            try:
-                result = self.update_check()
-            except Exception:
-                result = None
-            if result and result["reachable"] and result["valid"] and result["available"]:
-                self.emit("update.available", {
-                    "build": result["latest_build"],
-                    "current_build": result["current_build"],
-                    "notes": result["notes"],
-                    "can_self_update": result["can_self_update"],
-                })
-                self.emit("notification", {
-                    "level": "info",
-                    "title": "Update available",
-                    "body": (f"Build {result['latest_build']} is available "
-                            f"— you're on {result['current_build']}. Open "
-                            "About to install."),
-                    "at": datetime.now().isoformat(timespec="seconds"),
-                    "job": UPDATE_JOB,
-                })
+        if not self._take_update_timer_slot():
+            self._silent_update_check()
         self._arm_update_timer()
+
+    def _silent_update_check(self):
+        """Check, and announce a newer build — never download it."""
+        try:
+            result = self.update_check()
+        except Exception:
+            result = None
+        if result and result["reachable"] and result["valid"] and result["available"]:
+            self.emit("update.available", {
+                "build": result["latest_build"],
+                "current_build": result["current_build"],
+                "notes": result["notes"],
+                "can_self_update": result["can_self_update"],
+            })
+            self.emit("notification", {
+                "level": "info",
+                "title": "Update available",
+                "body": (f"Build {result['latest_build']} is available "
+                        f"— you're on {result['current_build']}. Open "
+                        "About to install."),
+                "at": datetime.now().isoformat(timespec="seconds"),
+                "job": UPDATE_JOB,
+            })
 
     def close(self):
         """Release the background resources this service holds — chiefly the
