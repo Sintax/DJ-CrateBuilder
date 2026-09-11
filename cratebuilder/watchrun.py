@@ -10,6 +10,7 @@ from cratebuilder import genrefix
 from cratebuilder import links as cb_links
 from cratebuilder import scanproc
 from cratebuilder import util
+from cratebuilder import watchlist_share
 from cratebuilder.batchresolve import (TrackSpec, channel_folders, entry_url,
                                        platform_dir)
 from cratebuilder.batchrun import BatchRunner
@@ -896,6 +897,34 @@ class WatchlistOps:
         self._card(new_id)
         self._patch_counts()
         return {"channel_id": new_id}
+
+    def add_imported(self, entries):
+        """Track the channels from another user's list file, skipping any
+        already here. No probe: the file carries the name and channel id, so
+        a hundred channels land in a second and a machine with no network
+        can still import. Rows that exist are never touched."""
+        db = self._db()
+        to_add, skipped = watchlist_share.plan_import(
+            entries, db.get_all_watchlist_channels())
+        added = 0
+        for entry in to_add:
+            url = entry["url"]
+            new_id = db.add_watchlist_channel(
+                url=url, display_name=entry.get("display_name") or url,
+                platform=entry.get("platform") or util.detect_platform(url),
+                genre=entry.get("genre") or CrateLayout.NO_GENRE_VALUE,
+                auto_added=False, channel_id=entry.get("channel_id") or None)
+            if new_id is None:
+                skipped.append(entry)
+                continue
+            row = db.get_watchlist_channel(new_id) or {}
+            self._mirror_link(row, url, entry.get("channel_id"))
+            self._line(LINE_DONE, f"DONE Imported {entry.get('display_name') or url}")
+            self._card(new_id)
+            added += 1
+        if added:
+            self._patch_counts()
+        return {"added": added, "skipped": len(skipped)}
 
     def populate_from_folders(self):
         """Fill an EMPTY Watch List from the crate folders already on disk —

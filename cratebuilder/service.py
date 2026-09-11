@@ -18,6 +18,7 @@ from cratebuilder import (activitylog, debuglog, rebuild, startup, ui_strings,
                           util, ydl)
 from cratebuilder import scanproc
 from cratebuilder import updater_core as ucore
+from cratebuilder import watchlist_share
 from cratebuilder.artwork import DEFAULT_COVER_ART_MODE, extract_cover
 from cratebuilder.batchresolve import PLATFORM_SUBDIR, platform_dir
 from cratebuilder.batchrun import BatchRunner
@@ -1219,6 +1220,8 @@ class CrateBuilderService:
             "genres.remove": lambda p: self.genres_remove(p.get("name"),
                                                           p.get("platform")),
             "fs.pick_folder": lambda p: self.pick_folder(),
+            "fs.watchlist_export": lambda p: self.watchlist_export(),
+            "fs.watchlist_import": lambda p: self.watchlist_import(),
             "fs.reveal": lambda p: self.fs_reveal(p.get("path"),
                                                   p.get("mode", "folder")),
             "fs.open_url": lambda p: self.open_url(p.get("url")),
@@ -2690,6 +2693,74 @@ class CrateBuilderService:
             raise CBError("No window is open to attach the picker to.")
         picked = window.create_file_dialog(webview.FOLDER_DIALOG)
         return {"path": picked[0] if picked else None}
+
+    def _file_dialog(self, kind, **opts):
+        """One native file dialog, or None when the user cancelled. Under the
+        LOCAL_ONLY "fs." prefix so the remote transport never reaches it."""
+        if self.transport != LOCAL:
+            raise CBError("Sharing a Watch List file only works in the app "
+                          "window on the host machine.")
+        try:
+            import webview
+        except ImportError:
+            raise CBError("The window toolkit is unavailable.")
+        window = webview.active_window()
+        if window is None:
+            raise CBError("No window is open to attach the dialog to.")
+        picked = window.create_file_dialog(kind, **opts)
+        if not picked:
+            return None
+        return picked if isinstance(picked, str) else picked[0]
+
+    def watchlist_export(self):
+        """Save the Watch List as a file another user can import: a Save
+        dialog, then the shareable half of every row. {"path": None} means
+        the dialog was cancelled and nothing was written."""
+        rows = self._watchlist_rows()
+        if not rows:
+            raise CBError("The Watch List is empty — nothing to export.")
+        import webview
+        path = self._file_dialog(
+            webview.SAVE_DIALOG,
+            save_filename=watchlist_share.default_filename(),
+            file_types=("Watch List export (*.json)", "All files (*.*)"))
+        if not path:
+            return {"path": None, "count": 0}
+        text = watchlist_share.dumps(rows)
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+        except OSError as exc:
+            raise CBError(f"Couldn't write the list file: {exc}")
+        count = text.count('"url":')
+        self.log_line(f"📤 Exported {count} Watch List channel"
+                      f"{'' if count == 1 else 's'} to {path}")
+        return {"path": path, "count": count}
+
+    def watchlist_import(self):
+        """Add the channels from another user's list file: an Open dialog,
+        then every channel not already tracked. Existing rows are never
+        changed. {"path": None} means the dialog was cancelled."""
+        import webview
+        path = self._file_dialog(
+            webview.OPEN_DIALOG, allow_multiple=False,
+            file_types=("Watch List export (*.json)", "All files (*.*)"))
+        if not path:
+            return {"path": None, "added": 0, "skipped": 0}
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError as exc:
+            raise CBError(f"Couldn't read the list file: {exc}")
+        try:
+            entries = watchlist_share.parse(text)
+        except watchlist_share.ShareError as exc:
+            raise CBError(str(exc))
+        result = self._watchlist.add_imported(entries)
+        self.log_line(f"📥 Imported {result['added']} Watch List channel"
+                      f"{'' if result['added'] == 1 else 's'} from {path}"
+                      f" ({result['skipped']} already tracked)")
+        return dict(result, path=path)
 
     def _fs_path_is_contained(self, path):
         """True when *path* is somewhere the viewer is allowed to point the

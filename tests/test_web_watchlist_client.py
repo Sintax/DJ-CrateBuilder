@@ -154,7 +154,8 @@ const num = (n) => Number(n || 0).toLocaleString();
 const TOOLTIPS = { 'main.scan_batch_conflict': 'BATCH-CONFLICT',
                    'wl.scan_all': 'TT-SCAN', 'wl.add_channel': 'TT-ADD',
                    'wl.check_links': 'TT-LINKS', 'wl.download_all_new': 'TT-DLALL',
-                   'wl.cancel_all': 'TT-CANCEL' };
+                   'wl.cancel_all': 'TT-CANCEL', 'wl.export_list': 'TT-EXPORT',
+                   'wl.import_list': 'TT-IMPORT' };
 const dl = { running: false };
 /* The remote transport's read-only / control-lock verdict. Local sessions
    always answer "", which is what every case below but `readOnly` exercises. */
@@ -184,13 +185,15 @@ global.document = { createElement: () => ({
 %(consts)s
 /* The toolbar also renders the next scheduled auto-download, whose text the
    host builds with the monolith's own next_run_label. */
-const state = { next_auto_download: { ts: 1, text: 'NEXT-RUN' } };
+const state = { next_auto_download: { ts: 1, text: 'NEXT-RUN' },
+                host: { transport: 'local' } };
 const wl = { running: false, cards: [], current: null, overall: null };
 %(helpers)s
 %(gate)s
 %(toolbar)s
 function snap() {
-  return ['wl-add', 'wl-links', 'wl-dl-all', 'wl-scan', 'wl-cancel']
+  return ['wl-add', 'wl-links', 'wl-dl-all', 'wl-scan', 'wl-cancel',
+          'wl-export', 'wl-import']
     .reduce((out, id) => {
       const e = $('#' + id);
       out[id] = { off: e.disabled, why: e.attrs['data-tt-text'] || null,
@@ -218,11 +221,20 @@ blockedReason = 'HOST-READ-ONLY';
 renderWatchlistToolbar();
 const readOnly = snap();
 blockedReason = '';
+wl.cards = [];
+renderWatchlistToolbar();
+const emptyList = snap();
+wl.cards = [{ id: 1, new_count: 7, unresolved: false }];
+state.host.transport = 'remote';
+renderWatchlistToolbar();
+const remote = snap();
+state.host.transport = 'local';
 // Back to the nothing-pending set, so the label assertion below reads the
 // state its own case left behind rather than this one's.
 wl.cards = [{ id: 1, new_count: 0, unresolved: false }];
 renderWatchlistToolbar();
 console.log(JSON.stringify({ idle, batching, scanning, nothingPending, readOnly,
+                             emptyList, remote,
                              label: $('#wl-dl-all').textContent,
                              nextDl: $('#wl-next-dl').textContent }));
 """
@@ -765,3 +777,37 @@ def test_the_genre_tag_wears_its_platforms_colour(app_js):
     for cls, token in (("cb-tag--yt", "--cb-yt"), ("cb-tag--sc", "--cb-sc")):
         assert f".{cls} {{ border-color: var({token}); color: var({token});" in app_css
         assert f"  {token}: #" in app_css and f"  {token}: #" in dark_css
+
+
+def test_the_share_buttons_are_wired_to_the_local_only_file_methods(app_js, index_html):
+    """Export and Import sit on their own row under the toolbar, each behind
+    an fs.-prefixed method LOCAL_ONLY already refuses over remote."""
+    assert 'id="wl-export" data-tt="wl.export_list"' in index_html
+    assert 'id="wl-import" data-tt="wl.import_list"' in index_html
+    assert "$('#wl-export').addEventListener('click'" in app_js
+    assert "$('#wl-import').addEventListener('click'" in app_js
+    assert "call('fs.watchlist_export', {})" in app_js
+    assert "call('fs.watchlist_import', {})" in app_js
+    imp = _slice(app_js, "$('#wl-import').addEventListener('click'",
+                 "$('#wl-links').addEventListener('click'")
+    assert "if (res.added) await refresh();" in imp
+
+
+def test_the_share_buttons_open_only_in_the_app_window(app_js, tmp_path):
+    """Export needs a list to save and Import needs the host idle; both need
+    the host's own file dialogs, so a remote session sees the local-only
+    line under the registry text instead of a button that would fail."""
+    r = _run_node(tmp_path, "wltoolbar.mjs", _toolbar_source(app_js))
+    assert r["idle"]["wl-export"] == {"off": False, "why": None, "tt": "wl.export_list"}
+    assert r["idle"]["wl-import"] == {"off": False, "why": None, "tt": "wl.import_list"}
+    # A running job locks Import (it writes rows) but Export only reads.
+    assert r["scanning"]["wl-import"]["off"] is True
+    assert r["scanning"]["wl-export"]["off"] is False
+    assert r["emptyList"]["wl-export"]["off"] is True
+    assert "nothing to export" in r["emptyList"]["wl-export"]["why"]
+    for key, tip in (("wl-export", "TT-EXPORT"), ("wl-import", "TT-IMPORT")):
+        assert r["remote"][key]["off"] is True, key
+        assert r["remote"][key]["why"].startswith(tip + "\n\n"), key
+        assert "app window on the host machine" in r["remote"][key]["why"], key
+    # Read-only reaches Import like every other write control.
+    assert r["readOnly"]["wl-import"]["off"] is True

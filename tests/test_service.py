@@ -26,7 +26,8 @@ def test_remote_transport_refuses_filesystem_and_updater(tmp_path):
         transport="remote",
         settings=Settings(path=str(tmp_path / "c.json")),
         db_path=str(tmp_path / "db.sqlite"))
-    for method in ("fs.pick_folder", "update.check", "update.apply"):
+    for method in ("fs.pick_folder", "fs.watchlist_export",
+                   "fs.watchlist_import", "update.check", "update.apply"):
         with pytest.raises(CBError):
             remote.call(method)
 

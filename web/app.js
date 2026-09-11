@@ -1767,6 +1767,9 @@
      sentinel. A duplicate literal rather than an import, for the same reason
      cratebuilder/db.py keeps its own copy of it. */
   const WL_UNRESOLVED_URL_PREFIX = 'unresolved://';
+  const WL_SHARE_LOCAL_ONLY = 'Only available in the app window on the host ' +
+    'machine — the list file is saved and opened with the host\'s own dialogs.';
+  const WL_NOTHING_TO_EXPORT = 'The Watch List is empty — nothing to export.';
   const WL_BUSY_REASON = 'A Watch List scan or download is already running — ' +
     'cancel it first, or wait for it to finish.';
   /* Both Download-All-New buttons — the Watch List's own and the Overview's —
@@ -1867,13 +1870,13 @@
     return b;
   }
 
-  function wlCardNode(row) {
-    const busy = wlBusy(row);
-    const downloading = row.status === 'downloading';
   /* The genre tag borrows its platform's brand colour; a platform this does
      not name falls back to the plain tag. */
   const PLATFORM_TAG_CLASS = { YouTube: 'cb-tag--yt', SoundCloud: 'cb-tag--sc' };
 
+  function wlCardNode(row) {
+    const busy = wlBusy(row);
+    const downloading = row.status === 'downloading';
     const progress = row.progress || null;
 
     const card = document.createElement('div');
@@ -2022,6 +2025,15 @@
 
     wlGate($('#wl-add'), blocked || (wl.running ? WL_BUSY_REASON : ''),
       'wl.add_channel');
+    /* Both need the host's own file dialogs, which only the app window has
+       — the same line Browse and Open Folder draw. */
+    const shareReason = (state && state.host && state.host.transport !== 'local')
+      ? WL_SHARE_LOCAL_ONLY : '';
+    wlGate($('#wl-export'), shareReason || (wl.cards.length ? '' : WL_NOTHING_TO_EXPORT),
+      'wl.export_list');
+    wlGate($('#wl-import'),
+      shareReason || blocked || (wl.running ? WL_BUSY_REASON : ''),
+      'wl.import_list');
     wlGate($('#wl-links'),
       blocked || (wl.running ? WL_BUSY_REASON
         : (unresolved ? ''
@@ -6600,6 +6612,23 @@
     const scanAll = () => wlRun('watchlist.scan_all', {}, 'Scanning every channel…');
     $('#wl-scan').addEventListener('click', scanAll);
     $('#wl-add').addEventListener('click', openAddChannel);
+    $('#wl-export').addEventListener('click', async () => {
+      try {
+        const res = await call('fs.watchlist_export', {});
+        if (res && res.path) {
+          toast(`Exported ${num(res.count)} channel${res.count === 1 ? '' : 's'}.`);
+        }
+      } catch (_) { /* call() already toasted the reason */ }
+    });
+    $('#wl-import').addEventListener('click', async () => {
+      try {
+        const res = await call('fs.watchlist_import', {});
+        if (!res || !res.path) return;
+        toast(`Added ${num(res.added)} channel${res.added === 1 ? '' : 's'}` +
+              ` · ${num(res.skipped)} already tracked.`);
+        if (res.added) await refresh();
+      } catch (_) { /* call() already toasted the reason */ }
+    });
     $('#wl-links').addEventListener('click', runCheckLinks);
     $('#wl-dl-all').addEventListener('click',
       () => wlRun('watchlist.download_all_new', {}, 'Downloading every pending track…'));

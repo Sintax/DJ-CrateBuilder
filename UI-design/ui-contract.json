@@ -67,6 +67,8 @@
     "db.cleanup_apply": { "params": { "channel_id": "int", "paths": [] }, "returns": "{trashed}", "notes": "phase 2; send2trash only what the user confirmed" },
 
     "fs.pick_folder": { "params": { "initial": "str|null" }, "returns": "str|null", "notes": "local transport only; returns null remotely" },
+    "fs.watchlist_export": { "params": {}, "returns": "{path, count}", "notes": "local transport only; Save dialog, path null when cancelled" },
+    "fs.watchlist_import": { "params": {}, "returns": "{path, added, skipped}", "notes": "local transport only; Open dialog, path null when cancelled; never changes existing rows" },
 
     "remote.pair_begin": { "params": {}, "returns": "{code, expires_at, qr_svg}", "notes": "host-side only" },
     "remote.pair_claim": { "params": { "code": "str" }, "returns": "{device_token}", "errors": ["bad_code", "expired", "rate_limited"] },
@@ -159,6 +161,8 @@
     "wl.download_all_new": { "text": "Download all pending new tracks across every channel.", "source": "py", "py_line": 10893, "screen": "3a,3d" },
     "wl.scan_all": { "text": "Check every channel for new uploads since the last scan.", "source": "py", "py_line": 10904, "screen": "3a,3d" },
     "wl.cancel_all": { "text": "Stop all in-progress Watch List scans and downloads.", "source": "py", "py_line": 10917, "screen": "3d" },
+    "wl.export_list": { "text": "Save the Watch List as a file another DJ-CrateBuilder user can import: each channel's link, name, platform and genre. No counts, dates or folder paths from this machine.", "source": "new", "screen": "3d" },
+    "wl.import_list": { "text": "Add the channels from another user's exported list. Channels already in your Watch List are skipped, never changed; new ones arrive with the sender's name and genre, ready to scan.", "source": "new", "screen": "3d" },
     "wl.card_title": { "text": "Open channel page:\n{url}", "source": "py", "py_line": 11140, "screen": "3d" },
     "wl.card_scan": { "text": "Check this channel for new uploads without downloading anything.", "source": "py", "py_line": 11216, "screen": "3d" },
     "wl.card_force": { "text": "Re-download every track from this channel, including ones already in your library.", "source": "py", "py_line": 11218, "screen": "3d" },
