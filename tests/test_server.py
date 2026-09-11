@@ -404,7 +404,7 @@ def test_updater_and_filesystem_are_refused_through_rpc(client, state):
     token = pair(client, state)
     client.post("/rpc", json={"method": "remote.claim_control"}, headers=auth(token))
     for method in ("update.check", "update.apply", "fs.pick_folder",
-                   "fs.reveal"):
+                   "fs.reveal", "fs.watchlist_export", "fs.watchlist_import"):
         body = client.post("/rpc", json={"method": method}, headers=auth(token)).json()
         assert body["ok"] is False, method
         assert "app window on the host machine" in body["error"], method

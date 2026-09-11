@@ -121,6 +121,8 @@ TOOLTIPS = {
     'wl.check_links': 'Look up the real YouTube channel for any folder that still needs one, so it can be scanned. Shows the top matches to choose from.',
     'wl.clear_scan_log': 'Clear the pinned log view. The Activity Log on disk is untouched.',
     'wl.download_all_new': 'Download all pending new tracks across every channel.',
+    'wl.export_list': "Save the Watch List as a file another DJ-CrateBuilder user can import: each channel's link, name, platform and genre. No counts, dates or folder paths from this machine.",
+    'wl.import_list': "Add the channels from another user's exported list. Channels already in your Watch List are skipped, never changed; new ones arrive with the sender's name and genre, ready to scan.",
     'wl.open_activity_log': 'Open the full colour-coded Activity Log viewer.',
     'wl.scan_all': 'Check every channel for new uploads since the last scan.',
     'wl.scan_dialog_close': 'Closing is the safe no-delete exit — it skips this channel when several are queued, or cancels the scan when it is the only one.',
