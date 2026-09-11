@@ -1870,10 +1870,6 @@
     return b;
   }
 
-  /* The genre tag borrows its platform's brand colour; a platform this does
-     not name falls back to the plain tag. */
-  const PLATFORM_TAG_CLASS = { YouTube: 'cb-tag--yt', SoundCloud: 'cb-tag--sc' };
-
   function wlCardNode(row) {
     const busy = wlBusy(row);
     const downloading = row.status === 'downloading';
@@ -1903,7 +1899,7 @@
     name.textContent = row.name;
     head.appendChild(name);
     head.appendChild(tagNode(row.platform || '—', 'cb-tag--grey'));
-    head.appendChild(tagNode(row.genre || '(none)', PLATFORM_TAG_CLASS[row.platform] || ''));
+    head.appendChild(tagNode(row.genre || '(none)', 'cb-tag--grey'));
     if (downloading) head.appendChild(tagNode('Downloading', 'cb-tag--fill'));
     else if (row.status === 'scanning') head.appendChild(tagNode('Scanning', 'cb-tag--fill'));
     if (row.unresolved) head.appendChild(tagNode('Link unresolved', 'cb-tag--attn'));

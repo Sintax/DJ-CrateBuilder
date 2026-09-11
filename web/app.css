@@ -26,17 +26,7 @@
   --cb-dot-read: #B4B9C3;
   /* --cb-ok at 6% — the log viewer's wrap toggle while it is on. */
   --cb-ok-wash: rgba(18, 122, 62, .06);
-  /* The platforms' brand accents (the monolith's YT_RED / SC_ORANGE), each
-     darkened until 10px uppercase on --cb-surface clears small-text
-     contrast; the raw brand values fail it. */
-  --cb-yt: #C81E1E;
-  --cb-sc: #C24A00;
 }
-
-/* A Watch List card's genre tag, in the colour of the platform it belongs to
-   — the same treatment .cb-tag--ok gives a state, keyed by platform. */
-.cb-tag--yt { border-color: var(--cb-yt); color: var(--cb-yt); background: var(--cb-surface); }
-.cb-tag--sc { border-color: var(--cb-sc); color: var(--cb-sc); background: var(--cb-surface); }
 
 html, body { height: 100%; }
 body { overflow: hidden; }
