@@ -329,8 +329,30 @@ body { overflow: hidden; }
 .cb-tblwrap { flex: 1 1 auto; min-height: 0; overflow: auto; }
 .cb-screen--db .cb-statbar { flex: none; flex-wrap: wrap; row-gap: 2px; }
 /* Header drag-resize handle — a thin strip on each <th>'s right edge, anchored
-   by the sticky <th> below, which is a containing block like relative was. */
-.cb-col-resize { position: absolute; right: -3px; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 2; }
+   by the sticky <th> below, which is a containing block like relative was.
+   It sits wholly inside its own <th>: the next sticky <th> paints on top of
+   anything that overhangs, which used to leave only 3px of a 6px strip
+   clickable. The strip itself stays transparent (7px of red would read as a
+   border); the visible divider is a 1px line at its right edge in the same
+   red the header's underline uses, so it shows against either theme's
+   surface. */
+.cb-col-resize { position: absolute; right: 0; top: 0; bottom: 0; width: 7px; cursor: col-resize; z-index: 2; }
+.cb-col-resize::after {
+  content: ''; position: absolute; right: 0; top: 4px; bottom: 6px; width: 1px;
+  background: var(--cb-line-soft);
+}
+.cb-col-resize:hover::after { background: var(--cb-line); width: 2px; }
+/* A dragged width only sticks under the fixed table algorithm: with the
+   automatic one a long unbreakable cell (a URL, a folder path) sets the
+   column's width and the header's width is ignored, which is why the Watch
+   List and Artwork tabs would not resize at all. Fixed layout needs a
+   non-auto table width, so dbWireHeaders sets it to the sum of the column
+   widths; min-width keeps the rows spanning the pane when that sum is
+   narrower, with the trailing filler column absorbing the difference. */
+.cb-screen--db .cb-table { table-layout: fixed; min-width: 100%; }
+.cb-screen--db .cb-table th { box-sizing: border-box; }
+.cb-screen--db .cb-table td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cb-screen--db .cb-table td[colspan] { white-space: normal; }
 /* The column labels hold the top of .cb-tblwrap while the rows scroll under
    them, so a row is always readable against its header. The background has to
    be opaque or the rows show through, and border-collapse hands a collapsed
