@@ -462,3 +462,29 @@ def test_acting_on_a_notification_marks_that_entry_read(app_js):
     assert "n.read = true;" in click
     assert "saveNotes();" in click and "renderBell();" in click
     assert click.index("n.read = true;") < click.index("show(jump[1])")
+
+
+# ── the Update card ──────────────────────────────────────────────────────────
+
+def test_the_update_card_sits_in_its_own_one_column_row(index_html):
+    host_at = index_html.index('<span class="cb-kick">Host</span>')
+    card_at = index_html.index('id="ov-update-card"')
+    assert host_at < card_at
+    # Its own grid row after the three-card row, so it stays one column wide.
+    between = index_html[host_at:card_at]
+    assert between.count('<div class="cb-grid-3">') == 1
+    assert 'id="ov-update-tag"' in index_html and 'id="ov-update"' in index_html
+    assert 'href="#update" id="ov-goto-update"' in index_html
+
+
+def test_the_update_card_is_drawn_from_the_snapshot_and_the_launch_check(app_js):
+    fn = _slice(app_js, "  function renderOverviewUpdate()", "  function renderOverviewWatch()")
+    assert "const u = state.update;" in fn
+    assert "label = `Build ${u.latest_build} available`;" in fn
+    assert "cls = 'cb-tag--attn';" in fn
+    assert "label = 'Up to date';" in fn
+    assert "renderOverviewUpdate();" in _slice(app_js, "  function renderOverview()", "  function renderGenres()")
+    handler = _slice(app_js, "    cbApi.on('update.available', (p) => {", "    });")
+    assert "state.update = aboutUpdate.result;" in handler
+    assert "renderOverviewUpdate();" in handler
+

@@ -887,6 +887,10 @@ class CrateBuilderService:
         self.on_update_restart = None
         self._update_timer = None
         self._next_update_check_ts = None
+        # What the most recent check (manual or the silent timer) found, so a
+        # page that connects after the launch check has fired can still draw
+        # it — the Overview's Update card reads this off the snapshot.
+        self._last_update_result = None
         # The auto-download scheduler, armed by start_auto_download_timer().
         # The anchor is set when it is armed, never read from
         # `watchlist_last_download` — see that method for why.
@@ -1273,6 +1277,7 @@ class CrateBuilderService:
             "host": {"transport": self.transport, "online": True,
                      "app_dir": app_dir(),
                      "remote_available": remoteauth.REMOTE_ACCESS_AVAILABLE},
+            "update": self._last_update_result,
             "counts": self.counts(library),
             "library": library,
             "batch": self.batch_list(),
@@ -2990,7 +2995,9 @@ class CrateBuilderService:
             "latest_build": None,
             "notes": None,
             "can_self_update": ucore.can_self_update(),
+            "checked_at": time.time(),
         }
+        self._last_update_result = result
         if manifest is None:
             return result
         ok, _reason = ucore.validate_manifest(manifest)
@@ -3610,6 +3617,7 @@ class CrateBuilderService:
                 "current_build": result["current_build"],
                 "notes": result["notes"],
                 "can_self_update": result["can_self_update"],
+                "checked_at": result["checked_at"],
             })
             self.emit("notification", {
                 "level": "info",
