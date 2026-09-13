@@ -134,34 +134,35 @@
         </div>
       </div>
 
-      <div class="cb-grid-3">
-        <div class="cb-card cb-pad cb-ov-mini">
-          <span class="cb-kick">Recent activity</span>
-          <div id="ov-recent" class="cb-ov-list"></div>
-          <a href="#activity-log" style="font-size:12px;margin-top:2px">Activity Log →</a>
-        </div>
-        <div class="cb-card cb-pad cb-ov-mini">
-          <span class="cb-kick">Needs attention</span>
-          <div id="ov-attention" class="cb-ov-list"></div>
-          <a href="#watchlist" style="font-size:12px;margin-top:2px">Watch List →</a>
-        </div>
-        <div class="cb-card cb-pad cb-ov-mini">
-          <span class="cb-kick">Host</span>
-          <div id="ov-host" class="cb-ov-list"></div>
-          <a href="#settings" style="font-size:12px;margin-top:2px">Settings →</a>
-        </div>
-      </div>
-
-      <!-- Its own row, one column wide: the launch check's verdict, so a
-           newer build is visible without opening Update. -->
-      <div class="cb-grid-3">
-        <div class="cb-card cb-pad cb-ov-mini" id="ov-update-card">
-          <div class="cb-row">
-            <span class="cb-kick">Update</span>
-            <span class="cb-tag cb-tag--grey" id="ov-update-tag">Not checked yet</span>
+      <!-- Two independent stacks: the host's own state on the left, what
+           it has been doing on the right. -->
+      <div class="cb-ov-cols">
+        <div class="cb-ov-col">
+          <div class="cb-card cb-pad cb-ov-mini">
+            <span class="cb-kick">Quick Settings</span>
+            <div id="ov-host" class="cb-ov-list"></div>
+            <a href="#settings" style="font-size:12px;margin-top:2px">Settings →</a>
           </div>
-          <div id="ov-update" class="cb-ov-list"></div>
-          <a href="#update" id="ov-goto-update" style="font-size:12px;margin-top:2px">Update →</a>
+          <div class="cb-card cb-pad cb-ov-mini" id="ov-update-card">
+            <div class="cb-row">
+              <span class="cb-kick">Update</span>
+              <span class="cb-tag cb-tag--grey" id="ov-update-tag">Not checked yet</span>
+            </div>
+            <div id="ov-update" class="cb-ov-list"></div>
+            <a href="#update" id="ov-goto-update" style="font-size:12px;margin-top:2px">Update →</a>
+          </div>
+        </div>
+        <div class="cb-ov-col">
+          <div class="cb-card cb-pad cb-ov-mini">
+            <span class="cb-kick">Recent activity</span>
+            <div id="ov-recent" class="cb-ov-list"></div>
+            <a href="#activity-log" style="font-size:12px;margin-top:2px">Activity Log →</a>
+          </div>
+          <div class="cb-card cb-pad cb-ov-mini">
+            <span class="cb-kick">Needs attention</span>
+            <div id="ov-attention" class="cb-ov-list"></div>
+            <a href="#watchlist" style="font-size:12px;margin-top:2px">Watch List →</a>
+          </div>
         </div>
       </div>
     </section>

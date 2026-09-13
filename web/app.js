@@ -941,21 +941,62 @@
     });
   }
 
-  /* The host's own configuration, read straight off the snapshot's settings —
-     the three the design names, plus where the database it is all counted
-     from actually lives. */
+  /* The Quick Settings card's lines, as [label, value] pairs read straight
+     off the snapshot's settings. Pure, so the wording is testable without a
+     document; the folder line is the only one the renderer treats specially. */
+  function overviewQuickSettings(s) {
+    const onOff = (v) => (v ? 'Enabled' : 'Disabled');
+    let throttle = 'Off';
+    if (s.sleep_enabled) {
+      // The preset may carry its range note ("Light  (1–5 s)"); the card
+      // has room for the name only.
+      const preset = String(s.sleep_preset || '').replace(/\s*\(.*$/, '').trim();
+      throttle = s.sleep_mode === 'Manual'
+        ? `${s.sleep_min}/${s.sleep_max} s`
+        : `${s.sleep_mode || 'Auto'}/${preset || '—'}`;
+    }
+    return [
+      ['Save directory', s.base_dir || '—'],
+      ['Output', s.no_conversion
+        ? 'Source format' : `MP3 ${s.bitrate_quality || ''}`.trim()],
+      ['Time limiter', s.limit_enabled ? `${s.limit_minutes} min` : 'Off'],
+      ['Browser/Cookies', !s.use_cookies ? 'Off'
+        : (s.cookie_method === 'Cookie File' ? 'Cookie file'
+                                             : (s.cookies_browser || 'Browser'))],
+      ['Geo-bypass', onOff(s.geo_bypass)],
+      ['User-Agent rotation', onOff(s.rotate_ua)],
+      ['Requests throttling', throttle],
+    ];
+  }
+
   function renderOverviewHost() {
     const box = $('#ov-host');
     if (!box) return;
     const s = state.settings || {};
     box.innerHTML = '';
-    box.appendChild(ovLine('Save directory', s.base_dir || '—'));
-    box.appendChild(ovLine('Output', s.no_conversion
-      ? 'Source format' : `MP3 ${s.bitrate_quality || ''}`.trim()));
-    box.appendChild(ovLine('Cookies', !s.use_cookies ? 'Off'
-      : (s.cookie_method === 'Cookie File' ? 'Cookie file'
-                                           : (s.cookies_browser || 'Browser'))));
-    box.appendChild(ovLine('Database', state.library.path || '—'));
+    overviewQuickSettings(s).forEach(([label, value]) => {
+      const row = ovLine(label, value);
+      if (label === 'Save directory' && s.base_dir) {
+        /* The same split as Downloads' Open Main Folder: the local window
+           can show the host's file manager, a remote browser cannot, so it
+           gets the path on its clipboard instead. */
+        const path = s.base_dir;
+        const link = document.createElement('a');
+        link.href = '#';
+        link.className = row.lastChild.className;
+        link.style.cssText = row.lastChild.style.cssText;
+        link.textContent = path;
+        link.setAttribute('data-tt-text', cbApi.transport === 'local'
+          ? `Open ${path} in your file manager` : `Copy ${path}`);
+        link.addEventListener('click', (e) => {
+          e.preventDefault();
+          if (cbApi.transport === 'local') dbReveal(path, 'folder');
+          else dbCopyText(path, 'the save directory path');
+        });
+        row.replaceChild(link, row.lastChild);
+      }
+      box.appendChild(row);
+    });
     bindTips(box);
   }
 
