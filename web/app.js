@@ -6231,8 +6231,21 @@
         body.appendChild(modalNote(
           `Build ${result.latest_build} is available — you're on `
           + `${result.current_build}.`));
-        if (result.notes) body.appendChild(modalNote(result.notes));
+        /* What is in the build comes first and reads larger than a hint —
+           it is the one thing here the user is deciding on. Then the two
+           cautions, both boxed the same way. */
+        if (result.notes) {
+          const notes = modalNote(result.notes);
+          notes.classList.add('cb-mnote--notes');
+          body.appendChild(notes);
+        }
         body.appendChild(aboutAvWarningNode());
+        if (result.notice) {
+          const notice = document.createElement('div');
+          notice.className = 'cb-warnbox';
+          notice.textContent = result.notice;
+          body.appendChild(notice);
+        }
         refs.state = document.createElement('div');
         body.appendChild(refs.state);
         /* Captured when the modal opens — the one moment that matters: the
@@ -7331,7 +7344,7 @@
       aboutUpdate.result = {
         reachable: true, valid: true, available: true,
         current_build: p.current_build, latest_build: p.build,
-        notes: p.notes, can_self_update: p.can_self_update,
+        notes: p.notes, notice: p.notice, can_self_update: p.can_self_update,
         checked_at: p.checked_at,
       };
       state.update = aboutUpdate.result;

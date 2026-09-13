@@ -2994,6 +2994,7 @@ class CrateBuilderService:
             "current_build": current,
             "latest_build": None,
             "notes": None,
+            "notice": None,
             "can_self_update": ucore.can_self_update(),
             "checked_at": time.time(),
         }
@@ -3011,7 +3012,12 @@ class CrateBuilderService:
         result["latest_build"] = int(manifest["build"])
         result["available"] = ucore.is_update_available(manifest, current)
         if result["available"]:
-            result["notes"] = str(manifest.get("notes", "")).strip() or None
+            # "changes" / "notice" are the manifest's styled-UI split of the
+            # legacy "notes" blob (release.py writes all three); a manifest
+            # without them is read the old way.
+            result["notes"] = str(manifest.get("changes")
+                                  or manifest.get("notes", "")).strip() or None
+            result["notice"] = str(manifest.get("notice", "")).strip() or None
         return result
 
     def _require_idle_for_update(self):
@@ -3616,6 +3622,7 @@ class CrateBuilderService:
                 "build": result["latest_build"],
                 "current_build": result["current_build"],
                 "notes": result["notes"],
+                "notice": result["notice"],
                 "can_self_update": result["can_self_update"],
                 "checked_at": result["checked_at"],
             })

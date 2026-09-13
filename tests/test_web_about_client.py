@@ -429,3 +429,21 @@ def test_update_now_does_not_hand_the_click_event_to_the_confirm(app_js):
     given the PointerEvent, which rendered as "[object PointerEvent]"."""
     assert "addEventListener('click', aboutConfirmUpdate)" not in app_js
     assert "updateBtn.addEventListener('click', () => aboutConfirmUpdate());" in app_js
+
+
+def test_the_confirm_leads_with_the_notes_and_boxes_the_notice(app_js):
+    """Order in the confirm: the build line, what is in the build (larger
+    than a hint), the code-signing caution, then the scan notice — both
+    cautions in the same orange box."""
+    confirm = _slice(app_js, "  function aboutConfirmUpdate(", "  /* The install itself.")
+    body = _slice(confirm, "      body(body) {", "      foot(foot) {")
+    build_at = body.index("is available")
+    notes_at = body.index("notes.classList.add('cb-mnote--notes');")
+    av_at = body.index("body.appendChild(aboutAvWarningNode());")
+    notice_at = body.index("notice.className = 'cb-warnbox';")
+    assert build_at < notes_at < av_at < notice_at
+    assert "notice.textContent = result.notice;" in body
+    assert "notes: p.notes, notice: p.notice," in app_js
+    with open(os.path.join(ROOT, "web", "app.css"), encoding="utf-8") as fh:
+        css = fh.read()
+    assert ".cb-mnote--notes { color: var(--cb-text); font-size: 14px;" in css
