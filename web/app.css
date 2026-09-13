@@ -226,9 +226,14 @@ body { overflow: hidden; }
 }
 .cb-btn[disabled] { background: var(--cb-surface); }
 
-/* Tooltips — JS-driven so focus and Escape work (theme.css covers hover only) */
+/* Tooltips — JS-driven so focus and Escape work (theme.css covers hover only).
+   The bubble is a <body> child, so it stacks against every other fixed layer
+   there: dialogs (.cb-dim, 100), the notification panel (.cb-notif, 85) and
+   the toast (90) all carry or overlap tooltip hosts, and a bubble below any
+   of them is drawn under the window it was hovered in. Only the pairing
+   screen (200) stays above it — it has no tooltips and hides the bubble. */
 .cb-tip {
-  position: fixed; z-index: 80; max-width: 300px; width: max-content;
+  position: fixed; z-index: 150; max-width: 300px; width: max-content;
   background: var(--cb-text); color: var(--cb-bg);
   font: 400 11.5px/1.5 var(--cb-font); white-space: pre-line;
   padding: 8px 10px; border-radius: var(--cb-radius-sm);

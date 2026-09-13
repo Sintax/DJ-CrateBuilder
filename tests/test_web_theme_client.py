@@ -231,3 +231,21 @@ def test_the_dark_sheet_never_reaches_a_page_that_did_not_ask():
         for selector in group.split(","):
             assert selector.strip().startswith(':root[data-theme="dark"]'), \
                 selector.strip()
+
+
+def _z_index(css, selector):
+    css = _strip_comments(css)
+    block = css[css.index(selector + " {"):]
+    block = block[:block.index("}")]
+    return int(re.search(r"z-index:\s*(\d+)", block).group(1))
+
+
+def test_the_tooltip_bubble_paints_above_every_layer_that_hosts_one():
+    """showTip appends the bubble to <body>, so it shares a stacking context
+    with every other fixed layer there. A dialog's scrim and the notification
+    panel both carry tooltip-bearing controls; the bubble has to sit above
+    them or it is drawn underneath the very window it was hovered in."""
+    css = _read("app.css")
+    tip = _z_index(css, ".cb-tip")
+    for host in (".cb-dim", ".cb-notif"):
+        assert tip > _z_index(css, host), host
