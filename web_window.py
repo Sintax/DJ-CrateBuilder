@@ -23,6 +23,7 @@ import os
 import sys
 import threading
 import time
+from urllib.parse import quote
 
 import bottle
 import webview
@@ -92,6 +93,62 @@ class JsApi:
             return {"ok": False, "error": str(exc)}
         except Exception as exc:                     # never kill the bridge
             return {"ok": False, "error": f"Unexpected host error: {exc}"}
+
+
+class HowtoWindow:
+    """The cookie setup guide's own window — web/howto.html in a second
+    pywebview window beside the app, so the steps stay on screen while the
+    user follows them in Settings.
+
+    One at a time, like the monolith's _open_cookie_howto: asking for a guide
+    while one is open replaces it, so the window always shows the browser
+    picked last. It shares the main window's bundle server (same origin, so
+    the stored theme carries over) and its service, over a JsApi of its own.
+    `stop()` closes it with the app: pywebview's loop only ends once every
+    window is gone, so a guide left open would keep the process alive after
+    the main window closed.
+    """
+
+    SIZE = (760, 680)
+    MIN_SIZE = (480, 360)
+
+    def __init__(self, service, create=None):
+        self._service = service
+        self._create = create or webview.create_window
+        self._window = None
+        self._lock = threading.Lock()
+
+    def open(self, browser, title):
+        page = os.path.join(WEB_DIR, "howto.html") + "#" + quote(browser)
+        self._close_current()
+        window = self._create(
+            title, page, js_api=JsApi(self._service),
+            width=self.SIZE[0], height=self.SIZE[1], min_size=self.MIN_SIZE)
+        if window is not None:
+            with self._lock:
+                self._window = window
+            window.events.closed += lambda: self._forget(window)
+        return window
+
+    def _forget(self, window):
+        with self._lock:
+            if self._window is window:
+                self._window = None
+
+    def _close_current(self):
+        # destroy() runs outside the lock: pywebview raises `closed` on the
+        # window's own thread before destroy() returns, and _forget wants
+        # the lock too.
+        with self._lock:
+            window, self._window = self._window, None
+        if window is not None:
+            try:
+                window.destroy()
+            except Exception:
+                pass
+
+    def stop(self):
+        self._close_current()
 
 
 def setting_is_on(service, key):
@@ -1116,11 +1173,15 @@ def main():
     )
     tray = WindowTray(window, service)
     placement = WindowPlacement(window, service)
+    howto = HowtoWindow(service)
+    service.on_open_howto = howto.open
     # One handler owns the whole close: the confirmation, then — only when
     # the close is going ahead — the teardown steps in this order. The
     # placement flush stays ahead of service.close because it still has a
-    # write to make.
-    closer = WindowClose(window, placement.stop, service.close, tray.stop)
+    # write to make; the guide window goes first so the loop has no second
+    # window left to wait on.
+    closer = WindowClose(window, howto.stop, placement.stop, service.close,
+                         tray.stop)
     window.events.closing += closer.on_closing
     # The update.apply worker calls this from its own (non-UI) thread once the
     # updater process has been handed off. It must not be met by the close

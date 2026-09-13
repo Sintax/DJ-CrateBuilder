@@ -80,3 +80,36 @@ def test_the_parse_is_cached_on_the_files_signature(tmp_path):
 def test_it_is_help_text_so_a_read_only_session_may_ask(service):
     assert "cookies.howto" in remoteauth.READ_METHODS
     assert "cookies.howto" in service._methods()
+
+
+# ── cookies.howto_window: the guide in a window of its own ───────────────────
+
+def test_the_window_opener_gets_the_browser_and_the_title(service):
+    opened = []
+    service.on_open_howto = lambda browser, title: opened.append((browser, title))
+
+    result = service.call("cookies.howto_window", {"browser": "Firefox"})
+
+    assert opened == [("Firefox",
+                       "How-To: Setting Up a Dedicated Firefox Profile")]
+    assert result == {"opened": True, "browser": "Firefox"}
+
+
+def test_with_no_opener_wired_the_call_is_a_refusal(service):
+    """web_server.py and every test construct a service with no window to
+    open into; the page keeps its in-page fallback for that answer."""
+    assert service.on_open_howto is None
+    with pytest.raises(CBError):
+        service.call("cookies.howto_window", {"browser": "Firefox"})
+
+
+def test_a_remote_browser_may_not_pop_windows_on_the_hosts_desktop(service):
+    opened = []
+    service.on_open_howto = lambda browser, title: opened.append(browser)
+
+    with pytest.raises(CBError, match="app window on the host"):
+        service.call("cookies.howto_window", {"browser": "Firefox"},
+                     transport=service_mod.REMOTE)
+
+    assert opened == []
+    assert "cookies.howto_window" not in remoteauth.READ_METHODS

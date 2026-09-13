@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DJ-CrateBuilder — Setup Guide</title>
+<script>
+  /* Same theme bootstrap as index.html: this window shares the app's
+     origin, so the stored theme is the one the main window is showing. */
+  try {
+    if (localStorage.getItem('cb_theme') === 'dark') {
+      document.documentElement.setAttribute('data-theme', 'dark');
+    }
+  } catch (e) { /* light */ }
+</script>
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="theme-dark.css">
+<style>
+  /* The guide fills its own window instead of sitting in a modal, so the
+     card's height cap comes off and the window's scrollbar is the only one. */
+  html, body { height: 100%; }
+  body { background: var(--cb-bg); color: var(--cb-text); margin: 0;
+         display: flex; flex-direction: column; }
+  .cb-howto-win__head { padding: 14px 18px 10px; font-weight: 700;
+                        font-size: 15px; flex: none; }
+  .cb-howto-win__body { flex: 1 1 auto; overflow: auto; padding: 0 18px 18px; }
+  .cb-howto-win__body .cb-howto { max-height: none; overflow: visible; }
+  .cb-howto-win__note { color: var(--cb-muted); font-size: 12px;
+                        padding: 8px 18px 0; }
+</style>
+</head>
+<body>
+<div class="cb-howto-win__head" id="howto-title">📖 Setup Guide</div>
+<div class="cb-howto-win__note">Keep this window open beside the app — it stays
+  put while you change settings in the main window.</div>
+<div class="cb-howto-win__body"><div class="cb-howto" id="howto-body">Loading…</div></div>
+<script src="api.js"></script>
+<script>
+  /* The walkthrough's five line treatments, as app.js's howtoLineClass tags
+     them — kept in step by tests/test_web_howto_client.py. */
+  function howtoLineClass(line) {
+    const s = line.trim();
+    if (s.startsWith('══')) return 'is-divider';
+    if (s.startsWith('Setting Up')) return 'is-title';
+    if (s.startsWith('Step ')) return 'is-step';
+    if (s.startsWith('https://')) return 'is-url';
+    if (s.startsWith('IMPORTANT:')) return 'is-important';
+    return '';
+  }
+
+  function renderHowto(page) {
+    const title = `📖 ${page.title}`;
+    document.title = title;
+    document.getElementById('howto-title').textContent = title;
+    const box = document.getElementById('howto-body');
+    box.textContent = '';
+    String(page.text || '').split('\n').forEach((line) => {
+      const row = document.createElement('div');
+      row.className = ('cb-howto__line ' + howtoLineClass(line)).trim();
+      row.textContent = line || ' ';
+      box.appendChild(row);
+    });
+  }
+
+  (async () => {
+    const browser = decodeURIComponent(location.hash.slice(1)) || 'Chrome';
+    try {
+      await cbApi.connect();
+      renderHowto(await cbApi.call('cookies.howto', { browser }));
+    } catch (err) {
+      document.getElementById('howto-body').textContent =
+        'The guide could not be read: ' + (err && err.message ? err.message : err);
+    }
+  })();
+</script>
+</body>
+</html>
