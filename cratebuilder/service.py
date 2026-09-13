@@ -1227,8 +1227,15 @@ class CrateBuilderService:
             "genres.remove": lambda p: self.genres_remove(p.get("name"),
                                                           p.get("platform")),
             "fs.pick_folder": lambda p: self.pick_folder(),
-            "fs.watchlist_export": lambda p: self.watchlist_export(),
-            "fs.watchlist_import": lambda p: self.watchlist_import(),
+            "fs.watchlist_export":
+                lambda p: self.watchlist_export(p.get("ids")),
+            "fs.watchlist_import_read":
+                lambda p: self.watchlist_import_read(),
+            "watchlist.import_entry": lambda p: self.watchlist_import_entry(
+                p.get("entry"), p.get("resolve")),
+            "watchlist.import_done": lambda p: self.watchlist_import_done(
+                p.get("path"), p.get("added"), p.get("overwritten"),
+                p.get("skipped")),
             "fs.reveal": lambda p: self.fs_reveal(p.get("path"),
                                                   p.get("mode", "folder")),
             "fs.open_url": lambda p: self.open_url(p.get("url")),
@@ -2719,11 +2726,22 @@ class CrateBuilderService:
             return None
         return picked if isinstance(picked, str) else picked[0]
 
-    def watchlist_export(self):
+    def watchlist_export(self, ids=None):
         """Save the Watch List as a file another user can import: a Save
-        dialog, then the shareable half of every row. {"path": None} means
-        the dialog was cancelled and nothing was written."""
+        dialog, then the shareable half of every row — or only the rows in
+        *ids* when the user picked some. {"path": None} means the dialog was
+        cancelled and nothing was written."""
         rows = self._watchlist_rows()
+        if ids is not None:
+            wanted = set()
+            for one in ids or ():
+                try:
+                    wanted.add(int(one))
+                except (TypeError, ValueError):
+                    continue
+            rows = [r for r in rows if r.get("id") in wanted]
+            if not rows:
+                raise CBError("Tick at least one channel to export.")
         if not rows:
             raise CBError("The Watch List is empty — nothing to export.")
         import webview
@@ -2744,16 +2762,18 @@ class CrateBuilderService:
                       f"{'' if count == 1 else 's'} to {path}")
         return {"path": path, "count": count}
 
-    def watchlist_import(self):
-        """Add the channels from another user's list file: an Open dialog,
-        then every channel not already tracked. Existing rows are never
-        changed. {"path": None} means the dialog was cancelled."""
+    def watchlist_import_read(self):
+        """Read another user's list file: an Open dialog, then the channels
+        it holds, each marked with the entry it would clash with here so the
+        picker can warn before anything is written. Nothing changes until
+        `watchlist.import_entry` lands a channel. {"path": None} means the
+        dialog was cancelled."""
         import webview
         path = self._file_dialog(
             webview.OPEN_DIALOG, allow_multiple=False,
             file_types=("Watch List export (*.json)", "All files (*.*)"))
         if not path:
-            return {"path": None, "added": 0, "skipped": 0}
+            return {"path": None, "entries": []}
         try:
             with open(path, encoding="utf-8") as fh:
                 text = fh.read()
@@ -2763,11 +2783,37 @@ class CrateBuilderService:
             entries = watchlist_share.parse(text)
         except watchlist_share.ShareError as exc:
             raise CBError(str(exc))
-        result = self._watchlist.add_imported(entries)
-        self.log_line(f"📥 Imported {result['added']} Watch List channel"
-                      f"{'' if result['added'] == 1 else 's'} from {path}"
-                      f" ({result['skipped']} already tracked)")
-        return dict(result, path=path)
+        mine = self._watchlist_rows()
+        out = []
+        for entry in entries:
+            clash = watchlist_share.find_conflict(entry, mine)
+            tracked = None
+            if clash is not None:
+                tracked = {"display_name": clash["row"].get("display_name") or "",
+                           "url": clash["row"].get("url") or "",
+                           "kinds": clash["kinds"]}
+            out.append(dict(entry, tracked=tracked))
+        return {"path": path, "entries": out}
+
+    def watchlist_import_entry(self, entry, resolve=None):
+        """One channel from a list file — see WatchlistOps.import_entry."""
+        if not isinstance(entry, dict) or not (entry.get("url") or "").strip():
+            raise CBError("That entry has no link to import.")
+        clean = {k: entry.get(k) for k in watchlist_share.FIELDS}
+        return self._watchlist.import_entry(clean, resolve or None)
+
+    def watchlist_import_done(self, path, added, overwritten, skipped):
+        """The summary line once the picker's loop has finished."""
+        def n(v):
+            try:
+                return int(v or 0)
+            except (TypeError, ValueError):
+                return 0
+        added, overwritten, skipped = n(added), n(overwritten), n(skipped)
+        self.log_line(f"📥 Imported {added} Watch List channel"
+                      f"{'' if added == 1 else 's'} from {path}"
+                      f" ({overwritten} re-pointed, {skipped} skipped)")
+        return {"added": added, "overwritten": overwritten, "skipped": skipped}
 
     def _fs_path_is_contained(self, path):
         """True when *path* is somewhere the viewer is allowed to point the
