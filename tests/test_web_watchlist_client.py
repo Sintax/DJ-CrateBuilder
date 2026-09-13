@@ -772,18 +772,155 @@ def test_the_genre_tag_matches_the_platform_tags_grey(app_js):
         assert "cb-tag--yt" not in fh.read()
 
 
-def test_the_share_buttons_are_wired_to_the_local_only_file_methods(app_js, index_html):
-    """Export and Import sit on their own row under the toolbar, each behind
-    an fs.-prefixed method LOCAL_ONLY already refuses over remote."""
+def test_the_share_buttons_open_pickers_over_the_local_only_file_methods(
+        app_js, index_html):
+    """Export and Import sit on their own row under the toolbar. Each opens a
+    picker first; the file dialogs stay behind fs.-prefixed methods LOCAL_ONLY
+    already refuses over remote, and landing an entry is an ordinary
+    watchlist. write."""
     assert 'id="wl-export" data-tt="wl.export_list"' in index_html
     assert 'id="wl-import" data-tt="wl.import_list"' in index_html
-    assert "$('#wl-export').addEventListener('click'" in app_js
-    assert "$('#wl-import').addEventListener('click'" in app_js
-    assert "call('fs.watchlist_export', {})" in app_js
-    assert "call('fs.watchlist_import', {})" in app_js
-    imp = _slice(app_js, "$('#wl-import').addEventListener('click'",
-                 "$('#wl-links').addEventListener('click'")
-    assert "if (res.added) await refresh();" in imp
+    assert "$('#wl-export').addEventListener('click', openExportPicker);" in app_js
+    assert "$('#wl-import').addEventListener('click', openImportPicker);" in app_js
+    assert "call('fs.watchlist_export', { ids: keys })" in app_js
+    assert "call('fs.watchlist_import_read', {})" in app_js
+    assert "call('watchlist.import_entry', { entry })" in app_js
+    assert "call('watchlist.import_done', Object.assign({ path }, tally))" in app_js
+    assert "fs.watchlist_import'" not in app_js
+    # A picker never lands anything by itself: the import loop is what writes.
+    imp = _slice(app_js, "  async function openImportPicker()",
+                 "  function wireWatchlist()")
+    assert "wlImportRun(res.path, picked)" in imp
+    assert "import_entry" not in imp
+
+
+def test_nothing_is_ticked_until_the_user_ticks_it(app_js, tmp_path):
+    """Sharing is opt-in per channel: the picker opens with None selected,
+    disabled rows never count even under Select All, and the primary button
+    carries the live count."""
+    r = _run_node(tmp_path, "wlshare.mjs", "\n".join([
+        _slice(app_js, "  function wlShareSelection(rows, checked, verb)",
+               "  function wlShareRow("),
+        """
+const rows = [{ key: 1 }, { key: 2, disabled: true }, { key: 3 }];
+const checked = new Set();
+const out = { fresh: wlShareSelection(rows, checked, 'Export') };
+rows.forEach((r) => checked.add(r.key));
+out.all = wlShareSelection(rows, checked, 'Import');
+checked.delete(3);
+out.one = wlShareSelection(rows, checked, 'Export');
+console.log(JSON.stringify(out));
+""",
+    ]))
+    assert r["fresh"] == {"keys": [], "label": "Export (0)", "empty": True}
+    assert r["all"] == {"keys": [1, 3], "label": "Import (2)", "empty": False}
+    assert r["one"] == {"keys": [1], "label": "Export (1)", "empty": False}
+
+
+def _import_loop_source(app_js, script):
+    """wlImportRun against a scripted host: `answers` is what the clash
+    prompt would return, in order; `host` is what watchlist.import_entry
+    replies per call, keyed by entry url then by resolve action."""
+    return "\n".join([
+        "const num = (n) => Number(n || 0).toLocaleString();",
+        "const calls = []; const toasts = []; let refreshed = 0;",
+        "const toast = (m) => toasts.push(m);",
+        "const refresh = async () => { refreshed += 1; };",
+        "let answers = []; const prompts = [];",
+        "const wlConflictModal = async (c) => { prompts.push(c); return answers.shift(); };",
+        "let host = {};",
+        "async function call(method, params) {",
+        "  calls.push([method, params]);",
+        "  if (method !== 'watchlist.import_entry') return {};",
+        "  const plan = host[params.entry.url];",
+        "  if (!plan) return { result: 'added' };",
+        "  if (!params.resolve) return plan.first;",
+        "  const r = plan[params.resolve.action];",
+        "  return typeof r === 'function' ? r(params.resolve) : r;",
+        "}",
+        _slice(app_js, "  async function wlImportRun(path, entries)",
+               "  function openExportPicker()"),
+        script,
+    ])
+
+
+def test_a_clash_asks_once_and_lands_the_users_answer(app_js, tmp_path):
+    r = _run_node(tmp_path, "wlimport1.mjs", _import_loop_source(app_js, """
+const clash = { result: 'conflict', kinds: ['name'], new_allowed: true,
+                existing: { id: 1, display_name: 'A', url: 'u-a' } };
+host = {
+  'u-b': { first: clash, skip: { result: 'skipped' } },
+  'u-c': { first: clash, overwrite: { result: 'overwritten' } },
+  'u-d': { first: clash,
+           new: (res) => res.name === 'D2' ? { result: 'added' }
+                 : Object.assign({}, clash, { name_error: 'taken' }) },
+};
+answers = [{ action: 'skip' }, { action: 'overwrite' },
+           { action: 'new', name: 'taken-name' }, { action: 'new', name: 'D2' }];
+(async () => {
+  const tally = await wlImportRun('list.json',
+    [{ url: 'u-a' }, { url: 'u-b' }, { url: 'u-c' }, { url: 'u-d' }]);
+  console.log(JSON.stringify({ tally, toasts, refreshed,
+    prompts: prompts.map((p) => [p.entry.url, p.nameError, p.name]),
+    done: calls.filter((c) => c[0] === 'watchlist.import_done').map((c) => c[1]) }));
+})();
+"""))
+    assert r["tally"] == {"added": 2, "overwritten": 1, "skipped": 1}
+    # The refused name reopens the prompt with the reason and the name typed.
+    assert r["prompts"] == [["u-b", "", ""], ["u-c", "", ""],
+                            ["u-d", "", ""], ["u-d", "taken", "taken-name"]]
+    assert r["done"] == [{"path": "list.json", "added": 2, "overwritten": 1,
+                          "skipped": 1}]
+    assert r["toasts"] == ["Added 2 · overwrote 1 · skipped 1."]
+    assert r["refreshed"] == 1
+
+
+def test_apply_to_all_answers_later_clashes_unasked_and_stop_ends_the_run(
+        app_js, tmp_path):
+    r = _run_node(tmp_path, "wlimport2.mjs", _import_loop_source(app_js, """
+const clash = { result: 'conflict', kinds: ['link'], new_allowed: false,
+                existing: { id: 1, display_name: 'A', url: 'u-a' } };
+const plan = { first: clash, skip: { result: 'skipped' },
+               overwrite: { result: 'overwritten' } };
+host = { 'u-b': plan, 'u-c': plan, 'u-d': plan };
+answers = [{ action: 'skip', applyAll: true }];
+const out = {};
+(async () => {
+  out.all = await wlImportRun('l.json', [{ url: 'u-b' }, { url: 'u-c' }, { url: 'u-d' }]);
+  out.allPrompts = prompts.length;
+  prompts.length = 0; toasts.length = 0;
+  answers = [{ action: 'stop' }];
+  out.stopped = await wlImportRun('l.json', [{ url: 'u-b' }, { url: 'u-e' }]);
+  out.stopPrompts = prompts.length;
+  out.stopToast = toasts[0];
+  out.landedAfterStop = calls.filter((c) => c[0] === 'watchlist.import_entry' &&
+    c[1].entry.url === 'u-e').length;
+  console.log(JSON.stringify(out));
+})();
+"""))
+    assert r["all"] == {"added": 0, "overwritten": 0, "skipped": 3}
+    assert r["allPrompts"] == 1
+    assert r["stopped"] == {"added": 0, "overwritten": 0, "skipped": 0}
+    assert r["stopPrompts"] == 1
+    assert r["landedAfterStop"] == 0
+    assert r["stopToast"].endswith("stopped early.")
+
+
+def test_new_is_never_remembered_for_apply_to_all(app_js, tmp_path):
+    """Every 'new' needs its own name, so the box on that answer must not
+    silently name every later clash the same."""
+    r = _run_node(tmp_path, "wlimport3.mjs", _import_loop_source(app_js, """
+const clash = { result: 'conflict', kinds: ['name'], new_allowed: true,
+                existing: { id: 1, display_name: 'A', url: 'u-a' } };
+const plan = { first: clash, new: { result: 'added' }, skip: { result: 'skipped' } };
+host = { 'u-b': plan, 'u-c': plan };
+answers = [{ action: 'new', name: 'B2', applyAll: true }, { action: 'skip' }];
+(async () => {
+  const tally = await wlImportRun('l.json', [{ url: 'u-b' }, { url: 'u-c' }]);
+  console.log(JSON.stringify({ tally, prompts: prompts.length }));
+})();
+"""))
+    assert r == {"tally": {"added": 1, "overwritten": 0, "skipped": 1}, "prompts": 2}
 
 
 def test_the_share_buttons_open_only_in_the_app_window(app_js, tmp_path):

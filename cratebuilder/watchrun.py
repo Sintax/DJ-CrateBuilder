@@ -898,33 +898,92 @@ class WatchlistOps:
         self._patch_counts()
         return {"channel_id": new_id}
 
-    def add_imported(self, entries):
-        """Track the channels from another user's list file, skipping any
-        already here. No probe: the file carries the name and channel id, so
-        a hundred channels land in a second and a machine with no network
-        can still import. Rows that exist are never touched."""
+    def import_entry(self, entry, resolve=None):
+        """Land ONE channel from another user's list file, or say why it
+        can't land unasked. No probe: the file carries the name and channel
+        id, so a hundred channels land in a second and a machine with no
+        network can still import.
+
+        With no *resolve*, a clash (same link, or same name) is REPORTED and
+        nothing is written — the user decides. *resolve* is then their
+        answer: skip; overwrite (re-point the existing row's link only — its
+        name and genre are also its folder, so those never move here); or
+        new (a second row under the name they typed, refused when that name
+        is taken or when the link itself is what clashed — one link can only
+        be tracked once). The clash is re-checked on every call because the
+        list changes as earlier entries land."""
         db = self._db()
-        to_add, skipped = watchlist_share.plan_import(
-            entries, db.get_all_watchlist_channels())
-        added = 0
-        for entry in to_add:
-            url = entry["url"]
-            new_id = db.add_watchlist_channel(
-                url=url, display_name=entry.get("display_name") or url,
-                platform=entry.get("platform") or util.detect_platform(url),
-                genre=entry.get("genre") or CrateLayout.NO_GENRE_VALUE,
-                auto_added=False, channel_id=entry.get("channel_id") or None)
-            if new_id is None:
-                skipped.append(entry)
-                continue
-            row = db.get_watchlist_channel(new_id) or {}
-            self._mirror_link(row, url, entry.get("channel_id"))
-            self._line(LINE_DONE, f"DONE Imported {entry.get('display_name') or url}")
-            self._card(new_id)
-            added += 1
-        if added:
-            self._patch_counts()
-        return {"added": added, "skipped": len(skipped)}
+        url = (entry.get("url") or "").strip()
+        theirs = entry.get("display_name") or url
+        clash = watchlist_share.find_conflict(
+            entry, db.get_all_watchlist_channels())
+        action = (resolve or {}).get("action") or ""
+
+        if clash is None:
+            return self._import_add(entry, theirs)
+
+        row = clash["row"]
+        report = {
+            "result": "conflict", "kinds": clash["kinds"],
+            "existing": {"id": row.get("id"),
+                         "display_name": row.get("display_name") or "",
+                         "url": row.get("url") or ""},
+            "new_allowed": "link" not in clash["kinds"],
+        }
+        if not action:
+            return report
+        if action == "skip":
+            self._line(LINE_HELD, f"SKIPPED {theirs} — already in the Watch "
+                                  f"List as {row.get('display_name') or row.get('url')}")
+            return {"result": "skipped"}
+        if action == "overwrite":
+            cid = row.get("id")
+            # A file with no channel id must not blank one already resolved
+            # here — the link is what the user chose to take, not the gaps.
+            channel_id = ((entry.get("channel_id") or "").strip()
+                          or (row.get("channel_id") or "").strip() or None)
+            ok = db.update_watchlist_channel_fields(
+                cid, url=url, channel_id=channel_id, status="idle",
+                last_error=None)
+            if not ok:
+                raise CBError(f"Couldn't re-point “{row.get('display_name')}” "
+                              f"— that link already belongs to another entry.")
+            fresh = db.get_watchlist_channel(cid) or row
+            self._mirror_link(fresh, url, channel_id)
+            self._line(LINE_DONE, f"DONE Re-pointed {fresh.get('display_name')} "
+                                  f"at {url}")
+            self._card(cid)
+            return {"result": "overwritten"}
+        if action == "new":
+            name = (resolve.get("name") or "").strip()
+            if not report["new_allowed"]:
+                return dict(report, name_error="This link is already tracked, "
+                            "so it can't be added a second time.")
+            if not name:
+                return dict(report, name_error="Type a name for the new entry.")
+            if watchlist_share.name_is_taken(name, db.get_all_watchlist_channels()):
+                return dict(report, name_error=f"“{name}” is already used by "
+                            f"another entry — pick a different name.")
+            return self._import_add(dict(entry, display_name=name), name)
+        raise CBError(f"Unknown import choice: {action}")
+
+    def _import_add(self, entry, shown):
+        db = self._db()
+        url = entry["url"]
+        new_id = db.add_watchlist_channel(
+            url=url, display_name=entry.get("display_name") or url,
+            platform=entry.get("platform") or util.detect_platform(url),
+            genre=entry.get("genre") or CrateLayout.NO_GENRE_VALUE,
+            auto_added=False, channel_id=entry.get("channel_id") or None)
+        if new_id is None:
+            raise CBError(f"Couldn't add “{shown}” — that link is already "
+                          f"tracked.")
+        row = db.get_watchlist_channel(new_id) or {}
+        self._mirror_link(row, url, entry.get("channel_id"))
+        self._line(LINE_DONE, f"DONE Imported {shown}")
+        self._card(new_id)
+        self._patch_counts()
+        return {"result": "added", "channel_id": new_id}
 
     def populate_from_folders(self):
         """Fill an EMPTY Watch List from the crate folders already on disk —

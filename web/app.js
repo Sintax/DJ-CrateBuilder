@@ -6604,27 +6604,348 @@
     }));
   }
 
+  /* ── Watch List sharing (3d): pick-what-you-share + clash prompts ────────
+     Export and Import both open a picker over the same list shell, with
+     nothing ticked by default: sharing is opt-in per channel, both ways. The
+     import loop lands one channel per host call and the HOST decides whether
+     it clashes — the list changes as each earlier entry lands, so a clash
+     judged up front from the picker's snapshot could be stale by the time
+     that entry's turn comes. */
+
+  /* Pure: which keys are ticked, and the primary button's label — sliced out
+     for the Node test. */
+  function wlShareSelection(rows, checked, verb) {
+    const keys = rows.filter((r) => !r.disabled && checked.has(r.key))
+                     .map((r) => r.key);
+    return { keys, label: `${verb} (${keys.length})`, empty: keys.length === 0 };
+  }
+
+  function wlShareRow(row, checked, onChange) {
+    const line = document.createElement('label');
+    line.className = 'cb-sharerow' + (row.disabled ? ' is-off' : '');
+    const box = document.createElement('input');
+    box.type = 'checkbox'; box.className = 'cb-cbx';
+    box.checked = checked.has(row.key);
+    box.disabled = !!row.disabled;
+    box.setAttribute('data-tt', 'wl.share_row_check');
+    box.addEventListener('change', () => {
+      if (box.checked) checked.add(row.key); else checked.delete(row.key);
+      onChange();
+    });
+    line.appendChild(box);
+    const name = document.createElement('span');
+    name.className = 'cb-sharerow__name';
+    name.textContent = row.name || row.url || 'Channel';
+    line.appendChild(name);
+    line.appendChild(tagNode(row.platform || '—', 'cb-tag--grey'));
+    line.appendChild(tagNode(row.genre || '(none)', 'cb-tag--grey'));
+    if (row.tag) {
+      const t = tagNode(row.tag.text, row.tag.cls || 'cb-tag--attn');
+      if (row.tag.tip) t.setAttribute('data-tt-text', row.tag.tip);
+      line.appendChild(t);
+    }
+    const link = document.createElement('span');
+    link.className = 'cb-sharerow__url cb-mut cb-mono';
+    link.textContent = row.url || '';
+    if (row.url) link.title = row.url;
+    line.appendChild(link);
+    if (row.disabled && row.disabledReason) {
+      line.setAttribute('data-tt-text', row.disabledReason);
+    }
+    return line;
+  }
+
+  /* opts: {title, note, rows:[{key,name,url,platform,genre,disabled,
+            disabledReason,tag}], verb, submitTt, onSubmit(keys, api)} */
+  function wlShareListModal(opts) {
+    const checked = new Set();
+    let submit = null;
+    const sync = () => {
+      if (!submit) return;
+      const sel = wlShareSelection(opts.rows, checked, opts.verb);
+      submit.textContent = sel.label;
+      setDisabled(submit, sel.empty,
+        { reason: 'Tick at least one channel first.', ttKey: opts.submitTt });
+    };
+    return openModal({
+      title: opts.title,
+      width: 640,
+      body(body) {
+        body.appendChild(modalNote(opts.note));
+        const bar = document.createElement('div');
+        bar.className = 'cb-row cb-sharebar';
+        const all = modalButton('Select All', 'cb-btn--quiet', () => {
+          opts.rows.forEach((r) => { if (!r.disabled) checked.add(r.key); });
+          redraw();
+        }, 'wl.share_all');
+        const sep = document.createElement('span');
+        sep.className = 'cb-mut'; sep.textContent = '|';
+        const none = modalButton('None', 'cb-btn--quiet', () => {
+          checked.clear(); redraw();
+        }, 'wl.share_none');
+        bar.append(all, sep, none);
+        body.appendChild(bar);
+        const list = document.createElement('div');
+        list.className = 'cb-sharelist';
+        body.appendChild(list);
+        function redraw() {
+          list.replaceChildren(
+            ...opts.rows.map((r) => wlShareRow(r, checked, sync)));
+          bindTips(list);
+          sync();
+        }
+        redraw();
+      },
+      foot(foot, api) {
+        submit = modalButton(opts.verb, 'cb-btn--fill', () => {
+          const sel = wlShareSelection(opts.rows, checked, opts.verb);
+          if (sel.empty) return;
+          opts.onSubmit(sel.keys, api);
+        }, opts.submitTt);
+        foot.append(submit,
+          modalButton('Cancel', 'cb-btn--quiet', closeModal, 'wl.share_cancel'));
+        sync();
+      },
+    });
+  }
+
+  function wlConflictSide(label, entry, kinds) {
+    const box = document.createElement('div');
+    box.className = 'cb-conflict__side';
+    const head = document.createElement('div');
+    head.className = 'cb-mlabel';
+    head.textContent = label;
+    box.appendChild(head);
+    const name = document.createElement('div');
+    name.className = 'cb-conflict__name' + (kinds.includes('name') ? ' is-match' : '');
+    name.textContent = entry.display_name || '(no name)';
+    const url = document.createElement('div');
+    url.className = 'cb-conflict__url cb-mono' + (kinds.includes('link') ? ' is-match' : '');
+    url.textContent = entry.url || '';
+    url.title = entry.url || '';
+    box.append(name, url);
+    return box;
+  }
+
+  /* One clash, one answer: resolves {action:'skip'|'overwrite'|'new'|'stop',
+     name, applyAll}. Escape and ✕ mean Skip — nothing is ever written
+     unasked. */
+  function wlConflictModal(c) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (answer) => { settled = true; resolve(answer); closeModal(); };
+      let applyAll = null;
+      let newBtn = null;
+      let bodyEl = null;
+      const linkClash = c.kinds.includes('link');
+      const nameClash = c.kinds.includes('name');
+
+      function showNameField() {
+        if (newBtn) newBtn.hidden = true;
+        const wrap = document.createElement('div');
+        wrap.className = 'cb-conflict__new';
+        const input = document.createElement('input');
+        input.className = 'cb-in';
+        input.value = c.name || c.entry.display_name || '';
+        input.placeholder = 'Name for the new entry';
+        input.setAttribute('data-tt', 'wl.conflict_new_name');
+        const ok = modalButton('Add under this name', 'cb-btn--fill',
+          () => done({ action: 'new', name: input.value }), 'wl.conflict_new');
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); ok.click(); }
+        });
+        wrap.append(labelled('Name for the new entry', input,
+          'The name is also the channel\'s folder name, so it must differ ' +
+          'from every other entry.'), ok);
+        bodyEl.appendChild(wrap);
+        bindTips(wrap);
+        input.focus(); input.select();
+      }
+
+      openModal({
+        title: 'Already in your Watch List',
+        tag: { text: linkClash ? 'Same link' : 'Same name', cls: 'cb-tag--attn' },
+        width: 620,
+        onClose: () => { if (!settled) resolve({ action: 'skip' }); },
+        body(body) {
+          bodyEl = body;
+          const what = linkClash && nameClash ? 'the same link and the same name'
+            : (linkClash ? 'the same link' : 'the same name');
+          body.appendChild(modalNote(
+            `A channel with ${what} is already in your Watch List. ` +
+            'Your entry is never changed unless you choose Overwrite.'));
+          const grid = document.createElement('div');
+          grid.className = 'cb-conflict';
+          grid.append(wlConflictSide('Yours', c.existing, c.kinds),
+                      wlConflictSide('In the file', c.entry, c.kinds));
+          body.appendChild(grid);
+          if (!c.newAllowed) {
+            body.appendChild(modalNote(
+              'This link is already tracked, so it can\'t be added a second ' +
+              'time — Skip keeps yours as it is, Overwrite re-points yours at ' +
+              'the file\'s link.'));
+          }
+          if (c.nameError) {
+            const err = document.createElement('div');
+            err.className = 'cb-merr';
+            err.style.margin = '0';
+            err.textContent = c.nameError;
+            body.appendChild(err);
+          }
+          const applyRow = document.createElement('label');
+          applyRow.className = 'cb-sharerow cb-conflict__all';
+          applyAll = document.createElement('input');
+          applyAll.type = 'checkbox'; applyAll.className = 'cb-cbx';
+          applyAll.setAttribute('data-tt', 'wl.conflict_apply_all');
+          const applyText = document.createElement('span');
+          applyText.textContent = 'Apply this choice to every remaining conflict';
+          applyRow.append(applyAll, applyText);
+          body.appendChild(applyRow);
+          const warn = document.createElement('p');
+          warn.className = 'cb-mnote cb-warn-note';
+          warn.textContent = '⚠ Use with extreme caution. Every later clash ' +
+            'in this import is then answered the same way without showing ' +
+            'you the two entries — Overwrite-for-all re-points every matching ' +
+            'channel at the file\'s link. Leave this off unless you are sure.';
+          body.appendChild(warn);
+        },
+        foot(foot) {
+          const flag = () => !!(applyAll && applyAll.checked);
+          foot.appendChild(modalButton('Skip', 'cb-btn--quiet',
+            () => done({ action: 'skip', applyAll: flag() }), 'wl.conflict_skip'));
+          foot.appendChild(modalButton('Overwrite', 'cb-btn--warn',
+            () => done({ action: 'overwrite', applyAll: flag() }),
+            'wl.conflict_overwrite'));
+          if (c.newAllowed) {
+            newBtn = modalButton('New', 'cb-btn--fill', showNameField,
+                                 'wl.conflict_new');
+            foot.appendChild(newBtn);
+          }
+          const stop = modalButton('Stop import', 'cb-btn--quiet',
+            () => done({ action: 'stop' }), 'wl.conflict_stop');
+          stop.style.marginLeft = 'auto';
+          foot.appendChild(stop);
+        },
+      });
+      // Reopened after a refused name: land straight back in the field.
+      if (c.nameError && c.newAllowed) showNameField();
+    });
+  }
+
+  /* The loop. `remembered` is the apply-to-all answer; it never carries
+     'new', which needs a name per entry. A host refusal mid-way stops the
+     run rather than silently continuing past a channel it could not land. */
+  async function wlImportRun(path, entries) {
+    const tally = { added: 0, overwritten: 0, skipped: 0 };
+    let remembered = null;
+    let stopped = false;
+    for (const entry of entries) {
+      let res;
+      try { res = await call('watchlist.import_entry', { entry }); }
+      catch (_) { stopped = true; break; }
+      let nameError = '';
+      let lastName = '';
+      while (res && res.result === 'conflict') {
+        let answer;
+        if (remembered && !nameError) {
+          answer = { action: remembered };
+        } else {
+          answer = await wlConflictModal({
+            entry, existing: res.existing, kinds: res.kinds || [],
+            newAllowed: !!res.new_allowed, nameError, name: lastName,
+          });
+        }
+        if (answer.action === 'stop') { stopped = true; break; }
+        if (answer.applyAll && answer.action !== 'new') remembered = answer.action;
+        lastName = answer.name || '';
+        try {
+          res = await call('watchlist.import_entry', {
+            entry, resolve: { action: answer.action, name: answer.name } });
+        } catch (_) { stopped = true; break; }
+        nameError = (res && res.result === 'conflict') ? (res.name_error || '') : '';
+      }
+      if (stopped) break;
+      if (res && Object.prototype.hasOwnProperty.call(tally, res.result)) {
+        tally[res.result] += 1;
+      }
+    }
+    try {
+      await call('watchlist.import_done', Object.assign({ path }, tally));
+    } catch (_) { /* the summary line is a courtesy */ }
+    toast(`Added ${num(tally.added)} · overwrote ${num(tally.overwritten)}` +
+          ` · skipped ${num(tally.skipped)}` + (stopped ? ' · stopped early.' : '.'));
+    if (tally.added || tally.overwritten) await refresh();
+    return tally;
+  }
+
+  function openExportPicker() {
+    const rows = wl.cards.map((row) => ({
+      key: row.id, name: row.name, url: wlUrl(row),
+      platform: row.platform, genre: row.genre,
+      disabled: !wlUrl(row),
+      disabledReason: TOOLTIPS['wl.share_row_unresolved'] || '',
+    }));
+    wlShareListModal({
+      title: 'Export Watch List',
+      note: 'Choose the channels to include in the export file.',
+      rows, verb: 'Export', submitTt: 'wl.export_confirm',
+      async onSubmit(keys, api) {
+        api.busy(true);
+        try {
+          const res = await call('fs.watchlist_export', { ids: keys });
+          if (res && res.path) {
+            closeModal();
+            toast(`Exported ${num(res.count)} channel${res.count === 1 ? '' : 's'}.`);
+          } else {
+            api.busy(false);
+          }
+        } catch (_) { api.busy(false); /* call() already toasted the reason */ }
+      },
+    });
+  }
+
+  async function openImportPicker() {
+    let res;
+    try { res = await call('fs.watchlist_import_read', {}); }
+    catch (_) { return; /* call() already toasted the reason */ }
+    if (!res || !res.path) return;
+    const entries = res.entries || [];
+    if (!entries.length) {
+      toast('That file holds no channels to import.', true);
+      return;
+    }
+    const rows = entries.map((e, i) => ({
+      key: i, name: e.display_name, url: e.url,
+      platform: e.platform, genre: e.genre,
+      tag: e.tracked ? {
+        text: '⚠ already tracked', cls: 'cb-tag--attn',
+        tip: `Already in your Watch List as “${e.tracked.display_name || e.tracked.url}”` +
+             ` (same ${(e.tracked.kinds || []).join(' and ')}). You will be asked` +
+             ' what to do when this one is imported.',
+      } : null,
+    }));
+    wlShareListModal({
+      title: 'Import Watch List',
+      note: 'Choose the channels to add to your Watch List.',
+      rows, verb: 'Import', submitTt: 'wl.import_confirm',
+      onSubmit(keys) {
+        closeModal();
+        const picked = keys.map((k) => {
+          const e = entries[k];
+          return { url: e.url, display_name: e.display_name, platform: e.platform,
+                   genre: e.genre, channel_id: e.channel_id };
+        });
+        wlImportRun(res.path, picked);
+      },
+    });
+  }
+
   function wireWatchlist() {
     const scanAll = () => wlRun('watchlist.scan_all', {}, 'Scanning every channel…');
     $('#wl-scan').addEventListener('click', scanAll);
     $('#wl-add').addEventListener('click', openAddChannel);
-    $('#wl-export').addEventListener('click', async () => {
-      try {
-        const res = await call('fs.watchlist_export', {});
-        if (res && res.path) {
-          toast(`Exported ${num(res.count)} channel${res.count === 1 ? '' : 's'}.`);
-        }
-      } catch (_) { /* call() already toasted the reason */ }
-    });
-    $('#wl-import').addEventListener('click', async () => {
-      try {
-        const res = await call('fs.watchlist_import', {});
-        if (!res || !res.path) return;
-        toast(`Added ${num(res.added)} channel${res.added === 1 ? '' : 's'}` +
-              ` · ${num(res.skipped)} already tracked.`);
-        if (res.added) await refresh();
-      } catch (_) { /* call() already toasted the reason */ }
-    });
+    $('#wl-export').addEventListener('click', openExportPicker);
+    $('#wl-import').addEventListener('click', openImportPicker);
     $('#wl-links').addEventListener('click', runCheckLinks);
     $('#wl-dl-all').addEventListener('click',
       () => wlRun('watchlist.download_all_new', {}, 'Downloading every pending track…'));

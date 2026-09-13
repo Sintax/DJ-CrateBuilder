@@ -1,5 +1,6 @@
-"""Sharing a Watch List between users: the list file's shape, and add-vs-skip."""
+"""Sharing a Watch List between users: the list file's shape, and what counts as a clash."""
 import json
+import re
 from datetime import date
 
 from .crate import CrateLayout
@@ -86,20 +87,42 @@ def parse(text):
     return entries
 
 
-def plan_import(entries, existing_rows):
-    """Split *entries* into (to_add, skipped). A channel already tracked —
-    by channel id, exact link, or any spelling of the same link — is
-    skipped, and so is a second copy of one channel inside the same file.
-    Existing rows are never changed by an import."""
-    seen = list(existing_rows or ())
-    to_add, skipped = [], []
-    for entry in entries:
-        match = util.find_matching_watchlist_row(
-            seen, entry["url"], channel_id=entry.get("channel_id"),
-            platform=entry.get("platform"))
-        if match is not None:
-            skipped.append(entry)
-            continue
-        to_add.append(entry)
-        seen.append(entry)
-    return to_add, skipped
+def name_key(name):
+    """One spelling of a channel name for clash checks: case-folded, trimmed,
+    inner whitespace collapsed — the name is also the folder name, and the
+    filesystem the crate lives on is case-insensitive."""
+    return re.sub(r"\s+", " ", (name or "").strip()).casefold()
+
+
+def name_is_taken(name, existing_rows):
+    key = name_key(name)
+    return bool(key) and any(
+        name_key((row or {}).get("display_name")) == key
+        for row in existing_rows or ())
+
+
+def find_conflict(entry, existing_rows):
+    """The row *entry* clashes with, or None. A link match (channel id, exact
+    link, or any spelling of the same link) wins over a name match; `kinds`
+    says which of the two matched that row, so the caller can tell the user
+    what is the same and what is not. A link clash means the channel can't
+    be added a second time; a name-only clash can, under a new name."""
+    rows = list(existing_rows or ())
+    row = util.find_matching_watchlist_row(
+        rows, entry.get("url"), channel_id=entry.get("channel_id"),
+        platform=entry.get("platform"))
+    kinds = []
+    if row is not None:
+        kinds.append("link")
+    else:
+        key = name_key(entry.get("display_name"))
+        for candidate in rows:
+            if key and name_key((candidate or {}).get("display_name")) == key:
+                row = candidate
+                break
+    if row is None:
+        return None
+    key = name_key(entry.get("display_name"))
+    if key and key == name_key(row.get("display_name")):
+        kinds.append("name")
+    return {"row": row, "kinds": kinds}

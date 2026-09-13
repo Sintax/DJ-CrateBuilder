@@ -514,6 +514,49 @@ input[type="radio"].cb-cbx {
 .cb-pair__card .cb-mlabel { text-align: left; }
 .cb-pair__card .cb-mhint { text-align: left; }
 
+/* Watch List sharing (3d): the Export / Import picker and the clash prompt.
+   One row per channel, single line, the link muted and clipped last — the
+   name is what the user picks by. Every colour is a theme.css token or one
+   of the derived values declared at the top of this file. */
+.cb-sharebar { gap: 6px; align-items: center; }
+.cb-sharebar .cb-mut { font-size: 12px; }
+.cb-sharelist {
+  display: flex; flex-direction: column; max-height: 50vh; overflow: auto;
+  border: 1px solid var(--cb-line-soft); border-radius: var(--cb-radius-sm);
+}
+.cb-sharerow {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding: 6px 10px; cursor: pointer; font-size: 12.5px; color: var(--cb-text);
+  border-bottom: 1px solid var(--cb-line-row);
+}
+.cb-sharerow:last-child { border-bottom: 0; }
+.cb-sharerow:hover { background: var(--cb-surface-alt); }
+.cb-sharerow.is-off { cursor: default; opacity: .55; }
+.cb-sharerow .cb-cbx { flex: none; }
+.cb-sharerow__name { font-weight: 600; flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cb-sharerow .cb-tag { flex: none; }
+.cb-sharerow__url { flex: 1 1 0; min-width: 0; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+.cb-conflict { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.cb-conflict__side {
+  min-width: 0; padding: 10px 12px; border: 1px solid var(--cb-line-soft);
+  border-radius: var(--cb-radius-sm); background: var(--cb-surface-alt);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.cb-conflict__name { font-weight: 600; font-size: 13.5px; color: var(--cb-text); overflow-wrap: anywhere; }
+.cb-conflict__url { font-size: 11px; color: var(--cb-muted); overflow-wrap: anywhere; }
+/* The matching half is what the prompt is about: the unresolved-orange pair
+   the Link-unresolved tag already uses, so "attention" reads the same here. */
+.cb-conflict .is-match {
+  color: var(--cb-warn); background: var(--cb-attn-wash);
+  border: 1px solid var(--cb-attn-line); border-radius: var(--cb-radius-sm);
+  padding: 2px 6px; margin: 0 -6px;
+}
+.cb-conflict__all { border: 0; padding: 4px 0 0; cursor: pointer; }
+.cb-conflict__all:hover { background: transparent; }
+.cb-warn-note { color: var(--cb-warn); font-weight: 500; }
+.cb-conflict__new { display: flex; flex-direction: column; gap: 8px; }
+.cb-conflict__new .cb-btn { align-self: flex-start; }
+
 /* The design targets desktop at >=1100px and states the layouts are not
    designed to reflow below it. Collapse to one column rather than clip a card
    off the edge — degrading is not the same as supporting a mobile breakpoint. */

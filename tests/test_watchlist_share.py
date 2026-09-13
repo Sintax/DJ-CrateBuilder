@@ -1,4 +1,4 @@
-"""cratebuilder.watchlist_share: the list file's shape, and add-vs-skip."""
+"""cratebuilder.watchlist_share: the list file's shape, and what counts as a clash."""
 import json
 from datetime import date
 
@@ -75,25 +75,62 @@ def test_damaged_entries_are_dropped_rather_than_failing_the_file():
                         "channel_id": None}]
 
 
-def test_plan_import_skips_tracked_channels_by_id_link_or_spelling():
-    existing = [
-        {"url": "https://www.youtube.com/@a", "channel_id": "UC1", "platform": "YouTube"},
-        {"url": "https://www.youtube.com/channel/UC2", "channel_id": "", "platform": "YouTube"},
+
+def _existing():
+    return [
+        {"id": 1, "url": "https://www.youtube.com/@a", "channel_id": "UC1",
+         "platform": "YouTube", "display_name": "Alpha"},
+        {"id": 2, "url": "https://www.youtube.com/channel/UC2", "channel_id": "",
+         "platform": "YouTube", "display_name": "Beta Beats"},
     ]
-    entries = [
-        # same id, different link
-        {"url": "https://www.youtube.com/@aa", "channel_id": "UC1", "platform": "YouTube"},
-        # exact link
-        {"url": "https://www.youtube.com/channel/UC2", "channel_id": None, "platform": "YouTube"},
-        # another spelling of the same channel link
-        {"url": "https://www.youtube.com/channel/UC2/videos", "channel_id": None, "platform": "YouTube"},
-        # genuinely new
-        {"url": "https://www.youtube.com/@new", "channel_id": "UC9", "platform": "YouTube"},
-        # the same new channel twice in one file
-        {"url": "https://www.youtube.com/@new-again", "channel_id": "UC9", "platform": "YouTube"},
-    ]
-    to_add, skipped = share.plan_import(entries, existing)
-    assert [e["url"] for e in to_add] == ["https://www.youtube.com/@new"]
-    assert len(skipped) == 4
-    # Existing rows are read, never rewritten.
-    assert existing[1]["channel_id"] == ""
+
+
+def test_name_key_ignores_case_edges_and_inner_spacing():
+    assert share.name_key("  Beta   BEATS ") == "beta beats"
+    assert share.name_key(None) == ""
+
+
+def test_name_is_taken_matches_any_spelling_of_an_existing_name():
+    assert share.name_is_taken("beta beats", _existing())
+    assert share.name_is_taken("ALPHA ", _existing())
+    assert not share.name_is_taken("Gamma", _existing())
+    assert not share.name_is_taken("", _existing())
+
+
+def test_no_conflict_for_a_channel_that_is_genuinely_new():
+    entry = {"url": "https://www.youtube.com/@new", "channel_id": "UC9",
+             "platform": "YouTube", "display_name": "Gamma"}
+    assert share.find_conflict(entry, _existing()) is None
+
+
+def test_a_link_clash_is_found_by_id_link_or_spelling():
+    by_id = {"url": "https://www.youtube.com/@aa", "channel_id": "UC1",
+             "platform": "YouTube", "display_name": "Other"}
+    by_spelling = {"url": "https://www.youtube.com/channel/UC2/videos",
+                   "channel_id": None, "platform": "YouTube",
+                   "display_name": "Other"}
+    hit = share.find_conflict(by_id, _existing())
+    assert hit["row"]["id"] == 1 and hit["kinds"] == ["link"]
+    hit = share.find_conflict(by_spelling, _existing())
+    assert hit["row"]["id"] == 2 and hit["kinds"] == ["link"]
+
+
+def test_a_name_clash_is_reported_when_the_links_differ():
+    entry = {"url": "https://www.youtube.com/@elsewhere", "channel_id": "UC7",
+             "platform": "YouTube", "display_name": "beta beats"}
+    hit = share.find_conflict(entry, _existing())
+    assert hit["row"]["id"] == 2 and hit["kinds"] == ["name"]
+
+
+def test_a_clash_on_both_link_and_name_names_both():
+    entry = {"url": "https://www.youtube.com/@a", "channel_id": None,
+             "platform": "YouTube", "display_name": "ALPHA"}
+    hit = share.find_conflict(entry, _existing())
+    assert hit["row"]["id"] == 1 and hit["kinds"] == ["link", "name"]
+
+
+def test_the_link_clash_wins_when_the_name_matches_a_different_row():
+    entry = {"url": "https://www.youtube.com/@a", "channel_id": "UC1",
+             "platform": "YouTube", "display_name": "Beta Beats"}
+    hit = share.find_conflict(entry, _existing())
+    assert hit["row"]["id"] == 1 and hit["kinds"] == ["link"]

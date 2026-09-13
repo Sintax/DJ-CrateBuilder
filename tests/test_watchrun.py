@@ -1286,7 +1286,7 @@ def test_watchlist_methods_are_reachable_on_the_remote_transport(tmp_path):
     service = _service(tmp_path, harness)
 
     names = [m for m in service._methods() if m.startswith("watchlist.")]
-    assert len(names) == 15
+    assert len(names) == 17
     for name in names:
         # The transport gate refuses before dispatch, so anything that gets
         # past it and fails on its own arguments has proven the point.
