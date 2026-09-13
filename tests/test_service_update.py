@@ -110,7 +110,7 @@ def test_check_reports_unreachable(service, monkeypatch):
     assert result == {
         "reachable": False, "valid": False, "available": False,
         "current_build": result["current_build"], "latest_build": None,
-        "notes": None, "notice": None,
+        "notes": None, "notice": None, "components": None,
         "can_self_update": result["can_self_update"],
         "checked_at": result["checked_at"],
     }
@@ -675,3 +675,76 @@ def test_check_reads_a_manifest_without_the_split_the_old_way(service, monkeypat
     result = service.update_check()
     assert result["notes"] == "Fixed a thing." and result["notice"] is None
 
+
+
+# ── the components table (update.status → components) ───────────────────────
+
+def _fake_installed(monkeypatch, versions):
+    monkeypatch.setattr(service_mod.components, "installed_versions",
+                        lambda ffmpeg_dir=None, **kw: dict(versions))
+
+
+def test_status_lists_what_is_installed_before_any_check(service, monkeypatch):
+    _fake_installed(monkeypatch, {"python": "3.14.5", "yt-dlp": "2026.8.19"})
+    comp = service.update_status()["components"]
+    assert comp["build"] is None and comp["available"] is False
+    by_key = {r["key"]: r for r in comp["rows"]}
+    assert by_key["python"] == {"key": "python", "label": "Python",
+                                "installed": "3.14.5", "offered": None,
+                                "state": "unknown"}
+    assert by_key["yt-dlp"]["state"] == "unknown"
+    assert by_key["ffmpeg"]["state"] == "missing"
+
+
+def test_a_check_carries_the_manifests_components_into_the_table(service, monkeypatch):
+    _fake_installed(monkeypatch, {"python": "3.14.5", "yt-dlp": "2026.8.19",
+                                  "ffmpeg": "9.0.1+aa"})
+    manifest = dict(MANIFEST, components={"python": "3.14.5", "yt_dlp": "2026.9.1",
+                                          "ffmpeg": "9.0.1+aa"})
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: manifest)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 1})
+
+    result = service.update_check()
+    assert result["components"] == {"python": "3.14.5", "yt-dlp": "2026.9.1",
+                                    "ffmpeg": "9.0.1+aa"}
+    comp = service.update_status()["components"]
+    assert comp["build"] == 99 and comp["available"] is True
+    by_key = {r["key"]: r for r in comp["rows"]}
+    assert by_key["yt-dlp"]["state"] == "newer"
+    assert by_key["yt-dlp"]["offered"] == "2026.9.1"
+    assert by_key["python"]["state"] == "same"
+    assert by_key["ffmpeg"]["state"] == "same"
+    assert by_key["pillow"]["state"] == "missing"
+
+
+def test_a_manifest_before_the_block_leaves_every_row_unknown(service, monkeypatch):
+    """Build 82's manifest has no components block: the table shows what
+    is installed and says the build didn't list its own."""
+    _fake_installed(monkeypatch, {"python": "3.14.5", "yt-dlp": "2026.8.19"})
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: MANIFEST)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 1})
+    assert service.update_check()["components"] is None
+    comp = service.update_status()["components"]
+    assert comp["build"] == 99
+    assert {r["state"] for r in comp["rows"] if r["installed"]} == {"unknown"}
+
+
+def test_installed_versions_are_read_once_per_service(service, monkeypatch):
+    reads = []
+    monkeypatch.setattr(service_mod.components, "installed_versions",
+                        lambda ffmpeg_dir=None, **kw: reads.append(1) or {"python": "3"})
+    service.update_status(); service.update_status()
+    assert reads == [1]
+
+
+def test_an_unreachable_check_keeps_a_stale_comparison_out(service, monkeypatch):
+    """After a failed check nothing is 'live': the table falls back to the
+    installed-only view rather than comparing against a stale build."""
+    _fake_installed(monkeypatch, {"python": "3.14.5"})
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: None)
+    service.update_check()
+    comp = service.update_status()["components"]
+    assert comp["build"] is None
+    assert {r["state"] for r in comp["rows"] if r["installed"]} == {"unknown"}

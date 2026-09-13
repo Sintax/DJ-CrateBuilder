@@ -455,3 +455,110 @@ def test_the_confirm_leads_with_the_notes_and_boxes_the_notice(app_js):
     assert ".cb-mnote--lead { color: var(--cb-text); font-weight: 700; }" in css
     assert ".cb-mnote__quote { font-weight: 700; }" in css
     assert ".cb-mnote--notes { color: var(--cb-text); font-size: 14px;" in css
+
+
+# ── the components table ─────────────────────────────────────────────────────
+
+_COMPONENTS_HARNESS = """
+const aboutUpdate = { status: %(status)s };
+function makeEl(tag) {
+  const e = {
+    tag, children: [], style: {}, className: '', textContent: '',
+    appendChild(c) { this.children.push(c); return c; },
+    append(...cs) { cs.forEach((c) => this.children.push(c)); },
+  };
+  e.classList = { add(c) { e.className += ' ' + c; } };
+  return e;
+}
+const document = {
+  createElement: makeEl,
+  createTextNode(t) { return { tag: '#text', textContent: t, children: [] }; },
+};
+function divNode() { return makeEl('div'); }
+function tagNode(text, cls) { const s = makeEl('span'); s.textContent = text; s.className = 'cb-tag ' + cls; return s; }
+%(fn)s
+const host = makeEl('div');
+renderUpdateComponents(host);
+function text(el) { return el.textContent + el.children.map(text).join(''); }
+const table = host.children.find((c) => c.className === 'cb-comp');
+const rows = table ? table.children[0].children[1].children.map((tr) => ({
+  cls: tr.className, cells: tr.children.map(text) })) : null;
+const heads = table ? table.children[0].children[0].children[0].children.map(text) : null;
+console.log(JSON.stringify({
+  n: host.children.length, heads, rows,
+  note: (host.children.find((c) => c.className.indexOf('cb-comp__note') !== -1) || {}).textContent,
+  badge: (host.children[1] ? host.children[1].children.slice(1).map(text) : []),
+}));
+"""
+
+
+def _components(app_js, tmp_path, status):
+    fn = _slice(app_js, "  const COMPONENT_STATE_TEXT = {", "  /* Loads what About and Update share")
+    return _run_node(tmp_path, "components.mjs", _COMPONENTS_HARNESS % {
+        "status": json.dumps(status), "fn": fn})
+
+
+_ROWS = [
+    {"key": "python", "label": "Python", "installed": "3.14.5", "offered": "3.14.5", "state": "same"},
+    {"key": "yt-dlp", "label": "yt-dlp", "installed": "2026.8.19", "offered": "2026.9.1", "state": "newer"},
+    {"key": "ffmpeg", "label": "FFmpeg", "installed": None, "offered": None, "state": "missing"},
+]
+
+
+def test_the_update_page_draws_the_components_table_after_the_controls(app_js):
+    update = _slice(app_js, "  function renderUpdate()", "  /* ── Update: what the build is made of")
+    assert update.index("renderUpdateControls(host);") < update.index("renderUpdateComponents(host);")
+    # Both silent-check verdicts refresh the status the table is drawn from.
+    available = _slice(app_js, "    cbApi.on('update.available', (p) => {", "    });")
+    checked = _slice(app_js, "    cbApi.on('update.checked', (p) => {", "    });")
+    assert "aboutRefreshUpdateStatus();" in available
+    assert "aboutRefreshUpdateStatus();" in checked
+    with open(os.path.join(ROOT, "web", "app.css"), encoding="utf-8") as fh:
+        css = fh.read()
+    assert ".cb-comp__row.is-newer td { background: var(--cb-attn-wash); }" in css
+    assert ".cb-comp__new { color: var(--cb-warn); font-weight: 700; }" in css
+
+
+def test_a_newer_component_stands_out_with_its_new_version(app_js, tmp_path):
+    r = _components(app_js, tmp_path, {"components": {"build": 83, "available": True, "rows": _ROWS}})
+    assert r["heads"] == ["Component", "You have", "In build 83"]
+    assert r["badge"] == ["1 will update"]
+    assert "Compared against build 83" in r["note"]
+    by = {row["cells"][0]: row for row in r["rows"]}
+    assert by["yt-dlp"]["cls"] == "cb-comp__row is-newer"
+    assert by["yt-dlp"]["cells"][1:] == ["2026.8.19", "2026.9.1 will update"]
+    assert by["Python"]["cls"] == "cb-comp__row is-same"
+    assert by["Python"]["cells"][1:] == ["3.14.5", "3.14.5"]
+    assert by["FFmpeg"]["cells"][1:] == ["not installed", "not listed"]
+    assert by["FFmpeg"]["cls"] == "cb-comp__row is-missing"
+
+
+def test_a_component_missing_here_still_shows_what_the_build_carries(app_js, tmp_path):
+    """A source run has no bundled FFmpeg; the live column still says what
+    the build ships rather than hiding it behind 'not installed'."""
+    rows = [dict(_ROWS[2], offered="9.0.1", state="missing")]
+    r = _components(app_js, tmp_path, {"components": {"build": 83, "available": True, "rows": rows}})
+    assert r["rows"][0]["cells"] == ["FFmpeg", "not installed", "9.0.1"]
+    assert r["badge"] == ["All current"]
+
+
+def test_a_build_before_the_block_shows_only_what_you_have(app_js, tmp_path):
+    rows = [dict(r, offered=None, state="unknown") for r in _ROWS if r["installed"]]
+    r = _components(app_js, tmp_path, {"components": {"build": 82, "available": False, "rows": rows}})
+    assert r["heads"][2] == "In build 82"
+    assert r["badge"] == ["All current"]
+    assert "Build 82 was published before" in r["note"]
+    assert {row["cells"][2] for row in r["rows"]} == {"not listed"}
+
+
+def test_before_any_check_the_live_column_is_blank_and_the_note_says_to_check(app_js, tmp_path):
+    rows = [dict(r, offered=None, state="unknown") for r in _ROWS]
+    r = _components(app_js, tmp_path, {"components": {"build": None, "available": False, "rows": rows}})
+    assert r["heads"][2] == "Live build"
+    assert r["badge"] == []
+    assert "Check for updates to compare" in r["note"]
+
+
+def test_no_status_draws_nothing(app_js, tmp_path):
+    assert _components(app_js, tmp_path, None)["n"] == 0
+    assert _components(app_js, tmp_path, {"components": {"rows": []}})["n"] == 0

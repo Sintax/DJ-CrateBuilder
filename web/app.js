@@ -6598,7 +6598,99 @@
     host.append(head, divNode());
 
     renderUpdateControls(host);
+    renderUpdateComponents(host);
     bindTips(host);
+  }
+
+  /* ── Update: what the build is made of ────────────────────────────────
+     One row per bundled component — Python, FFmpeg, yt-dlp and the rest —
+     with the version this install has beside the version the live build
+     carries. The host does the comparing (update.status → components);
+     this only draws it. A row whose live version differs is the one an
+     update would change, so it is the one that stands out. */
+  const COMPONENT_STATE_TEXT = {
+    newer: 'will update',
+    same: 'up to date',
+    unknown: 'not listed',
+    missing: 'not installed',
+  };
+
+  function renderUpdateComponents(host) {
+    const status = aboutUpdate.status;
+    const comp = status && status.components;
+    if (!comp || !Array.isArray(comp.rows) || !comp.rows.length) return;
+
+    host.appendChild(divNode());
+    const head = document.createElement('div');
+    head.className = 'cb-row';
+    head.style.gap = '7px';
+    const kick = document.createElement('span');
+    kick.className = 'cb-sect';
+    kick.textContent = 'Components';
+    head.appendChild(kick);
+    const changing = comp.rows.filter((r) => r.state === 'newer').length;
+    if (comp.build && changing) {
+      head.appendChild(tagNode(`${changing} will update`, 'cb-tag--attn'));
+    } else if (comp.build) {
+      head.appendChild(tagNode('All current', 'cb-tag--ok'));
+    }
+    host.appendChild(head);
+
+    const note = document.createElement('div');
+    note.className = 'cb-mut cb-comp__note';
+    note.textContent = comp.build
+      ? (comp.rows.some((r) => r.state === 'unknown')
+          ? `Build ${comp.build} was published before builds listed their `
+            + 'components, so only what you have is shown.'
+          : `Compared against build ${comp.build}. A highlighted version is `
+            + 'what that build would change.')
+      : 'What this install is running. Check for updates to compare against '
+        + 'the live build.';
+    host.appendChild(note);
+
+    const wrap = document.createElement('div');
+    wrap.className = 'cb-comp';
+    const table = document.createElement('table');
+    table.className = 'cb-table cb-comp__table';
+    const thead = document.createElement('thead');
+    const hr = document.createElement('tr');
+    ['Component', 'You have', comp.build ? `In build ${comp.build}` : 'Live build']
+      .forEach((text) => {
+        const th = document.createElement('th');
+        th.textContent = text;
+        hr.appendChild(th);
+      });
+    thead.appendChild(hr);
+    const tbody = document.createElement('tbody');
+    comp.rows.forEach((row) => {
+      const tr = document.createElement('tr');
+      tr.className = 'cb-comp__row is-' + row.state;
+      const name = document.createElement('td');
+      name.textContent = row.label;
+      const have = document.createElement('td');
+      have.className = 'cb-mono';
+      have.textContent = row.installed || COMPONENT_STATE_TEXT.missing;
+      const will = document.createElement('td');
+      will.className = 'cb-mono cb-comp__offered';
+      if (row.state === 'newer') {
+        const ver = document.createElement('span');
+        ver.className = 'cb-comp__new';
+        ver.textContent = row.offered;
+        will.appendChild(ver);
+        will.appendChild(document.createTextNode(' '));
+        will.appendChild(tagNode(COMPONENT_STATE_TEXT.newer, 'cb-tag--attn'));
+      } else if (row.state === 'same' || row.offered) {
+        will.textContent = row.offered;
+      } else {
+        will.textContent = comp.build ? COMPONENT_STATE_TEXT.unknown : '—';
+        will.classList.add('cb-mut');
+      }
+      tr.append(name, have, will);
+      tbody.appendChild(tr);
+    });
+    table.append(thead, tbody);
+    wrap.appendChild(table);
+    host.appendChild(wrap);
   }
 
   /* Loads what About and Update share (about.info, for the version line),
@@ -7409,14 +7501,18 @@
       state.update = aboutUpdate.result;
       renderUpdate();
       renderOverviewUpdate();
+      aboutRefreshUpdateStatus();       // the components table's live column
     });
     /* Every silent check's verdict, up to date included. The Overview card
        was drawn from a snapshot taken before the launch check ran, so
-       without this it would say "not checked yet" until the next reload. */
+       without this it would say "not checked yet" until the next reload —
+       and the Update page's components table compares against what the
+       check just saw. */
     cbApi.on('update.checked', (p) => {
       if (!p || !state) return;
       state.update = p;
       renderOverviewUpdate();
+      aboutRefreshUpdateStatus();
     });
   }
 
