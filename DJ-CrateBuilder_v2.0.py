@@ -1410,7 +1410,7 @@ Step 2 — Create the Throwaway Google Account
   Create a new Google account using a throwaway email.
   Complete the signup process.
 
-Step 3 — Log into YouTube
+Step 3 — Log into YouTube and SoundCloud
 
   Still in the DJ-CrateBuilder profile window, go to:
       https://www.youtube.com
@@ -1418,6 +1418,18 @@ Step 3 — Log into YouTube
   You should be signed in with the account you just created.
   Watch a video or two briefly and accept any terms prompts.
   This establishes a valid session with cookies.
+
+  Then, in the same window, go to:
+      https://soundcloud.com
+
+  Sign in there too (the throwaway account works via "Continue
+  with Google"). One profile covers both sites; the app sends
+  each site its own sign-in.
+
+  IMPORTANT: SoundCloud Go+ tracks only download when the paid,
+  subscribed account is the one signed in. A throwaway account
+  will not do — and using your paid account carries the very
+  risk of being flagged that the throwaway account exists to avoid.
 
 Step 4 — Install a Cookie Export Extension
 
@@ -1430,13 +1442,15 @@ Step 4 — Install a Cookie Export Extension
 
 Step 5 — Export the Cookies
 
-  Go back to youtube.com, click the extension's icon, and
-  choose Export. Save the file somewhere permanent, e.g.:
+  Click the extension's icon and choose Export — pick the option
+  that exports cookies for ALL sites, so one file holds both the
+  YouTube and SoundCloud sign-ins. Save it somewhere permanent, e.g.:
 
       C:\\Users\\YourName\\Documents\\DJ-CrateBuilder\\cookies.txt
 
-  IMPORTANT: Export while youtube.com is the active tab, so the
-  file holds the YouTube session and not another site's.
+  IMPORTANT: If the extension only exports the current site, export
+  once on youtube.com and once on soundcloud.com, then paste the
+  contents of both files together into one cookies.txt.
 
 Step 6 — Configure the App
 
@@ -1456,7 +1470,8 @@ Step 7 — When Cookies Expire
 
     1. Click your Chrome profile icon
     2. Switch to the DJ-CrateBuilder profile
-    3. Go to youtube.com — make sure you're still signed in
+    3. Go to youtube.com and soundcloud.com — make sure you're
+       still signed in to both
     4. Export again with the extension, overwriting the same file
 
   The app picks up the new file on its next download.
@@ -1492,7 +1507,7 @@ Step 3 — Create the Throwaway Google Account
   Create a new Google account using a throwaway email.
   Complete the signup process.
 
-Step 4 — Log into YouTube
+Step 4 — Log into YouTube and SoundCloud
 
   Still in the DJ-CrateBuilder profile window, go to:
       https://www.youtube.com
@@ -1500,6 +1515,18 @@ Step 4 — Log into YouTube
   You should be signed in with the account you just created.
   Watch a video or two briefly and accept any terms prompts.
   This establishes a valid session with cookies.
+
+  Then, in the same window, go to:
+      https://soundcloud.com
+
+  Sign in there too (the throwaway account works via "Continue
+  with Google"). One profile covers both sites; the app sends
+  each site its own sign-in.
+
+  IMPORTANT: SoundCloud Go+ tracks only download when the paid,
+  subscribed account is the one signed in. A throwaway account
+  will not do — and using your paid account carries the very
+  risk of being flagged that the throwaway account exists to avoid.
 
 Step 5 — Find Your Profile Folder Name
 
@@ -1538,7 +1565,8 @@ Step 8 — When Cookies Expire
   To refresh:
 
     1. Run  firefox -P  and launch the DJ-CrateBuilder profile
-    2. Go to youtube.com — make sure you're still signed in
+    2. Go to youtube.com and soundcloud.com — make sure you're
+       still signed in to both
     3. Close the window and continue as normal
 
   The cookies refresh automatically when you visit the site.
@@ -1570,7 +1598,7 @@ Step 3 — Create the Throwaway Google Account
   Create a new Google account using a throwaway email.
   Complete the signup process.
 
-Step 4 — Log into YouTube
+Step 4 — Log into YouTube and SoundCloud
 
   Still in the DJ-CrateBuilder profile window, go to:
       https://www.youtube.com
@@ -1578,6 +1606,18 @@ Step 4 — Log into YouTube
   You should be signed in with the account you just created.
   Watch a video or two briefly and accept any terms prompts.
   This establishes a valid session with cookies.
+
+  Then, in the same window, go to:
+      https://soundcloud.com
+
+  Sign in there too (the throwaway account works via "Continue
+  with Google"). One profile covers both sites; the app sends
+  each site its own sign-in.
+
+  IMPORTANT: SoundCloud Go+ tracks only download when the paid,
+  subscribed account is the one signed in. A throwaway account
+  will not do — and using your paid account carries the very
+  risk of being flagged that the throwaway account exists to avoid.
 
 Step 5 — Find Your Profile Name
 
@@ -1616,7 +1656,8 @@ Step 8 — When Cookies Expire
 
     1. Click your Edge profile icon
     2. Switch to the DJ-CrateBuilder profile
-    3. Go to youtube.com — make sure you're still signed in
+    3. Go to youtube.com and soundcloud.com — make sure you're
+       still signed in to both
     4. Close the window and continue as normal
 
   The cookies refresh automatically when you visit the site.
@@ -1649,7 +1690,7 @@ Step 3 — Create the Throwaway Google Account
   Create a new Google account using a throwaway email.
   Complete the signup process.
 
-Step 4 — Log into YouTube
+Step 4 — Log into YouTube and SoundCloud
 
   Still in the DJ-CrateBuilder profile window, go to:
       https://www.youtube.com
@@ -1657,6 +1698,18 @@ Step 4 — Log into YouTube
   You should be signed in with the account you just created.
   Watch a video or two briefly and accept any terms prompts.
   This establishes a valid session with cookies.
+
+  Then, in the same window, go to:
+      https://soundcloud.com
+
+  Sign in there too (the throwaway account works via "Continue
+  with Google"). One profile covers both sites; the app sends
+  each site its own sign-in.
+
+  IMPORTANT: SoundCloud Go+ tracks only download when the paid,
+  subscribed account is the one signed in. A throwaway account
+  will not do — and using your paid account carries the very
+  risk of being flagged that the throwaway account exists to avoid.
 
 Step 5 — Find Your Profile Name
 
@@ -1695,7 +1748,8 @@ Step 8 — When Cookies Expire
 
     1. Click your Brave profile icon
     2. Switch to the DJ-CrateBuilder profile
-    3. Go to youtube.com — make sure you're still signed in
+    3. Go to youtube.com and soundcloud.com — make sure you're
+       still signed in to both
     4. Close the window and continue as normal
 
   The cookies refresh automatically when you visit the site.
@@ -1722,7 +1776,7 @@ Step 2 — Create the Throwaway Google Account
   Create a new Google account using a throwaway email.
   Complete the signup process.
 
-Step 3 — Log into YouTube
+Step 3 — Log into YouTube and SoundCloud
 
   Go to:
       https://www.youtube.com
@@ -1731,10 +1785,24 @@ Step 3 — Log into YouTube
   Watch a video or two briefly and accept any terms prompts.
   This establishes a valid session with cookies.
 
+  Then, in the same window, go to:
+      https://soundcloud.com
+
+  Sign in there too (the throwaway account works via "Continue
+  with Google"). One profile covers both sites; the app sends
+  each site its own sign-in.
+
+  IMPORTANT: SoundCloud Go+ tracks only download when the paid,
+  subscribed account is the one signed in. A throwaway account
+  will not do — and using your paid account carries the very
+  risk of being flagged that the throwaway account exists to avoid.
+
 Step 4 — Export Cookies
 
-  While on youtube.com, click the "Get cookies.txt LOCALLY"
-  extension icon and export the cookies for the current site.
+  Click the "Get cookies.txt LOCALLY" extension icon and export
+  cookies for ALL sites, so one file holds both the YouTube and
+  SoundCloud sign-ins. (If it only offers the current site, export
+  once on each site and paste the two files together.)
   Save the file somewhere convenient, e.g.:
       C:\\Users\\YourName\\cookies.txt
 
@@ -1750,7 +1818,8 @@ Step 6 — When Cookies Expire
   Every few weeks or months, the session cookies will expire.
   To refresh:
 
-    1. Go to youtube.com in Opera — sign in if needed
+    1. Go to youtube.com and soundcloud.com in Opera — sign in
+       if needed
     2. Re-export cookies using the extension
     3. Overwrite the old cookies.txt file
 
@@ -1786,7 +1855,7 @@ Step 3 — Create the Throwaway Google Account
   Create a new Google account using a throwaway email.
   Complete the signup process.
 
-Step 4 — Log into YouTube
+Step 4 — Log into YouTube and SoundCloud
 
   Still in the DJ-CrateBuilder profile window, go to:
       https://www.youtube.com
@@ -1794,6 +1863,18 @@ Step 4 — Log into YouTube
   You should be signed in with the account you just created.
   Watch a video or two briefly and accept any terms prompts.
   This establishes a valid session with cookies.
+
+  Then, in the same window, go to:
+      https://soundcloud.com
+
+  Sign in there too (the throwaway account works via "Continue
+  with Google"). One profile covers both sites; the app sends
+  each site its own sign-in.
+
+  IMPORTANT: SoundCloud Go+ tracks only download when the paid,
+  subscribed account is the one signed in. A throwaway account
+  will not do — and using your paid account carries the very
+  risk of being flagged that the throwaway account exists to avoid.
 
 Step 5 — Find Your Profile Name
 
@@ -1832,7 +1913,8 @@ Step 8 — When Cookies Expire
 
     1. Click your Chromium profile icon
     2. Switch to the DJ-CrateBuilder profile
-    3. Go to youtube.com — make sure you're still signed in
+    3. Go to youtube.com and soundcloud.com — make sure you're
+       still signed in to both
     4. Close the window and continue as normal
 
   The cookies refresh automatically when you visit the site.
