@@ -3103,6 +3103,8 @@ class CrateBuilderService:
         dl_url = manifest["url"]
         sha256 = manifest["sha256"]
         notes = str(manifest.get("notes", "")).strip() or None
+        component_rows = components.compare(
+            self._installed_components(), components.offered_versions(manifest))
 
         def worker():
             ws = ucore.default_workspace()
@@ -3168,6 +3170,9 @@ class CrateBuilderService:
             # process's point of view, so job.finished must say ok=True even
             # if the restart callback below misbehaves — the app is about to
             # exit either way, and there is no user-facing failure to report.
+            # Logged here, not earlier, so activity.log only ever records an
+            # update that is actually going to be applied.
+            self.log_line(activitylog.updated(current, build, component_rows))
             if self.on_update_restart is not None:
                 try:
                     self.on_update_restart()

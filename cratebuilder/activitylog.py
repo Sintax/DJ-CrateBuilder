@@ -26,6 +26,23 @@ def error(title, url, message):
     return f"ERROR       | Title: {title} | URL: {url} | Error: {message}"
 
 
+def updated(current_build, new_build, rows):
+    """One UPDATED entry, written at the moment the app hands off to the
+    updater: which build it is moving to and which bundled components that
+    build changes. *rows* are `components.compare` rows; a build published
+    without a components block yields "not listed"."""
+    changes = [f"{r['label']} {r['installed']} -> {r['offered']}"
+               for r in rows if r["state"] == "newer"]
+    if changes:
+        summary = ", ".join(changes)
+    elif any(r["state"] == "unknown" for r in rows):
+        summary = "not listed"
+    else:
+        summary = "none"
+    return (f"UPDATED     | Build: {current_build} -> {new_build} | "
+            f"Components: {summary}")
+
+
 def separator(label=""):
     """The centred rule that opens and closes a batch."""
     if not label:

@@ -42,6 +42,21 @@ third column reads *not listed* and the note says why.
   and `update.available`), so the launch check fills the third column
   without a reload.
 
+## The activity.log record
+
+The table itself logs nothing — it only describes. The one line that is
+written lands in `activity.log` at the moment the app hands off to the
+updater (after download, verify and stage have all succeeded, so a failed
+attempt leaves no trace):
+
+    UPDATED     | Build: 82 -> 83 | Components: yt-dlp 2026.8.19 -> 2026.9.2, …
+
+Only the rows the build changes are named. A build published without the
+block reads `Components: not listed`; a build that changes no bundled
+component reads `Components: none`. `activitylog.updated` formats it; the
+verb was chosen so the Activity Log viewer's Downloaded / Skipped / Errors
+filters never match it.
+
 ## Not in scope
 
 - Nothing here installs anything: the table describes; the existing Update

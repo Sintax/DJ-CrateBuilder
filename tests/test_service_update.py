@@ -378,6 +378,87 @@ def test_apply_happy_path(service, monkeypatch):
     assert not service._job_running(UPDATE_JOB)
 
 
+def _happy_apply(service, monkeypatch, manifest, tmp_path):
+    service._log_path = str(tmp_path / "activity.log")
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: manifest)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 1})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
+    monkeypatch.setattr(service_mod.ucore, "download", _fake_download(None))
+    monkeypatch.setattr(service_mod.ucore, "verify_sha256", lambda path, sha: True)
+
+    def fake_extract(zip_path, dest_dir):
+        os.makedirs(dest_dir, exist_ok=True)
+        return dest_dir
+    monkeypatch.setattr(service_mod.ucore, "extract_zip", fake_extract)
+
+    class _FakePopen:
+        def __init__(self, cmd, **kw):
+            pass
+    monkeypatch.setattr(service_mod.subprocess, "Popen", _FakePopen)
+    service.on_update_restart = None
+
+
+def _activity_lines(service):
+    if not os.path.isfile(service._log_path):
+        return []
+    with open(service._log_path, encoding="utf-8") as fh:
+        return [ln.rstrip("\n") for ln in fh]
+
+
+def test_apply_logs_the_components_the_build_changes(service, monkeypatch, tmp_path):
+    """A successful handoff leaves one UPDATED line in activity.log naming
+    the build jump and every bundled component the new build replaces."""
+    service._installed_components_cache = {
+        "python": "3.14.5", "ffmpeg": "9.0.1", "yt-dlp": "2026.8.19",
+        "certifi": "2026.7.22",
+    }
+    manifest = dict(MANIFEST, components={
+        "python": "3.14.5", "ffmpeg": "9.0.1", "yt-dlp": "2026.9.2",
+        "certifi": "2026.9.1",
+    })
+    _happy_apply(service, monkeypatch, manifest, tmp_path)
+
+    waiter = _Waiter(service)
+    service.update_apply()
+    waiter.wait()
+
+    lines = [ln for ln in _activity_lines(service) if "UPDATED" in ln]
+    assert len(lines) == 1
+    assert "| UPDATED     | Build: 1 -> 99 | Components: " in lines[0]
+    assert "yt-dlp 2026.8.19 -> 2026.9.2" in lines[0]
+    assert "(certifi) 2026.7.22 -> 2026.9.1" in lines[0]
+    assert "Python" not in lines[0]
+    assert "FFmpeg" not in lines[0]
+
+
+def test_apply_logs_not_listed_for_a_manifest_without_the_block(service, monkeypatch, tmp_path):
+    service._installed_components_cache = {"python": "3.14.5"}
+    _happy_apply(service, monkeypatch, MANIFEST, tmp_path)
+
+    waiter = _Waiter(service)
+    service.update_apply()
+    waiter.wait()
+
+    lines = [ln for ln in _activity_lines(service) if "UPDATED" in ln]
+    assert len(lines) == 1
+    assert lines[0].endswith("| Components: not listed")
+
+
+def test_failed_apply_writes_no_updated_line(service, monkeypatch, tmp_path):
+    """The line records an update that is really going to happen: a
+    download that fails verification never reaches the handoff."""
+    _happy_apply(service, monkeypatch, MANIFEST, tmp_path)
+    monkeypatch.setattr(service_mod.ucore, "verify_sha256", lambda path, sha: False)
+
+    waiter = _Waiter(service)
+    service.update_apply()
+    waiter.wait()
+
+    assert not any("UPDATED" in ln for ln in _activity_lines(service))
+
+
 def test_restart_callback_raising_does_not_purge_the_handoff(service, monkeypatch):
     """HIGH-2: once Popen has returned, the staged payload belongs to the
     separate updater process — a failing restart callback (window already
