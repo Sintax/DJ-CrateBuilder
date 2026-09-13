@@ -1762,6 +1762,13 @@
     return p;
   }
 
+  function modalQuoteMark(mark) {
+    const b = document.createElement('b');
+    b.className = 'cb-mnote__quote';
+    b.textContent = mark;
+    return b;
+  }
+
   function labelled(labelText, control, hintText) {
     const wrap = document.createElement('div');
     const lab = document.createElement('div');
@@ -6129,11 +6136,13 @@
     renderUpdate();
   }
 
-  /* The antivirus/false-positive warning has to be seen BEFORE any bytes
-     move — a user-mandated ordering carried over from the desktop app's own
-     update prompt (unsigned build, so SmartScreen and some AV engines flag
-     it; the FAQ entry at "Windows says the installer is unrecognised" is the
-     same explanation this restates for the confirm modal). */
+  /* The antivirus/false-positive warning, carried over from the desktop
+     app's own update prompt (unsigned build, so SmartScreen and some AV
+     engines flag it; the FAQ entry at "Windows says the installer is
+     unrecognised" is the same explanation). A nightly does not show it —
+     the update payload is not what SmartScreen flags — so the confirm only
+     adds it when the result says the update is a fresh install, which no
+     host sets today. Kept for that day rather than deleted. */
   function aboutAvWarningNode() {
     const warn = document.createElement('div');
     warn.className = 'cb-warnbox';
@@ -6275,18 +6284,21 @@
       width: 480,
       onClose: dropPending,
       body(body) {
-        body.appendChild(modalNote(
+        const lead = modalNote(
           `Build ${result.latest_build} is available — you're on `
-          + `${result.current_build}.`));
+          + `${result.current_build}.`);
+        lead.classList.add('cb-mnote--lead');
+        body.appendChild(lead);
         /* What is in the build comes first and reads larger than a hint —
-           it is the one thing here the user is deciding on. Then the two
-           cautions, both boxed the same way. */
+           it is the one thing here the user is deciding on — set off in
+           bold quotation marks. Then the scan notice, boxed. */
         if (result.notes) {
-          const notes = modalNote(result.notes);
+          const notes = modalNote('');
           notes.classList.add('cb-mnote--notes');
+          notes.append(modalQuoteMark('“'), result.notes, modalQuoteMark('”'));
           body.appendChild(notes);
         }
-        body.appendChild(aboutAvWarningNode());
+        if (result.fresh_install) body.appendChild(aboutAvWarningNode());
         if (result.notice) {
           const notice = document.createElement('div');
           notice.className = 'cb-warnbox';

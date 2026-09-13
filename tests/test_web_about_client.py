@@ -196,6 +196,7 @@ function makeEl(tag) {
   return {
     tag, children: [], listeners: {}, attrs: {}, style: {},
     className: '', textContent: '', disabled: false,
+    classList: { add() {} },
     appendChild(c) { this.children.push(c); return c; },
     append(...cs) { cs.forEach((c) => this.children.push(c)); },
     replaceChildren() { this.children = []; },
@@ -230,6 +231,7 @@ function modalButton(label, cls, onClick) {
   b.textContent = label; b.listeners.click = onClick; return b;
 }
 function modalNote(text) { const p = makeEl('p'); p.textContent = text; return p; }
+function modalQuoteMark(mark) { const b = makeEl('b'); b.textContent = mark; return b; }
 /* Faked timers: tick(n) advances the countdown n seconds. */
 const timers = [];
 global.setInterval = (fn) => { timers.push({ fn, live: true }); return timers.length; };
@@ -432,18 +434,24 @@ def test_update_now_does_not_hand_the_click_event_to_the_confirm(app_js):
 
 
 def test_the_confirm_leads_with_the_notes_and_boxes_the_notice(app_js):
-    """Order in the confirm: the build line, what is in the build (larger
-    than a hint), the code-signing caution, then the scan notice — both
-    cautions in the same orange box."""
+    """Order in the confirm: the build line in bold, what is in the build
+    (larger than a hint, in bold quotation marks), then the scan notice in
+    its orange box. The code-signing caution is for a fresh install, which
+    a nightly is not, so it stays out unless the result says so."""
     confirm = _slice(app_js, "  function aboutConfirmUpdate(", "  /* The install itself.")
     body = _slice(confirm, "      body(body) {", "      foot(foot) {")
     build_at = body.index("is available")
+    lead_at = body.index("lead.classList.add('cb-mnote--lead');")
     notes_at = body.index("notes.classList.add('cb-mnote--notes');")
-    av_at = body.index("body.appendChild(aboutAvWarningNode());")
+    quote_at = body.index("modalQuoteMark('\u201C'), result.notes, modalQuoteMark('\u201D')")
     notice_at = body.index("notice.className = 'cb-warnbox';")
-    assert build_at < notes_at < av_at < notice_at
+    assert build_at < lead_at < notes_at < quote_at < notice_at
+    assert body.count("aboutAvWarningNode()") == 1
+    assert "if (result.fresh_install) body.appendChild(aboutAvWarningNode());" in body
     assert "notice.textContent = result.notice;" in body
     assert "notes: p.notes, notice: p.notice," in app_js
     with open(os.path.join(ROOT, "web", "app.css"), encoding="utf-8") as fh:
         css = fh.read()
+    assert ".cb-mnote--lead { color: var(--cb-text); font-weight: 700; }" in css
+    assert ".cb-mnote__quote { font-weight: 700; }" in css
     assert ".cb-mnote--notes { color: var(--cb-text); font-size: 14px;" in css
