@@ -772,6 +772,19 @@ def test_the_genre_tag_matches_the_platform_tags_grey(app_js):
         assert "cb-tag--yt" not in fh.read()
 
 
+def test_the_platform_and_genre_tags_are_labelled(app_js):
+    """Two grey tags side by side read as two of the same thing, so each
+    carries a small label saying which it is."""
+    card = _slice(app_js, "  function wlCardNode(row)", "  function wlCurrentLine(row)")
+    assert ("wlTagLabel('Platform:')" in card
+            and card.index("wlTagLabel('Platform:')") < card.index("tagNode(row.platform"))
+    assert ("wlTagLabel('Genre:')" in card
+            and card.index("wlTagLabel('Genre:')") < card.index("tagNode(row.genre"))
+    assert card.index("tagNode(row.platform") < card.index("wlTagLabel('Genre:')")
+    with open(os.path.join(ROOT, "web", "app.css"), encoding="utf-8") as fh:
+        assert ".cb-wlcard__taglab" in fh.read()
+
+
 def test_the_share_buttons_open_pickers_over_the_local_only_file_methods(
         app_js, index_html):
     """Export and Import sit on their own row under the toolbar. Each opens a

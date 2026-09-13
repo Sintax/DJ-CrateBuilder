@@ -84,6 +84,8 @@ const state = { settings: { use_cookies: true, cookies_browser: 'Firefox',
                             sleep_mode: 'Auto', limit_enabled: true },
                 host: { transport: 'local' } };
 const REMOTE_SETTING_KEYS = [];
+const REMOTE_PARKED_REASON = 'parked';
+function remoteAccessAvailable() { return true; }
 function setDisabled(el, disabled, opts) { el.disabled = !!disabled; el.opts = opts || {}; }
 function bindTips() {}
 function writeBlocked() { return ''; }
@@ -485,3 +487,23 @@ def test_the_review_starts_with_strong_rows_ticked_and_sends_only_ticks(app_js, 
     assert r["meta"][0] == "3.0 MB  2023-11-14"
     assert r["meta"][2] == "512 B  "
     assert r["solo"] == ["Select All", "Deselect All", "Confirm Deletions", "Cancel Scan"]
+
+
+# ── Remote Access parked while it is worked out ─────────────────────────────
+
+def test_the_remote_access_card_is_greyed_with_a_red_notice_while_parked(app_js):
+    """host.remote_available false (remoteauth's kill switch) greys the three
+    remote toggles, pairing and revoke on both mounts and says why in red;
+    the notify toggles stay live because they also gate the local bell."""
+    assert "state.host.remote_available === false" in app_js
+    assert "set(key, remoteMount || remoteParked," in app_js
+    card = _slice(app_js, "    'Remote Access': (card) => {", "    'Browser Cookies': (card) => {")
+    assert "const parked = !remoteAccessAvailable();" in card
+    assert "notice.className = 'cb-remote-parked';" in card
+    assert "still in development" in card
+    assert "setDisabled(pairBtn, parked || !local," in card
+    assert "setDisabled(revoke, parked || !local || !count," in card
+    with open(os.path.join(ROOT, "web", "app.css"), encoding="utf-8") as fh:
+        css = fh.read()
+    assert ".cb-remote-parked {" in css and "color: var(--cb-err); font-weight: 700" in css
+

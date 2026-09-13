@@ -1752,6 +1752,13 @@
     return el;
   }
 
+  function wlTagLabel(text) {
+    const el = document.createElement('span');
+    el.className = 'cb-wlcard__taglab';
+    el.textContent = text;
+    return el;
+  }
+
   /* ── Watch List (3d) ──────────────────────────────────────────────────────
      Cards are push-driven: watchlist.list fills them once and every
      watchlist.card event replaces exactly one of them in place, so a scan
@@ -1900,7 +1907,11 @@
     name.className = 'cb-wlcard__name';
     name.textContent = row.name;
     head.appendChild(name);
+    /* Two grey tags side by side read as two of the same thing; the labels
+       say which is the platform and which the genre folder. */
+    head.appendChild(wlTagLabel('Platform:'));
     head.appendChild(tagNode(row.platform || '—', 'cb-tag--grey'));
+    head.appendChild(wlTagLabel('Genre:'));
     head.appendChild(tagNode(row.genre || '(none)', 'cb-tag--grey'));
     if (downloading) head.appendChild(tagNode('Downloading', 'cb-tag--fill'));
     else if (row.status === 'scanning') head.appendChild(tagNode('Scanning', 'cb-tag--fill'));
@@ -4807,10 +4818,14 @@
       'the host machine.');
 
     /* Remote Access is read-only on a remote mount (3j): a browser that has
-       been let in must not be able to widen the door it came through. */
-    REMOTE_SETTING_KEYS.forEach((key) => set(key, remoteMount,
-      'Remote access settings can only be changed from the app window on the ' +
-      'host machine.'));
+       been let in must not be able to widen the door it came through. And
+       while the whole feature is parked (host.remote_available), the three
+       toggles are greyed on both mounts — the host refuses the write anyway. */
+    const remoteParked = !remoteAccessAvailable();
+    REMOTE_SETTING_KEYS.forEach((key) => set(key, remoteMount || remoteParked,
+      remoteParked ? REMOTE_PARKED_REASON
+        : 'Remote access settings can only be changed from the app window on the ' +
+          'host machine.'));
 
     /* A read-only session, or one without the control lock, changes nothing
        at all — the host refuses every settings.set. */
@@ -5171,6 +5186,15 @@
   const REMOTE_SETTING_KEYS = ['remote_enabled', 'remote_require_pairing',
                                'remote_read_only'];
 
+  /* The host's kill switch (remoteauth.REMOTE_ACCESS_AVAILABLE) as the page
+     sees it. Absent from an older host's snapshot means available, so a
+     bundle newer than its host does not grey a card the host still serves. */
+  function remoteAccessAvailable() {
+    return !(state && state.host && state.host.remote_available === false);
+  }
+  const REMOTE_PARKED_REASON = 'Remote Access is disabled — this feature is ' +
+    'still in development. The app works normally on this machine.';
+
   /* The Remote Access card's two live things — the code countdown's interval
      and its subscription — held outside the builder so a re-render can stop
      the previous card's before starting its own. */
@@ -5322,14 +5346,26 @@
        must not be able to pair another one or revoke the host's own devices. */
     'Remote Access': (card) => {
       const local = state.host.transport === 'local';
+      const parked = !remoteAccessAvailable();
       /* One card at a time: renderSettings rebuilds the grid, so the previous
          card's countdown and its subscription have to go with it. */
       if (remoteCard.tick) clearInterval(remoteCard.tick);
       if (remoteCard.off) remoteCard.off();
       remoteCard.tick = null;
       remoteCard.off = null;
-      const remoteReason = 'Remote access settings can only be changed from ' +
-        'the app window on the host machine.';
+      const remoteReason = parked ? REMOTE_PARKED_REASON
+        : 'Remote access settings can only be changed from ' +
+          'the app window on the host machine.';
+
+      if (parked) {
+        card.classList.add('is-parked');
+        const notice = document.createElement('div');
+        notice.className = 'cb-remote-parked';
+        notice.id = 'remote-parked';
+        notice.textContent = 'Remote Access is disabled — this feature is ' +
+          'still in development.';
+        card.insertBefore(notice, card.firstElementChild.nextSibling);
+      }
 
       const div = document.createElement('div');
       div.className = 'cb-div';
@@ -5353,6 +5389,7 @@
       revoke.textContent = 'Revoke all & re-pair';
 
       row.append(lab, list, revoke);
+      if (parked) row.classList.add('cb-parked-dim');
       card.appendChild(row);
 
       const pairRow = document.createElement('div');
@@ -5374,6 +5411,7 @@
       codeNote.id = 'remote-code-note';
       codeNote.style.fontSize = '11px';
       pairRow.append(pairBtn, codeOut, codeNote);
+      if (parked) pairRow.classList.add('cb-parked-dim');
       card.appendChild(pairRow);
 
       const hint = document.createElement('div');
@@ -5416,8 +5454,8 @@
             ? `${count} — ` + devices.map((d) =>
                 `${d.name} (${d.paired_at ? fmtDate(d.paired_at) : 'unknown'})`).join(' · ')
             : `${count} device${count === 1 ? '' : 's'}`;
-        setDisabled(revoke, !local || !count,
-          { reason: !local ? remoteReason
+        setDisabled(revoke, parked || !local || !count,
+          { reason: parked || !local ? remoteReason
               : 'No devices are paired, so there is nothing to revoke.',
             ttKey: 'remote.revoke_all' });
         const pairing = cfg && cfg.pairing;
@@ -5428,7 +5466,11 @@
           codeOut.textContent = '';
           countdown(null);
         }
-        hint.textContent = cfg && cfg.enabled
+        hint.textContent = parked
+          ? 'Nothing here is live yet: the host answers on this machine only, ' +
+            'no device can pair, and any paired device is shut out until the ' +
+            'feature ships.'
+          : cfg && cfg.enabled
           ? 'Remote access is on. The host serves this bundle to paired ' +
             'devices on the network; a change here takes effect the next time ' +
             'the host starts. Plain HTTP is LAN-only — put it behind a tunnel ' +
@@ -5437,7 +5479,7 @@
             'no paired device can reach it from elsewhere.';
       }
 
-      setDisabled(pairBtn, !local,
+      setDisabled(pairBtn, parked || !local,
         { reason: remoteReason, ttText: pairBtn.getAttribute('data-tt-text') });
       pairBtn.addEventListener('click', async () => {
         try {

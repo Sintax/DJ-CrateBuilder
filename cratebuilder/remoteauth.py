@@ -10,6 +10,18 @@ import time
 
 REMOTE_FILE_NAME = "cratebuilder_remote.json"
 
+# The whole feature is parked while it is worked out. While this is False the
+# "enabled" flag reads as off no matter what the file says, so every gate that
+# consults it — the LAN bind, the per-request check, the event socket, the
+# window's mount-on-start — refuses without each needing its own switch. The
+# flag itself is not rewritten: the user's choice comes back when this flips.
+REMOTE_ACCESS_AVAILABLE = False
+
+IN_DEVELOPMENT_REASON = (
+    "Remote Access is disabled — this feature is still in development. "
+    "The app works normally on this machine; pairing and remote control "
+    "will return in a later build.")
+
 # HANDOFF §8.1 — a 6-digit code, good for five minutes, exchanged once.
 PAIRING_CODE_TTL = 300
 PAIRING_CODE_DIGITS = 6
@@ -297,12 +309,13 @@ class RemoteState:
     # ── flags ────────────────────────────────────────────────────────────────
 
     def config(self):
-        with self._lock:
-            return {key: bool(self._data.get(key)) for key in FLAG_KEYS}
+        return {key: self.get_flag(key) for key in FLAG_KEYS}
 
     def get_flag(self, key):
         if key not in FLAG_KEYS:
             raise KeyError(key)
+        if key == "enabled" and not REMOTE_ACCESS_AVAILABLE:
+            return False
         with self._lock:
             return bool(self._data.get(key))
 

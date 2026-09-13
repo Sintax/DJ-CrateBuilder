@@ -98,6 +98,17 @@ def _isolate_service_paths(request, monkeypatch, _service_sandbox):
     monkeypatch.setattr(cb_service, "app_dir", lambda: runtime)
 
 
+@pytest.fixture(autouse=True)
+def _remote_access_available(monkeypatch):
+    """Remote Access is parked in the shipped build (remoteauth's kill switch),
+    but the pairing, lock and transport machinery behind it still has to keep
+    working for the day it comes back — so the suite runs with the switch on,
+    and tests/test_remote_parked.py covers the parked behaviour by flipping it
+    off again."""
+    from cratebuilder import remoteauth
+    monkeypatch.setattr(remoteauth, "REMOTE_ACCESS_AVAILABLE", True)
+
+
 @pytest.fixture(scope="module")
 def cb_mod():
     """Fresh monolith module for the requesting test file.

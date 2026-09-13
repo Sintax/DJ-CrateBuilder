@@ -26,6 +26,7 @@ from cratebuilder.crate import CrateLayout
 from cratebuilder.db import DownloadsDatabase
 from cratebuilder.events import Coalescer, EventBus
 from cratebuilder.links import LINKS_FILE_NAME
+from cratebuilder import remoteauth
 from cratebuilder.remoteauth import REMOTE_FILE_NAME, RemoteState
 from cratebuilder.settings import Settings
 from cratebuilder.sidecar import UNRESOLVED_URL_PREFIX, is_unresolved_channel
@@ -1270,7 +1271,8 @@ class CrateBuilderService:
         return {
             "app": {"name": "DJ-CrateBuilder", **version_info()},
             "host": {"transport": self.transport, "online": True,
-                     "app_dir": app_dir()},
+                     "app_dir": app_dir(),
+                     "remote_available": remoteauth.REMOTE_ACCESS_AVAILABLE},
             "counts": self.counts(library),
             "library": library,
             "batch": self.batch_list(),
@@ -2192,6 +2194,8 @@ class CrateBuilderService:
         if flag is not None:
             if self.transport != LOCAL:
                 raise CBError(REMOTE_SETTING_REFUSAL)
+            if not remoteauth.REMOTE_ACCESS_AVAILABLE:
+                raise CBError(remoteauth.IN_DEVELOPMENT_REASON)
             stored = self.remote_state.set_flag(flag, bool(value))
             if flag == "enabled" and not stored:
                 # set_flag has just closed every live socket and dropped the
@@ -2284,6 +2288,8 @@ class CrateBuilderService:
     def _require_local_remote_admin(self):
         if self.transport != LOCAL:
             raise CBError(REMOTE_SETTING_REFUSAL)
+        if not remoteauth.REMOTE_ACCESS_AVAILABLE:
+            raise CBError(remoteauth.IN_DEVELOPMENT_REASON)
 
     def remote_config(self):
         """The Remote Access card's whole state in one call.
@@ -2299,6 +2305,7 @@ class CrateBuilderService:
         out = dict(state.config())
         out["control"] = state.control_holder()
         out["local"] = self.transport == LOCAL
+        out["available"] = remoteauth.REMOTE_ACCESS_AVAILABLE
         out["device_count"] = state.device_count()
         if self.transport == LOCAL:
             out["devices"] = state.devices()
