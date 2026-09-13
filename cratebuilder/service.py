@@ -102,7 +102,7 @@ JOB_TITLES = {
 # rule is that a browser elsewhere can never replace the binary it is talking
 # to, and that only the host may see the host's filesystem — so this is checked
 # here, not left to a client to respect.
-LOCAL_ONLY = ("update.", "fs.")
+LOCAL_ONLY = ("update.", "fs.", "cookies.howto_window")
 
 # logs.download only ever hands back a path (see CrateBuilderService.logs_download)
 # — never touches the host filesystem itself — so it's safe on the remote
@@ -885,6 +885,9 @@ class CrateBuilderService:
         # a service nothing has wired it into (every test, the remote-only
         # entry points) — the worker treats that as "nothing to call".
         self.on_update_restart = None
+        # The desktop window's opener for the cookie setup guide's own
+        # window (see cookies_howto_window). None everywhere else.
+        self.on_open_howto = None
         self._update_timer = None
         self._next_update_check_ts = None
         # What the most recent check (manual or the silent timer) found, so a
@@ -1227,6 +1230,8 @@ class CrateBuilderService:
             "db.cleanup_pending": lambda p: self.cleanup_pending(),
             "about.info": lambda p: self.about(),
             "cookies.howto": lambda p: self.cookies_howto(p.get("browser")),
+            "cookies.howto_window":
+                lambda p: self.cookies_howto_window(p.get("browser")),
             "genres.create": lambda p: self.genres_create(p.get("name"),
                                                           p.get("platform")),
             "genres.remove": lambda p: self.genres_remove(p.get("name"),
@@ -1351,6 +1356,22 @@ class CrateBuilderService:
         return {"browser": name,
                 "title": f"How-To: Setting Up a Dedicated {name} Profile",
                 "text": text}
+
+    def cookies_howto_window(self, browser):
+        """Open the walkthrough in a window of its own, beside the app, so the
+        steps stay readable while the user works through them in Settings —
+        a modal closes the moment they click back into the app. Only the
+        desktop window can do this (web_window.py hands in the opener); with
+        none wired the page keeps its in-page fallback. Refused over the
+        remote transport (LOCAL_ONLY's "fs." prefix is for paths; this one is
+        named there outright): a browser elsewhere must not pop windows on
+        the host's desktop."""
+        page = self.cookies_howto(browser)
+        opener = self.on_open_howto
+        if opener is None:
+            raise CBError("The guide cannot open in its own window here.")
+        opener(page["browser"], page["title"])
+        return {"opened": True, "browser": page["browser"]}
 
     # ── library / database ────────────────────────────────────────────────────
 

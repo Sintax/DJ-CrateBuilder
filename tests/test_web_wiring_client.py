@@ -171,7 +171,7 @@ function modalButton(label, cls, onClick) {
   return { label, cls, onClick, style: {} };
 }
 function closeModal() { closes += 1; if (opened && opened.onClose) opened.onClose(); }
-function openCookieHowto(browser) { howto.push(browser); closeModal(); }
+function openCookieHowto(browser) { howto.push(browser); }
 function openModal(opts) {
   opened = opts;
   opened.bodyEl = mkEl(); opened.footEl = mkEl();
@@ -227,12 +227,13 @@ def test_got_it_turns_cookies_on_through_the_ordinary_save(app_js, tmp_path):
 
 
 def test_the_guide_button_turns_cookies_on_and_opens_the_browsers_guide(app_js, tmp_path):
-    """Asking for the guide is committing: cookies go on, then the walkthrough
-    for the selected browser replaces the gate. Closing the gate that way must
-    not undo the tick."""
+    """Asking for the guide is committing: cookies go on, the gate closes, and
+    the walkthrough for the selected browser opens in its own window. Closing
+    the gate that way must not undo the tick."""
     r = _gate(app_js, tmp_path, "Brave", "Open the setup guide")
     assert r["checked"] is True
     assert r["saves"] == [["use_cookies", True, True]]
+    assert r["closes"] == 1
     assert r["howto"] == ["Brave"]
 
 

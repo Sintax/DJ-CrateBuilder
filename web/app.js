@@ -5564,7 +5564,28 @@
     return '';
   }
 
+  /* The guide lives in a window of its own so it can sit beside the app
+     while the user follows it — a modal closes on the first click back into
+     Settings. The desktop window opens a second native window; a browser
+     gets a popup of the same page. Only when neither can open (the host
+     refused, the popup was blocked) does the modal fallback below appear. */
+  async function openCookieHowtoWindow(browser) {
+    if (cbApi.transport === 'local') {
+      try {
+        await cbApi.call('cookies.howto_window', { browser });
+        return true;
+      } catch (_) { return false; }
+    }
+    try {
+      const win = window.open('howto.html#' + encodeURIComponent(browser || ''),
+                              'cb-howto', 'popup,width=760,height=680');
+      if (win) { win.focus(); return true; }
+    } catch (_) { /* blocked */ }
+    return false;
+  }
+
   async function openCookieHowto(browser) {
+    if (await openCookieHowtoWindow(browser)) return;
     let page;
     try {
       page = await call('cookies.howto', { browser });
@@ -5658,6 +5679,7 @@
         const keepOff = modalButton('Keep cookies off', 'cb-btn--quiet', closeModal);
         const guide = modalButton('Open the setup guide', 'cb-btn--quiet', () => {
           turnOn();
+          closeModal();
           openCookieHowto(browser);
         });
         guide.style.marginLeft = 'auto';

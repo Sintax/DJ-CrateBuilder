@@ -1102,3 +1102,112 @@ def test_windowclose_guards_each_part_separately():
     closer.on_closing()                         # must not raise
 
     assert ran == ["broken", "service"]
+
+
+# ── the cookie setup guide's own window ──────────────────────────────────────
+# HowtoWindow over a recording create_window: no second pywebview window is
+# ever raised, and the guide page it asks for is checked as a URL.
+
+class GuideWindow(FakeWindow):
+    def __init__(self):
+        super().__init__()
+        self.events = type("Events", (), {})()
+        self.events.closed = FakeEvent()
+
+
+def make_howto(service=None):
+    made = []
+
+    def create(title, url, **kwargs):
+        window = GuideWindow()
+        made.append({"title": title, "url": url, "window": window, **kwargs})
+        return window
+
+    return web_window.HowtoWindow(service or RecordingService(), create=create), made
+
+
+def test_the_guide_opens_howto_html_for_the_browser_over_its_own_bridge():
+    service = RecordingService()
+    howto, made = make_howto(service)
+
+    window = howto.open("Firefox", "How-To: Setting Up a Dedicated Firefox Profile")
+
+    (call,) = made
+    assert call["title"] == "How-To: Setting Up a Dedicated Firefox Profile"
+    assert call["url"].endswith("howto.html#Firefox")
+    assert call["url"].startswith(web_window.WEB_DIR)
+    assert isinstance(call["js_api"], web_window.JsApi)
+    assert call["js_api"]._service is service
+    assert (call["width"], call["height"]) == web_window.HowtoWindow.SIZE
+    assert call["min_size"] == web_window.HowtoWindow.MIN_SIZE
+    assert window is call["window"]
+
+
+def test_a_browser_name_is_url_quoted_into_the_hash():
+    howto, made = make_howto()
+    howto.open("Chrome Beta", "t")
+    assert made[0]["url"].endswith("howto.html#Chrome%20Beta")
+
+
+def test_asking_for_another_guide_replaces_the_open_one():
+    """The monolith's _open_cookie_howto: one guide window, showing the
+    browser picked last."""
+    howto, made = make_howto()
+    first = howto.open("Chrome", "chrome")
+    second = howto.open("Firefox", "firefox")
+
+    assert first.actions == ["destroy"]
+    assert second.actions == []
+    assert howto._window is second
+
+
+def test_a_guide_the_user_closed_is_not_destroyed_again():
+    howto, made = make_howto()
+    first = howto.open("Chrome", "chrome")
+    (closed,) = first.events.closed.handlers
+    closed()                                   # the user hit its X
+
+    howto.stop()
+    howto.open("Edge", "edge")
+
+    assert first.actions == []
+
+
+def test_stop_closes_the_guide_with_the_app():
+    """pywebview's loop only ends once every window is gone: a guide left
+    open would keep the process alive after the main window closed."""
+    howto, made = make_howto()
+    window = howto.open("Chrome", "chrome")
+
+    howto.stop()
+
+    assert window.actions == ["destroy"]
+    assert howto._window is None
+    howto.stop()                               # idempotent
+    assert window.actions == ["destroy"]
+
+
+def test_stop_survives_a_window_that_refuses_to_destroy():
+    howto, made = make_howto()
+    window = howto.open("Chrome", "chrome")
+    window.destroy = lambda: (_ for _ in ()).throw(RuntimeError("gone"))
+
+    howto.stop()                               # must not raise
+
+    assert howto._window is None
+
+
+def test_main_hands_the_guide_opener_to_the_service_and_closes_it_first(monkeypatch):
+    service, window, created, started, _ = run_main(monkeypatch)
+
+    assert getattr(service.on_open_howto, "__func__", None) is \
+        web_window.HowtoWindow.open
+    howto = service.on_open_howto.__self__
+    guide = GuideWindow()
+    monkeypatch.setattr(howto, "_create", lambda *a, **k: guide)
+    howto.open("Chrome", "chrome")
+
+    close_the_window(window)
+
+    assert guide.actions == ["destroy"]
+    assert service.closes == 1
