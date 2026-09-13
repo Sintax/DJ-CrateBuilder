@@ -649,6 +649,27 @@ def run_scan_worker_if_requested(argv=None):
     sys.exit(cb_scanproc.worker_main())
 
 
+def run_self_test_if_requested(argv=None):
+    """Detect `--self-test <report.json>` and, if present, run the build's
+    self-test and exit with its verdict — before anything else runs.
+
+    The release script runs the freshly built exe this way to prove the
+    bundle can load its packages, encode with the bundled FFmpeg and probe a
+    public video, before the build is published. Like the scan worker it
+    must never create a window or touch the single-instance lock; unlike it
+    the verdict travels through the report file, since a windowed exe has no
+    stdout. Returns without exiting when the flag is absent.
+    """
+    argv = sys.argv if argv is None else argv
+    if "--self-test" not in argv:
+        return
+    pos = argv.index("--self-test") + 1
+    if pos >= len(argv):
+        sys.exit("--self-test needs a report path")
+    from cratebuilder import selftest as cb_selftest
+    sys.exit(cb_selftest.run(argv[pos]))
+
+
 def acquire_or_hand_off(port=SINGLE_INSTANCE_PORT):
     """Claim the single-instance lock, or hand off to the instance that
     already holds it and exit.
@@ -1221,4 +1242,5 @@ def main():
 
 if __name__ == "__main__":
     run_scan_worker_if_requested()
+    run_self_test_if_requested()
     main()
