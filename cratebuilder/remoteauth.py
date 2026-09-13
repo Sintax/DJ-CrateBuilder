@@ -106,8 +106,8 @@ def normalise_host(name):
 #   watchlist.resolve_candidates — reads nothing local: it spends the host's
 #                              yt-dlp session on a channel search, which is
 #                              work, and it is step one of a write flow.
-#   logs.download / db.export_csv are present: both only read and hand back
-#                              bytes the viewer already has permission to see.
+#   logs.download is present: it only reads and hands back bytes the viewer
+#                              already has permission to see.
 #   logs.watch is present: it starts a tail thread, not a job — without it the
 #                              log viewers cannot follow a running batch, which
 #                              is the whole point of a read-only session.
@@ -122,7 +122,6 @@ READ_METHODS = frozenset({
     "watchlist.details",
     "db.groups",
     "db.query",
-    "db.export_csv",
     "db.artwork_preview",
     "db.cleanup_pending",
     "logs.tail",

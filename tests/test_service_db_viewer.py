@@ -1,9 +1,8 @@
-"""CrateBuilderService: the Database viewer's db.groups/db.query/db.export_csv/
+"""CrateBuilderService: the Database viewer's db.groups/db.query/
 db.artwork_preview/fs.reveal surface — contract-id mapping, watch-list folder +
-cleanup eligibility, artwork on_disk derivation, and the off-DB-lock rules for
-CSV export and artwork preview."""
+cleanup eligibility, artwork on_disk derivation, and the off-DB-lock rule for
+artwork preview."""
 import os
-import tempfile
 
 import pytest
 
@@ -284,85 +283,6 @@ def test_db_query_artwork_defaults_to_all_tracks_filter(dbsvc):
     _add_download(db, video_id="a", title="A", channel_name="C")
     res = svc.db_query("artwork", {}, {}, 0, 50)
     assert res["total"] == 1
-
-
-# ── db.export_csv ─────────────────────────────────────────────────────────────
-
-def test_db_export_csv_downloads_returns_csv_text_and_writes_no_file(dbsvc, tmp_path):
-    svc, db = dbsvc
-    _add_download(db, video_id="a", title="A Track", channel_name="Chan",
-                  file_path="/x/a.mp3")
-    before = set(os.listdir(tempfile.gettempdir()))
-    result = svc.db_export_csv("downloads", {}, {})
-    assert result["rows"] == 1
-    assert "path" not in result            # nothing is left on the host's disk
-    assert result["filename"] == "cratebuilder_downloads.csv"
-    assert "A Track" in result["csv"]
-    assert "Title,Channel,Genre,Platform" in result["csv"]
-    leaked = [n for n in set(os.listdir(tempfile.gettempdir())) - before
-              if n.startswith("cratebuilder_")]
-    assert leaked == []
-
-
-def test_db_export_csv_watchlist_and_artwork_tables_work(dbsvc):
-    svc, db = dbsvc
-    db.add_watchlist_channel(url="https://a", display_name="Chan A",
-                             platform="YouTube", genre="House")
-    wl = svc.db_export_csv("watchlist", {}, {})
-    assert "Chan A" in wl["csv"]
-
-    _add_download(db, video_id="a", title="A", channel_name="Chan",
-                  artwork_embedded=1)
-    art = svc.db_export_csv("artwork", {}, {})
-    assert "Yes" in art["csv"]   # embedded formatted as Yes/No, not True/False
-
-
-def test_db_export_csv_unknown_table_raises(dbsvc):
-    svc, _db = dbsvc
-    with pytest.raises(CBError):
-        svc.db_export_csv("not_a_table", {}, {})
-
-
-def test_db_export_csv_builds_the_text_after_the_db_lock_is_released(dbsvc, monkeypatch):
-    svc, db = dbsvc
-    _add_download(db, video_id="a", title="A", channel_name="Chan")
-    monkeypatch.setattr(svc, "_db", lambda: db)
-
-    lock_states = []
-    import cratebuilder.service as service_module
-    real_writer = service_module.csv.writer
-
-    def spy_writer(*a, **k):
-        lock_states.append(db._lock.locked())
-        return real_writer(*a, **k)
-
-    monkeypatch.setattr(service_module.csv, "writer", spy_writer)
-    svc.db_export_csv("downloads", {}, {})
-    assert lock_states == [False]
-
-
-def test_db_export_csv_neutralises_formula_cells(dbsvc):
-    svc, db = dbsvc
-    _add_download(db, video_id="a", title="=cmd|'/c calc'!A1",
-                  channel_name="@SUM(1)")
-    csv_text = svc.db_export_csv("downloads", {}, {})["csv"]
-    assert "'=cmd|'" in csv_text          # leading ' added, so Excel sees text
-    assert "'@SUM(1)" in csv_text
-    assert not csv_text.splitlines()[1].startswith("=")
-
-
-def test_db_export_csv_artwork_skips_the_on_disk_stat(dbsvc, monkeypatch, tmp_path):
-    """The artwork export has no On Disk column, so it must not stat a row."""
-    svc, db = dbsvc
-    _add_download(db, video_id="a", title="A", channel_name="Chan",
-                  artwork_path=str(tmp_path / "cover.jpg"))
-    import cratebuilder.service as service_module
-    stats = []
-    real_isfile = service_module.os.path.isfile
-    monkeypatch.setattr(service_module.os.path, "isfile",
-                        lambda p: (stats.append(p), real_isfile(p))[1])
-    svc.db_export_csv("artwork", {}, {})
-    assert str(tmp_path / "cover.jpg") not in stats
 
 
 # ── db.artwork_preview ───────────────────────────────────────────────────────

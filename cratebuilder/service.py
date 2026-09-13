@@ -2,7 +2,6 @@
 
 import ast
 import base64
-import csv
 import io
 import itertools
 import os
@@ -120,11 +119,6 @@ DEFAULT_DB_PAGE_SIZE = 200
 # payload" property is the server's, not a convention the client happens to
 # follow — a browser on the remote transport is not code this host controls.
 MAX_DB_PAGE_SIZE = 5000
-# db.export_csv fetches the whole filtered set in one pass rather than paging
-# it — comfortably above any real library size while still bounding worst-case
-# memory, and avoids the LIMIT 0 footgun (SQLite reads that as "zero rows",
-# not "no limit").
-EXPORT_ROW_CAP = 1_000_000
 # db.artwork_preview holds the bytes, their base64 form, the data URL and the
 # JSON envelope live at once, so an uncapped read is a multiple of the file's
 # size in host memory. Far above any real cover art.
@@ -1212,8 +1206,6 @@ class CrateBuilderService:
                 p.get("table"), p.get("filters") or {}, p.get("sort") or {},
                 p.get("offset", 0), p.get("limit", DEFAULT_DB_PAGE_SIZE),
                 want_total=p.get("want_total", True)),
-            "db.export_csv": lambda p: self.db_export_csv(
-                p.get("table"), p.get("filters") or {}, p.get("sort") or {}),
             "db.artwork_preview": lambda p: self.db_artwork_preview(p.get("id")),
             "db.maintenance_preview":
                 lambda p: self.maintenance_preview(p.get("task")),
@@ -1667,21 +1659,6 @@ class CrateBuilderService:
         "status": lambda r: (r.get("status") or "").lower(),
     }
 
-    _EXPORT_COLUMNS = {
-        "downloads": [("title", "Title"), ("channel", "Channel"),
-                      ("genre", "Genre"), ("platform", "Platform"),
-                      ("upload", "Upload date"), ("downloaded", "Downloaded"),
-                      ("bitrate", "Bitrate"), ("file_path", "File path")],
-        "watchlist": [("channel", "Channel"), ("link", "URL Link"),
-                      ("folder", "Folder"), ("platform", "Platform"),
-                      ("genre", "Genre"), ("pending", "Pending new"),
-                      ("total", "Total dl'd"), ("status", "Status")],
-        "artwork": [("title", "Track"), ("channel", "Channel"),
-                    ("platform", "Platform"), ("embedded", "Embedded"),
-                    ("sidecar", "Sidecar"), ("thumb_url", "Thumbnail URL"),
-                    ("file_path", "File path")],
-    }
-
     @staticmethod
     def _map_download_row(row):
         ts = row.get("download_timestamp")
@@ -1706,12 +1683,9 @@ class CrateBuilderService:
         }
 
     @staticmethod
-    def _map_artwork_row(row, derive_on_disk=True):
+    def _map_artwork_row(row):
         path = (row.get("artwork_path") or "").strip()
-        # The CSV export has no On Disk column, so statting every exported
-        # row would be a full-library filesystem scan for a value nothing
-        # reads.
-        on_disk = (os.path.isfile(path) if path else None) if derive_on_disk else None
+        on_disk = os.path.isfile(path) if path else None
         return {
             "id": row.get("id"),
             "title": row.get("title") or "(untitled)",
@@ -1804,11 +1778,9 @@ class CrateBuilderService:
         return mapped
 
     def _query_rows(self, table, filters, sort, offset, limit,
-                    want_total=True, derive_on_disk=True):
+                    want_total=True):
         """(rows, total) for one Database-viewer table, rows mapped to the
-        contract's UI column ids. Shared by db_query (one page) and
-        db_export_csv (the whole filtered set, offset 0 / a very high
-        limit) so the two can never disagree about what a filter means.
+        contract's UI column ids.
 
         want_total=False skips the count entirely (total comes back as
         None) — "Sidecar missing on disk" has to stat every candidate to
@@ -1847,7 +1819,7 @@ class CrateBuilderService:
                                              limit=limit, offset=offset)
             except ValueError as exc:
                 raise CBError(str(exc))
-            return [self._map_artwork_row(r, derive_on_disk) for r in rows], total
+            return [self._map_artwork_row(r) for r in rows], total
 
         if table == "watchlist":
             rows = [self._map_watchlist_row(r)
@@ -1878,44 +1850,6 @@ class CrateBuilderService:
         rows, total = self._query_rows(table, filters, sort, offset, limit,
                                        want_total=bool(want_total))
         return {"rows": rows, "total": total}
-
-    # A leading =, +, -, @, tab or CR makes Excel and LibreOffice read a cell
-    # as a formula. Track titles are third-party text straight off
-    # YouTube/SoundCloud, so a channel can name an upload =cmd|'/c calc'!A1
-    # and have it fire when the user opens their own export.
-    _CSV_FORMULA_LEADERS = ("=", "+", "-", "@", "\t", "\r")
-
-    @classmethod
-    def _csv_cell(cls, key, value):
-        if key == "embedded":
-            return "Yes" if value else "No"
-        if value is None:
-            return ""
-        if isinstance(value, str) and value[:1] in cls._CSV_FORMULA_LEADERS:
-            return "'" + value
-        return value
-
-    def db_export_csv(self, table, filters, sort):
-        """The whole current filtered set for *table* as CSV text.
-
-        Returned inline only — nothing is written to disk. The browser
-        builds its download Blob from "csv" (the same shape logs.download's
-        local path already uses), and a host-side file would otherwise
-        accumulate one full copy of the library per export with nothing to
-        delete it."""
-        columns = self._EXPORT_COLUMNS.get(table)
-        if columns is None:
-            raise CBError(f"Unknown export table: {table!r}")
-        rows, _total = self._query_rows(table, filters, sort, 0, EXPORT_ROW_CAP,
-                                        want_total=False, derive_on_disk=False)
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        writer.writerow([label for _key, label in columns])
-        for row in rows:
-            writer.writerow([self._csv_cell(key, row.get(key))
-                             for key, _label in columns])
-        return {"filename": f"cratebuilder_{table}.csv",
-                "rows": len(rows), "csv": buf.getvalue()}
 
     def db_artwork_preview(self, row_id):
         """{data_url} (base64) for one downloads row's artwork — never sent

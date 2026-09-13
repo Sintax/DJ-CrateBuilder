@@ -1171,7 +1171,7 @@ def main():
                                host_allow=host_allow_args(sys.argv))
         except Exception as exc:                     # never block the window
             print(f"Remote mount could not start: {exc}", file=sys.stderr)
-    webview.settings["ALLOW_DOWNLOADS"] = True       # Export CSV, log downloads
+    webview.settings["ALLOW_DOWNLOADS"] = True       # log downloads
     serve_bundle_revalidated()
     # Created hidden when the user asked to start in the tray, so the window is
     # never mapped at all — the monolith withdraws before it builds a widget
