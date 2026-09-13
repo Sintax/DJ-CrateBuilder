@@ -76,6 +76,8 @@ body { overflow: hidden; }
 .cb-card { overflow-wrap: anywhere; }
 /* Full-width sections interrupt the flow rather than claiming two tracks. */
 .cb-span-2 { column-span: all; }
+/* The rule above Settings' Remote Access card. */
+.cb-set-sep { border-top: 2px solid var(--cb-accent); margin: 6px 0 18px; }
 .cb-cards { display: flex; flex-direction: column; gap: 10px; }
 .cb-big { font-size: 30px; font-weight: 500; color: var(--cb-accent); line-height: 1; }
 
@@ -337,9 +339,13 @@ body { overflow: hidden; }
 .cb-wlcard.is-running { border-color: var(--cb-accent); border-width: 2px; padding: 13px 15px; }
 .cb-wlcard__name { font-weight: 600; font-size: 14.5px; color: var(--cb-text); text-decoration: none; }
 a.cb-wlcard__name { border-bottom: 1px dotted var(--cb-line); }
-.cb-wlcard__taglab { font-size: 11.5px; color: var(--cb-muted); margin-left: 2px; margin-right: -4px; }
+.cb-wlcard__facts { display: inline-flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+                    font-size: 12px; color: var(--cb-text); white-space: nowrap; }
+.cb-wlcard__taglab { color: var(--cb-muted); }
+.cb-wlcard__factsep { color: var(--cb-dim); }
+.cb-wlcard__added { margin-left: 8px; color: var(--cb-muted); }
 .cb-wlcard__new { margin-left: auto; font: 500 12.5px var(--cb-mono); color: var(--cb-line); }
-.cb-wlcard__meta { font-size: 11px; }
+.cb-wlcard__meta { font-size: 11px; font-weight: 700; }
 .cb-wlcard__actions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 /* Fix Link is the design's one unresolved-orange control; --cb-unresolved is
    too light for white text, so the label goes near-black as the design does. */

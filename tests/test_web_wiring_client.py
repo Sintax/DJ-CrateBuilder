@@ -492,6 +492,19 @@ def test_the_review_starts_with_strong_rows_ticked_and_sends_only_ticks(app_js, 
 
 # ── Remote Access parked while it is worked out ─────────────────────────────
 
+def test_a_red_rule_separates_remote_access_from_the_settings_above(app_js):
+    """The Remote Access card is set apart from the everyday settings by a
+    full-width red rule, placed in the grid just ahead of it."""
+    settings = _slice(app_js, "  function renderSettings()", "  /* ── About (3n)")
+    assert "if (sec.name === 'Remote Access') {" in settings
+    assert "sep.className = 'cb-set-sep cb-span-2';" in settings
+    assert settings.index("grid.appendChild(sep);") < settings.index(
+        "grid.appendChild(card);", settings.index("grid.appendChild(sep);"))
+    with open(os.path.join(ROOT, "web", "app.css"), encoding="utf-8") as fh:
+        css = fh.read()
+    assert ".cb-set-sep { border-top: 2px solid var(--cb-accent);" in css
+
+
 def test_the_remote_access_card_is_greyed_with_a_red_notice_while_parked(app_js):
     """host.remote_available false (remoteauth's kill switch) greys the three
     remote toggles, pairing and revoke on both mounts and says why in red;
