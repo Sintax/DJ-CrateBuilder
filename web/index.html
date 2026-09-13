@@ -24,10 +24,12 @@
 
   <!-- ── Left panel: never changes width or order between screens ────────── -->
   <aside class="cb-panel">
-    <div class="cb-row" style="gap:9px">
-      <img src="assets/logo.png" alt="" width="22" height="22"
-           style="border-radius:5px;display:block;flex:none">
-      <span class="cb-brand">CrateBuilder</span>
+    <div class="cb-brandrow">
+      <div class="cb-row" style="gap:9px">
+        <img src="assets/logo.png" alt="" width="22" height="22"
+             style="border-radius:5px;display:block;flex:none">
+        <span class="cb-brand">DJ-CrateBuilder</span>
+      </div>
       <span class="cb-tag" id="mount-tag">Local</span>
     </div>
 
@@ -275,8 +277,8 @@
                 data-tt="wl.cancel_all">✕ Cancel</button>
       </div>
       <div class="cb-row" style="gap:8px;flex-wrap:wrap">
-        <button class="cb-btn cb-btn--quiet cb-btn--sm" id="wl-export" data-tt="wl.export_list">📤 Export List</button>
-        <button class="cb-btn cb-btn--quiet cb-btn--sm" id="wl-import" data-tt="wl.import_list">📥 Import List</button>
+        <button class="cb-btn cb-btn--quiet cb-btn--xs" id="wl-export" data-tt="wl.export_list">📤 Export List</button>
+        <button class="cb-btn cb-btn--quiet cb-btn--xs" id="wl-import" data-tt="wl.import_list">📥 Import List</button>
       </div>
       <div id="wl-cards" class="cb-cards"></div>
 
