@@ -3085,7 +3085,7 @@ class CrateBuilderService:
         return {"job_id": job_id, "build": build, "notes": notes}
 
     def update_status(self):
-        """Everything the About screen's Updates card renders besides the
+        """Everything the web UI's Update screen renders besides the
         result of the last check: the interval dropdown's options and current
         value, when the next silent check will fire, and whether this build
         can self-update at all."""
@@ -3563,7 +3563,7 @@ class CrateBuilderService:
                 "title": "Update available",
                 "body": (f"Build {result['latest_build']} is available "
                         f"— you're on {result['current_build']}. Open "
-                        "About to install."),
+                        "Update to install."),
                 "at": datetime.now().isoformat(timespec="seconds"),
                 "job": UPDATE_JOB,
             })

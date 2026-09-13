@@ -1,4 +1,4 @@
-"""web/app.js: the About screen's Updates card, client-side.
+"""web/app.js: the Update screen (the self-updater), client-side.
 
 Same method as tests/test_web_downloads_client.py — the real functions are
 sliced out of app.js verbatim and run in Node against stub state, so a test
@@ -18,11 +18,18 @@ import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP_JS = os.path.join(ROOT, "web", "app.js")
+INDEX_HTML = os.path.join(ROOT, "web", "index.html")
 
 
 @pytest.fixture(scope="module")
 def app_js():
     with open(APP_JS, encoding="utf-8") as fh:
+        return fh.read()
+
+
+@pytest.fixture(scope="module")
+def index_html():
+    with open(INDEX_HTML, encoding="utf-8") as fh:
         return fh.read()
 
 
@@ -59,7 +66,7 @@ function tagNode() { return makeEl('span'); }
 function aboutCheckUpdates() {}
 function aboutConfirmUpdate() {}
 function aboutUpdateStatusLine() { return ''; }
-function renderAbout() {}
+function renderUpdate() {}
 function makeEl(tag) {
   return {
     tag, children: [], listeners: {}, attrs: {}, style: {},
@@ -82,7 +89,7 @@ function renderWith(result, running, transport) {
   wl.running = running;
   cbApi.transport = transport || 'local';
   const host = makeEl('div');
-  renderAboutUpdates(host);
+  renderUpdateControls(host);
   const all = buttons(host);
   const update = all.find((b) => b.textContent.indexOf('Update Now') !== -1);
   return { labels: all.map((b) => b.textContent),
@@ -101,8 +108,8 @@ main();
 
 
 def _slices(app_js):
-    return _slice(app_js, "  function renderAboutUpdates(host)",
-                  "  async function aboutOpen()")
+    return _slice(app_js, "  function renderUpdateControls(host)",
+                  "  function renderUpdate()")
 
 
 def test_the_card_never_grows_a_separate_stop_button(app_js, tmp_path):
@@ -130,12 +137,38 @@ def test_the_update_confirm_modal_stops_the_run_from_install_itself(app_js):
     assert "cannot install" in body
 
 
-def test_refresh_repaints_about_so_the_card_tracks_the_run(app_js):
+def test_refresh_repaints_update_so_the_screen_tracks_the_run(app_js):
     """job.started and job.finished both resync through refresh(); without
-    renderAbout() there the Updates card would show stale run state."""
+    renderUpdate() there the Update screen would show stale run state."""
     body = _slice(app_js, "  async function refresh()",
                   "  function isBatchProgress(")
-    assert "renderAbout();" in body
+    assert "renderUpdate();" in body
+
+
+# ── Update is its own screen, under Settings in the nav ─────────────────────
+
+def test_update_is_a_nav_item_between_settings_and_about(index_html):
+    nav = _slice(index_html, "<nav ", "</nav>")
+    items = [line for line in nav.splitlines() if "data-screen=" in line]
+    screens = [line.split('data-screen="')[1].split('"')[0] for line in items]
+    assert screens == ["overview", "downloads", "watchlist", "settings",
+                       "update", "about"]
+    assert 'id="screen-update"' in index_html
+    assert 'id="update-body"' in index_html
+
+
+def test_the_router_opens_the_update_screen_and_about_no_longer_hosts_it(app_js):
+    show = _slice(app_js, "  function show(name)", "  /* The nav is real anchors")
+    assert "if (name === 'update') updateOpen();" in show
+    assert "'update'," in _slice(app_js, "  const SCREENS = [", "];")
+    about = _slice(app_js, "  function renderAbout()",
+                   "  /* ── Update (3o)")
+    assert "renderUpdateControls" not in about
+    assert "aboutUpdate" not in about
+    update = _slice(app_js, "  function renderUpdate()",
+                    "  async function updateOpen()")
+    assert "renderUpdateControls(host);" in update
+    assert "$('#update-body')" in update
 
 
 # ── Download and install during a run: stop → countdown → install ───────────

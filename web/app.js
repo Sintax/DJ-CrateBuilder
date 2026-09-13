@@ -245,15 +245,16 @@
   }
 
   /* ── navigation ────────────────────────────────────────────────────────── */
-  const SCREENS = ['overview', 'downloads', 'watchlist', 'settings',
+  const SCREENS = ['overview', 'downloads', 'watchlist', 'settings', 'update',
                     'activity-log', 'debug-log', 'database', 'about'];
   /* The log screens and the database viewer aren't nav items (they open
      from Settings, per the contract's shell.not_in_nav) — while any of them
      is open, Settings stays the highlighted nav entry, per
-     shell.active_item_rule. About is the one deliberate departure from the
-     contract's four-item nav: buried as a button on Settings it went unfound,
-     so it is a fifth nav destination that highlights itself. The panel
-     footer's build line still opens it. */
+     shell.active_item_rule. About and Update are the two deliberate
+     departures from the contract's four-item nav: buried as a button on
+     Settings, About went unfound, so it became a nav destination that
+     highlights itself; the updater then outgrew its card on About and got a
+     page of its own. The panel footer's build line still opens About. */
   const NAV_ALIAS = { 'activity-log': 'settings', 'debug-log': 'settings',
                       'database': 'settings' };
   const LOG_KIND_BY_SCREEN = { 'activity-log': 'activity', 'debug-log': 'debug' };
@@ -280,6 +281,7 @@
     if (enteringKind) logOpen(enteringKind);
     if (name === 'database' && previous !== 'database') dbOpen();
     if (name === 'about') aboutOpen();
+    if (name === 'update') updateOpen();
     /* Every other screen repaints on entry; the Overview aggregates all of
        them, so it is the one that goes stale fastest — a setting changed on
        Settings, or a batch paused on Downloads, has to be on it when you
@@ -5753,10 +5755,12 @@
 
   const about = { info: null, loading: false, open: {} };
 
-  /* The updater's own state: the last update.status snapshot (interval,
-     next-check, can_self_update, running), the last update.check result
-     (what the status line and the Update Now gate read), and the live
-     apply — a modal's field refs while a download/verify/stage is running. */
+  /* The updater's own state, shared by the Update screen and the modals it
+     opens: the last update.status snapshot (interval, next-check,
+     can_self_update, running), the last update.check result (what the
+     status line and the Update Now gate read), and the live apply — a
+     modal's field refs while a download/verify/stage is running. The
+     about* names date from when this was a card on About. */
   const aboutUpdate = {
     status: null, result: null, checking: false, view: null,
     // Set by the update confirm's Stop Watch List and install while it waits
@@ -5927,9 +5931,6 @@
       host.appendChild(note);
     }
 
-    // ── updates ───────────────────────────────────────────────────────────
-    renderAboutUpdates(host);
-
     // ── FAQ ───────────────────────────────────────────────────────────────
     host.appendChild(divNode());
     const faqHead = document.createElement('div');
@@ -5964,9 +5965,10 @@
     bindTips(host);
   }
 
-  /* ── updates (3n's "local-session-only" controls) ───────────────────────
-     Enabled in the local window; rendered disabled — with the contract's own
-     tooltip plus ABOUT_UPDATER_NOTE as the reason — on a remote session,
+  /* ── Update (3o) ────────────────────────────────────────────────────────
+     Its own nav destination, under Settings. The controls are enabled in the
+     local window; rendered disabled — with the contract's own tooltip plus
+     ABOUT_UPDATER_NOTE as the reason — on a remote session,
      where update.* is refused server-side regardless of what this renders.
      The manifest is always fetched host-side (update.check/update.apply);
      nothing here ever hands the host a build number, URL or checksum. */
@@ -5989,13 +5991,13 @@
 
   async function aboutCheckUpdates() {
     aboutUpdate.checking = true;
-    renderAbout();
+    renderUpdate();
     try {
       aboutUpdate.result = await call('update.check');
       aboutUpdate.status = await call('update.status');
     } catch (_) { /* call() already toasted the reason */ }
     aboutUpdate.checking = false;
-    renderAbout();
+    renderUpdate();
   }
 
   /* The antivirus/false-positive warning has to be seen BEFORE any bytes
@@ -6268,20 +6270,21 @@
     }
   }
 
-  /* Re-fetches update.status and re-renders the About card — the fix for a
-     failed apply otherwise latching Check/Update Now disabled forever (see
-     the job.finished handler's comment). renderAbout() is safe to call
-     whether or not About is the open screen (see the update.available
+  /* Re-fetches update.status and re-renders the Update screen — the fix for
+     a failed apply otherwise latching Check/Update Now disabled forever (see
+     the job.finished handler's comment). renderUpdate() is safe to call
+     whether or not Update is the open screen (see the update.available
      handler, which already does the same). */
   async function aboutRefreshUpdateStatus() {
     if (cbApi.transport !== 'local') return;
     try { aboutUpdate.status = await call('update.status'); }
     catch (_) { /* call() already toasted the reason */ }
-    renderAbout();
+    renderUpdate();
   }
 
-  function renderAboutUpdates(host) {
-    host.appendChild(divNode());
+  /* The controls only — split from renderUpdate() so the tests can drive
+     them against a stub host without the identity line's about.info. */
+  function renderUpdateControls(host) {
     const upHead = document.createElement('div');
     upHead.className = 'cb-row';
     upHead.style.gap = '7px';
@@ -6369,7 +6372,7 @@
         try {
           aboutUpdate.status = await call('update.set_interval', { value: every.value });
         } catch (_) { /* call() already toasted the reason */ }
-        renderAbout();
+        renderUpdate();
       });
     }
     upRow.appendChild(every);
@@ -6399,18 +6402,74 @@
     }
   }
 
-  async function aboutOpen() {
-    if (about.info || about.loading) { renderAbout(); return; }
+  function renderUpdate() {
+    const host = $('#update-body');
+    if (!host) return;
+    host.innerHTML = '';
+    const info = about.info;
+
+    // ── identity ──────────────────────────────────────────────────────────
+    // The build this host is running, so ABOUT_UPDATER_NOTE's "the build
+    // number above" stays true now that the controls no longer sit under
+    // About's version line.
+    const head = document.createElement('div');
+    head.className = 'cb-row';
+    head.style.gap = '14px';
+    const logo = document.createElement('img');
+    logo.src = 'assets/logo.png';
+    logo.alt = '';
+    logo.width = 54;
+    logo.height = 54;
+    logo.style.cssText = 'border-radius:8px;display:block;flex:none';
+    const names = document.createElement('div');
+    const name = document.createElement('div');
+    name.style.cssText =
+      'font-weight:600;font-size:19px;color:var(--cb-text);letter-spacing:-.015em';
+    name.textContent = (info && info.app_name) || 'DJ-CrateBuilder';
+    const build = document.createElement('div');
+    build.className = 'cb-mono cb-mut';
+    build.style.cssText = 'font-size:11.5px;margin-top:3px';
+    build.textContent = info
+      ? [info.version ? `version ${info.version}` : '',
+         info.build_status].filter(Boolean).join(' · ')
+      : (about.loading ? 'Loading…' : '');
+    names.append(name, build);
+    head.append(logo, names);
+    const mount = tagNode(
+      cbApi.transport === 'local' ? 'Local window'
+        : (session && session.read_only ? 'Read-only' : 'Remote session'),
+      'cb-tag--grey');
+    mount.style.marginLeft = 'auto';
+    head.appendChild(mount);
+    host.append(head, divNode());
+
+    renderUpdateControls(host);
+    bindTips(host);
+  }
+
+  /* Loads what About and Update share (about.info, for the version line),
+     then the updater's own status. Both fetches are one-shot: the screen
+     re-renders from state after that, and a manual check refreshes it. */
+  async function updateOpen() {
+    if (!about.info && !about.loading) await aboutLoadInfo();
+    if (cbApi.transport === 'local' && !aboutUpdate.status) {
+      try { aboutUpdate.status = await call('update.status'); }
+      catch (_) { /* toasted; the screen just shows nothing to start from */ }
+    }
+    renderUpdate();
+  }
+
+  async function aboutLoadInfo() {
     about.loading = true;
     renderAbout();
-    try {
-      about.info = await call('about.info');
-      if (cbApi.transport === 'local') {
-        try { aboutUpdate.status = await call('update.status'); }
-        catch (_) { /* toasted; the card just shows nothing to start from */ }
-      }
-    } catch (_) { /* call() already toasted the reason */ }
+    renderUpdate();
+    try { about.info = await call('about.info'); }
+    catch (_) { /* call() already toasted the reason */ }
     about.loading = false;
+  }
+
+  async function aboutOpen() {
+    if (!about.info && !about.loading) await aboutLoadInfo();
     renderAbout();
   }
 
@@ -6664,11 +6723,10 @@
     renderDownloads();
     renderWatchlist();
     renderSettings();
-    // About re-renders too: its Updates card offers Stop Watch List activity
-    // while an available build is blocked behind a run, and job.started /
-    // job.finished both resync through here — without this the button would
-    // outlive the run it exists to stop.
-    renderAbout();
+    // Update re-renders too: its controls close while a run holds the
+    // updater's slot, and job.started / job.finished both resync through
+    // here — without this they would outlive the run they wait on.
+    renderUpdate();
     bindTips(document);
   }
 
@@ -6768,7 +6826,7 @@
       if (job === 'batch') dl.running = true;
       else if (job === 'watchlist') wl.running = true;
       else if (job === 'maintenance') mt.running = true;
-      else return;              // 'update' owns its own screen state (About)
+      else return;              // 'update' owns its own screen state (Update)
       refresh();
     });
     /* The one event that means a job category is free again — emitted after
@@ -6857,13 +6915,13 @@
   }
 
   /* The self-updater's three events. Wired separately from the
-     download/watchlist/maintenance set above because they drive the About
+     download/watchlist/maintenance set above because they drive the Update
      screen's own progress modal, not one of the run-panels those cover. */
   function subscribeUpdateEvents() {
     cbApi.on('update.progress', (p) => aboutPaintApplyProgress(p));
     cbApi.on('update.restarting', (p) => aboutShowRestarting(p && p.build));
-    /* The silent auto-check timer found something — reflect it in the About
-       card if it's open, exactly as a manual Check for updates would, so
+    /* The silent auto-check timer found something — reflect it on the Update
+       screen if it's open, exactly as a manual Check for updates would, so
        Update Now lights up without the user having to ask again. */
     cbApi.on('update.available', (p) => {
       if (!p) return;
@@ -6872,7 +6930,7 @@
         current_build: p.current_build, latest_build: p.build,
         notes: p.notes, can_self_update: p.can_self_update,
       };
-      renderAbout();
+      renderUpdate();
     });
   }
 
