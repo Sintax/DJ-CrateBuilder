@@ -4019,6 +4019,10 @@
         const td = document.createElement('td');
         td.style.textAlign = def.align === 'e' ? 'right' : def.align === 'center' ? 'center' : 'left';
         if (id === 'sel') {
+          // A 34px column leaves 14px of content under the cell padding — the
+          // box overflows that and the fixed layout's ellipsis would replace
+          // it with "…", so this cell gives up the ellipsis and 2px of padding.
+          td.style.cssText = 'padding-left:9px;padding-right:9px;text-overflow:clip';
           const box = document.createElement('input');
           box.type = 'checkbox'; box.className = 'cb-cbx';
           box.checked = !!st.checked[row.id];
