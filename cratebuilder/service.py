@@ -3617,6 +3617,11 @@ class CrateBuilderService:
             result = self.update_check()
         except Exception:
             result = None
+        # Every verdict is pushed, not just a newer build: the Overview's
+        # Update card was drawn from a snapshot taken before the launch check
+        # ran, and "up to date" is as much news to it as "build N available".
+        if result:
+            self.emit("update.checked", dict(result))
         if result and result["reachable"] and result["valid"] and result["available"]:
             self.emit("update.available", {
                 "build": result["latest_build"],

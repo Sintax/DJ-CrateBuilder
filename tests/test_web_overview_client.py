@@ -488,3 +488,9 @@ def test_the_update_card_is_drawn_from_the_snapshot_and_the_launch_check(app_js)
     assert "state.update = aboutUpdate.result;" in handler
     assert "renderOverviewUpdate();" in handler
 
+
+def test_the_update_card_hears_every_silent_check_not_just_a_newer_build(app_js):
+    handler = _slice(app_js, "    cbApi.on('update.checked', (p) => {", "    });")
+    assert "state.update = p;" in handler
+    assert "renderOverviewUpdate();" in handler
+

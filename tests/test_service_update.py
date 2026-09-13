@@ -549,6 +549,12 @@ def test_timer_fire_silent_when_current(service, monkeypatch):
     waiter = _Waiter(service)
     service._update_timer_fire()
     assert waiter.of_type("update.available") == []
+    # ...but the verdict itself is still pushed, so the Overview's Update
+    # card can turn "not checked yet" into "up to date" without a reload.
+    checked = waiter.of_type("update.checked")
+    assert len(checked) == 1
+    assert checked[0]["available"] is False and checked[0]["latest_build"] == 1
+    assert checked[0]["current_build"] == 50 and checked[0]["checked_at"] > 0
 
 
 def test_timer_skips_fire_while_a_job_runs(service, monkeypatch):

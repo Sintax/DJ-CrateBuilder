@@ -7351,6 +7351,14 @@
       renderUpdate();
       renderOverviewUpdate();
     });
+    /* Every silent check's verdict, up to date included. The Overview card
+       was drawn from a snapshot taken before the launch check ran, so
+       without this it would say "not checked yet" until the next reload. */
+    cbApi.on('update.checked', (p) => {
+      if (!p || !state) return;
+      state.update = p;
+      renderOverviewUpdate();
+    });
   }
 
   let booted = false;
