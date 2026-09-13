@@ -521,3 +521,15 @@ def test_the_remote_access_card_is_greyed_with_a_red_notice_while_parked(app_js)
         css = fh.read()
     assert ".cb-remote-parked {" in css and "color: var(--cb-err); font-weight: 700" in css
 
+
+
+def test_the_sidebar_names_the_app_in_full_with_the_mount_tag_beneath(index_html):
+    """The brand reads "DJ-CrateBuilder"; the Local / Remote tag sits on its
+    own line under it rather than beside the name."""
+    assert '<span class="cb-brand">DJ-CrateBuilder</span>' in index_html
+    row = index_html[index_html.index('<div class="cb-brandrow">'):
+                     index_html.index('<nav ')]
+    assert row.index('cb-brand">') < row.index('id="mount-tag"')
+    assert row.count('</div>') == 2          # the name's row closes before the tag
+    with open(os.path.join(ROOT, "web", "app.css"), encoding="utf-8") as fh:
+        assert ".cb-brandrow { display: flex; flex-direction: column;" in fh.read()
