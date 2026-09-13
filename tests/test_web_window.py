@@ -229,6 +229,28 @@ def test_run_scan_worker_if_requested_answers_the_protocol_and_exits(monkeypatch
     assert calls == [1]
 
 
+def test_run_self_test_if_requested_is_a_noop_without_the_flag():
+    assert web_window.run_self_test_if_requested(["prog"]) is None
+
+
+def test_run_self_test_if_requested_runs_the_self_test_and_exits(monkeypatch):
+    """Same shape as the scan worker: the flag is detected, selftest.run()
+    gets the report path and decides the exit code, nothing else runs."""
+    import cratebuilder.selftest as selftest
+
+    calls = []
+    monkeypatch.setattr(selftest, "run", lambda path: calls.append(path) or 1)
+    with pytest.raises(SystemExit) as info:
+        web_window.run_self_test_if_requested(["prog", "--self-test", "r.json"])
+    assert info.value.code == 1
+    assert calls == ["r.json"]
+
+
+def test_run_self_test_if_requested_needs_a_report_path():
+    with pytest.raises(SystemExit):
+        web_window.run_self_test_if_requested(["prog", "--self-test"])
+
+
 def test_acquire_or_hand_off_returns_the_lock_on_success(monkeypatch):
     sentinel = object()
     monkeypatch.setattr(web_window, "acquire_single_instance",
