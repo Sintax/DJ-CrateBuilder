@@ -8703,8 +8703,18 @@ class MP3DownloaderApp(tk.Tk):
              "online sources."),
 
             ("Q: Do I need Python installed to run this?",
-             "A: No. If you're using the installer version, everything is bundled — Python, yt-dlp, and FFmpeg are "
-             "all included. Just install and run."),
+             "A: No. If you're using the Windows installer, everything is bundled — Python, yt-dlp, and FFmpeg are "
+             "all included. Just install and run. On Linux the .deb package pulls in Python and FFmpeg from your "
+             "distribution as it installs, so there's nothing to set up by hand there either."),
+
+            ("Q: Does DJ-CrateBuilder run on Linux?",
+             "A: Yes — there's a .deb package for Debian, Ubuntu and Linux Mint on the project's GitHub releases "
+             "page, plus an install script for other setups. It's the same app and the same library layout, and it "
+             "has its own update channel that tells you when a newer package is out (installing it is a manual "
+             "download). Be aware that the Linux port has had far less testing than the Windows build, so expect "
+             "more rough edges and the occasional bug; if something misbehaves, please report it with the Submit "
+             "Issues button above. The tray and run-at-startup options are Windows-only and don't appear on "
+             "Linux."),
 
             ("Q: What is FFmpeg and why is it needed?",
              "A: FFmpeg is the audio conversion engine that converts downloaded audio streams into MP3 files. It runs "
@@ -8719,11 +8729,24 @@ class MP3DownloaderApp(tk.Tk):
              "certificate-free freeware behaves like this. Every update payload is SHA-256 verified against the "
              "manifest on GitHub before anything is written to disk."),
 
+            ("Q: What is the Overview screen?",
+             "A: The screen the app opens on — a one-glance answer to \"what is it doing right now?\". It shows the "
+             "job in progress (with Pause and Cancel for a batch), how many new tracks the Watch List has found and "
+             "when the next automatic download is due, recent activity, anything that needs your attention (links "
+             "to fix, channels that failed to scan), a Quick Settings card with your key options, and the result of "
+             "the last update check. The bell in the top corner collects notifications — scans that found tracks, "
+             "batches that finished, errors — until you've read them."),
+
+            ("Q: Is there a dark theme?",
+             "A: Yes. Settings ▸ Appearance switches between light and dark, and the choice is remembered on that "
+             "device."),
+
             # ── Downloading ───────────────────────────────────────────────
             ("Q: Where are my downloaded files saved?",
              "A: By default, files are saved to your Music folder under \"DJ-CrateBuilder,\" organized by "
-             "platform (YouTube/SoundCloud), then by genre and channel name. You can change the base directory in the "
-             "Settings tab. The \"Open Main Folder\" button on the Main tab opens the current download directory."),
+             "platform (YouTube/SoundCloud), then by genre and channel name. You can change the base directory in "
+             "Settings. The \"Open Main Folder\" button on the Downloads screen opens the current download "
+             "directory, and so does clicking the Save directory path on the Overview's Quick Settings card."),
 
             ("Q: Does pasting a YouTube channel URL download all videos?",
              "A: Yes. When you paste a bare channel URL (like https://www.youtube.com/@ChannelName), the app "
@@ -8766,8 +8789,8 @@ class MP3DownloaderApp(tk.Tk):
 
             ("Q: Why are some downloads marked \"login required\"?",
              "A: YouTube sometimes requires account authentication for certain content, especially when accessing from "
-             "VPN or datacenter IP addresses. The most reliable fix is to enable \"Browser Cookie Authentication\" in the "
-             "Settings tab and pick the browser you're signed into YouTube with — the app then borrows that session "
+             "VPN or datacenter IP addresses. The most reliable fix is to enable \"Use Browser Cookies\" under "
+             "Settings ▸ Browser Cookies and pick the browser you're signed into YouTube with — the app then borrows that session "
              "so downloads authenticate as you. (Use a throwaway account in a separate browser profile if you'd "
              "rather not risk your main one.) Otherwise, try disconnecting your VPN, switching to a different VPN "
              "server, or waiting a while before retrying."),
@@ -8835,11 +8858,11 @@ class MP3DownloaderApp(tk.Tk):
 
             # ── The database ──────────────────────────────────────────────
             ("Q: What is the Database Viewer?",
-             "A: A separate window (\"Open Database Viewer\" in Settings) that browses everything the app has "
-             "recorded: your downloads, the Watch List, and an Artwork tab showing which tracks still have no cover "
-             "art. You can group the downloads by platform, genre or channel, sort and reorder columns, and "
-             "search. Its Folders Cleanup and Fetch Missing Artwork buttons are dark red because they change "
-             "files on disk; everything else in that window only reads."),
+             "A: A screen (opened from Settings, with a \"‹ Settings\" link to come back) that browses everything "
+             "the app has recorded: your downloads, the Watch List, and an Artwork tab showing which tracks still "
+             "have no cover art. You can group the downloads by platform, genre or channel, sort and resize "
+             "columns, and search. Its Folders Cleanup button is dark red because it changes files on disk; "
+             "everything else on that screen only reads."),
 
             ("Q: What is \"Rebuild Database from Files\"?",
              "A: It throws away the downloads table and rebuilds it by scanning the audio files actually in your "
@@ -8870,23 +8893,43 @@ class MP3DownloaderApp(tk.Tk):
              "A: A text file that records every downloaded, skipped, and failed file with timestamps. It lives beside "
              "the app itself as \"activity.log\" — in the install folder on Windows, falling back to "
              "%LOCALAPPDATA%\\DJ-CrateBuilder when that folder isn't writable (which is what a system-wide Linux "
-             "install does). Under the \"Activity Log\" heading in the Settings tab, \"View Log\" opens it in the "
-             "built-in colour-coded viewer and \"Open in System Viewer\" opens it in your default text editor. The "
-             "path beneath is a clickable link that opens its folder in your file explorer."),
+             "install does). Settings ▸ Logs opens it in the built-in viewer: filter by Downloaded, Skipped or "
+             "Errors, search it, jump to the newest line, or download a copy. The Watch List screen's scan log "
+             "has an \"Open Activity Log\" shortcut to the same place, and the path shown under the viewer opens "
+             "its folder in your file explorer."),
 
             ("Q: What is debug.log, and what is the log size limit for?",
              "A: activity.log is the readable history of what was downloaded. debug.log is the technical one: yt-dlp "
              "errors, cookie problems, retry attempts, and the reason behind any failure. It's the file to look at "
-             "when a download fails for no obvious reason. Both sit in the same folder and both obey the \"Limit log "
-             "file size\" dropdown in Settings — when a log passes the chosen size the oldest entries are trimmed, so "
-             "a long-running install never fills a disk. Set it to Unlimited to keep everything."),
+             "when a download fails for no obvious reason, and it has a viewer of its own beside the Activity Log's. "
+             "Both sit in the same folder and both obey the \"Log Size Limit\" dropdown in Settings — when a log "
+             "passes the chosen size the oldest entries are trimmed, so a long-running install never fills a disk. "
+             "Set it to Unlimited to keep everything."),
 
             # ── The Watch List ────────────────────────────────────────────
             ("Q: What is the Watch List?",
              "A: It tracks YouTube and SoundCloud channels you care about and surfaces only genuinely-new uploads — "
              "tracks you haven't already downloaded — so you never re-grab your whole library. New-track counts "
              "refresh whenever you press \"🔍 Scan for new\", on each scheduled auto-download run, and (optionally) "
-             "at launch if you enable \"Scan Watch List for new uploads when the app starts\" in Settings."),
+             "at launch if you enable \"Scan Watch List for new uploads when the app starts\" in Settings. The "
+             "total shows as a badge on the Watch List entry in the side panel and on the Overview."),
+
+            ("Q: What's the Scan log at the bottom of the Watch List?",
+             "A: A live, pinned view of the scan or Watch List download that is running right now, so you can "
+             "watch it work without opening the full log. \"Clear\" empties the view only — activity.log keeps the "
+             "permanent record, and \"Open Activity Log ↗\" takes you straight to it."),
+
+            ("Q: What does 🛠 Check Links do?",
+             "A: It looks up the real YouTube channel for every entry that still \"needs channel ID\", in one pass, "
+             "and shows you the top matches to pick from — the same repair \"Fix Link\" does on a single card, "
+             "done for the whole list at once. Entries that are already resolved are left alone."),
+
+            ("Q: Can I share my Watch List with another DJ-CrateBuilder user?",
+             "A: Yes. \"📤 Export List\" lets you choose which channels to save into a file — each channel's link, "
+             "name, platform and genre, and nothing else from your machine (no counts, dates or folder paths). "
+             "\"📥 Import List\" opens someone else's file and lets you pick which channels to add; a channel you "
+             "already track (same link or same name) asks what to do, and your own entries are never changed "
+             "unless you say so."),
 
             ("Q: What's the difference between \"Scan for new\" and \"Download All New\"?",
              "A: \"🔍 Scan for new\" only checks every watched channel for new uploads and updates the new-track "
@@ -8934,12 +8977,13 @@ class MP3DownloaderApp(tk.Tk):
              "A: In Settings → Automation/Startup, set \"Auto-download Watch-List channels every…\" (default 1 day; "
              "choose \"Off\" to disable it). On that interval the app scans every watched channel first, then "
              "automatically downloads any new tracks into their folders using your bitrate/throttle/skip settings, "
-             "and shows a tray notification summarising what it grabbed. The countdown runs from app launch and "
-             "re-anchors each time a \"Download All New\" completes; the Watch List tab shows when the next run is "
-             "due."),
+             "and shows a notification summarising what it grabbed. The countdown runs from app launch and "
+             "re-anchors each time a \"Download All New\" completes; the Watch List screen and the Overview both "
+             "show when the next run is due."),
 
             ("Q: What do the tray and startup options do?",
-             "A: \"Run App on Startup\" launches the app when you sign in to Windows, so the auto-download schedule "
+             "A: These are Windows-only and don't appear on Linux. "
+             "\"Run App on Startup\" launches the app when you sign in to Windows, so the auto-download schedule "
              "keeps running without you thinking about it. \"Minimize to System Tray\" sends the window to the tray "
              "instead of the taskbar when you minimise it, and the app keeps scanning and downloading while it's "
              "there. \"Start App Minimized to System Tray\" combines the two: it launches straight to the tray with "
@@ -8949,13 +8993,17 @@ class MP3DownloaderApp(tk.Tk):
 
             # ── Updates ───────────────────────────────────────────────────
             ("Q: How do updates work?",
-             "A: The About tab has a \"Check for updates\" button that turns into \"Update Now\" once a newer build "
-             "is found, and the app also checks quietly in the background on the interval beside it. Updates come "
-             "from the nightly channel on the project's GitHub repository and are SHA-256 verified before anything is "
+             "A: The Update screen has a \"Check for updates\" button that turns into \"Update Now\" once a newer "
+             "build is found; the app also checks shortly after launch and then quietly in the background on the "
+             "interval beside the button, and the Overview's Update card shows the verdict. Updates come from the "
+             "nightly channel on the project's GitHub repository and are SHA-256 verified before anything is "
              "installed; most are small delta payloads containing only the files that changed. The display version "
-             "stays pinned at 2.0 and only the build number advances. Installing one closes the app, swaps the files, "
-             "and relaunches. Running from source instead of the installer? There's nothing to self-update — git pull "
-             "the latest changes."),
+             "stays pinned at 2.0 and only the build number advances. Installing one closes the app, swaps the "
+             "files, and relaunches — if a Watch List scan or download is running, \"Download and install\" stops "
+             "it first and counts down a few seconds so you can still cancel. The Components table below the "
+             "button lists what this install is running (Python, FFmpeg, yt-dlp and the rest) against the live "
+             "build, so you can see exactly what an update would change. Running from source instead of the "
+             "installer? There's nothing to self-update — git pull the latest changes."),
         ]
 
         # Every entry starts collapsed inside its own container frame, so an

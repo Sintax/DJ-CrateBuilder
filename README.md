@@ -2,7 +2,7 @@
 
 A desktop application for batch-downloading audio from YouTube and SoundCloud as MP3 files, organized by platform, genre, and channel — like a digital record crate for DJs and music collectors.
 
-Version 2.0 is a ground-up interface rework: the app is now a modern web UI running in a native desktop window, with optional remote access so you can drive it from a phone or another computer on your network. Same download engine, same library layout, same database — a new face on everything.
+Version 2.0 is a ground-up interface rework: the app is now a modern web UI running in a native desktop window, on Windows and Linux, with a light and a dark theme. Same download engine, same library layout, same database — a new face on everything. Remote access from a phone or another computer is built in but still in development, and is switched off in current builds.
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue) ![Platform](https://img.shields.io/badge/Platform-Windows_|_Linux-lightgrey) ![License](https://img.shields.io/badge/License-Personal_Use-orange)
 
@@ -58,7 +58,7 @@ Version 2.0 is a ground-up interface rework: the app is now a modern web UI runn
   </tr>
   <tr>
     <td align="center"><sub>Settings</sub></td>
-    <td align="center"><sub>About — with the in-app updater</sub></td>
+    <td align="center"><sub>About — author, links and the built-in FAQ</sub></td>
   </tr>
 </table>
 
@@ -69,10 +69,13 @@ Version 2.0 is a ground-up interface rework: the app is now a modern web UI runn
 ## What's new in 2.0&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
 
 - **The web UI is the app.** DJ-CrateBuilder now opens as a fast, clean web interface inside a native desktop window (WebView2 on Windows, WebKit on Linux). The old tkinter interface is retired.
-- **Remote access, built in.** Switch it on in Settings ▸ Remote Access and pair a phone or laptop with a 6-digit code — then watch batches, run Watch List scans, and manage the library from the couch. Off by default, LAN-only by design, with read-only mode and a single-writer control lock.
-- **Overview dashboard.** One screen answers "what is the app doing right now": current job, Watch List status, notifications, recent activity, and host info.
-- **Database viewer.** Browse everything you've downloaded, grouped by platform / genre / channel, with search and CSV export.
-- **Activity & debug logs in-app.** Both logs get proper viewers with filtering — no more digging for files.
+- **Overview dashboard.** One screen answers "what is the app doing right now": current job, Watch List status, notifications, recent activity, a Quick Settings card, and the last update check's verdict.
+- **Dark theme.** Settings ▸ Appearance; remembered per device.
+- **Update screen.** The self-updater has a screen of its own, with a Components table showing what your install runs (Python, FFmpeg, yt-dlp, …) against the live build. Updates check shortly after launch and on an interval.
+- **Watch List sharing.** Export the channels you choose to a file another user can import — clashes with their existing entries are resolved on import. **🛠 Check Links** repairs every unresolved channel link in one pass.
+- **Database viewer.** Browse everything you've downloaded, grouped by platform / genre / channel, with search and resizable columns.
+- **Activity & debug logs in-app.** Both logs get proper viewers with filtering and search — no more digging for files.
+- **Remote access, in development.** Pairing a phone or laptop to drive the app from a browser is built and wired, but switched off in current builds while it is finished. The Settings card shows it greyed out.
 
 ---
 
@@ -80,11 +83,11 @@ Version 2.0 is a ground-up interface rework: the app is now a modern web UI runn
 
 ## Features&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
 
-- **Watch List** — Track your favourite YouTube and SoundCloud channels and periodically scan for *only* genuinely-new uploads, so you never re-download tracks you already own. YouTube channels are identified by their canonical channel ID (with a built-in search resolver to heal broken links), SoundCloud artists by their profile URL; new uploads are cross-referenced against what's already in your folders, and per-channel cards let you Fix Link, Scan, Download New, Edit, or Cancel at any time — alongside a pinned scan log. Unreleased premieres and scheduled live events are held back from the "new" count instead of failing mid-batch.
+- **Watch List** — Track your favourite YouTube and SoundCloud channels and periodically scan for *only* genuinely-new uploads, so you never re-download tracks you already own. YouTube channels are identified by their canonical channel ID (with a built-in search resolver to heal broken links, one card at a time with Fix Link or all at once with Check Links), SoundCloud artists by their profile URL; new uploads are cross-referenced against what's already in your folders, and per-channel cards let you Scan, Download New, Force Download, Edit, or Remove at any time — alongside a pinned scan log. Unreleased premieres and scheduled live events are held back from the "new" count instead of failing mid-batch. Export the list (or part of it) to share with another user, and import theirs.
 - **Background Automation** — Every launch refreshes new-track counts for all tracked channels in the background, and a configurable interval (Off / 6 / 12 / 24 / 48 hours) scans every channel and auto-downloads new tracks to their folders, notifying you when it does. Optionally launch at Windows startup and minimize to the system tray so it keeps watching while you work.
 - **Batch Queue** — Add multiple URLs (channels, playlists, single videos) and process them in sequence with per-track and overall progress
 - **Auto-Organization** — Downloads are sorted into folders by platform, genre, and channel name
-- **MP3 Conversion** — Converts all audio to MP3 at your chosen bitrate (128 / 192 / 256 / 320 kbps)
+- **MP3 Conversion** — Converts all audio to MP3 at your chosen bitrate (128 / 192 / 224 / 256 / 320 kbps), or keep the source format untouched
 - **Skip Existing** — Detects previously downloaded files by log history and/or folder scan, doubling as a resume function for interrupted batches
 - **Time Limiter** — Automatically skip tracks longer than a set duration to filter out mixes, podcasts, and full albums
 - **Browser Cookie Authentication** — Authenticate with a YouTube account for faster downloads and fewer restrictions (supports Firefox, Chrome, Edge, Brave, and cookie file export)
@@ -93,10 +96,11 @@ Version 2.0 is a ground-up interface rework: the app is now a modern web UI runn
 - **Geo-Bypass** — Attempt to bypass geographic IP restrictions
 - **Cover Art** — Embeds the source thumbnail into each MP3 so cover art shows in Explorer, media players, and on mobile, with Crop-to-square or Keep-original-aspect modes; a **Fetch Missing Cover Art** backfill tool covers older tracks
 - **Tag Repair** — A **Repair Track Tags** backfill tool realigns genre tags with the folder each track is filed under and fills in missing Title, Encoded-by, or source URL. Changing a Watch List channel's genre also retags its already-downloaded files to match
-- **Database Viewer & Maintenance** — Browse the full downloads library grouped by platform / genre / channel, export to CSV, and run maintenance tools like **Remove Duplicates** *(viewer new in v2.0)*
+- **Database Viewer & Maintenance** — Browse the full downloads library grouped by platform / genre / channel, and run maintenance tools like **Remove Duplicates**, **Rebuild Database from Files** and **Folders Cleanup** *(viewer new in v2.0)*
 - **Downloads & Debug Logs** — Timestamped record of every download, skip, and error (`activity.log`) plus a separate diagnostic log (`debug.log`) with yt-dlp/cookie details — both with built-in viewers *(in-app viewers new in v2.0)*
-- **Remote Access** — Pair another device with a one-time code and control the app from a browser on your network *(new in v2.0 — see [Remote Access](#remote-access))*
-- **In-App Updates** — SHA-256-verified nightly builds installed from the About screen
+- **Remote Access** — Pair another device with a one-time code and control the app from a browser on your network *(built in v2.0 but still in development and switched off in current builds — see [Remote Access](#remote-access))*
+- **In-App Updates** — SHA-256-verified nightly builds installed from the Update screen, which also lists the components your install is running against the live build
+- **Light & Dark Theme** — Chosen under Settings ▸ Appearance, remembered per device
 - **URL History** — The URL field remembers your recent inputs
 - **Channel Auto-Detection** — Bare channel URLs (youtube.com/@Name) automatically resolve to the full video list
 
@@ -189,7 +193,7 @@ bash install-linux.sh
 
 After installation, launch with `dj-cratebuilder` from terminal or find it in your app launcher. To uninstall: `bash uninstall-linux.sh`
 
-> The v2.0 Linux package is a fresh port and hasn't had wide testing yet — if something misbehaves on your distro, please [open an issue](https://github.com/Sintax/DJ-CrateBuilder/issues).
+> The Linux port has had far less testing than the Windows build — expect more rough edges and the occasional bug. If something misbehaves on your distro, please [open an issue](https://github.com/Sintax/DJ-CrateBuilder/issues). The tray and run-at-startup options are Windows-only.
 
 ---
 
@@ -197,13 +201,19 @@ After installation, launch with `dj-cratebuilder` from terminal or find it in yo
 
 ## Updates&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
 
-DJ-CrateBuilder can update itself. The **About** screen shows a **Check for
+DJ-CrateBuilder can update itself. The **Update** screen shows a **Check for
 updates** button that flips to **Update Now** once a newer nightly build is
-found, and the app also checks quietly in the background on a configurable
-interval. The display version stays pinned at `2.0` — only the build number
-advances between nightly updates. Update files come straight from the official
+found; the app also checks shortly after launch and then quietly in the
+background on a configurable interval, and the Overview's Update card shows
+the verdict. A **Components** table on the same screen lists what your install
+is running — Python, FFmpeg, yt-dlp and the rest — against the live build, so
+you can see exactly what an update would change. The display version stays
+pinned at `2.0` — only the build number advances between nightly updates.
+Update files come straight from the official
 [GitHub repository](https://github.com/Sintax/DJ-CrateBuilder) and are SHA-256
-verified before anything is installed.
+verified before anything is installed. If a Watch List scan or download is
+running, **Download and install** stops it first and counts down a few seconds
+before the update begins, so you can still cancel.
 
 **Already installed?** Nothing to do — the in-app updater offers each new
 build as a normal update and keeps your database, config, and music library
@@ -225,7 +235,7 @@ certificate-free freeware.
 
 1. **Paste a URL** — Single video, playlist, or entire channel (YouTube or SoundCloud — the platform is detected automatically)
 2. **Choose a genre** — Select from existing genres or create a new one (optional)
-3. **Add to Batch** — Queue multiple URLs, or download a single URL directly
+3. **Add to Batch** — Queue multiple URLs, or press Start with a single pasted link to download it directly
 4. **Press Start** — The batch processes sequentially with real-time progress on the Downloads screen
 
 ### Folder Structure
@@ -249,6 +259,11 @@ certificate-free freeware.
 <a name="remote-access"></a>
 
 ## Remote Access&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
+
+> **Still in development.** Remote Access is built and wired but switched off
+> in current builds while it is finished: the Settings card is greyed out and
+> every remote route refuses. What follows describes how it works once it is
+> switched on.
 
 The same interface the desktop window shows can be reached from a browser on
 another device — start a batch from your laptop, check a scan from your phone.
@@ -329,19 +344,22 @@ For faster downloads and fewer "login required" errors, you can authenticate wit
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Time Limiter | 8 min | Skip tracks exceeding this duration |
-| MP3 Bitrate | 192 kbps | Output quality (128 / 192 / 256 / 320) |
+| Output Quality | 192 kbps | MP3 bitrate (128 / 192 / 224 / 256 / 320), or keep the source format with no conversion |
 | Cover Art | On ~ Crop to square | Embed the source thumbnail as MP3 cover art (Crop to square / Keep original aspect / Off) |
-| Skip Existing | In Logs ~ In Folder | Prevent re-downloading completed files |
+| Skip Existing | In Database ~ In Folder | Prevent re-downloading completed files |
 | Geo-Bypass | Off | Bypass geographic restrictions |
 | Rotate User-Agent | On | Randomize browser fingerprint per session |
 | Throttle Requests | On / Light | Random delay between downloads |
-| Browser Cookies | Off | Authenticate with a YouTube account |
+| Browser Cookies | Off | Authenticate with a YouTube or SoundCloud account |
+| Scan Watch List at startup | On | Refresh every channel's new-track count when the app starts |
 | Auto-add to Watch List | On | Add channels to the Watch List after downloading |
-| Check for new tracks every | 24 hours | Background auto-scan interval for the Watch List (Off / 6 / 12 / 24 / 48 hours) |
-| Run at Windows startup | Off | Launch DJ-CrateBuilder automatically when you log in |
-| Minimize to system tray | Off | Closing the window hides it to the tray and keeps the Watch List running |
-| Remote Access | Off | Allow paired devices to control the app from a browser |
-| Theme | Light | Light or dark for the web UI, remembered per device — the app window and each paired browser choose their own |
+| Auto-download Watch-List channels every | 1 day | Scan every channel and download what's new (Off / 6 h / 12 h / 1 day / 2 days) |
+| Run at Windows startup | Off | Launch DJ-CrateBuilder automatically when you log in (Windows only) |
+| Minimize to system tray | Off | Minimising hides the window to the tray and keeps the Watch List running (Windows only) |
+| Log Size Limit | 5 MB | Trim the oldest lines of activity.log and debug.log past this size |
+| Warn about duplicates at startup | On | Show the Remove Duplicates prompt while duplicate rows exist |
+| Remote Access | Off | Allow paired devices to control the app from a browser *(in development — greyed out in current builds)* |
+| Theme | Light | Light or dark for the web UI, remembered per device |
 
 All settings auto-save and persist between sessions.
 
@@ -416,7 +434,8 @@ See the built-in FAQ on the app's About screen for answers to common questions a
 - **Age-restricted videos** require age verification on the throwaway account, or the app falls back to anonymous download (which bypasses age gates via YouTube's embedded player)
 - **YouTube rate limiting** may occur during large batch downloads — enable Throttle Requests with Moderate or Aggressive presets for 200+ file batches
 - **VPN users** may encounter "login required" errors from YouTube — enabling Browser Cookies typically resolves this
-- **Remote sessions** deliberately can't install updates or browse the host filesystem — use the desktop window for those
+- **Remote sessions** deliberately can't install updates or browse the host filesystem — use the desktop window for those (and Remote Access itself is switched off in current builds while it is finished)
+- **Linux** has had far less testing than Windows — expect more rough edges; the tray and run-at-startup options are Windows-only
 
 ---
 
@@ -465,6 +484,7 @@ python -m pytest -q
 | Version | Date | Highlights |
 |---------|------|------------|
 | 2.0 | 2026-08 | **Web UI becomes the app** — the full interface reworked as a modern web frontend in a native desktop window (pywebview/WebView2), replacing the tkinter UI; **Remote Access** — pair other devices with a one-time 6-digit code and control the app from any browser on the network, with read-only mode, a single-writer control lock, per-device revocation, and a headless `web_server.py` entry point; **Overview dashboard** (current job, Watch List status, notifications, recent activity, host info); **Database viewer** with platform/genre/channel grouping, search, and CSV export; in-app **Activity Log and Debug Log viewers**; in-app updater carried over and wired into the About screen; service layer (`CrateBuilderService`) exposing the whole app over one RPC surface shared by the window and remote clients; Linux `.deb` ported to the web UI (GTK/WebKit); v1.3 installs upgrade in place via the normal update channel |
+| 2.0 nightlies 70–85 | 2026-09 | **Update screen** — the self-updater moves out of About onto its own screen, with a **Components** table (Python, FFmpeg, yt-dlp, … against the live build), a check shortly after launch, the verdict on the Overview's Update card, and each applied update recorded in activity.log; **Watch List sharing** — Export List / Import List with a channel picker and clash resolution, plus **Check Links** to repair every unresolved channel in one pass; Watch List cards label their platform and genre tags; Browser Cookies gated behind a setup guide (opens in its own window), Chrome greyed out, and cookies now cover SoundCloud too; Start accepts a single pasted link, no-genre adds ask first; notifications capped at the newest 20 and marked read when followed; **Overview** lower half reworked into two columns with a **Quick Settings** card; About trimmed to author, links and FAQ; screens fill the window; Database viewer columns resize on every tab (its CSV export dropped); tooltips draw above dialogs; installer detects the build it replaces and backs up user data; nightlies self-test the built app before publishing; **Remote Access parked** — switched off with an in-development notice until it is finished |
 | 2.0 nightlies 67–69 | 2026-09 | Build 67: one config file in `~/.cratebuilder`, home directory tidied into it; Watch List fills itself from the crate folders on first launch. Build 68: **dark theme**, chosen per device under Settings ▸ Appearance; the side panel's Quick actions block removed. Build 69: an update stops a running Watch List scan on the spot and counts down before restarting |
 | 1.3 | 2026-05 | **Watch List** — YouTube **and SoundCloud** channel tracking with new-upload detection, canonical channel-ID resolution + search-based healing (Fix Link, shown only when needed, with duplicate-entry detection), folder cross-reference dedup, per-card Scan/Download/Edit/Cancel, pinned resizable scan log, premieres/scheduled uploads held back instead of failing mid-batch; **Background Automation** — startup scan refreshing new-track counts for every entry, interval auto-scan (Off/6/12/24/48h, default 24h) with auto-download + tray notifications, run-at-Windows-startup, minimize-to-system-tray; **Cover Art** embedding with crop/original modes and a Fetch-Missing-Cover-Art backfill tool; **ID3 Tag Tools** — Repair Track Tags backfill (genre realignment plus missing title/encoder/source-URL fill-in), retag-on-channel-move; **Database Maintenance** — Remove Duplicates tool, offered automatically once after an update; in-app self-updater (Check for Updates / Update Now, SHA-256-verified nightly builds); extracted reusable `cratebuilder/` package with a pytest suite; debug log with full yt-dlp/cookie diagnostics, renamed DJ-CrateBuilder.log → activity.log, "Downloads Log" rename, native Linux installer improvements |
 | 1.2 | 2026-03 | Browser cookie auth, cookie file support, age-gate retry, format diagnostics, _No Genre folder, URL history, genre confirmation, renamed from YouTube DJ-CrateBuilder |
