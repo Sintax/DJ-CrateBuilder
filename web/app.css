@@ -337,6 +337,7 @@ body { overflow: hidden; }
 .cb-wlcard.is-running { border-color: var(--cb-accent); border-width: 2px; padding: 13px 15px; }
 .cb-wlcard__name { font-weight: 600; font-size: 14.5px; color: var(--cb-text); text-decoration: none; }
 a.cb-wlcard__name { border-bottom: 1px dotted var(--cb-line); }
+.cb-wlcard__taglab { font-size: 11.5px; color: var(--cb-muted); margin-left: 2px; margin-right: -4px; }
 .cb-wlcard__new { margin-left: auto; font: 500 12.5px var(--cb-mono); color: var(--cb-line); }
 .cb-wlcard__meta { font-size: 11px; }
 .cb-wlcard__actions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
@@ -445,6 +446,15 @@ input[type="radio"].cb-cbx {
 .cb-howto__line.is-step { color: var(--cb-warn); font-weight: 700; }
 .cb-howto__line.is-url { color: var(--cb-ok); }
 .cb-howto__line.is-important { color: var(--cb-err); font-weight: 700; }
+
+/* Remote Access parked (remoteauth.REMOTE_ACCESS_AVAILABLE): the notice
+   stays at full strength while the rows under it fade, so the card reads as
+   "switched off on purpose" rather than as a host that failed to answer. */
+.cb-remote-parked {
+  color: var(--cb-err); font-weight: 700; font-size: 13px; line-height: 1.5;
+  padding: 6px 0 4px;
+}
+.cb-card.is-parked .cb-parked-dim { opacity: .55; }
 
 /* New Genre — the monolith's dialog, folded inline under a dialog's Genre row
    (one modal at a time) or wrapped in a modal of its own on the Downloads
