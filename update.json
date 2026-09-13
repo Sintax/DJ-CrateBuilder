@@ -1,11 +1,11 @@
 {
   "version": "2.0",
-  "build": 83,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.83.zip",
-  "sha256": "6893c1901794e4bd45f93294b9c3ad109da12c5099c5536a17e12b050d33ef5c",
-  "notes": "*** IMPORTANT -- STOP ALL WATCH LIST SCANS BEFORE YOU UPDATE ***\nIF A SCAN IS STILL RUNNING, THIS UPDATE WILL SILENTLY ROLL BACK AND\nOFFER ITSELF AGAIN ON THE NEXT CHECK -- AN ENDLESS UPDATE LOOP.\nBEFORE YOU CLICK YES: OPEN THE WATCH LIST TAB, PRESS CANCEL, AND WAIT\nUNTIL NO CHANNEL CARD STILL SAYS \"SCANNING\".\n\nUpdate page now lists the build's components (yt-dlp, FFmpeg, etc.); larger app name in the sidebar. Full build.",
+  "build": 84,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.84.zip",
+  "sha256": "12741e34b58a75db509c57cfad8c3493e2dbd8047233468a498131ebb8c5dbd8",
+  "notes": "*** IMPORTANT -- STOP ALL WATCH LIST SCANS BEFORE YOU UPDATE ***\nIF A SCAN IS STILL RUNNING, THIS UPDATE WILL SILENTLY ROLL BACK AND\nOFFER ITSELF AGAIN ON THE NEXT CHECK -- AN ENDLESS UPDATE LOOP.\nBEFORE YOU CLICK YES: OPEN THE WATCH LIST TAB, PRESS CANCEL, AND WAIT\nUNTIL NO CHANNEL CARD STILL SAYS \"SCANNING\".\n\nUpdate history now logged: your activity log records each update as it installs.",
   "base": 83,
-  "changes": "Update page now lists the build's components (yt-dlp, FFmpeg, etc.); larger app name in the sidebar. Full build.",
+  "changes": "Update history now logged: your activity log records each update as it installs.",
   "notice": "Important: stop all Watch List scans before you update. If a scan is still running, the update will silently roll back and offer itself again on the next check. Open the Watch List, press Cancel, and wait until no channel card still says \"Scanning\".",
   "ffmpeg": {
     "version": "9.0.1-essentials_build-www.gyan.dev+72a489ec",
