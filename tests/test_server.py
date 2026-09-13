@@ -249,7 +249,6 @@ def test_read_only_allows_the_log_and_database_reads(client, state):
                            ("logs.search", {"name": "debug", "query": "x"}),
                            ("db.query", {"table": "downloads"}),
                            ("db.groups", {}),
-                           ("db.export_csv", {"table": "downloads"}),
                            ("watchlist.list", {}),
                            ("batch.list", {}),
                            ("ui_strings", {})):

@@ -8837,8 +8837,8 @@ class MP3DownloaderApp(tk.Tk):
             ("Q: What is the Database Viewer?",
              "A: A separate window (\"Open Database Viewer\" in Settings) that browses everything the app has "
              "recorded: your downloads, the Watch List, and an Artwork tab showing which tracks still have no cover "
-             "art. You can group the downloads by platform, genre or channel, sort and reorder columns, search, and "
-             "export to CSV. Its Folders Cleanup and Fetch Missing Artwork buttons are dark red because they change "
+             "art. You can group the downloads by platform, genre or channel, sort and reorder columns, and "
+             "search. Its Folders Cleanup and Fetch Missing Artwork buttons are dark red because they change "
              "files on disk; everything else in that window only reads."),
 
             ("Q: What is \"Rebuild Database from Files\"?",
