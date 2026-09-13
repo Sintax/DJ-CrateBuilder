@@ -421,3 +421,11 @@ def test_the_watch_lists_job_finished_wakes_the_waiting_confirm(app_js):
                     "} else if (job === 'maintenance')")
     assert "aboutUpdate.onWatchlistStopped" in branch
     assert branch.index("aboutUpdate.onWatchlistStopped = null") < branch.index("stopped()")
+
+
+def test_update_now_does_not_hand_the_click_event_to_the_confirm(app_js):
+    """aboutConfirmUpdate(errorText) prints whatever it is given as an error
+    box at the foot of the dialog. Bound directly as a click listener it was
+    given the PointerEvent, which rendered as "[object PointerEvent]"."""
+    assert "addEventListener('click', aboutConfirmUpdate)" not in app_js
+    assert "updateBtn.addEventListener('click', () => aboutConfirmUpdate());" in app_js

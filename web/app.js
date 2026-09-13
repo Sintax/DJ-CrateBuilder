@@ -6413,7 +6413,7 @@
       const canSelf = !!(result && result.can_self_update);
       if (available && canSelf && !running) {
         setDisabled(updateBtn, false, { ttKey: 'about.update_now' });
-        updateBtn.addEventListener('click', aboutConfirmUpdate);
+        updateBtn.addEventListener('click', () => aboutConfirmUpdate());
       } else {
         let reason = TOOLTIPS['about.update_now'] || '';
         if (running) {
