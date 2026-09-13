@@ -652,7 +652,7 @@ function renderGenres() {}
 function renderDownloads() {}
 function renderWatchlist() {}
 function renderSettings() {}
-function renderAbout() {}
+function renderUpdate() {}
 function bindTips() {}
 const document = {};
 %(refresh)s
