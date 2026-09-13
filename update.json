@@ -1,10 +1,12 @@
 {
   "version": "2.0",
-  "build": 79,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.79.zip",
-  "sha256": "1ade5d23fa626f736f2372421fb80cb3af3490d0c34c87227aa4a32f0dce9eeb",
-  "notes": "*** IMPORTANT -- STOP ALL WATCH LIST SCANS BEFORE YOU UPDATE ***\nIF A SCAN IS STILL RUNNING, THIS UPDATE WILL SILENTLY ROLL BACK AND\nOFFER ITSELF AGAIN ON THE NEXT CHECK -- AN ENDLESS UPDATE LOOP.\nBEFORE YOU CLICK YES: OPEN THE WATCH LIST TAB, PRESS CANCEL, AND WAIT\nUNTIL NO CHANNEL CARD STILL SAYS \"SCANNING\".\n\nSoundCloud cookie support; update check result shown on Overview; Remote Access parked for now.",
+  "build": 80,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.80.zip",
+  "sha256": "079c4c1c46001cdf91b07b17451fcdc78fab755841214b94b1be15bfca6cbed6",
+  "notes": "*** IMPORTANT -- STOP ALL WATCH LIST SCANS BEFORE YOU UPDATE ***\nIF A SCAN IS STILL RUNNING, THIS UPDATE WILL SILENTLY ROLL BACK AND\nOFFER ITSELF AGAIN ON THE NEXT CHECK -- AN ENDLESS UPDATE LOOP.\nBEFORE YOU CLICK YES: OPEN THE WATCH LIST TAB, PRESS CANCEL, AND WAIT\nUNTIL NO CHANNEL CARD STILL SAYS \"SCANNING\".\n\nUpdate popup now leads with the release notes and shows a clear scan notice; fixed garbled text; Overview Update card refreshes after a check.",
   "base": 65,
+  "changes": "Update popup now leads with the release notes and shows a clear scan notice; fixed garbled text; Overview Update card refreshes after a check.",
+  "notice": "Important: stop all Watch List scans before you update. If a scan is still running, the update will silently roll back and offer itself again on the next check. Open the Watch List, press Cancel, and wait until no channel card still says \"Scanning\".",
   "ffmpeg": {
     "version": "9.0.1-essentials_build-www.gyan.dev+72a489ec",
     "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/ffmpeg-9.0.1-essentials_build-www.gyan.dev_72a489ec.zip",
