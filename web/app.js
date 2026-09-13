@@ -3476,9 +3476,16 @@
     order.splice(insertAt, 0, srcId);
     return order;
   }
+  function dbSetTableWidth(theadRow, colset) {
+    const table = theadRow.closest('table');
+    if (!table) return;
+    const total = colset.order.reduce((sum, id) => sum + (colset.widths[id] || 0), 0);
+    table.style.width = total + 'px';
+  }
   function dbWireHeaders(theadRow, colset, opts) {
     let dragSrc = null;
     theadRow.innerHTML = '';
+    dbSetTableWidth(theadRow, colset);
     colset.order.forEach((id) => {
       const def = colset.byId[id];
       if (!def) return;
@@ -3516,6 +3523,7 @@
         function onMove(ev) {
           colset.widths[id] = Math.max(40, startW + (ev.clientX - startX));
           th.style.width = colset.widths[id] + 'px';
+          dbSetTableWidth(theadRow, colset);
         }
         function onUp() {
           document.removeEventListener('mousemove', onMove);
@@ -3528,6 +3536,9 @@
       th.appendChild(resize);
       theadRow.appendChild(th);
     });
+    // The filler takes whatever width the pane has beyond the columns' sum,
+    // so a narrower set of columns still draws its header rule edge to edge.
+    theadRow.appendChild(document.createElement('th'));
     bindTips(theadRow);
   }
 
@@ -3598,19 +3609,6 @@
      window.open target. Anything that isn't http(s) renders as plain text. */
   function dbSafeLink(url) {
     return /^https?:\/\//i.test(url || '') ? url : '';
-  }
-
-  async function dbExportCsv(table, filters, sort) {
-    try {
-      const res = await call('db.export_csv', { table, filters, sort });
-      const blob = new Blob([res.csv], { type: 'text/csv' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = res.filename;
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 4000);
-      toast(`Exported ${res.rows} row${res.rows === 1 ? '' : 's'} to ${res.filename}`);
-    } catch (_) { /* call() already toasted the reason */ }
   }
 
   /* ── Downloads tab: lazy group tree ───────────────────────────────────────
@@ -3813,6 +3811,7 @@
         }
         tr.appendChild(td);
       });
+      tr.appendChild(document.createElement('td'));
       tbody.appendChild(tr);
     }
     function renderLeafRow(row, depth) {
@@ -3829,6 +3828,7 @@
         td.textContent = row[id] != null && row[id] !== '' ? row[id] : (id === 'title' ? row.title : '');
         tr.appendChild(td);
       });
+      tr.appendChild(document.createElement('td'));
       tr.addEventListener('click', () => {
         $$('#db-dl-tbody tr.is-selected').forEach((r) => r.classList.remove('is-selected'));
         tr.classList.add('is-selected');
@@ -3845,7 +3845,7 @@
     function renderLoadMoreRow(node) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
-      td.colSpan = colset.order.length;
+      td.colSpan = colset.order.length + 1;
       const remaining = node.rowsTotal - node.rowsOffset;
       td.style.cssText = `padding-left:${14 + (node.depth + 1) * 18}px;cursor:pointer;` +
                          'color:var(--cb-line);font-size:12px';
@@ -3861,7 +3861,7 @@
     function renderNoteRow(depth, text, color) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
-      td.colSpan = colset.order.length;
+      td.colSpan = colset.order.length + 1;
       td.style.cssText = `padding-left:${14 + depth * 18}px;color:${color};font-size:12px`;
       td.textContent = text;
       tr.appendChild(td);
@@ -3944,9 +3944,6 @@
     $('#db-dl-expand').addEventListener('click', dbExpandAllDownloads);
     $('#db-dl-collapse').addEventListener('click', dbCollapseAllDownloads);
     $('#db-dl-refresh').addEventListener('click', dbDownloadsReload);
-    $('#db-dl-export').addEventListener('click', () => dbExportCsv(
-      'downloads', dbTreeRootFilters(),
-      { col: dbState.downloads.sortCol, desc: dbState.downloads.sortDesc }));
   }
 
   /* ── Watch List tab: flat table, small enough to load in one call ───────── */
@@ -4082,6 +4079,7 @@
         }
         tr.appendChild(td);
       });
+      tr.appendChild(document.createElement('td'));
       tr.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         dbShowMenu(e.clientX, e.clientY, dbWatchlistMenuItems(row));
@@ -4091,7 +4089,7 @@
     if (st.offset < st.total) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
-      td.colSpan = colset.order.length;
+      td.colSpan = colset.order.length + 1;
       const remaining = st.total - st.offset;
       td.style.cssText = 'padding-left:14px;cursor:pointer;color:var(--cb-line);font-size:12px';
       td.textContent = `Load ${Math.min(DB_PAGE_SIZE, remaining)} more of ${remaining} remaining…`;
@@ -4261,6 +4259,7 @@
         }
         tr.appendChild(td);
       });
+      tr.appendChild(document.createElement('td'));
       tr.addEventListener('click', () => dbArtworkSelectRow(row));
       tr.addEventListener('contextmenu', (e) => {
         e.preventDefault();
@@ -4271,7 +4270,7 @@
     if (st.offset < st.total) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
-      td.colSpan = colset.order.length;
+      td.colSpan = colset.order.length + 1;
       const remaining = st.total - st.offset;
       td.style.cssText = 'padding-left:14px;cursor:pointer;color:var(--cb-line);font-size:12px';
       td.textContent = `Load ${Math.min(DB_PAGE_SIZE, remaining)} more of ${remaining} remaining…`;
@@ -4302,9 +4301,6 @@
       t = setTimeout(() => { dbState.artwork.search = searchEl.value.trim(); dbArtworkReload(); }, 250);
     });
     $('#db-art-refresh').addEventListener('click', dbArtworkReload);
-    // 3i's toolbar has no Export CSV button (matching the design) — the
-    // service's db.export_csv still accepts table:"artwork" for a future
-    // screen that wants it.
     $('#db-art-fetch').addEventListener('click', () => maintConfirm('db.fetch_artwork'));
     dbGateArtworkFetch();
     $('#db-art-copy-thumb').addEventListener('click', () => {
@@ -4870,8 +4866,9 @@
     const throttleOn = !!val('sleep_enabled');
     const throttleReason = 'Turn on Throttle Requests first.';
     set('sleep_mode', !throttleOn, throttleReason);
-    set('sleep_preset', !throttleOn, throttleReason);
     const manual = val('sleep_mode') === 'Manual';
+    set('sleep_preset', !throttleOn || manual,
+        throttleOn ? 'Presets apply in Auto mode; Manual uses Min/Max below.' : throttleReason);
     const manualReason = throttleOn ? 'Enabled with Manual mode.' : throttleReason;
     set('sleep_min', !throttleOn || !manual, manualReason);
     set('sleep_max', !throttleOn || !manual, manualReason);
@@ -6021,37 +6018,9 @@
       return;
     }
 
-    // ── identity ──────────────────────────────────────────────────────────
-    const head = document.createElement('div');
-    head.className = 'cb-row';
-    head.style.gap = '14px';
-    const logo = document.createElement('img');
-    logo.src = 'assets/logo.png';
-    logo.alt = '';
-    logo.width = 54;
-    logo.height = 54;
-    logo.style.cssText = 'border-radius:8px;display:block;flex:none';
-    const names = document.createElement('div');
-    const name = document.createElement('div');
-    name.style.cssText =
-      'font-weight:600;font-size:19px;color:var(--cb-text);letter-spacing:-.015em';
-    name.textContent = info.app_name || 'DJ-CrateBuilder';
-    const build = document.createElement('div');
-    build.className = 'cb-mono cb-mut';
-    build.style.cssText = 'font-size:11.5px;margin-top:3px';
-    build.textContent = [info.version ? `version ${info.version}` : '',
-                         info.build_status].filter(Boolean).join(' · ');
-    names.append(name, build);
-    head.append(logo, names);
-    const mount = tagNode(
-      cbApi.transport === 'local' ? 'Local window'
-        : (session && session.read_only ? 'Read-only' : 'Remote session'),
-      'cb-tag--grey');
-    mount.style.marginLeft = 'auto';
-    head.appendChild(mount);
-    host.append(head, divNode());
-
     // ── author ────────────────────────────────────────────────────────────
+    // No identity block: the Update screen carries the name, version and
+    // build, and the panel footer already says which build this is.
     const author = document.createElement('div');
     author.style.cssText = 'display:flex;gap:8px;align-items:flex-start';
     const avatar = document.createElement('img');
