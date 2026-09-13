@@ -110,7 +110,8 @@ def test_check_reports_unreachable(service, monkeypatch):
     assert result == {
         "reachable": False, "valid": False, "available": False,
         "current_build": result["current_build"], "latest_build": None,
-        "notes": None, "can_self_update": result["can_self_update"],
+        "notes": None, "notice": None,
+        "can_self_update": result["can_self_update"],
         "checked_at": result["checked_at"],
     }
 
@@ -532,7 +533,7 @@ def test_timer_fire_emits_available_only_when_newer(service, monkeypatch):
     service._update_timer_fire()
     available = waiter.of_type("update.available")
     assert available == [{
-        "build": 99, "current_build": 1, "notes": "test build",
+        "build": 99, "current_build": 1, "notes": "test build", "notice": None,
         "can_self_update": available[0]["can_self_update"],
         "checked_at": available[0]["checked_at"],
     }]
@@ -644,4 +645,27 @@ def test_snapshot_carries_the_last_check_result(service, monkeypatch):
     result = service.update_check()
     assert service.call("state.snapshot", {})["update"] == result
     assert result["checked_at"] > 0
+
+
+# ── the manifest's styled split of the notes ─────────────────────────────────
+
+def test_check_prefers_the_manifests_changes_and_notice_fields(service, monkeypatch):
+    """release.py writes the legacy "notes" blob (shouted notice + changes)
+    for old builds AND the clean "changes" / "notice" pair; the web dialog
+    draws the pair, so the check reports those when they exist."""
+    manifest = dict(MANIFEST, build=99,
+                    notes="*** STOP SCANS ***\n\nFixed a thing.",
+                    changes="Fixed a thing.",
+                    notice="Important: stop all Watch List scans first.")
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: manifest)
+    result = service.update_check()
+    assert result["notes"] == "Fixed a thing."
+    assert result["notice"] == "Important: stop all Watch List scans first."
+
+
+def test_check_reads_a_manifest_without_the_split_the_old_way(service, monkeypatch):
+    manifest = dict(MANIFEST, build=99, notes="Fixed a thing.")
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: manifest)
+    result = service.update_check()
+    assert result["notes"] == "Fixed a thing." and result["notice"] is None
 
