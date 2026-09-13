@@ -466,15 +466,83 @@ def test_acting_on_a_notification_marks_that_entry_read(app_js):
 
 # ── the Update card ──────────────────────────────────────────────────────────
 
-def test_the_update_card_sits_in_its_own_one_column_row(index_html):
-    host_at = index_html.index('<span class="cb-kick">Host</span>')
-    card_at = index_html.index('id="ov-update-card"')
-    assert host_at < card_at
-    # Its own grid row after the three-card row, so it stays one column wide.
-    between = index_html[host_at:card_at]
-    assert between.count('<div class="cb-grid-3">') == 1
+def test_the_lower_cards_sit_in_two_stacked_columns(index_html):
+    """Left column: Quick Settings over Update. Right column: Recent activity
+    over Needs attention. Each column is its own stack so a short card does
+    not hold a tall neighbour's row height open."""
+    ov = _slice(index_html, 'id="screen-overview"', 'id="screen-downloads"')
+    left = _slice(ov, '<div class="cb-ov-col">', '</div>\n        <div class="cb-ov-col">')
+    right = ov[ov.index('<div class="cb-ov-col">', ov.index(left) + 1):]
+    assert '<div class="cb-ov-cols">' in ov
+    assert ov.count('<div class="cb-ov-col">') == 2
+    assert '<div class="cb-grid-3">' not in ov
+    assert 'Quick Settings' in left and 'id="ov-update-card"' in left
+    assert left.index('Quick Settings') < left.index('id="ov-update-card"')
+    assert 'Recent activity' in right and 'Needs attention' in right
+    assert right.index('Recent activity') < right.index('Needs attention')
+    assert 'Host</span>' not in ov
     assert 'id="ov-update-tag"' in index_html and 'id="ov-update"' in index_html
     assert 'href="#update" id="ov-goto-update"' in index_html
+
+
+# ── the Quick Settings card ──────────────────────────────────────────────────
+
+_QS_HARNESS = """
+%(fn)s
+const base = { base_dir: 'C:\\\\Music', no_conversion: false, bitrate_quality: '192',
+  limit_enabled: true, limit_minutes: 8, use_cookies: false, cookie_method: 'Browser',
+  cookies_browser: 'Firefox', geo_bypass: true, rotate_ua: false,
+  sleep_enabled: true, sleep_mode: 'Auto', sleep_preset: 'Light  (1-5 s)',
+  sleep_min: 4, sleep_max: 11 };
+const pairs = (s) => Object.fromEntries(overviewQuickSettings(s));
+const out = {};
+out.defaults = pairs(base);
+out.limiterOff = pairs({ ...base, limit_enabled: false });
+out.cookiesBrowser = pairs({ ...base, use_cookies: true });
+out.cookiesFile = pairs({ ...base, use_cookies: true, cookie_method: 'Cookie File' });
+out.manual = pairs({ ...base, sleep_mode: 'Manual' });
+out.throttleOff = pairs({ ...base, sleep_enabled: false });
+out.labels = overviewQuickSettings(base).map((p) => p[0]);
+console.log(JSON.stringify(out));
+"""
+
+
+def _qs_source(app_js):
+    return _slice(app_js, "  function overviewQuickSettings(",
+                  "  function renderOverviewHost()")
+
+
+def test_quick_settings_lists_the_seven_lines_in_order(app_js, tmp_path):
+    r = _run_node(tmp_path, "ovqs.mjs", _QS_HARNESS % {"fn": _qs_source(app_js)})
+    assert r["labels"] == ["Save directory", "Output", "Time limiter",
+                           "Browser/Cookies", "Geo-bypass",
+                           "User-Agent rotation", "Requests throttling"]
+
+
+def test_quick_settings_words_each_value_the_way_the_design_asks(app_js, tmp_path):
+    r = _run_node(tmp_path, "ovqs.mjs", _QS_HARNESS % {"fn": _qs_source(app_js)})
+    d = r["defaults"]
+    assert d["Time limiter"] == "8 min"
+    assert r["limiterOff"]["Time limiter"] == "Off"
+    assert d["Browser/Cookies"] == "Off"
+    assert r["cookiesBrowser"]["Browser/Cookies"] == "Firefox"
+    assert r["cookiesFile"]["Browser/Cookies"] == "Cookie file"
+    assert d["Geo-bypass"] == "Enabled"
+    assert d["User-Agent rotation"] == "Disabled"
+    # Auto: mode/preset, with the preset's range note dropped; Manual: min/max.
+    assert d["Requests throttling"] == "Auto/Light"
+    assert r["manual"]["Requests throttling"] == "4/11 s"
+    assert r["throttleOff"]["Requests throttling"] == "Off"
+    assert "Database" not in d
+
+
+def test_the_save_directory_line_opens_the_folder_locally_and_copies_it_remotely(app_js):
+    fn = _slice(app_js, "  function renderOverviewHost()",
+                "  /* The Update card")
+    assert "$('#ov-host')" in fn
+    assert "dbReveal(path, 'folder')" in fn
+    assert "dbCopyText(path" in fn
+    assert "cbApi.transport === 'local'" in fn
 
 
 def test_the_update_card_is_drawn_from_the_snapshot_and_the_launch_check(app_js):
