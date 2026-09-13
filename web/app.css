@@ -388,7 +388,9 @@ a.cb-wlcard__name { border-bottom: 1px dotted var(--cb-line); }
 .cb-mnote { color: var(--cb-muted); font-size: 12.5px; line-height: 1.6; margin: 0; }
 /* The update confirm's release notes: the text being decided on, so full
    strength and a step larger than a hint; newlines kept as typed. */
+.cb-mnote--lead { color: var(--cb-text); font-weight: 700; }
 .cb-mnote--notes { color: var(--cb-text); font-size: 14px; white-space: pre-line; }
+.cb-mnote__quote { font-weight: 700; }
 /* In a footer the note shares the row with the buttons: let it shrink and wrap
    rather than pushing the primary action onto a second line. */
 .cb-mfoot .cb-mnote { flex: 1 1 170px; min-width: 0; font-size: 11.5px; }
