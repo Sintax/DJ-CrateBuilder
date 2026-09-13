@@ -26,6 +26,7 @@ from cratebuilder.crate import CrateLayout
 from cratebuilder.db import DownloadsDatabase
 from cratebuilder.events import Coalescer, EventBus
 from cratebuilder.links import LINKS_FILE_NAME
+from cratebuilder import components
 from cratebuilder import remoteauth
 from cratebuilder.remoteauth import REMOTE_FILE_NAME, RemoteState
 from cratebuilder.settings import Settings
@@ -888,6 +889,7 @@ class CrateBuilderService:
         # The desktop window's opener for the cookie setup guide's own
         # window (see cookies_howto_window). None everywhere else.
         self.on_open_howto = None
+        self._installed_components_cache = None
         self._update_timer = None
         self._next_update_check_ts = None
         # What the most recent check (manual or the silent timer) found, so a
@@ -3016,6 +3018,7 @@ class CrateBuilderService:
             "latest_build": None,
             "notes": None,
             "notice": None,
+            "components": None,
             "can_self_update": ucore.can_self_update(),
             "checked_at": time.time(),
         }
@@ -3030,7 +3033,11 @@ class CrateBuilderService:
         # valid, current build or not — the About screen's status line wants
         # to say what build is live even when it isn't newer. notes stays
         # available-only: there is nothing to show notes FOR otherwise.
+        # components too: the Update page's table compares against the live
+        # build whether or not it is newer. None for a manifest that
+        # predates the block (build 82 and earlier).
         result["latest_build"] = int(manifest["build"])
+        result["components"] = components.offered_versions(manifest)
         result["available"] = ucore.is_update_available(manifest, current)
         if result["available"]:
             # "changes" / "notice" are the manifest's styled-UI split of the
@@ -3183,7 +3190,30 @@ class CrateBuilderService:
             "next_check": self._next_update_check_ts,
             "can_self_update": ucore.can_self_update(),
             "running": self._job_running(UPDATE_JOB),
+            "components": self.update_components(),
         }
+
+    def update_components(self):
+        """The Update page's components table: one row per bundled
+        component with what this install has and what the last-seen live
+        build carries (`build` None until a check has reached a valid
+        manifest; rows then say "unknown" for a build that predates the
+        block, "newer" where the live build differs)."""
+        last = self._last_update_result or {}
+        offered = last.get("components") if last.get("valid") else None
+        return {
+            "build": last.get("latest_build") if last.get("valid") else None,
+            "available": bool(last.get("available")),
+            "rows": components.compare(self._installed_components(), offered),
+        }
+
+    def _installed_components(self):
+        """What this process is running, read once: versions don't change
+        under a running app, and the FFmpeg read may spawn the binary."""
+        if self._installed_components_cache is None:
+            self._installed_components_cache = components.installed_versions(
+                bundled_ffmpeg_dir())
+        return dict(self._installed_components_cache)
 
     def update_set_interval(self, value):
         if value not in UPDATE_CHECK_OPTIONS:

@@ -80,6 +80,16 @@ body { overflow: hidden; }
 .cb-card { overflow-wrap: anywhere; }
 /* Full-width sections interrupt the flow rather than claiming two tracks. */
 .cb-span-2 { column-span: all; }
+/* Update page: the components table. The row an update would change is the
+   one that stands out; the others sit quiet. */
+.cb-comp { overflow-x: auto; margin-top: 4px; }
+.cb-comp__note { font-size: 12px; margin: 2px 0 8px; }
+.cb-comp__table td { padding: 6px 10px; font-size: 12.5px; }
+.cb-comp__table td.cb-mono { font-size: 12px; }
+.cb-comp__row.is-newer td { background: var(--cb-attn-wash); }
+.cb-comp__new { color: var(--cb-warn); font-weight: 700; }
+.cb-comp__row.is-missing td { color: var(--cb-muted); }
+
 /* The rule above Settings' Remote Access card. */
 .cb-set-sep { border-top: 2px solid var(--cb-accent); margin: 6px 0 18px; }
 .cb-cards { display: flex; flex-direction: column; gap: 10px; }
