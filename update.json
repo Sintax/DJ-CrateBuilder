@@ -1,11 +1,11 @@
 {
   "version": "2.0",
-  "build": 81,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.81.zip",
-  "sha256": "2663abc923302f6e82a60e31bb3a244bb8e0e39c96b7d5e98c5ac48364563a36",
-  "notes": "*** IMPORTANT -- STOP ALL WATCH LIST SCANS BEFORE YOU UPDATE ***\nIF A SCAN IS STILL RUNNING, THIS UPDATE WILL SILENTLY ROLL BACK AND\nOFFER ITSELF AGAIN ON THE NEXT CHECK -- AN ENDLESS UPDATE LOOP.\nBEFORE YOU CLICK YES: OPEN THE WATCH LIST TAB, PRESS CANCEL, AND WAIT\nUNTIL NO CHANNEL CARD STILL SAYS \"SCANNING\".\n\nCookie setup guide in its own window, plus small layout polish.",
-  "base": 65,
-  "changes": "Cookie setup guide in its own window, plus small layout polish.",
+  "build": 82,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.82.zip",
+  "sha256": "c1f86742e3b6721edc47ba50cd7444b8f253d54bd48f6d246c8b885af2f929ec",
+  "notes": "*** IMPORTANT -- STOP ALL WATCH LIST SCANS BEFORE YOU UPDATE ***\nIF A SCAN IS STILL RUNNING, THIS UPDATE WILL SILENTLY ROLL BACK AND\nOFFER ITSELF AGAIN ON THE NEXT CHECK -- AN ENDLESS UPDATE LOOP.\nBEFORE YOU CLICK YES: OPEN THE WATCH LIST TAB, PRESS CANCEL, AND WAIT\nUNTIL NO CHANNEL CARD STILL SAYS \"SCANNING\".\n\nSidebar naming and update popup styling polish. Full build.",
+  "base": 82,
+  "changes": "Sidebar naming and update popup styling polish. Full build.",
   "notice": "Important: stop all Watch List scans before you update. If a scan is still running, the update will silently roll back and offer itself again on the next check. Open the Watch List, press Cancel, and wait until no channel card still says \"Scanning\".",
   "ffmpeg": {
     "version": "9.0.1-essentials_build-www.gyan.dev+72a489ec",
