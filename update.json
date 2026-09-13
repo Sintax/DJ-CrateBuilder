@@ -1,15 +1,30 @@
 {
   "version": "2.0",
-  "build": 82,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.82.zip",
-  "sha256": "c1f86742e3b6721edc47ba50cd7444b8f253d54bd48f6d246c8b885af2f929ec",
-  "notes": "*** IMPORTANT -- STOP ALL WATCH LIST SCANS BEFORE YOU UPDATE ***\nIF A SCAN IS STILL RUNNING, THIS UPDATE WILL SILENTLY ROLL BACK AND\nOFFER ITSELF AGAIN ON THE NEXT CHECK -- AN ENDLESS UPDATE LOOP.\nBEFORE YOU CLICK YES: OPEN THE WATCH LIST TAB, PRESS CANCEL, AND WAIT\nUNTIL NO CHANNEL CARD STILL SAYS \"SCANNING\".\n\nSidebar naming and update popup styling polish. Full build.",
-  "base": 82,
-  "changes": "Sidebar naming and update popup styling polish. Full build.",
+  "build": 83,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.83.zip",
+  "sha256": "6893c1901794e4bd45f93294b9c3ad109da12c5099c5536a17e12b050d33ef5c",
+  "notes": "*** IMPORTANT -- STOP ALL WATCH LIST SCANS BEFORE YOU UPDATE ***\nIF A SCAN IS STILL RUNNING, THIS UPDATE WILL SILENTLY ROLL BACK AND\nOFFER ITSELF AGAIN ON THE NEXT CHECK -- AN ENDLESS UPDATE LOOP.\nBEFORE YOU CLICK YES: OPEN THE WATCH LIST TAB, PRESS CANCEL, AND WAIT\nUNTIL NO CHANNEL CARD STILL SAYS \"SCANNING\".\n\nUpdate page now lists the build's components (yt-dlp, FFmpeg, etc.); larger app name in the sidebar. Full build.",
+  "base": 83,
+  "changes": "Update page now lists the build's components (yt-dlp, FFmpeg, etc.); larger app name in the sidebar. Full build.",
   "notice": "Important: stop all Watch List scans before you update. If a scan is still running, the update will silently roll back and offer itself again on the next check. Open the Watch List, press Cancel, and wait until no channel card still says \"Scanning\".",
   "ffmpeg": {
     "version": "9.0.1-essentials_build-www.gyan.dev+72a489ec",
     "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/ffmpeg-9.0.1-essentials_build-www.gyan.dev_72a489ec.zip",
     "sha256": "523fde94b906d1bd9efe7d3b79b4b81c7911625d3d2bcb4debbd2c9a36981ce9"
+  },
+  "components": {
+    "python": "3.14.5",
+    "ffmpeg": "9.0.1-essentials_build-www.gyan.dev+72a489ec",
+    "yt-dlp": "2026.8.19",
+    "yt-dlp-ejs": "0.8.0",
+    "certifi": "2026.7.22",
+    "pystray": "0.19.5",
+    "pillow": "12.3.0",
+    "send2trash": "2.1.0",
+    "mutagen": "1.48.1",
+    "pywebview": "6.2.1",
+    "bottle": "0.13.4",
+    "fastapi": "0.141.1",
+    "uvicorn": "0.52.4"
   }
 }
