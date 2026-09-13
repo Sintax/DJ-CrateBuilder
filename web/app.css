@@ -40,7 +40,7 @@ body { overflow: hidden; }
 .cb-brandrow { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 .cb-brandrow .cb-tag { margin-left: 31px; }   /* under the name, clear of the logo */
 .cb-brand {
-  font-weight: 600; font-size: 17px; color: var(--cb-text); letter-spacing: -.01em;
+  font-weight: 600; font-size: 20px; color: var(--cb-text); letter-spacing: -.01em;
 }
 /* One step under --sm: the Watch List's Export / Import pair. */
 .cb-btn--xs { font-size: 11px; padding: 3px 7px; min-height: 22px; border-radius: var(--cb-radius-sm); }
