@@ -1784,10 +1784,23 @@
     return el;
   }
 
-  function wlTagLabel(text) {
+  /* One "Label: value" of a card's fact line — plain text, not a tag: a
+     boxed value reads as a button, and two of them read as clutter. */
+  function wlFact(label, value) {
     const el = document.createElement('span');
-    el.className = 'cb-wlcard__taglab';
-    el.textContent = text;
+    el.className = 'cb-wlcard__fact';
+    const lab = document.createElement('span');
+    lab.className = 'cb-wlcard__taglab';
+    lab.textContent = label;
+    el.appendChild(lab);
+    el.appendChild(document.createTextNode(' ' + value));
+    return el;
+  }
+
+  function wlFactSep() {
+    const el = document.createElement('span');
+    el.className = 'cb-wlcard__factsep';
+    el.textContent = '||';
     return el;
   }
 
@@ -1939,12 +1952,17 @@
     name.className = 'cb-wlcard__name';
     name.textContent = row.name;
     head.appendChild(name);
-    /* Two grey tags side by side read as two of the same thing; the labels
-       say which is the platform and which the genre folder. */
-    head.appendChild(wlTagLabel('Platform:'));
-    head.appendChild(tagNode(row.platform || '—', 'cb-tag--grey'));
-    head.appendChild(wlTagLabel('Genre:'));
-    head.appendChild(tagNode(row.genre || '(none)', 'cb-tag--grey'));
+    const facts = document.createElement('span');
+    facts.className = 'cb-wlcard__facts';
+    facts.appendChild(wlFact('Platform:', row.platform || '—'));
+    facts.appendChild(wlFactSep());
+    facts.appendChild(wlFact('Genre:', row.genre || '(none)'));
+    if (row.date_added) {
+      const added = wlFact('(Added:', fmtDate(row.date_added) + ')');
+      added.classList.add('cb-wlcard__added');
+      facts.appendChild(added);
+    }
+    head.appendChild(facts);
     if (downloading) head.appendChild(tagNode('Downloading', 'cb-tag--fill'));
     else if (row.status === 'scanning') head.appendChild(tagNode('Scanning', 'cb-tag--fill'));
     if (row.unresolved) head.appendChild(tagNode('Link unresolved', 'cb-tag--attn'));
@@ -1977,7 +1995,6 @@
       const bits = [];
       if (row.last_scan) bits.push(`Last scan ${fmtWhen(row.last_scan)}`);
       bits.push(`${num(row.downloaded)} downloaded`);
-      if (row.date_added) bits.push(`added ${fmtDate(row.date_added)}`);
       if (row.unresolved) bits.push('folder has no canonical channel id');
       const status = row.status || 'idle';
       /* 3d's unresolved card stops at "folder has no canonical channel id" —
@@ -5828,6 +5845,14 @@
       if (rows > 6 || sec.name === 'Remote Access') card.classList.add('cb-span-2');
 
       if (SECTION_EXTRAS[sec.name]) SECTION_EXTRAS[sec.name](card);
+      if (sec.name === 'Remote Access') {
+        /* A rule between the everyday settings above and the parked
+           Remote Access section, so the two do not read as one list. */
+        const sep = document.createElement('div');
+        sep.className = 'cb-set-sep cb-span-2';
+        sep.id = 'settings-remote-sep';
+        grid.appendChild(sep);
+      }
       grid.appendChild(card);
     });
 

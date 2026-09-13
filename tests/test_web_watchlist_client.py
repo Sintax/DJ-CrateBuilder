@@ -762,27 +762,42 @@ def test_the_watch_list_controls_carry_their_registry_keys(app_js, index_html):
     assert sorted(expected - used) == []
 
 
-def test_the_genre_tag_matches_the_platform_tags_grey(app_js):
-    """Each card's genre tag wears the same quiet grey as the platform tag
-    beside it — no red or platform colouring."""
+def test_the_platform_and_genre_are_plain_text_not_tags(app_js):
+    """Boxed values read as buttons, and two of them read as clutter: the
+    head line says `Platform: X || Genre: Y  (Added: date)` in plain text,
+    each value after its label."""
     card = _slice(app_js, "  function wlCardNode(row)", "  function wlCurrentLine(row)")
-    assert "tagNode(row.genre || '(none)', 'cb-tag--grey')" in card
+    assert "tagNode(row.platform" not in card
+    assert "tagNode(row.genre" not in card
     assert "PLATFORM_TAG_CLASS" not in app_js
+    assert "wlFact('Platform:', row.platform || '—')" in card
+    assert "wlFact('Genre:', row.genre || '(none)')" in card
+    assert (card.index("wlFact('Platform:'") < card.index("wlFactSep()")
+            < card.index("wlFact('Genre:'"))
     with open(os.path.join(ROOT, "web", "app.css"), encoding="utf-8") as fh:
-        assert "cb-tag--yt" not in fh.read()
+        css = fh.read()
+    assert "cb-tag--yt" not in css
+    assert ".cb-wlcard__facts" in css and ".cb-wlcard__taglab" in css
 
 
-def test_the_platform_and_genre_tags_are_labelled(app_js):
-    """Two grey tags side by side read as two of the same thing, so each
-    carries a small label saying which it is."""
+def test_the_added_date_moved_up_to_the_head_line(app_js):
+    """`(Added: date)` closes the head line's facts; the meta line below no
+    longer repeats it."""
     card = _slice(app_js, "  function wlCardNode(row)", "  function wlCurrentLine(row)")
-    assert ("wlTagLabel('Platform:')" in card
-            and card.index("wlTagLabel('Platform:')") < card.index("tagNode(row.platform"))
-    assert ("wlTagLabel('Genre:')" in card
-            and card.index("wlTagLabel('Genre:')") < card.index("tagNode(row.genre"))
-    assert card.index("tagNode(row.platform") < card.index("wlTagLabel('Genre:')")
+    assert "wlFact('(Added:', fmtDate(row.date_added) + ')')" in card
+    assert "bits.push(`added " not in card
+    assert card.index("wlFact('(Added:'") < card.index("head.appendChild(facts)")
+
+
+def test_the_meta_line_is_bold(app_js):
     with open(os.path.join(ROOT, "web", "app.css"), encoding="utf-8") as fh:
-        assert ".cb-wlcard__taglab" in fh.read()
+        css = fh.read()
+    assert ".cb-wlcard__meta { font-size: 11px; font-weight: 700; }" in css
+
+
+def test_the_share_buttons_are_the_small_size(index_html):
+    assert ('class="cb-btn cb-btn--quiet cb-btn--sm" id="wl-export"' in index_html)
+    assert ('class="cb-btn cb-btn--quiet cb-btn--sm" id="wl-import"' in index_html)
 
 
 def test_the_share_buttons_open_pickers_over_the_local_only_file_methods(
