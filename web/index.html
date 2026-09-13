@@ -149,6 +149,19 @@
           <a href="#settings" style="font-size:12px;margin-top:2px">Settings →</a>
         </div>
       </div>
+
+      <!-- Its own row, one column wide: the launch check's verdict, so a
+           newer build is visible without opening Update. -->
+      <div class="cb-grid-3">
+        <div class="cb-card cb-pad cb-ov-mini" id="ov-update-card">
+          <div class="cb-row">
+            <span class="cb-kick">Update</span>
+            <span class="cb-tag cb-tag--grey" id="ov-update-tag">Not checked yet</span>
+          </div>
+          <div id="ov-update" class="cb-ov-list"></div>
+          <a href="#update" id="ov-goto-update" style="font-size:12px;margin-top:2px">Update →</a>
+        </div>
+      </div>
     </section>
 
     <!-- 3b / 3c — Downloads -->

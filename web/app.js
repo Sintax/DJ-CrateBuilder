@@ -959,6 +959,37 @@
     bindTips(box);
   }
 
+  /* The Update card: what the last check found. The launch check fires a
+     few seconds after start and arrives as `update.available` (only when
+     there IS one); a page connecting later reads the same verdict off the
+     snapshot, so the card never has to ask the host itself. */
+  function renderOverviewUpdate() {
+    const box = $('#ov-update');
+    if (!box) return;
+    const u = state.update;
+    const tag = $('#ov-update-tag');
+    const current = (u && u.current_build) || (state.app && state.app.build) || '—';
+    box.innerHTML = '';
+    box.appendChild(ovLine('This build', String(current)));
+    let label = 'Not checked yet';
+    let cls = 'cb-tag--grey';
+    let latest = '—';
+    if (u) {
+      if (!u.reachable) { label = 'Unreachable'; latest = 'could not reach GitHub'; }
+      else if (!u.valid) { label = 'Unreadable'; latest = 'update info looks invalid'; }
+      else if (u.available) {
+        label = `Build ${u.latest_build} available`;
+        cls = 'cb-tag--attn';
+        latest = String(u.latest_build);
+      } else { label = 'Up to date'; latest = String(u.latest_build || current); }
+    }
+    tag.textContent = label;
+    tag.className = 'cb-tag ' + cls;
+    box.appendChild(ovLine('Latest', latest));
+    box.appendChild(ovLine('Last checked', u && u.checked_at ? fmtWhen(u.checked_at) : 'never'));
+    bindTips(box);
+  }
+
   /* The Watch List card, fed from the same cards the nav badge is — so a
      watchlist.card event moves the number here without a snapshot. */
   function renderOverviewWatch() {
@@ -987,6 +1018,7 @@
       s(c.genres, 'genre'), s(c.watchlist, 'channel')].join(' · ');
     renderOverviewWatch();
     renderOverviewHost();
+    renderOverviewUpdate();
     renderOverviewAttention();
     renderOverviewRecent();
     renderOverviewRunning();
@@ -5594,14 +5626,20 @@
       width: 560,
       body(body) {
         body.appendChild(modalNote(
-          'This is not a quick fix. YouTube only serves some tracks to a ' +
-          'signed-in browser, and for the app to borrow that sign-in you ' +
-          'need a dedicated browser profile — or an exported cookie file — ' +
-          'set up exactly as the guide describes.'));
+          'This is not a quick fix. YouTube and SoundCloud only serve some ' +
+          'tracks to a signed-in browser, and for the app to borrow that ' +
+          'sign-in you need a dedicated browser profile — or an exported ' +
+          'cookie file — set up exactly as the guide describes. One profile ' +
+          'covers both sites: sign into each one in it.'));
         body.appendChild(modalNote(
           'Follow the setup guide for the browser you pick under Browser. ' +
           'It walks through creating a throwaway profile, signing into ' +
-          'YouTube with it, and telling the app where to find it.'));
+          'YouTube and SoundCloud with it, and telling the app where to ' +
+          'find it.'));
+        body.appendChild(modalNote(
+          'SoundCloud Go+ tracks only download with the paid, subscribed ' +
+          'account signed in. A throwaway account will not do, and using ' +
+          'your paid account carries the same risk of it being flagged.'));
         body.appendChild(modalNote(
           'Chrome cannot be read directly: it encrypts its cookies in a way ' +
           'only Chrome can unlock, so it is greyed out in the Browser list. ' +
@@ -6036,6 +6074,8 @@
     renderUpdate();
     try {
       aboutUpdate.result = await call('update.check');
+      state.update = aboutUpdate.result;
+      renderOverviewUpdate();
       aboutUpdate.status = await call('update.status');
     } catch (_) { /* call() already toasted the reason */ }
     aboutUpdate.checking = false;
@@ -7292,8 +7332,11 @@
         reachable: true, valid: true, available: true,
         current_build: p.current_build, latest_build: p.build,
         notes: p.notes, can_self_update: p.can_self_update,
+        checked_at: p.checked_at,
       };
+      state.update = aboutUpdate.result;
       renderUpdate();
+      renderOverviewUpdate();
     });
   }
 

@@ -111,6 +111,7 @@ def test_check_reports_unreachable(service, monkeypatch):
         "reachable": False, "valid": False, "available": False,
         "current_build": result["current_build"], "latest_build": None,
         "notes": None, "can_self_update": result["can_self_update"],
+        "checked_at": result["checked_at"],
     }
 
 
@@ -533,6 +534,7 @@ def test_timer_fire_emits_available_only_when_newer(service, monkeypatch):
     assert available == [{
         "build": 99, "current_build": 1, "notes": "test build",
         "can_self_update": available[0]["can_self_update"],
+        "checked_at": available[0]["checked_at"],
     }]
     # Re-armed for the next interval.
     assert service._update_timer is not None
@@ -629,3 +631,17 @@ def test_close_cancels_the_timer(service):
     assert service._update_timer is not None
     service.close()
     assert service._update_timer is None
+
+
+# ── the Overview's Update card reads the last verdict off the snapshot ───────
+
+def test_snapshot_carries_nothing_until_a_check_has_run(service):
+    assert service.call("state.snapshot", {})["update"] is None
+
+
+def test_snapshot_carries_the_last_check_result(service, monkeypatch):
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: None)
+    result = service.update_check()
+    assert service.call("state.snapshot", {})["update"] == result
+    assert result["checked_at"] > 0
+
