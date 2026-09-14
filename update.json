@@ -1,11 +1,11 @@
 {
   "version": "2.0",
-  "build": 85,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.85.zip",
-  "sha256": "f58aee05c5bb67f44c2e871f9dab793f207893b49e6b577e045b5e7b04e2860e",
-  "notes": "Screens now fill the window, the Update page is wider, and tooltips no longer hide behind dialogs.",
+  "build": 86,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.86.zip",
+  "sha256": "1bf378d6a743272c15060b15a7904609948683d653d8b388a7ddf1df902b5a82",
+  "notes": "Overview page reorganized with a Quick Settings card; Database viewer column resizing and dividers fixed; Export CSV removed; About/README refreshed.",
   "base": 85,
-  "changes": "Screens now fill the window, the Update page is wider, and tooltips no longer hide behind dialogs.",
+  "changes": "Overview page reorganized with a Quick Settings card; Database viewer column resizing and dividers fixed; Export CSV removed; About/README refreshed.",
   "notice": "",
   "ffmpeg": {
     "version": "9.0.1-essentials_build-www.gyan.dev+72a489ec",
