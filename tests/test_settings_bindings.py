@@ -413,6 +413,11 @@ def running(service):
     ("cover_art_mode", "On ~ Keep original aspect"),
     ("limit_enabled", False),
     ("limit_minutes", 42),
+    ("cover_art_enabled", False),
+    ("geo_bypass", True),
+    ("rotate_ua", False),
+    ("sleep_enabled", False),
+    ("use_cookies", True),
 ])
 def test_download_policy_keys_are_frozen_mid_run(service, settings, running,
                                                  category, key, value):
@@ -442,17 +447,29 @@ def test_a_watchlist_run_freezes_the_same_keys(service, running):
 
 
 def test_settings_outside_the_lock_stay_writable_mid_run(service, running):
-    """The freeze is the monolith's list, not a blanket ban: adding genres and
-    changing anything a running track does not read stays allowed."""
+    """The freeze is a list, not a blanket ban: adding genres and changing
+    anything a running track does not read stays allowed — and so does the
+    throttle's tuning (mode, preset, manual bounds), which the user may
+    adjust to a run as it goes."""
     running("batch")
     assert service.settings_set("dupe_check_enabled", False)["value"] is False
     assert service.settings_set("auto_add_to_watchlist", False)["value"] is False
-    assert service.settings_set("geo_bypass", True)["value"] is True
+    assert service.settings_set("sleep_mode", "Manual")["value"] == "Manual"
+    assert service.settings_set("sleep_preset", "Moderate")["value"] == "Moderate"
+    assert service.settings_set("sleep_min", 2)["value"] == 2
+    assert service.settings_set("sleep_max", 9)["value"] == 9
 
 
-def test_the_frozen_list_matches_the_tkinter_lock():
-    """The monolith's widget list is the specification. If a widget is added
-    to `_set_download_lock`, this is what says the web half went with it."""
+# The keys the web lock freezes beyond the monolith's widget list: the rest of
+# the per-track policy plus the cookie switch, all re-read per track / per
+# channel listing.
+WEB_ONLY_LOCKED = {"cover_art_enabled", "geo_bypass", "rotate_ua",
+                   "sleep_enabled", "use_cookies"}
+
+
+def test_the_frozen_list_covers_the_tkinter_lock():
+    """The monolith's widget list is the floor. If a widget is added to
+    `_set_download_lock`, this is what says the web half went with it."""
     import os
     import re
 
@@ -482,7 +499,7 @@ def test_the_frozen_list_matches_the_tkinter_lock():
     assert widgets == set(expected), (
         "the tkinter download lock changed — update DOWNLOAD_LOCKED_SETTINGS")
     assert set(cb_service.DOWNLOAD_LOCKED_SETTINGS) == {
-        key for key in expected.values() if key}
+        key for key in expected.values() if key} | WEB_ONLY_LOCKED
 
 
 # ── F3, the UI half: the host's refusal reaches the user verbatim ───────────

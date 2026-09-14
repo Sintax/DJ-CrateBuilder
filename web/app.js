@@ -4842,6 +4842,22 @@
     return row;
   }
 
+  /* The keys the host refuses while a download or Watch List job runs
+     (service.py's DOWNLOAD_LOCKED_SETTINGS — a test holds the two lists
+     equal). Every track re-reads them, so a change mid-run would land on the
+     next track; the grid greys them before the click, as the Downloads
+     screen's Skip row does. The throttle's mode, preset and bounds are
+     absent on purpose: a delay tuned mid-run is the point of them. */
+  const RUN_LOCKED_SETTINGS = [
+    'base_dir', 'skip_existing', 'skip_mode', 'bitrate_quality',
+    'bitrate_auto_upgrade', 'no_conversion', 'cover_art_enabled',
+    'cover_art_mode', 'limit_enabled', 'limit_minutes', 'geo_bypass',
+    'rotate_ua', 'sleep_enabled', 'use_cookies',
+  ];
+  const RUN_LOCKED_REASON =
+    'A download or Watch List scan is running, so this option is frozen ' +
+    'until it finishes — cancel it, or wait for it to finish.';
+
   /* ── settings: cross-field dependencies (tkinter's _on_sleep_toggle /
      _on_cookies_toggle, and limit_enabled greying the limiter row) ──────────
      Re-run after every successful save() so a dependency reacts the moment
@@ -4924,6 +4940,18 @@
       remoteParked ? REMOTE_PARKED_REASON
         : 'Remote access settings can only be changed from the app window on the ' +
           'host machine.'));
+
+    /* Last of the greying passes so it wins over the ones above: a run
+       freezes the limiter row whether or not the limiter is on. Each control
+       keeps its registry tooltip ahead of the reason, like gateWrite. */
+    if (dl.running || wl.running) {
+      RUN_LOCKED_SETTINGS
+        .concat(['limit_minutes__minus', 'limit_minutes__plus'])
+        .forEach((key) => {
+          const e = el(key);
+          if (e) setDisabled(e, true, { reason: tipPlus(e.dataset.origTt, RUN_LOCKED_REASON) });
+        });
+    }
 
     /* A read-only session, or one without the control lock, changes nothing
        at all — the host refuses every settings.set. */
