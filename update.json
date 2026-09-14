@@ -1,11 +1,11 @@
 {
   "version": "2.0",
-  "build": 86,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.86.zip",
-  "sha256": "1bf378d6a743272c15060b15a7904609948683d653d8b388a7ddf1df902b5a82",
-  "notes": "Overview page reorganized with a Quick Settings card; Database viewer column resizing and dividers fixed; Export CSV removed; About/README refreshed.",
+  "build": 87,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.87.zip",
+  "sha256": "5d2f986424b31faab216920fd9138eb7e0ebcb9888a2f063b49cda9334d8486b",
+  "notes": "Two fixes: settings can no longer shift mid-download, and the app checks for updates on launch even during the startup scan.",
   "base": 85,
-  "changes": "Overview page reorganized with a Quick Settings card; Database viewer column resizing and dividers fixed; Export CSV removed; About/README refreshed.",
+  "changes": "Two fixes: settings can no longer shift mid-download, and the app checks for updates on launch even during the startup scan.",
   "notice": "",
   "ffmpeg": {
     "version": "9.0.1-essentials_build-www.gyan.dev+72a489ec",
