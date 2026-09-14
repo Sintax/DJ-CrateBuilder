@@ -219,8 +219,13 @@ UPDATE_BLOCKS_SCAN = (
 # and a base_dir change scatters one batch across two crate roots. The three
 # DB-maintenance buttons in the same widget list are already refused server
 # side by `_require_idle_library`; `_update_btn` has no web equivalent.
-# `cover_art_enabled` is deliberately absent, because the monolith leaves its
-# checkbox live — this ports the lock, it does not widen it.
+#
+# The web lock is wider than the monolith's by the five keys under
+# "web only": the cookie config and the rest of the download policy are
+# re-read per track (and per channel listing) exactly like the keys above,
+# so a mid-scan flip of any of them lands on the next track too. The
+# throttle's mode, preset and manual bounds stay live on purpose — a delay
+# that changes between tracks is a tuning, not a policy change.
 DOWNLOAD_LOCKED_SETTINGS = {
     "base_dir": "the save directory",
     "skip_existing": "the skip-existing option",
@@ -231,6 +236,12 @@ DOWNLOAD_LOCKED_SETTINGS = {
     "cover_art_mode": "the cover-art formatting",
     "limit_enabled": "the length limiter",
     "limit_minutes": "the length limit",
+    # web only
+    "cover_art_enabled": "the cover-art option",
+    "geo_bypass": "geo-bypass",
+    "rotate_ua": "User-Agent rotation",
+    "sleep_enabled": "request throttling",
+    "use_cookies": "the browser-cookies option",
 }
 
 _VERSION_RE = re.compile(r'^APP_VERSION\s*=\s*"([^"]+)"', re.M)
@@ -2208,10 +2219,10 @@ class CrateBuilderService:
             return
         if self._job_running("batch") or self._job_running(WATCHLIST_JOB):
             raise CBError(
-                f"A download is running, so {what} is frozen until it "
-                f"finishes. Every track re-reads these settings, so a change "
-                f"now would land part-way through the run — cancel the "
-                f"download, or wait for it to finish.")
+                f"A download or Watch List scan is running, so {what} is "
+                f"frozen until it finishes. Every track re-reads these "
+                f"settings, so a change now would land part-way through the "
+                f"run — cancel it, or wait for it to finish.")
 
     def _set_run_at_startup(self, value, get):
         """Toggle the Windows Run-at-login registry entry, then persist.

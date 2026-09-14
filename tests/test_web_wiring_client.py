@@ -85,6 +85,10 @@ const state = { settings: { use_cookies: true, cookies_browser: 'Firefox',
                 host: { transport: 'local' } };
 const REMOTE_SETTING_KEYS = [];
 const REMOTE_PARKED_REASON = 'parked';
+const dl = { running: false };
+const wl = { running: false };
+const TOOLTIPS = {};
+function tipPlus(ttKey, reason) { return reason; }
 function remoteAccessAvailable() { return true; }
 function setDisabled(el, disabled, opts) { el.disabled = !!disabled; el.opts = opts || {}; }
 function bindTips() {}
@@ -131,6 +135,93 @@ def test_the_howto_button_names_the_browser_and_greys_with_cookies_off(app_js, t
     assert r["brave"] == "📖 How-To: Setting Up a Dedicated Brave Profile"
     assert r["chrome"] == "📖 How-To: Using Chrome Cookies via a Cookie File"
     assert r["off"] == {"off": True, "reason": "Turn on Use Browser Cookies first."}
+
+
+# ── the per-track policy is greyed while a download or scan runs ─────────────
+# The host refuses these writes (DOWNLOAD_LOCKED_SETTINGS) for a batch or a
+# Watch List job alike; the grid says so before the click, the way the
+# Downloads screen's Skip row already does.
+
+_RUN_LOCK_HARNESS = """
+const state = { settings: { use_cookies: false, cookies_browser: 'Firefox',
+                            cookie_method: 'Browser Profile', sleep_enabled: true,
+                            sleep_mode: 'Manual', limit_enabled: true,
+                            geo_bypass: false, rotate_ua: true,
+                            cover_art_enabled: true, cover_art_mode: 'Off',
+                            skip_existing: true, limit_minutes: 8 },
+                host: { transport: 'local' } };
+const REMOTE_SETTING_KEYS = [];
+const REMOTE_PARKED_REASON = 'parked';
+const dl = { running: false };
+const wl = { running: %(wl)s };
+const TOOLTIPS = { 'settings.geo_bypass': 'geo tip' };
+function tipPlus(ttKey, reason) {
+  return (ttKey && TOOLTIPS[ttKey] ? TOOLTIPS[ttKey] + '\\n\\n' : '') + reason;
+}
+function remoteAccessAvailable() { return true; }
+function setDisabled(el, disabled, opts) { el.disabled = !!disabled; el.opts = opts || {}; }
+function bindTips() {}
+function writeBlocked() { return ''; }
+const els = {};
+const grid = { querySelector: (sel) => {
+  const key = sel.slice('[data-key="'.length, -2);
+  if (!els[key]) els[key] = { key, dataset: { origTt: key === 'geo_bypass' ? 'settings.geo_bypass' : '' } };
+  return els[key];
+} };
+function $(sel) { return sel === '#settings-grid' ? grid : null; }
+function $$() { return []; }
+%(fn)s
+applySettingsDependencies();
+const out = {};
+Object.keys(els).forEach((k) => { out[k] = { off: els[k].disabled, reason: els[k].opts.reason || '' }; });
+console.log(JSON.stringify(out));
+"""
+
+
+def _run_lock(app_js, tmp_path, running):
+    return _run_node(tmp_path, "runlock.mjs", _RUN_LOCK_HARNESS % {
+        "wl": "true" if running else "false",
+        "fn": _unreadable_browsers(app_js)
+        + _slice(app_js, "  const RUN_LOCKED_SETTINGS = [",
+                 "  /* One setting, drawn twice"),
+    })
+
+
+def test_the_policy_keys_grey_while_a_watch_list_job_runs(app_js, tmp_path):
+    r = _run_lock(app_js, tmp_path, running=True)
+    for key in ("cover_art_enabled", "cover_art_mode", "limit_minutes",
+                "limit_minutes__minus", "limit_minutes__plus", "limit_enabled",
+                "geo_bypass", "rotate_ua", "sleep_enabled", "use_cookies",
+                "skip_existing", "skip_mode", "bitrate_quality",
+                "bitrate_auto_upgrade", "no_conversion", "base_dir"):
+        assert r[key]["off"] is True, key
+        assert "frozen until it finishes" in r[key]["reason"], key
+    # The registry tooltip still travels with the reason.
+    assert r["geo_bypass"]["reason"].startswith("geo tip\n\n")
+    # The throttle's tuning stays live mid-run: Manual mode here, so the
+    # bounds are enabled and the preset is greyed for the mode, not the run.
+    assert r["sleep_mode"]["off"] is False
+    assert r["sleep_min"]["off"] is False
+    assert r["sleep_max"]["off"] is False
+    assert "frozen" not in r["sleep_preset"]["reason"]
+
+
+def test_the_policy_keys_are_live_when_nothing_runs(app_js, tmp_path):
+    """The grid is rebuilt enabled on every refresh, so a key no dependency
+    pass names must simply go untouched here — never greyed."""
+    r = _run_lock(app_js, tmp_path, running=False)
+    for key in ("cover_art_enabled", "cover_art_mode", "geo_bypass", "rotate_ua",
+                "sleep_enabled", "use_cookies", "limit_minutes"):
+        assert r.get(key, {"off": False})["off"] is False, key
+
+
+def test_the_run_lock_list_matches_the_hosts(app_js):
+    """One list, two copies: the grid greys exactly what the host refuses."""
+    import re
+    from cratebuilder import service as cb_service
+    body = _slice(app_js, "  const RUN_LOCKED_SETTINGS = [", "];")
+    assert set(re.findall(r"'([a-z_]+)'", body)) == \
+        set(cb_service.DOWNLOAD_LOCKED_SETTINGS)
 
 
 # ── turning Browser Cookies on is gated ──────────────────────────────────────
