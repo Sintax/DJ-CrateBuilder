@@ -245,11 +245,8 @@ _BUILD_RE = re.compile(r"^APP_BUILD\s*=\s*(\d+)", re.M)
 UPDATE_CHECK_OPTIONS = ["1 hour", "3 hours", "6 hours", "12 hours", "1 day"]
 
 # The launch check: the monolith's after(3000, _auto_check_for_updates),
-# measured from a UI that is already built. When a job (the startup scan,
-# usually) is still running at that moment the check waits this long and
-# looks again rather than giving up until the first interval tick.
+# measured from a UI that is already built.
 STARTUP_UPDATE_CHECK_DELAY = 3.0
-STARTUP_UPDATE_CHECK_RETRY = 30.0
 
 # The two manifest URL constants, read out of the monolith the same way
 # version_info() reads APP_VERSION/APP_BUILD — one copy, no drift. Unlike
@@ -3576,15 +3573,14 @@ class CrateBuilderService:
             return bool(self._jobs)
 
     def _startup_update_check_fire(self):
-        """The launch check. A job still running (the startup scan, most
-        likely) means look again shortly rather than skip to the first
-        interval tick — the point of a launch check is to happen at launch.
-        Once it has run, the ordinary interval timer carries on from here.
+        """The launch check. It runs whether or not a job is going — the
+        startup scan usually is, at the three-second mark — because it only
+        reads the manifest and announces; nothing installs until the user
+        says so. Holding it back while the scan ran meant no launch check at
+        all until the scan was stopped. Once it has run, the ordinary
+        interval timer carries on from here.
         """
-        if self._take_update_timer_slot():
-            self._arm_update_timer(STARTUP_UPDATE_CHECK_RETRY,
-                                   self._startup_update_check_fire)
-            return
+        self._take_update_timer_slot()
         self._silent_update_check()
         self._arm_update_timer()
 

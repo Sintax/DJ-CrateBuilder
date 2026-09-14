@@ -684,9 +684,11 @@ def test_startup_check_noop_on_remote(tmp_path):
         svc.close()
 
 
-def test_startup_fire_waits_for_a_running_job(service, monkeypatch):
-    """A startup scan still running at the three-second mark must not turn
-    the launch check into a six-hour wait: it looks again shortly."""
+def test_startup_fire_checks_even_while_a_job_runs(service, monkeypatch):
+    """The launch check only reads the manifest and announces; it never
+    installs. So a startup scan still running at the three-second mark is
+    no reason to hold it back — waiting meant no check at all until the
+    scan was stopped."""
     called = []
     monkeypatch.setattr(service, "update_check", lambda: called.append(1))
     with service._lock:
@@ -696,10 +698,10 @@ def test_startup_fire_waits_for_a_running_job(service, monkeypatch):
     finally:
         with service._lock:
             service._jobs.pop("watchlist", None)
-    assert called == []
-    assert service._update_timer is not None
-    assert service._next_update_check_ts - time.time() <= \
-        service_mod.STARTUP_UPDATE_CHECK_RETRY
+    assert called == [1]
+    secs = util.interval_label_to_seconds(
+        service._settings.get("update_check_interval"))
+    assert service._next_update_check_ts - time.time() > secs - 5
 
 
 def test_startup_fire_checks_then_hands_over_to_the_interval(service, monkeypatch):
