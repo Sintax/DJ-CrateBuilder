@@ -460,12 +460,16 @@ def test_the_confirm_leads_with_the_notes_and_boxes_the_notice(app_js):
 # ── the components table ─────────────────────────────────────────────────────
 
 _COMPONENTS_HARNESS = """
-const aboutUpdate = { status: %(status)s };
+const aboutUpdate = { status: %(status)s, componentsOpen: %(open)s };
+let renders = 0;
+function renderUpdate() { renders += 1; }
 function makeEl(tag) {
   const e = {
-    tag, children: [], style: {}, className: '', textContent: '',
+    tag, children: [], style: {}, className: '', textContent: '', attrs: {},
     appendChild(c) { this.children.push(c); return c; },
     append(...cs) { cs.forEach((c) => this.children.push(c)); },
+    setAttribute(k, v) { this.attrs[k] = v; },
+    addEventListener(ev, fn) { this.on = fn; },
   };
   e.classList = { add(c) { e.className += ' ' + c; } };
   return e;
@@ -484,18 +488,27 @@ const table = host.children.find((c) => c.className === 'cb-comp');
 const rows = table ? table.children[0].children[1].children.map((tr) => ({
   cls: tr.className, cells: tr.children.map(text) })) : null;
 const heads = table ? table.children[0].children[0].children[0].children.map(text) : null;
+const head = host.children[1];
+let toggle = null;
+host.children.forEach((c) => {
+  const b = c.children && c.children.find((k) => k.tag === 'button');
+  if (b) toggle = b;
+});
+if (toggle) toggle.on();
 console.log(JSON.stringify({
   n: host.children.length, heads, rows,
   note: (host.children.find((c) => c.className.indexOf('cb-comp__note') !== -1) || {}).textContent,
-  badge: (host.children[1] ? host.children[1].children.slice(1).map(text) : []),
+  badge: (head ? head.children.filter((c) => c.className.indexOf('cb-tag') !== -1).map(text) : []),
+  toggle: toggle ? { text: toggle.textContent, expanded: toggle.attrs['aria-expanded'] } : null,
+  afterClick: { open: aboutUpdate.componentsOpen, renders },
 }));
 """
 
 
-def _components(app_js, tmp_path, status):
+def _components(app_js, tmp_path, status, open=True):
     fn = _slice(app_js, "  const COMPONENT_STATE_TEXT = {", "  /* Loads what About and Update share")
     return _run_node(tmp_path, "components.mjs", _COMPONENTS_HARNESS % {
-        "status": json.dumps(status), "fn": fn})
+        "status": json.dumps(status), "open": json.dumps(open), "fn": fn})
 
 
 _ROWS = [
@@ -517,6 +530,24 @@ def test_the_update_page_draws_the_components_table_after_the_controls(app_js):
         css = fh.read()
     assert ".cb-comp__row.is-newer td { background: var(--cb-attn-wash); }" in css
     assert ".cb-comp__new { color: var(--cb-warn); font-weight: 700; }" in css
+
+
+def test_the_components_list_starts_folded_behind_a_show_button(app_js, tmp_path):
+    """Folded: the heading and its badge still say whether anything would
+    change, but no note and no table. Show flips the flag and redraws;
+    open, the same button reads Hide."""
+    status = {"components": {"build": 83, "available": True, "rows": _ROWS}}
+    assert "componentsOpen: false," in app_js
+    folded = _components(app_js, tmp_path, status, open=False)
+    assert folded["rows"] is None
+    assert folded.get("note") is None
+    assert folded["badge"] == ["1 will update"]
+    assert folded["toggle"] == {"text": "Show", "expanded": "false"}
+    assert folded["afterClick"] == {"open": True, "renders": 1}
+    shown = _components(app_js, tmp_path, status, open=True)
+    assert shown["rows"] is not None
+    assert shown["toggle"] == {"text": "Hide", "expanded": "true"}
+    assert shown["afterClick"] == {"open": False, "renders": 1}
 
 
 def test_a_newer_component_stands_out_with_its_new_version(app_js, tmp_path):

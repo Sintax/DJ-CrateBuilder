@@ -292,6 +292,104 @@ def test_a_cberror_from_a_job_is_reported_as_its_own_message(service):
     assert seen[0][1]["error"] == "The library folder is on a drive that went away."
 
 
+# ── the last run's rows, kept for the Downloads screen's queue panel ──────────
+# That panel is redrawn from live queue.row events and collapses the moment a
+# run ends — so an overnight Watch List download left nothing to look at in the
+# morning. The service keeps the finished run's final rows until the user
+# clears them, and hands them out in the snapshot and as queue.last_run.
+
+_RUN_ROWS = [
+    {"id": 7, "index": 1, "state": "queued", "title": "Second", "detail": ""},
+    {"id": 3, "index": 0, "state": "active", "title": "First", "detail": "fetching"},
+    {"id": 3, "index": 0, "state": "done", "title": "First", "detail": "2 tracks"},
+    {"id": 7, "index": 1, "state": "error", "title": "Second",
+     "detail": "link unresolved"},
+]
+
+
+def _run_emitting(service, category, rows, tail=None):
+    done = threading.Event()
+    service.events.subscribe(
+        lambda t, p: done.set() if t == JOB_FINISHED else None)
+
+    def body():
+        for row in rows:
+            service.emit("queue.row", dict(row, job=category))
+        if tail:
+            tail()
+
+    service._start_job(category, body)
+    assert done.wait(10)
+
+
+@pytest.mark.parametrize("category", ["batch", "watchlist"])
+def test_a_finished_run_keeps_its_final_rows_until_cleared(service, category):
+    seen = []
+    service.events.subscribe(
+        lambda t, p: seen.append(p) if t == "queue.last_run" else None)
+    assert service.snapshot()["last_run"] is None
+
+    _run_emitting(service, category, _RUN_ROWS)
+
+    last = service.snapshot()["last_run"]
+    assert last["job"] == category
+    assert last["ok"] is True
+    assert last["finished_at"] > 0
+    # Each row's LAST state, in queue order — not every event that arrived.
+    assert [(r["title"], r["state"], r["detail"]) for r in last["rows"]] == [
+        ("First", "done", "2 tracks"), ("Second", "error", "link unresolved")]
+    assert last["tally"] is None
+    assert seen == [last]
+
+    assert service.call("queue.clear_last_run") is None
+    assert service.snapshot()["last_run"] is None
+    assert seen[-1] is None
+
+
+def test_the_last_run_is_told_before_job_finished_so_a_resync_sees_it(service):
+    order = []
+    service.events.subscribe(
+        lambda t, p: order.append(t) if t in ("queue.last_run", JOB_FINISHED)
+        else None)
+    _run_emitting(service, "batch", _RUN_ROWS)
+    assert order == ["queue.last_run", JOB_FINISHED]
+
+
+def test_a_batch_run_keeps_its_closing_tally(service):
+    counts = {"downloaded": 2, "skipped": 1, "errors": 0, "cancelled": False}
+    _run_emitting(service, "batch", _RUN_ROWS,
+                  tail=lambda: service.emit("batch.finished", dict(counts)))
+    assert service.snapshot()["last_run"]["tally"] == counts
+
+
+def test_a_run_that_reported_no_rows_leaves_the_last_run_alone(service):
+    """A Watch List SCAN claims the same job slot as a download but has no
+    queue rows — it must not wipe last night's download from the panel."""
+    _run_emitting(service, "watchlist", _RUN_ROWS)
+    kept = service.snapshot()["last_run"]
+    _run_emitting(service, "watchlist", [])
+    assert service.snapshot()["last_run"] == kept
+
+
+def test_a_new_run_replaces_the_last_one(service):
+    _run_emitting(service, "watchlist", _RUN_ROWS)
+    _run_emitting(service, "batch", _RUN_ROWS[:1])
+    last = service.snapshot()["last_run"]
+    assert last["job"] == "batch"
+    assert [r["title"] for r in last["rows"]] == ["Second"]
+
+
+def test_a_failed_run_still_keeps_what_it_got_through(service):
+    def boom():
+        raise RuntimeError("the run blew up")
+
+    _run_emitting(service, "batch", _RUN_ROWS, tail=boom)
+    last = service.snapshot()["last_run"]
+    assert last["ok"] is False
+    assert last["error"] == "RuntimeError: the run blew up"
+    assert len(last["rows"]) == 2
+
+
 @pytest.mark.parametrize("category", ["batch", "watchlist", "maintenance"])
 def test_job_started_is_emitted_with_the_slot_already_taken(service, category):
     """The mirror of job.finished's guarantee. A frontend resyncing on this
