@@ -971,3 +971,9 @@ def test_the_share_buttons_open_only_in_the_app_window(app_js, tmp_path):
         assert "app window on the host machine" in r["remote"][key]["why"], key
     # Read-only reaches Import like every other write control.
     assert r["readOnly"]["wl-import"]["off"] is True
+
+
+def test_import_picker_reports_entries_the_host_dropped(app_js):
+    assert "const dropped = res.dropped || [];" in app_js
+    assert "weren’t imported" in app_js
+    assert "note: 'Choose the channels to add to your Watch List.' + droppedNote" in app_js

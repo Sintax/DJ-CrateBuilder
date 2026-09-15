@@ -7257,10 +7257,20 @@
     catch (_) { return; /* call() already toasted the reason */ }
     if (!res || !res.path) return;
     const entries = res.entries || [];
+    /* The host has already thrown out entries it would not import (a link
+       that is not YouTube or SoundCloud, mostly); say so rather than let
+       the user wonder why their friend's list came up short. */
+    const dropped = res.dropped || [];
     if (!entries.length) {
-      toast('That file holds no channels to import.', true);
+      toast(dropped.length
+        ? `Nothing to import — ${dropped.length} ${dropped.length === 1 ? 'entry' : 'entries'} weren’t valid.`
+        : 'That file holds no channels to import.', true);
       return;
     }
+    const droppedNote = dropped.length
+      ? ` ⚠ ${dropped.length} ${dropped.length === 1 ? 'entry' : 'entries'} weren’t imported: `
+        + dropped.slice(0, 3).join('; ') + (dropped.length > 3 ? '; …' : '')
+      : '';
     const rows = entries.map((e, i) => ({
       key: i, name: e.display_name, url: e.url,
       platform: e.platform, genre: e.genre,
@@ -7273,7 +7283,7 @@
     }));
     wlShareListModal({
       title: 'Import Watch List',
-      note: 'Choose the channels to add to your Watch List.',
+      note: 'Choose the channels to add to your Watch List.' + droppedNote,
       rows, verb: 'Import', submitTt: 'wl.import_confirm',
       onSubmit(keys) {
         closeModal();
