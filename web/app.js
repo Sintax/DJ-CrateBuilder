@@ -7644,6 +7644,12 @@
       const job = (p && p.job) || 'batch';
       if (authTrouble.muted || authTrouble.shownFor[job]) return;
       authTrouble.shownFor[job] = true;
+      /* openModal closes whatever is up first, so a host-timed pop-up would
+         throw away the text someone is typing in Fix Link or a report. */
+      if (openDialog) {
+        toast('Several downloads were refused as if you weren’t signed in — check Settings ▸ Browser & Cookies.', true);
+        return;
+      }
       openAuthTroubleDialog(p);
     });
     /* A run's closing summary. Display only, and never a state signal — the

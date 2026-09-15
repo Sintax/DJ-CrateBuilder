@@ -621,6 +621,13 @@ def test_auth_trouble_event_opens_the_dialog(app_js):
     # once per job, and a session mute
     assert "authTrouble.shownFor" in app_js
     assert "authTrouble.muted" in app_js
+    # a dialog the user is already typing in must not be thrown away for it:
+    # once per job still, but a toast instead of the pop-up while one is open
+    handler = app_js[app_js.index("cbApi.on('auth.trouble'"):]
+    handler = handler[:handler.index("openAuthTroubleDialog(p);")]
+    assert "authTrouble.shownFor[job] = true;" in handler
+    assert "if (openDialog) {" in handler.split("authTrouble.shownFor[job] = true;")[1]
+    assert "check Settings ▸ Browser & Cookies" in handler
     # the three cookie states each get their own copy
     assert "switching browser cookies off" in app_js
     assert "cookie file may have expired" in app_js

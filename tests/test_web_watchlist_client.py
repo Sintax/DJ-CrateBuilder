@@ -329,6 +329,7 @@ const mt = { running: false, task: null, current: null, overall: null,
              note: null, view: null };
 const authTrouble = { shownFor: {}, muted: false };
 function openAuthTroubleDialog() {}
+let openDialog = null;
 let state = { counts: {} };
 const calls = [];
 const handlers = {};
@@ -473,6 +474,7 @@ const mt = { running: false, task: null, current: null, overall: null,
              note: null, view: null };
 const authTrouble = { shownFor: {}, muted: false };
 function openAuthTroubleDialog() {}
+let openDialog = null;
 let state = { counts: {} };
 const handlers = {};
 const cbApi = { on(event, fn) { handlers[event] = fn; } };
