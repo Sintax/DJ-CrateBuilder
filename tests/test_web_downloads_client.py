@@ -613,3 +613,15 @@ def test_start_adds_the_pasted_link_before_it_starts(app_js):
                    "$('#dl-cancel').addEventListener('click'")
     assert "if (pendingUrl() && !(await addToBatch())) return;" in start
     assert start.index("addToBatch()") < start.index("call('download.start')")
+
+
+def test_auth_trouble_event_opens_the_dialog(app_js):
+    assert "cbApi.on('auth.trouble'" in app_js
+    assert "function openAuthTroubleDialog(" in app_js
+    # once per job, and a session mute
+    assert "authTrouble.shownFor" in app_js
+    assert "authTrouble.muted" in app_js
+    # the three cookie states each get their own copy
+    assert "switching browser cookies off" in app_js
+    assert "cookie file may have expired" in app_js
+    assert "Open cookie settings" in app_js

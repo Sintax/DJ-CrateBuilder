@@ -1911,6 +1911,12 @@
     skipping: {},     // channel id -> a Skip the host has been told about
   };
 
+  /* ── auth-trouble pop-up ──
+     The host says "three login-shaped failures" once per runner; the
+     frontend decides whether the user has already been told this job, or
+     asked not to be told again this session. */
+  const authTrouble = { shownFor: {}, muted: false };
+
   function wlPending() {
     return wl.cards.reduce((a, c) => a + (Number(c.new_count) || 0), 0);
   }
@@ -5787,6 +5793,60 @@
     });
   }
 
+  function openAuthTroubleDialog(p) {
+    const s = (state && state.settings) || {};
+    const running = dl.running || wl.running;
+    let lead, hint;
+    if (!s.use_cookies) {
+      lead = 'Several downloads were refused as if you weren’t signed in.';
+      hint = 'These sites often need a signed-in session. Set up a cookie '
+           + 'source in Settings ▸ Browser & Cookies — the how-to walks '
+           + 'through a throwaway browser profile or saving a cookie file.';
+    } else if (s.cookie_method === 'Cookie File') {
+      lead = 'Several downloads were refused even with your cookie file.';
+      hint = 'Your cookie file may have expired — export a fresh one from '
+           + 'your browser and point Settings at it.';
+    } else {
+      lead = `Several downloads were refused with ${s.cookies_browser || 'browser'} cookies on.`;
+      hint = 'Try switching browser cookies off and running again. If that '
+           + 'doesn’t help, the how-to explains a throwaway profile or a '
+           + 'saved cookie file.';
+    }
+    const refs = {};
+    openModal({
+      title: '🔐 Looks like a sign-in problem',
+      width: 520,
+      body(body) {
+        const a = document.createElement('p'); a.textContent = lead;
+        const b = document.createElement('p'); b.textContent = hint;
+        body.append(a, b);
+        if (running) {
+          body.appendChild(modalNote('Cookie settings are locked while a '
+            + 'download is running — stop the run first, then change them.'));
+        }
+        const lab = document.createElement('label');
+        lab.className = 'cb-row';
+        lab.style.cssText = 'gap:8px;cursor:pointer';
+        refs.mute = document.createElement('input');
+        refs.mute.type = 'checkbox';
+        refs.mute.className = 'cb-cbx';
+        lab.append(refs.mute, document.createTextNode(
+          ' Don’t show this again this session'));
+        body.appendChild(lab);
+      },
+      foot(foot, api) {
+        const settings = modalButton('Open cookie settings', 'cb-btn--warn',
+          () => { api.close(); show('settings'); });
+        const howto = modalButton('Read the how-to', 'cb-btn--quiet',
+          () => { api.close(); openCookieHowto(s.cookies_browser || 'Chrome'); });
+        const close = modalButton('Close', 'cb-btn--quiet', api.close);
+        close.style.marginLeft = 'auto';
+        foot.append(settings, howto, close);
+      },
+      onClose() { if (refs.mute && refs.mute.checked) authTrouble.muted = true; },
+    });
+  }
+
   /* Section-level help, keyed by the section name the contract's settings keys
      group under. These are the registry's `?` strings — about a whole card,
      not about one control. */
@@ -7453,6 +7513,7 @@
        back still claiming the run is going. Both job categories resync here;
        neither reads its own terminal event for this. */
     cbApi.on('job.finished', (p) => {
+      if (p && p.job) delete authTrouble.shownFor[p.job];
       const job = p && p.job;
       if (job === 'batch') {
         dl.running = false;
@@ -7493,6 +7554,12 @@
         return;
       }
       refresh();
+    });
+    cbApi.on('auth.trouble', (p) => {
+      const job = (p && p.job) || 'batch';
+      if (authTrouble.muted || authTrouble.shownFor[job]) return;
+      authTrouble.shownFor[job] = true;
+      openAuthTroubleDialog(p);
     });
     /* A run's closing summary. Display only, and never a state signal — the
        modal is settled by job.finished above, which is what the host emits
