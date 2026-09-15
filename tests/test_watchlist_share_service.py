@@ -269,7 +269,7 @@ def test_import_read_reports_what_it_dropped(service, monkeypatch, tmp_path):
 def test_import_entry_cleans_what_the_client_sends(service):
     res = service.call("watchlist.import_entry", {
         "entry": {"url": "https://www.youtube.com/@b", "display_name": "..",
-                  "platform": "..\..", "genre": "..\..\Windows",
+                  "platform": r"..\..", "genre": r"..\..\Windows",
                   "channel_id": "UC/../x"}})
     assert res["result"] == "added"
     row = service._watchlist_rows()[0]
