@@ -606,3 +606,28 @@ def test_about_has_a_report_a_problem_flow(app_js):
     assert "Save bundle & open GitHub" in app_js
     assert "Nothing is sent until you press" in app_js
     assert "Available in the app window on the host machine." in app_js
+
+
+def test_the_show_hide_toggle_wears_the_apps_red_like_check_for_updates(app_js):
+    """The toggle was drawn quiet (grey); it now reads as the other Update
+    controls do — the base button, red outline and text."""
+    fn = _slice(app_js, "    const toggle = document.createElement('button');",
+                "    toggle.addEventListener('click'")
+    assert "toggle.className = 'cb-btn cb-btn--sm';" in fn
+    assert "cb-btn--quiet" not in fn
+
+
+def test_report_a_bug_stands_on_its_own_line_full_size_and_red(app_js):
+    """The report button leaves the link row for a line of its own, at the
+    base button's full size and colour, so a user looking for where to
+    report something finds it without reading the links."""
+    fn = _slice(app_js, "    const report = document.createElement('button');",
+                "    if (info.note) {")
+    assert "report.className = 'cb-btn';" in fn
+    assert "cb-btn--quiet" not in fn and "cb-btn--sm" not in fn
+    assert "'🐞 Report a Bug'" in fn
+    # Its own row, appended after the links row — not inside it.
+    assert "reportRow.appendChild(report)" in fn
+    assert fn.index("host.appendChild(links)") < fn.index("host.appendChild(reportRow)")
+    start = fn.index("links.append(")
+    assert "report" not in fn[start:fn.index(");", start)]

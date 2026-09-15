@@ -70,7 +70,7 @@ Version 2.0 is a ground-up interface rework: the app is now a modern web UI runn
 
 - **The web UI is the app.** DJ-CrateBuilder now opens as a fast, clean web interface inside a native desktop window (WebView2 on Windows, WebKit on Linux). The old tkinter interface is retired.
 - **Overview dashboard.** One screen answers "what is the app doing right now": current job, Watch List status, notifications, recent activity, a Quick Settings card, and the last update check's verdict.
-- **Dark theme.** Settings ▸ Appearance; remembered per device.
+- **Dark theme and text size.** Settings ▸ Appearance; both remembered per device. Text size has Normal, Large and Extra-Large, and scales every screen as a whole so nothing is cut off.
 - **Update screen.** The self-updater has a screen of its own, with a Components table showing what your install runs (Python, FFmpeg, yt-dlp, …) against the live build. Updates check shortly after launch and on an interval.
 - **Watch List sharing.** Export the channels you choose to a file another user can import — clashes with their existing entries are resolved on import. **🛠 Check Links** repairs every unresolved channel link in one pass.
 - **Database viewer.** Browse everything you've downloaded, grouped by platform / genre / channel, with search and resizable columns.
@@ -103,7 +103,7 @@ Version 2.0 is a ground-up interface rework: the app is now a modern web UI runn
 - **Bug reports with scrubbed logs** — **Report a Bug** on the About screen previews an anonymised copy of both logs (home and library folders, user name, e-mails, IPs, cookie paths and tokens replaced with placeholders), saves them as a zip and opens a pre-filled GitHub issue for you to attach it to
 - **Remote Access** — Pair another device with a one-time code and control the app from a browser on your network *(built in v2.0 but still in development and switched off in current builds — see [Remote Access](#remote-access))*
 - **In-App Updates** — SHA-256-verified nightly builds installed from the Update screen, which also lists the components your install is running against the live build
-- **Light & Dark Theme** — Chosen under Settings ▸ Appearance, remembered per device
+- **Light & Dark Theme, Text Size** — Both chosen under Settings ▸ Appearance and remembered per device; Large and Extra-Large scale the whole app up by 8% or 15% for easier reading
 - **URL History** — The URL field remembers your recent inputs
 - **Channel Auto-Detection** — Bare channel URLs (youtube.com/@Name) automatically resolve to the full video list
 

@@ -95,8 +95,31 @@ out.card = {
   options: segs.map((s) => [s.dataset.theme, s.textContent, s.attrs.role,
                             s.attrs['aria-checked'], s.tabIndex,
                             s.dataset.readOk, s.classList.contains('is-on')]),
-  hint: card.children[1].textContent,
+  rows: card.children.length,
+  labels: card.children.map((row) => row.children[0].textContent),
 };
+const sizeSel = card.children[1].children[1];
+function sizeSnapshot() {
+  let stored;
+  try { stored = localStorage.getItem('cb_text_size'); } catch (_) { stored = 'refused'; }
+  return { attr: document.documentElement.attrs['data-text-size'] || null, stored };
+}
+out.size = {
+  tag: sizeSel.tag, id: sizeSel.id, readOk: sizeSel.dataset.readOk,
+  options: sizeSel.children.map((o) => [o.value, o.textContent]),
+  value: sizeSel.value, initial: storedTextSize(),
+};
+sizeSel.value = 'large';
+sizeSel.listeners.change();
+out.sizeLarge = sizeSnapshot();
+sizeSel.value = 'xl';
+sizeSel.listeners.change();
+out.sizeXl = sizeSnapshot();
+applyTextSize('bogus');
+out.sizeBogus = sizeSnapshot();
+sizeSel.value = 'normal';
+sizeSel.listeners.change();
+out.sizeNormal = sizeSnapshot();
 segs[0].listeners.click();
 out.clickedLight = snapshot();
 let prevented = false;
@@ -108,6 +131,9 @@ localStorage = refusing;
 out.refusedStored = storedTheme();
 applyTheme('dark');
 out.refusedApply = snapshot();
+out.refusedSize = storedTextSize();
+applyTextSize('large');
+out.refusedSizeApply = sizeSnapshot();
 console.log(JSON.stringify(out));
 """
 
@@ -152,7 +178,91 @@ def test_the_card_draws_two_radio_options_reading_the_stored_theme(result):
         ["light", "Light", "radio", "false", 0, "1", False],
         ["dark", "Dark", "radio", "true", 0, "1", True],
     ]
-    assert "this device" in card["hint"]
+    # Two labelled rows and nothing else: the "kept on this device" hint
+    # that used to follow the theme switch is gone.
+    assert card["rows"] == 2
+    assert card["labels"] == ["Theme", "Text size"]
+
+
+# ── text size ────────────────────────────────────────────────────────────────
+
+def test_the_text_size_control_is_a_select_of_three_sizes_reading_the_store(result):
+    """A dropdown, not a segmented switch: three options, the stored size
+    selected, live in a read-only remote session like the theme switch."""
+    size = result["size"]
+    assert (size["tag"], size["id"], size["readOk"]) == ("select", "settings-text-size", "1")
+    assert size["options"] == [["normal", "Normal"], ["large", "Large"],
+                               ["xl", "Extra-Large"]]
+    assert size["initial"] == "normal"
+    assert size["value"] == "normal"
+
+
+def test_choosing_a_size_marks_the_page_and_remembers_it(result):
+    """Normal is today's size, so it clears the mark rather than setting one;
+    the other two set it for app.css to answer. An unknown value falls
+    back to normal."""
+    assert result["sizeLarge"] == {"attr": "large", "stored": "large"}
+    assert result["sizeXl"] == {"attr": "xl", "stored": "xl"}
+    assert result["sizeBogus"] == {"attr": None, "stored": "normal"}
+    assert result["sizeNormal"] == {"attr": None, "stored": "normal"}
+
+
+def test_a_store_that_refuses_still_sizes_the_page(result):
+    assert result["refusedSize"] == "normal"
+    assert result["refusedSizeApply"] == {"attr": "large", "stored": "refused"}
+
+
+def test_index_applies_the_stored_text_size_before_any_stylesheet_loads():
+    html = _read("index.html")
+    key = re.search(r"const TEXT_SIZE_KEY = '([^']+)'", _read("app.js")).group(1)
+    assert key == "cb_text_size"
+    assert html.index(f"localStorage.getItem('{key}')") < html.index('href="theme.css"')
+    assert "setAttribute('data-text-size'" in html
+
+
+def test_app_css_scales_the_whole_page_for_each_larger_size():
+    """The sizes are one zoom rule each on the root, so text, controls and
+    spacing grow together and no screen has to be re-laid-out by hand.
+    theme.css stays the design's drop-in, so the rules live in app.css."""
+    css = _read("app.css")
+    assert re.search(r'html\[data-text-size="large"\]\s*\{\s*zoom:\s*1\.08;', css)
+    assert re.search(r'html\[data-text-size="xl"\]\s*\{\s*zoom:\s*1\.15;', css)
+    assert "zoom" not in _read("theme.css")
+
+
+def test_nothing_is_sized_from_the_viewport_units_zoom_leaves_alone():
+    """vh and vw are not shrunk by zoom: a 100vh shell at 115% is a sixth
+    taller than the window and every screen's bottom is cut off. The two
+    variables divide the zoom back out, so each size declares them and no
+    rule reaches for the raw unit."""
+    css = _strip_comments(_read("app.css"))
+    assert re.search(r':root\s*\{\s*--cb-vh:\s*1vh;\s*--cb-vw:\s*1vw;\s*\}', css)
+    for size, zoom in (("large", "1.08"), ("xl", "1.15")):
+        rule = re.search(r'html\[data-text-size="%s"\]\s*\{([^}]*)\}' % size, css).group(1)
+        assert f"--cb-vh: calc(1vh / {zoom})" in rule
+        assert f"--cb-vw: calc(1vw / {zoom})" in rule
+    bare = [m.group(0) for m in re.finditer(r"[^\n]*\b\d+v[hw]\b[^\n]*", css)
+            if "--cb-v" not in m.group(0)]
+    assert bare == [], bare
+    assert ".cb-shell { display: flex; height: 100%; }" in css
+
+
+def test_everything_placed_from_a_measurement_divides_by_the_page_zoom():
+    """Under CSS zoom a rectangle, a pointer position and innerWidth answer
+    in viewport pixels while style.left and scrollTop are written in the
+    page's own, larger pixels. Every site that mixes the two goes through
+    pageZoom(), or a tooltip lands 15–30% away from its control."""
+    app_js = _read("app.js")
+    assert "function pageZoom()" in app_js
+    assert "currentCSSZoom" in app_js
+    for start, end in [
+        ("  function showTip(host, text) {", "  function hideTip()"),
+        ("  function toggleNotifications() {", "  function renderNotifications()"),
+        ("  function scrollQueueLogToActive(", "  function renderQueueLog()"),
+        ("      resize.addEventListener('mousedown'", "        function onUp()"),
+        ("  function dbShowMenu(x, y, items) {", "  async function dbCopyText("),
+    ]:
+        assert "pageZoom()" in _slice(app_js, start, end), start
 
 
 def test_the_section_is_seeded_first_and_filled_like_the_other_extras():
@@ -214,7 +324,7 @@ def _tokens(css, selector):
 # Tokens that are not colours, and the one colour that is deliberately shared:
 # the Fix Link label is near-black on orange whichever ground the page has.
 _SAME_IN_BOTH = {"--cb-radius", "--cb-radius-sm", "--cb-font", "--cb-mono",
-                 "--cb-panel-w", "--cb-touch", "--cb-fix-ink"}
+                 "--cb-panel-w", "--cb-touch", "--cb-fix-ink", "--cb-vh", "--cb-vw"}
 
 
 def test_every_colour_token_the_light_sheets_declare_has_a_dark_value():
