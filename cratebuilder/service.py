@@ -2619,6 +2619,9 @@ class CrateBuilderService:
         if not path:
             return {"saved": None, "opened": False}
         preview = self.support_preview()
+        kw = self._scrub_kwargs()
+        title = support.scrub_text(title or "", **kw)
+        description = support.scrub_text(description, **kw)
         support.build_bundle(path, {
             "report.txt": f"{title or ''}\n\n{description}\n\n{preview['system']}",
             "activity.log": preview["activity"],
