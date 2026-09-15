@@ -505,3 +505,36 @@ def test_classify_leaves_the_soundcloud_url_empty_when_the_entry_has_none():
                        is_downloaded=_never_downloaded).classify(
         [{"id": "x", "title": "X"}])
     assert out["new"][0]["url"] == ""
+
+
+# ── folder names can never leave the crate ───────────────────────────────────
+
+@pytest.mark.parametrize("genre", ["..", ".", "...", r"..\..\Windows", "../etc",
+                                   "a/b", "a" + chr(92) + "b", " .. "])
+def test_a_genre_that_could_walk_the_tree_becomes_the_no_genre_folder(genre):
+    assert CrateLayout.genre_dir_name(genre) == "_No Genre"
+
+
+@pytest.mark.parametrize("name", ["..", ".", "...", " .. "])
+def test_a_dot_only_channel_name_yields_no_folder(name):
+    assert CrateLayout.channel_dir_name(name) == ""
+
+
+@pytest.mark.parametrize("name", ["CON", "con", "NUL", "COM1", "LPT9", "aux.mp3",
+                                  "PRN "])
+def test_a_windows_device_name_is_prefixed_so_it_is_a_real_folder(name):
+    out = CrateLayout.channel_dir_name(name)
+    assert out.startswith("_")
+    assert out[1:].strip().upper() == name.strip().upper().rstrip(". ")
+
+
+def test_a_trailing_dot_or_space_is_trimmed_from_a_channel_folder():
+    # Win32 silently drops them, so the folder the app names must match the
+    # folder Windows actually creates.
+    assert CrateLayout.channel_dir_name("Beats...") == "Beats"
+    assert CrateLayout.channel_dir_name("Beats . ") == "Beats"
+
+
+def test_ordinary_channel_names_are_untouched():
+    assert CrateLayout.channel_dir_name("Drum & Bass Mixes") == "Drum & Bass Mixes"
+    assert CrateLayout.channel_dir_name("Conflict Radio") == "Conflict Radio"

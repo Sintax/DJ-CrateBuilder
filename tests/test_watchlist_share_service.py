@@ -235,3 +235,64 @@ def test_overwrite_keeps_a_resolved_channel_id_the_file_lacks(service):
     row = service._watchlist_rows()[0]
     assert (row["url"], row["channel_id"]) == (
         "https://www.youtube.com/@a/videos", "UC1")
+
+
+# ── the boundary holds for a hostile file and a hostile client alike ────────
+
+def test_import_read_refuses_a_file_over_the_size_cap(service, monkeypatch, tmp_path):
+    big = tmp_path / "big.json"
+    big.write_bytes(b"{" + b" " * (share.MAX_IMPORT_BYTES + 1) + b"}")
+    _dialog(monkeypatch, service, str(big))
+    with pytest.raises(CBError, match="too large"):
+        service.call("fs.watchlist_import_read")
+
+
+def test_import_read_refuses_a_file_that_is_not_utf8(service, monkeypatch, tmp_path):
+    bad = tmp_path / "bad.json"
+    bad.write_bytes(b"\xff\xfe\x00\x00 not text")
+    _dialog(monkeypatch, service, str(bad))
+    with pytest.raises(CBError):
+        service.call("fs.watchlist_import_read")
+
+
+def test_import_read_reports_what_it_dropped(service, monkeypatch, tmp_path):
+    f = tmp_path / "list.json"
+    f.write_text(json.dumps({"format": share.FORMAT, "version": share.VERSION,
+        "channels": [{"url": "https://youtu.be/ok"},
+                     {"url": "file:///etc/passwd"}]}), encoding="utf-8")
+    _dialog(monkeypatch, service, str(f))
+    res = service.call("fs.watchlist_import_read")
+    assert len(res["entries"]) == 1
+    assert len(res["dropped"]) == 1
+
+
+def test_import_entry_cleans_what_the_client_sends(service):
+    res = service.call("watchlist.import_entry", {
+        "entry": {"url": "https://www.youtube.com/@b", "display_name": "..",
+                  "platform": "..\..", "genre": "..\..\Windows",
+                  "channel_id": "UC/../x"}})
+    assert res["result"] == "added"
+    row = service._watchlist_rows()[0]
+    assert row["platform"] == "YouTube"
+    assert row["genre"] == "(none)"
+    assert row["channel_id"] is None
+    # ".." is kept as a display name (it is only text) but it never becomes a
+    # folder: CrateLayout refuses it as a folder component.
+    assert row["display_name"] == ".."
+
+
+def test_import_entry_refuses_a_link_that_is_not_a_web_address(service):
+    with pytest.raises(CBError, match="link"):
+        service.call("watchlist.import_entry", {
+            "entry": {"url": "file:///C:/Windows/system.ini"}})
+    assert service._watchlist_rows() == []
+
+
+def test_a_typed_name_for_a_new_entry_is_cleaned_too(service):
+    _track(service, "https://www.youtube.com/@a", "Alpha", cid="UC1")
+    res = service.call("watchlist.import_entry", {
+        "entry": _entry("https://www.youtube.com/@other", "Alpha", cid="UC9"),
+        "resolve": {"action": "new", "name": "Evil\nLine\u202e"}})
+    assert res["result"] == "added"
+    names = sorted(r["display_name"] for r in service._watchlist_rows())
+    assert names == ["Alpha", "EvilLine"]

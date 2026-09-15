@@ -2751,13 +2751,27 @@ class CrateBuilderService:
             file_types=("Watch List export (*.json)", "All files (*.*)"))
         if not path:
             return {"path": None, "entries": []}
+        # The file is another user's data: refuse anything too big to be a
+        # list before a byte of it is read, and read it as text rather than
+        # letting a bad encoding raise past the RPC as a crash.
         try:
-            with open(path, encoding="utf-8") as fh:
+            if not os.path.isfile(path):
+                raise CBError("Couldn't read the list file: it is not a file.")
+            size = os.path.getsize(path)
+            if size > watchlist_share.MAX_IMPORT_BYTES:
+                raise CBError(
+                    "That file is too large to be a Watch List export "
+                    f"({size / (1024 * 1024):.1f} MB; the limit is "
+                    f"{watchlist_share.MAX_IMPORT_BYTES // (1024 * 1024)} MB).")
+            with open(path, encoding="utf-8", errors="strict") as fh:
                 text = fh.read()
         except OSError as exc:
             raise CBError(f"Couldn't read the list file: {exc}")
+        except UnicodeDecodeError:
+            raise CBError("That file is not a DJ-CrateBuilder Watch List "
+                          "export (it is not readable as text).")
         try:
-            entries = watchlist_share.parse(text)
+            entries, dropped = watchlist_share.parse(text)
         except watchlist_share.ShareError as exc:
             raise CBError(str(exc))
         mine = self._watchlist_rows()
@@ -2770,13 +2784,21 @@ class CrateBuilderService:
                            "url": clash["row"].get("url") or "",
                            "kinds": clash["kinds"]}
             out.append(dict(entry, tracked=tracked))
-        return {"path": path, "entries": out}
+        return {"path": path, "entries": out, "dropped": dropped}
 
     def watchlist_import_entry(self, entry, resolve=None):
-        """One channel from a list file — see WatchlistOps.import_entry."""
-        if not isinstance(entry, dict) or not (entry.get("url") or "").strip():
-            raise CBError("That entry has no link to import.")
-        clean = {k: entry.get(k) for k in watchlist_share.FIELDS}
+        """One channel from a list file — see WatchlistOps.import_entry.
+
+        The entry comes back from the client, not from the file the host
+        read, so it is sanitised again here: a paired browser could send
+        anything, and this is the last stop before the database, the link
+        store and a folder name."""
+        clean, reason = watchlist_share.sanitize_entry(entry)
+        if clean is None:
+            raise CBError(f"That entry can't be imported — it has {reason}.")
+        if isinstance(resolve, dict) and "name" in resolve:
+            resolve = dict(resolve,
+                           name=watchlist_share.clean_text(resolve.get("name")))
         return self._watchlist.import_entry(clean, resolve or None)
 
     def watchlist_import_done(self, path, added, overwritten, skipped):

@@ -8,6 +8,18 @@ from cratebuilder.util import normalize_track_key, safe_filename
 
 
 # ── CrateLayout ───────────────────────────────────────────────────────────────
+_WINDOWS_DEVICE_NAMES = frozenset(
+    ["CON", "PRN", "AUX", "NUL"]
+    + [f"COM{i}" for i in range(1, 10)] + [f"LPT{i}" for i in range(1, 10)])
+
+
+def _is_one_component(name):
+    """True when *name* can only ever be a single folder under its parent."""
+    if "/" in name or "\\" in name:
+        return False
+    return bool(name.strip().strip("."))
+
+
 class CrateLayout:
     """The single answer to "where does this track live?".
 
@@ -49,6 +61,12 @@ class CrateLayout:
         folder than the one the user picked."""
         if not (genre or "").strip() or genre == cls.NO_GENRE_VALUE:
             return cls.NO_GENRE_DIR
+        # A genre is one folder component, never a path: a separator, or a
+        # name that is only dots, would walk out of the crate. Such a value
+        # can only arrive from outside (a shared list file, a remote client),
+        # since the folders the app lists never carry one.
+        if not _is_one_component(genre):
+            return cls.NO_GENRE_DIR
         return genre
 
     @classmethod
@@ -64,9 +82,18 @@ class CrateLayout:
     @staticmethod
     def channel_dir_name(channel_name):
         """The folder name for a channel's display name, or "" when the name
-        holds nothing legal (whitespace-only). Illegal characters map to "_",
-        so a name of pure punctuation still yields a real folder."""
-        return safe_filename(channel_name, strip=True)
+        holds nothing legal (whitespace-only, or only dots — "." and ".."
+        would name the parent, not a channel). Illegal characters map to "_",
+        so a name of pure punctuation still yields a real folder. Trailing
+        dots and spaces are dropped because Win32 drops them when creating
+        the directory, and a reserved device name (CON, NUL, COM1…) is
+        prefixed with "_" so it names a folder rather than a device."""
+        safe = safe_filename(channel_name, strip=True).rstrip(". ")
+        if not safe:
+            return ""
+        if safe.split(".", 1)[0].upper() in _WINDOWS_DEVICE_NAMES:
+            return "_" + safe
+        return safe
 
     @classmethod
     def channel_dir(cls, platform_dir, genre, channel_name=None):
