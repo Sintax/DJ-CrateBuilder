@@ -302,7 +302,7 @@ def classify_download_failure(error_text, is_age=False):
         return Failure("unavailable", permanent)
 
     if   "ffmpeg"        in lower: return Failure("failed", "FFmpeg missing")
-    elif "sign in to confirm you" in lower: return Failure("failed", "bot check")
+    elif "not a bot"     in lower: return Failure("failed", "bot check")
     elif "sign in"       in lower: return Failure("failed", "login required")
     elif is_age:                   return Failure("failed", "age-restricted")
 

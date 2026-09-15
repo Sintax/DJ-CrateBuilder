@@ -554,7 +554,7 @@ def test_is_age_is_sticky_and_sits_below_ffmpeg_and_sign_in():
     assert classify_download_failure(
         "ffmpeg exited with code 1", is_age=True).reason == "FFmpeg missing"
     assert classify_download_failure(
-        "Sign in to confirm your age", is_age=True).reason == "bot check"
+        "Sign in to confirm your age", is_age=True).reason == "login required"
 
 
 # The three raw messages that were reaching the queue verbatim, taken from a
@@ -978,7 +978,7 @@ def test_skip_or_cancel_wait_times_out_quietly_when_nothing_cancels():
 
 
 # ── Auth reason set ──────────────────────────────────────────────────────────
-from cratebuilder.download import classify_download_failure, is_auth_reason, AUTH_REASONS
+from cratebuilder.download import is_auth_reason, AUTH_REASONS
 
 
 def test_bot_check_is_labelled_before_plain_sign_in():
