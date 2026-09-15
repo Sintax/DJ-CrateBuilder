@@ -62,7 +62,7 @@
 | `web/app.js:7350-7524` | Modify | `auth.trouble` subscriber → `openAuthTroubleDialog(payload)`; once-per-job + session-mute flags. |
 | `tests/test_download.py`, `tests/test_batchrun.py`, `tests/test_web_downloads_client.py` | Modify | Coverage. |
 
-Task order: **Phase C (auth pop-up) → Phase A (import sanitising) → Phase B (bug reports).** Each phase is independent and ships on its own.
+Task order: **Phase C (auth pop-up) → Phase A (import sanitising, ✅ done) → Phase B (bug reports).** Each phase is independent and ships on its own.
 
 ---
 
@@ -384,6 +384,13 @@ git commit -m "feat(web): sign-in trouble pop-up after repeated auth failures"
 
 ## Phase A — Sanitise Watch List import files
 
+> **✅ Completed 2026-09-15 — commit `9ca8435`.** Implemented in one pass rather than as the three tasks below, and wider than planned after a threat-model walk of every place an imported value lands:
+> - The guard also lives in `CrateLayout` (`genre_dir_name`, `channel_dir_name`): separators and dot-only names fall back to no-genre / no folder, trailing dots and spaces are trimmed, and Windows device names (`CON`, `NUL`, `COM1`…) are prefixed with `_`. This protects channel edits and the remote client, not only imports.
+> - `watchlist.import_entry` re-sanitises the entry the picker sends back (a paired remote browser can call it directly), and the typed name for a "new" entry is cleaned too.
+> - The platform is derived from the link, never trusted from the file; `channel_id` must be a plain string matching `^[A-Za-z0-9_-]{1,64}$`; Unicode format characters (bidi overrides, zero-width) are stripped along with control characters; `MAX_ENTRIES = 5000`; `RecursionError` and bad encodings are readable errors; the picked path must be a regular file.
+> - Tests: `tests/test_crate.py`, `tests/test_watchlist_share.py`, `tests/test_watchlist_share_service.py`, `tests/test_web_watchlist_client.py`.
+> The task text below is kept as the original design record; the checkboxes are marked done.
+
 ### Task A1: Pure entry sanitiser and size cap
 
 **Files:**
@@ -393,7 +400,7 @@ git commit -m "feat(web): sign-in trouble pop-up after repeated auth failures"
 **Interfaces:**
 - Produces: `MAX_IMPORT_BYTES`, `ALLOWED_HOSTS`, `sanitize_entry(item) -> tuple[dict | None, str | None]`, and `parse(text) -> tuple[list[dict], list[str]]` (**signature change** — the second element is the list of human-readable drop reasons).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_watchlist_share.py (append)
@@ -455,12 +462,12 @@ def test_max_import_bytes_is_four_megabytes():
 
 Update the existing `parse` tests in this file that unpack a bare list — they now unpack `entries, _ = ws.parse(...)`.
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 Run: `python -m pytest tests/test_watchlist_share.py -q`
 Expected: FAIL (tuple unpack / missing names).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 # cratebuilder/watchlist_share.py — constants after FIELDS
@@ -532,12 +539,12 @@ Then rewrite the loop at the end of `parse` (`:71-87`):
 
 Update the `parse` docstring's last sentence to: "Returns (entries, dropped): the clean entries and one reason per entry that was thrown out."
 
-- [ ] **Step 4: Run to verify they pass**
+- [x] **Step 4: Run to verify they pass**
 
 Run: `python -m pytest tests/test_watchlist_share.py -q`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add cratebuilder/watchlist_share.py tests/test_watchlist_share.py
@@ -554,7 +561,7 @@ git commit -m "feat(watchlist): sanitise import entries and report what was drop
 - Consumes: `watchlist_share.parse -> (entries, dropped)`, `MAX_IMPORT_BYTES`.
 - Produces: `fs.watchlist_import_read` result gains `"dropped": [str, ...]`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Reuse the file's existing pattern for stubbing `_file_dialog` to return a temp path.
 
@@ -579,12 +586,12 @@ def test_import_read_reports_dropped_entries(service, tmp_path, monkeypatch):
     assert len(res["dropped"]) == 1
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 Run: `python -m pytest tests/test_watchlist_share_service.py -q -k "cap or dropped"`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `watchlist_import_read`, before the `open()`:
 
@@ -601,12 +608,12 @@ In `watchlist_import_read`, before the `open()`:
 
 Change `entries = watchlist_share.parse(text)` to `entries, dropped = watchlist_share.parse(text)` and the return to `return {"path": path, "entries": out, "dropped": dropped}`.
 
-- [ ] **Step 4: Run to verify they pass**
+- [x] **Step 4: Run to verify they pass**
 
 Run: `python -m pytest tests/test_watchlist_share_service.py tests/test_watchlist_share.py -q`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add cratebuilder/service.py tests/test_watchlist_share_service.py
@@ -619,7 +626,7 @@ git commit -m "fix(watchlist): cap import file size and surface dropped entries"
 - Modify: `web/app.js:7254-7288` (`openImportPicker`), `wlShareListModal` (`:7007-7057`) if it has no `note`-below-title slot for a warning.
 - Test: `tests/test_web_watchlist_client.py`
 
-- [ ] **Step 1: Write the failing static test**
+- [x] **Step 1: Write the failing static test**
 
 ```python
 def test_import_picker_reports_dropped_entries(app_js):
@@ -627,11 +634,11 @@ def test_import_picker_reports_dropped_entries(app_js):
     assert "weren’t imported" in app_js or "weren't imported" in app_js
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `python -m pytest tests/test_web_watchlist_client.py -q -k dropped`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `openImportPicker`, after `const entries = res.entries || [];`:
 
@@ -651,12 +658,12 @@ In `openImportPicker`, after `const entries = res.entries || [];`:
 
 and pass `note: droppedNote ? `Choose the channels to add to your Watch List. ⚠ ${droppedNote}` : 'Choose the channels to add to your Watch List.'` to `wlShareListModal`. (Check that `note` is rendered with `textContent` — it is a plain string, and file-supplied text must never reach `innerHTML`.)
 
-- [ ] **Step 4: Run tests and verify visually**
+- [x] **Step 4: Run tests and verify visually**
 
 Run: `python -m pytest tests/test_web_watchlist_client.py -q`
 Visual: `python web_window.py --screen watchlist` → Import, pick a hand-made JSON with one good and two bad entries; check the note in light and dark.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/app.js tests/test_web_watchlist_client.py
