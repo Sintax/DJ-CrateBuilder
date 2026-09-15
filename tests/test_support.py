@@ -1,3 +1,7 @@
+import json
+import os
+import subprocess
+import sys
 import zipfile
 from urllib.parse import parse_qs, urlsplit
 
@@ -147,6 +151,33 @@ def test_scrub_hides_the_username_between_url_encoded_separators():
                              home="C:\\Users\\other", base_dir="D:\\Crates",
                              username="djsin")
     assert out == "D%3A%5C<USER>%5Cstuff and %2F<USER>%2F"
+
+
+def _scrub_in_a_fresh_process(text, **kw):
+    # A catastrophic regex holds the interpreter lock, so a thread or a clock
+    # in-process can never interrupt it; only a subprocess timeout fails fast.
+    code = ("import json, sys; from cratebuilder import support; "
+            "a = json.load(sys.stdin); print(json.dumps(support.scrub_text(a['t'], **a['kw'])))")
+    try:
+        done = subprocess.run([sys.executable, "-c", code], input=json.dumps({"t": text, "kw": kw}),
+                              capture_output=True, text=True, timeout=5,
+                              cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    except subprocess.TimeoutExpired:
+        raise AssertionError("scrub_text did not finish within 5 s") from None
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def test_scrub_stays_linear_on_long_separator_runs():
+    # 60 would take hours with a nested quantifier; 50,000 takes ~30 s if the
+    # leading separator of a POSIX path is retried at every position in a run.
+    for n in (60, 50000):
+        run = "C:" + "\\" * n + "nothome and x"
+        assert _scrub_in_a_fresh_process(run, home="C:\\Users\\djsin", base_dir="D:\\Crates",
+                                         username="djsin") == run
+        run = "/" * n + "nothome and x"
+        assert _scrub_in_a_fresh_process(run, home="/home/u", base_dir="/home/u/Music",
+                                         username="u") == run
 
 
 def test_scrub_tolerates_empty_inputs():

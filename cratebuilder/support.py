@@ -11,7 +11,11 @@ _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 # Logs carry paths three ways: as typed, repr()-escaped (doubled backslashes),
 # and URL-encoded (%5C / %2F) — one separator pattern has to cover all three.
-_SEP = r"(?:[\\/]+|%5c|%2f)+"
+# No quantifier inside the group: a nested + backtracks exponentially. A
+# leading separator may only start where a run begins, or a long run is
+# re-scanned from every position inside it.
+_SEP = r"(?:[\\/]|%5c|%2f)+"
+_LEAD_SEP = r"(?<![\\/])(?<!%5c)(?<!%2f)" + _SEP
 _WORD_START = r"(?:(?<![\w-])|(?<=%5c)|(?<=%2f))"
 _WORD_END = r"(?:(?![\w-])|(?=%5c)|(?=%2f))"
 
@@ -44,7 +48,7 @@ def _segment_pattern(segment):
 
 def _path_pattern(path):
     """A regex matching *path* in any of the forms a log can carry it."""
-    lead = _SEP if re.match(r"\s*[\\/]", path or "") else ""
+    lead = _LEAD_SEP if re.match(r"\s*[\\/]", path or "") else ""
     return lead + _SEP.join(_segment_pattern(p) for p in _segments(path))
 
 
