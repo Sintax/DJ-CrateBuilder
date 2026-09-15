@@ -15,7 +15,7 @@ from cratebuilder.batchresolve import (ResolvedRow, RowResolver,  # noqa: F401
 from cratebuilder.crate import (ChannelCrate, CrateLayout, SkipDecision,
                                 SkipMode, is_unreleased_entry, skip_decision)
 from cratebuilder.download import (REASON_WIDTH, SkipOrCancel, TrackDownloader,
-                                   TrackPlan, download_with)
+                                   TrackPlan, download_with, is_auth_reason)
 from cratebuilder.ydl import YdlSession
 
 
@@ -24,6 +24,10 @@ from cratebuilder.ydl import YdlSession
 # drive a BatchRunner, and without this field the two progress streams are
 # indistinguishable and each overwrites the other's bar.
 DEFAULT_JOB = "batch"
+
+# Login-shaped failures in one run before the host raises auth.trouble. Three
+# is enough to rule out a single bad video and still fire early in a batch.
+AUTH_WARN_THRESHOLD = 3
 
 
 # ── Pure helpers ──────────────────────────────────────────────────────────────
@@ -158,6 +162,8 @@ class BatchRunner:
         self._crates = {}
         self._counted = set()
         self._session_ua = None
+        self._auth_failures = 0
+        self._auth_warned = False
         self._batch_open = False
         self._reset(0)
 
@@ -455,6 +461,14 @@ class BatchRunner:
             tally["errors"] += 1
             self._errors += 1
             state, detail = "error", reason
+            if is_auth_reason(reason):
+                self._auth_failures += 1
+                if (self._auth_failures >= AUTH_WARN_THRESHOLD
+                        and not self._auth_warned):
+                    self._auth_warned = True
+                    self._emit("auth.trouble", {
+                        "job": self._job, "count": self._auth_failures,
+                        "reason": reason})
         tally["state"], tally["detail"] = state, detail
 
     # ── Bookkeeping ───────────────────────────────────────────────────────────
@@ -470,6 +484,8 @@ class BatchRunner:
         self._durations = []
         self._counted = set()
         self._session_ua = pick_session_ua(self._settings.download_policy())
+        self._auth_failures = 0
+        self._auth_warned = False
 
     def _admit(self, row):
         """Count one queue row toward the batch total, once. A row already
