@@ -323,8 +323,8 @@ def _manifest_urls(script_path=None):
 # tkinter label uses; the note is the monolith's bug/suggestion line, which
 # lives inside a widget call there and so has no constant to read.
 ABOUT_AVATAR = "assets/about_avatar.png"
-ABOUT_NOTE = ("*(For any bugs encountered or suggestions you'd like to make, "
-              "submit them using the Submit Issues/Suggestions button.)")
+ABOUT_NOTE = ("*(For any bugs encountered, submit them easily using the "
+              "[Report a Bug] button.)")
 # Which monolith module constant fills which About field.
 ABOUT_CONSTANTS = {
     "created_by": "ABOUT_CREATED_BY",

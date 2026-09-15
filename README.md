@@ -75,7 +75,7 @@ Version 2.0 is a ground-up interface rework: the app is now a modern web UI runn
 - **Watch List sharing.** Export the channels you choose to a file another user can import — clashes with their existing entries are resolved on import. **🛠 Check Links** repairs every unresolved channel link in one pass.
 - **Database viewer.** Browse everything you've downloaded, grouped by platform / genre / channel, with search and resizable columns.
 - **Activity & debug logs in-app.** Both logs get proper viewers with filtering and search — no more digging for files.
-- **Report a problem.** One button on the About screen bundles the tail of both logs into a zip, with your user name, folders, e-mail and IP addresses blanked out, shows you the result, and opens a pre-filled GitHub issue to attach it to. Nothing is sent until you say so.
+- **Report a Bug.** One button on the About screen bundles the tail of both logs into a zip, with your user name, folders, e-mail and IP addresses blanked out, shows you the result, and opens a pre-filled GitHub issue to attach it to. Nothing is sent until you say so.
 - **Sign-in trouble pop-up.** Three login-shaped refusals in one run (login required, age-restricted, 403, bot check) raise a pop-up that says what to try with your cookie setting.
 - **Remote access, in development.** Pairing a phone or laptop to drive the app from a browser is built and wired, but switched off in current builds while it is finished. The Settings card shows it greyed out.
 
@@ -100,7 +100,7 @@ Version 2.0 is a ground-up interface rework: the app is now a modern web UI runn
 - **Tag Repair** — A **Repair Track Tags** backfill tool realigns genre tags with the folder each track is filed under and fills in missing Title, Encoded-by, or source URL. Changing a Watch List channel's genre also retags its already-downloaded files to match
 - **Database Viewer & Maintenance** — Browse the full downloads library grouped by platform / genre / channel, and run maintenance tools like **Remove Duplicates**, **Rebuild Database from Files** and **Folders Cleanup** *(viewer new in v2.0)*
 - **Downloads & Debug Logs** — Timestamped record of every download, skip, and error (`activity.log`) plus a separate diagnostic log (`debug.log`) with yt-dlp/cookie details — both with built-in viewers *(in-app viewers new in v2.0)*
-- **Bug reports with scrubbed logs** — **Report a problem** on the About screen previews an anonymised copy of both logs (home and library folders, user name, e-mails, IPs, cookie paths and tokens replaced with placeholders), saves them as a zip and opens a pre-filled GitHub issue for you to attach it to
+- **Bug reports with scrubbed logs** — **Report a Bug** on the About screen previews an anonymised copy of both logs (home and library folders, user name, e-mails, IPs, cookie paths and tokens replaced with placeholders), saves them as a zip and opens a pre-filled GitHub issue for you to attach it to
 - **Remote Access** — Pair another device with a one-time code and control the app from a browser on your network *(built in v2.0 but still in development and switched off in current builds — see [Remote Access](#remote-access))*
 - **In-App Updates** — SHA-256-verified nightly builds installed from the Update screen, which also lists the components your install is running against the live build
 - **Light & Dark Theme** — Chosen under Settings ▸ Appearance, remembered per device

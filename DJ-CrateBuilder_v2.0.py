@@ -9013,7 +9013,7 @@ class MP3DownloaderApp(tk.Tk):
 
             # ── Getting help ──────────────────────────────────────────────
             ("Q: How do I report a bug?",
-             "A: The About screen has a \"🐞 Report a problem\" button. Give the problem a title, describe what "
+             "A: The About screen has a \"🐞 Report a Bug\" button. Give the problem a title, describe what "
              "happened and what you expected, and the dialog shows you a preview of exactly what will go in the "
              "report: a short system summary plus the tail end of activity.log and debug.log. Press \"Save bundle & "
              "open GitHub\" and the app saves those logs as a zip where you choose, then opens a pre-filled GitHub "
