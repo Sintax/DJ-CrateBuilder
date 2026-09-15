@@ -73,3 +73,30 @@ def test_send_cancel_does_not_open_issue(service, tmp_path, monkeypatch):
                        {"title": "t", "description": "x"}, transport=LOCAL)
     assert res == {"saved": None, "opened": False}
     assert "url" not in opened
+
+
+def test_preview_scrubs_os_login_name_even_when_home_folder_differs(service, monkeypatch):
+    import cratebuilder.service as service_mod
+
+    monkeypatch.setattr(service_mod.getpass, "getuser", lambda: "jsmith.CORP")
+    home_basename = os.path.basename(os.path.expanduser("~"))
+    assert home_basename != "jsmith.CORP"
+    with open(service._log_path, "w", encoding="utf-8") as fh:
+        fh.write("user jsmith.CORP started a scan\n")
+    res = service.call("support.preview", {}, transport=REMOTE)
+    assert "jsmith.CORP" not in res["activity"]
+    assert "<USER>" in res["activity"]
+
+
+def test_send_open_failure_still_reports_the_saved_path(service, tmp_path, monkeypatch):
+    target = tmp_path / "r2.zip"
+    monkeypatch.setattr(service, "_file_dialog", lambda *a, **k: str(target))
+
+    def raise_open(url):
+        raise CBError("Could not open that link.")
+
+    monkeypatch.setattr(service, "open_url", raise_open)
+    res = service.call("fs.support_send",
+                       {"title": "t", "description": "x"}, transport=LOCAL)
+    assert target.exists()
+    assert res == {"saved": str(target), "opened": False}
