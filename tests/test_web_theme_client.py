@@ -225,9 +225,26 @@ def test_app_css_scales_the_whole_page_for_each_larger_size():
     spacing grow together and no screen has to be re-laid-out by hand.
     theme.css stays the design's drop-in, so the rules live in app.css."""
     css = _read("app.css")
-    assert re.search(r'html\[data-text-size="large"\]\s*\{\s*zoom:\s*1\.15;?\s*\}', css)
-    assert re.search(r'html\[data-text-size="xl"\]\s*\{\s*zoom:\s*1\.3;?\s*\}', css)
+    assert re.search(r'html\[data-text-size="large"\]\s*\{\s*zoom:\s*1\.1;', css)
+    assert re.search(r'html\[data-text-size="xl"\]\s*\{\s*zoom:\s*1\.2;', css)
     assert "zoom" not in _read("theme.css")
+
+
+def test_nothing_is_sized_from_the_viewport_units_zoom_leaves_alone():
+    """vh and vw are not shrunk by zoom: a 100vh shell at 120% is a fifth
+    taller than the window and every screen's bottom is cut off. The two
+    variables divide the zoom back out, so each size declares them and no
+    rule reaches for the raw unit."""
+    css = _strip_comments(_read("app.css"))
+    assert re.search(r':root\s*\{\s*--cb-vh:\s*1vh;\s*--cb-vw:\s*1vw;\s*\}', css)
+    for size, zoom in (("large", "1.1"), ("xl", "1.2")):
+        rule = re.search(r'html\[data-text-size="%s"\]\s*\{([^}]*)\}' % size, css).group(1)
+        assert f"--cb-vh: calc(1vh / {zoom})" in rule
+        assert f"--cb-vw: calc(1vw / {zoom})" in rule
+    bare = [m.group(0) for m in re.finditer(r"[^\n]*\b\d+v[hw]\b[^\n]*", css)
+            if "--cb-v" not in m.group(0)]
+    assert bare == [], bare
+    assert ".cb-shell { display: flex; height: 100%; }" in css
 
 
 def test_everything_placed_from_a_measurement_divides_by_the_page_zoom():
@@ -307,7 +324,7 @@ def _tokens(css, selector):
 # Tokens that are not colours, and the one colour that is deliberately shared:
 # the Fix Link label is near-black on orange whichever ground the page has.
 _SAME_IN_BOTH = {"--cb-radius", "--cb-radius-sm", "--cb-font", "--cb-mono",
-                 "--cb-panel-w", "--cb-touch", "--cb-fix-ink"}
+                 "--cb-panel-w", "--cb-touch", "--cb-fix-ink", "--cb-vh", "--cb-vw"}
 
 
 def test_every_colour_token_the_light_sheets_declare_has_a_dark_value():

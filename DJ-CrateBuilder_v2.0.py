@@ -8743,7 +8743,7 @@ class MP3DownloaderApp(tk.Tk):
 
             ("Q: Can I make the text bigger?",
              "A: Yes. Settings ▸ Appearance has a Text size dropdown: Normal is the size the app was designed at, "
-             "Large is 15% bigger and Extra-Large 30% bigger. Everything grows together — headings, labels, "
+             "Large is 10% bigger and Extra-Large 20% bigger. Everything grows together — headings, labels, "
              "buttons and the space between them — so each screen keeps its layout and nothing gets cut off. Like "
              "the theme, the choice is remembered on that device rather than in the app's config, so the app "
              "window and a remote browser can each pick their own."),
