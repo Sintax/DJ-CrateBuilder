@@ -239,6 +239,7 @@
     "about.mail": { "text": "Write to the author in your mail client", "source": "py", "py_line": 8588, "screen": "3n" },
     "about.github": { "text": "Opens the DJ-CrateBuilder GitHub page in your browser. Check here for the latest releases and update notes.", "source": "py", "py_line": 8594, "screen": "3n" },
     "about.issues": { "text": "Opens the GitHub 'Create new issue' form in your browser, where you can report a bug or suggest a feature.", "source": "py", "py_line": 8602, "screen": "3n" },
+    "about.report": { "text": "Send a bug report: your description plus the last part of activity.log and debug.log with your user name, folders and cookies blanked out. You see everything before it goes.", "source": "new", "screen": "3n" },
     "about.faq_expand": { "text": "Expand all answers", "source": "py", "py_line": 8627, "screen": "3n" },
     "about.faq_collapse": { "text": "Collapse all answers", "source": "py", "py_line": 8627, "screen": "3n" },
     "about.check_updates": { "text": "Checks GitHub for a newer nightly build and, if one exists, downloads and installs it (the app restarts to finish). Available only in the window running on the host machine itself — this is a remote session, so it is switched off.", "source": "py", "py_line": 8528, "screen": "local only" },
