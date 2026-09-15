@@ -34,12 +34,12 @@ body { overflow: hidden; }
 /* Text size (Settings ▸ Appearance). The whole page, so text, controls and
    spacing grow together and every screen keeps its layout; Normal is the
    size every rule below was written for and sets nothing. vh and vw are not
-   shrunk by zoom — 100vh at 120% is a fifth taller than the window and the
+   shrunk by zoom — 100vh at 115% is a sixth taller than the window and the
    bottom of every screen is cut off — so anything sized from the viewport
    uses --cb-vh / --cb-vw, which divide the zoom back out. */
 :root { --cb-vh: 1vh; --cb-vw: 1vw; }
-html[data-text-size="large"] { zoom: 1.1; --cb-vh: calc(1vh / 1.1); --cb-vw: calc(1vw / 1.1); }
-html[data-text-size="xl"] { zoom: 1.2; --cb-vh: calc(1vh / 1.2); --cb-vw: calc(1vw / 1.2); }
+html[data-text-size="large"] { zoom: 1.08; --cb-vh: calc(1vh / 1.08); --cb-vw: calc(1vw / 1.08); }
+html[data-text-size="xl"] { zoom: 1.15; --cb-vh: calc(1vh / 1.15); --cb-vw: calc(1vw / 1.15); }
 
 /* Must beat the display:flex on .cb-pad / .cb-card below. */
 [hidden] { display: none !important; }
