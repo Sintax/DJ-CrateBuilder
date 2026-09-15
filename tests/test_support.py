@@ -96,6 +96,20 @@ def test_scrub_redacts_tokens_in_urls_and_leaves_already_redacted_alone():
                               username="u") == out
 
 
+def test_scrub_redacts_tokens_regardless_of_case():
+    out = support.scrub_text("Token=abc TOKEN=def token=ghi", home="/home/u",
+                             base_dir="/home/u/Music", username="u")
+    assert out == "Token=<redacted> TOKEN=<redacted> token=<redacted>"
+
+
+def test_scrub_replaces_longer_names_before_shorter_ones():
+    # username "dj" and home folder "dj sintax": the whole folder name must
+    # become one <USER>, not "<USER> sintax" with the surname left behind.
+    out = support.scrub_text("owner dj sintax and dj", home="C:\\Users\\dj sintax",
+                             base_dir="D:\\Crates", username="dj")
+    assert out == "owner <USER> and <USER>"
+
+
 def test_scrub_hides_ip_addresses_inside_urls_and_ports():
     out = support.scrub_text("remote http://192.168.1.20:8765/ from 10.0.0.7",
                              home="/home/u", base_dir="/home/u/Music", username="u")
@@ -178,6 +192,14 @@ def test_scrub_stays_linear_on_long_separator_runs():
         run = "/" * n + "nothome and x"
         assert _scrub_in_a_fresh_process(run, home="/home/u", base_dir="/home/u/Music",
                                          username="u") == run
+
+
+def test_scrub_stays_linear_on_long_word_runs():
+    # A base64 / JWT blob in a log is one long run of word characters; the
+    # e-mail pattern must not be retried from every position inside it.
+    run = "x" * 200000 + " then a@b.co"
+    assert _scrub_in_a_fresh_process(run, home="/home/u", base_dir="/home/u/Music",
+                                     username="u") == "x" * 200000 + " then <EMAIL>"
 
 
 def test_scrub_tolerates_empty_inputs():

@@ -60,6 +60,31 @@ def test_send_writes_bundle_and_opens_issue(service, tmp_path, monkeypatch):
     assert "Scan+hangs" in opened["url"]
 
 
+def test_send_scrubs_the_typed_title_and_description(service, tmp_path, monkeypatch):
+    from urllib.parse import parse_qs, urlsplit
+    # The sandbox home is a folder literally called "home", which the name
+    # pass would turn into <<USER>>; a real-looking login keeps the tag intact.
+    home = str(tmp_path / "Users" / "dj sintax")
+    monkeypatch.setenv("HOME", home)
+    monkeypatch.setenv("USERPROFILE", home)
+    monkeypatch.setattr(service, "_file_dialog", lambda *a, **k: str(tmp_path / "r.zip"))
+    opened = {}
+
+    def fake_open_url(url):
+        opened["url"] = url
+        return {"opened": True}
+
+    monkeypatch.setattr(service, "open_url", fake_open_url)
+    service.call("fs.support_send",
+                 {"title": f"Crash reading {home}/x.mp3",
+                  "description": f"Traceback mentions {home}/cookies.txt token=abc"},
+                 transport=LOCAL)
+    q = parse_qs(urlsplit(opened["url"]).query)
+    assert home not in q["body"][0] and "<HOME>" in q["body"][0]
+    assert "token=<redacted>" in q["body"][0]
+    assert home not in q["title"][0] and "<HOME>" in q["title"][0]
+
+
 def test_send_cancel_does_not_open_issue(service, tmp_path, monkeypatch):
     monkeypatch.setattr(service, "_file_dialog", lambda *a, **k: None)
     opened = {}

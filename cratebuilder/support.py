@@ -6,9 +6,11 @@ from urllib.parse import quote, urlencode
 
 TAIL_BYTES = 512 * 1024
 BODY_LIMIT = 6000
-_TOKEN = re.compile(r"(token=)[^\s&\"']+")
+_TOKEN = re.compile(r"(token=)[^\s&\"']+", re.IGNORECASE)
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
-_EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+# The local part may only start where a word run begins, or a long blob
+# (base64, a JWT) is re-scanned from every position inside it.
+_EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+\.[\w.-]+")
 # Logs carry paths three ways: as typed, repr()-escaped (doubled backslashes),
 # and URL-encoded (%5C / %2F) — one separator pattern has to cover all three.
 # No quantifier inside the group: a nested + backtracks exponentially. A
@@ -59,8 +61,10 @@ def _word_pattern(word):
 
 def scrub_text(text, *, home, base_dir, username, cookie_file=None):
     """Replace anything that identifies the machine or person. Longest
-    paths first so <LIBRARY> wins over <HOME> where they nest; e-mails
-    before names so a name in the local part cannot expose the domain."""
+    paths first so <LIBRARY> wins over <HOME> where they nest, and longest
+    names first so a short login cannot leave the rest of a folder name
+    behind; e-mails before names so a name in the local part cannot expose
+    the domain."""
     out = text or ""
     for value, tag in ((cookie_file, "<COOKIE_FILE>"),
                        (base_dir, "<LIBRARY>"), (home, "<HOME>")):
@@ -69,7 +73,7 @@ def scrub_text(text, *, home, base_dir, username, cookie_file=None):
     out = _EMAIL.sub("<EMAIL>", out)
     names = {n.strip().lower(): n.strip()
              for n in (username, *_segments(home)[-1:]) if n and n.strip()}
-    for name in names.values():
+    for name in sorted(names.values(), key=len, reverse=True):
         out = re.sub(_word_pattern(name), "<USER>", out, flags=re.IGNORECASE)
     out = _TOKEN.sub(r"\1<redacted>", out)
     out = _IPV4.sub("<IP>", out)
