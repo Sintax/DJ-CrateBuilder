@@ -103,7 +103,7 @@ Version 2.0 is a ground-up interface rework: the app is now a modern web UI runn
 - **Bug reports with scrubbed logs** — **Report a Bug** on the About screen previews an anonymised copy of both logs (home and library folders, user name, e-mails, IPs, cookie paths and tokens replaced with placeholders), saves them as a zip and opens a pre-filled GitHub issue for you to attach it to
 - **Remote Access** — Pair another device with a one-time code and control the app from a browser on your network *(built in v2.0 but still in development and switched off in current builds — see [Remote Access](#remote-access))*
 - **In-App Updates** — SHA-256-verified nightly builds installed from the Update screen, which also lists the components your install is running against the live build
-- **Light & Dark Theme, Text Size** — Both chosen under Settings ▸ Appearance and remembered per device; Large and Extra-Large scale the whole app up by 15% or 30% for easier reading
+- **Light & Dark Theme, Text Size** — Both chosen under Settings ▸ Appearance and remembered per device; Large and Extra-Large scale the whole app up by 10% or 20% for easier reading
 - **URL History** — The URL field remembers your recent inputs
 - **Channel Auto-Detection** — Bare channel URLs (youtube.com/@Name) automatically resolve to the full video list
 
