@@ -33,13 +33,24 @@ def rel():
     return mod
 
 
+@pytest.fixture(scope="module")
+def notice(rel):
+    """The notice text, when one is shipping. It was cleared on 2026-09-13
+    (builds 59+ drain scans before handing off), and the constant is meant to
+    stay empty until a warning is needed again — so the tests that pin its
+    wording only run while there is wording to pin."""
+    if not rel.STICKY_NOTICE:
+        pytest.skip("STICKY_NOTICE is cleared — nothing to check")
+    return rel.STICKY_NOTICE
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # What the notice says
 # ══════════════════════════════════════════════════════════════════════════════
-def test_the_notice_shouts(rel):
+def test_the_notice_shouts(notice):
     """Capitals are the only emphasis a native messagebox renders — it has no
     bold and no markup — so the warning must actually be upper-case."""
-    letters = [c for c in rel.STICKY_NOTICE if c.isalpha()]
+    letters = [c for c in notice if c.isalpha()]
     assert letters, "the notice has no text"
     assert all(c.isupper() for c in letters)
 
@@ -47,10 +58,10 @@ def test_the_notice_shouts(rel):
 @pytest.mark.parametrize("phrase", [
     "WATCH LIST", "SCAN", "CANCEL", "LOOP", "BEFORE YOU UPDATE",
 ])
-def test_the_notice_still_says_the_load_bearing_things(rel, phrase):
+def test_the_notice_still_says_the_load_bearing_things(notice, phrase):
     """Each phrase is a step the user cannot work out on their own: which tab,
     what to press, and why it matters. Rewording is fine; dropping one is not."""
-    assert phrase in rel.STICKY_NOTICE
+    assert phrase in notice
 
 
 def test_the_notice_is_plain_ascii(rel):
@@ -59,18 +70,18 @@ def test_the_notice_is_plain_ascii(rel):
     rel.STICKY_NOTICE.encode("ascii")
 
 
-def test_no_line_is_too_wide_for_the_dialog(rel):
+def test_no_line_is_too_wide_for_the_dialog(notice):
     """messagebox does not wrap generously; long lines stretch the dialog off
     the screen instead of folding."""
-    assert max(len(ln) for ln in rel.STICKY_NOTICE.splitlines()) <= 72
+    assert max(len(ln) for ln in notice.splitlines()) <= 72
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # How it is combined with the typed notes
 # ══════════════════════════════════════════════════════════════════════════════
-def test_the_notice_comes_first(rel):
+def test_the_notice_comes_first(rel, notice):
     out = rel.compose_notes("Fixed the Watch List crash.")
-    assert out.startswith(rel.STICKY_NOTICE)
+    assert out.startswith(notice)
     assert out.endswith("Fixed the Watch List crash.")
     assert "\n\n" in out          # a blank line separates the two
 
