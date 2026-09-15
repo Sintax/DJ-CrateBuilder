@@ -523,7 +523,7 @@ def test_failure_logs_the_full_error_once_to_the_activity_log(tmp_path):
     ("ERROR: HTTP Error 404: Not Found", "unavailable", "Removed"),
     ("Video not available from your location", "unavailable", "Geo-blocked"),
     ("ffmpeg not found; install it", "failed", "FFmpeg missing"),
-    ("Sign in to confirm you are not a bot", "failed", "login required"),
+    ("Sign in to confirm you are not a bot", "failed", "bot check"),
     ("Video unavailable", "failed", "unavailable"),
     ("This is a private video", "failed", "private"),
     ("Blocked on copyright grounds", "failed", "copyright claim"),
@@ -554,7 +554,7 @@ def test_is_age_is_sticky_and_sits_below_ffmpeg_and_sign_in():
     assert classify_download_failure(
         "ffmpeg exited with code 1", is_age=True).reason == "FFmpeg missing"
     assert classify_download_failure(
-        "Sign in to confirm your age", is_age=True).reason == "login required"
+        "Sign in to confirm your age", is_age=True).reason == "bot check"
 
 
 # The three raw messages that were reaching the queue verbatim, taken from a
@@ -975,3 +975,29 @@ def test_skip_or_cancel_wait_times_out_quietly_when_nothing_cancels():
     c = SkipOrCancel(threading.Event(), lambda: False)
     assert c.wait(0.05) is False
     assert c.wait(None) is False                 # no timeout = a plain poll
+
+
+# ── Auth reason set ──────────────────────────────────────────────────────────
+from cratebuilder.download import classify_download_failure, is_auth_reason, AUTH_REASONS
+
+
+def test_bot_check_is_labelled_before_plain_sign_in():
+    text = "ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies"
+    out = classify_download_failure(text)
+    assert out.kind == "failed"
+    assert out.reason == "bot check"
+
+
+def test_plain_sign_in_still_reads_login_required():
+    out = classify_download_failure("ERROR: Sign in to view this video")
+    assert out.reason == "login required"
+
+
+def test_auth_reasons_cover_the_four_login_shaped_labels():
+    assert set(AUTH_REASONS) == {"login required", "age-restricted",
+                                 "refused (403)", "bot check"}
+    for r in AUTH_REASONS:
+        assert is_auth_reason(r)
+    assert not is_auth_reason("network error")
+    assert not is_auth_reason("")
+    assert not is_auth_reason(None)
