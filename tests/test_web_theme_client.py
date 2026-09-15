@@ -225,19 +225,19 @@ def test_app_css_scales_the_whole_page_for_each_larger_size():
     spacing grow together and no screen has to be re-laid-out by hand.
     theme.css stays the design's drop-in, so the rules live in app.css."""
     css = _read("app.css")
-    assert re.search(r'html\[data-text-size="large"\]\s*\{\s*zoom:\s*1\.1;', css)
-    assert re.search(r'html\[data-text-size="xl"\]\s*\{\s*zoom:\s*1\.2;', css)
+    assert re.search(r'html\[data-text-size="large"\]\s*\{\s*zoom:\s*1\.08;', css)
+    assert re.search(r'html\[data-text-size="xl"\]\s*\{\s*zoom:\s*1\.15;', css)
     assert "zoom" not in _read("theme.css")
 
 
 def test_nothing_is_sized_from_the_viewport_units_zoom_leaves_alone():
-    """vh and vw are not shrunk by zoom: a 100vh shell at 120% is a fifth
+    """vh and vw are not shrunk by zoom: a 100vh shell at 115% is a sixth
     taller than the window and every screen's bottom is cut off. The two
     variables divide the zoom back out, so each size declares them and no
     rule reaches for the raw unit."""
     css = _strip_comments(_read("app.css"))
     assert re.search(r':root\s*\{\s*--cb-vh:\s*1vh;\s*--cb-vw:\s*1vw;\s*\}', css)
-    for size, zoom in (("large", "1.1"), ("xl", "1.2")):
+    for size, zoom in (("large", "1.08"), ("xl", "1.15")):
         rule = re.search(r'html\[data-text-size="%s"\]\s*\{([^}]*)\}' % size, css).group(1)
         assert f"--cb-vh: calc(1vh / {zoom})" in rule
         assert f"--cb-vw: calc(1vw / {zoom})" in rule
