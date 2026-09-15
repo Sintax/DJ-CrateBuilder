@@ -104,6 +104,51 @@ def test_scrub_hides_emails_but_not_youtube_handles():
     assert out == "<EMAIL> https://youtube.com/@dj.handle"
 
 
+def test_scrub_hides_an_email_whose_local_part_is_the_username():
+    out = support.scrub_text("login djsin@sintax-music.com",
+                             home="/home/djsin", base_dir="/home/djsin/Music",
+                             username="djsin")
+    assert out == "login <EMAIL>"
+    assert "sintax-music" not in out
+
+
+def test_scrub_matches_repr_escaped_paths_with_doubled_backslashes():
+    line = ("WL FOLDER-POPULATE | 'C:\\\\Users\\\\djsin\\\\Music\\\\DJ-CrateBuilder"
+            "\\\\YouTube\\\\House' | {\"p\": \"C:\\\\Users\\\\djsin\\\\AppData\"}")
+    out = support.scrub_text(line, home="C:\\Users\\djsin",
+                             base_dir="C:\\Users\\djsin\\Music\\DJ-CrateBuilder",
+                             username="DJ Sintax")
+    assert out == ("WL FOLDER-POPULATE | '<LIBRARY>\\\\YouTube\\\\House' | "
+                   "{\"p\": \"<HOME>\\\\AppData\"}")
+    assert "djsin" not in out
+
+
+def test_scrub_matches_url_encoded_paths():
+    out = support.scrub_text("C%3A%5CUsers%5Cdjsin%5CMusic and C%3A%5CUsers%5Cdjsin%5C"
+                             "Music%5CDJ-CrateBuilder%5Ca.mp3",
+                             home="C:\\Users\\djsin",
+                             base_dir="C:\\Users\\djsin\\Music\\DJ-CrateBuilder",
+                             username="DJ Sintax")
+    assert out == "<HOME>%5CMusic and <LIBRARY>%5Ca.mp3"
+    out = support.scrub_text("%2Fhome%2Fu%2FMusic%2Fa and /home/u/Music/b",
+                             home="/home/u", base_dir="/home/u/Music", username="u")
+    assert out == "<LIBRARY>%2Fa and <LIBRARY>/b"
+
+
+def test_scrub_hides_the_home_folder_name_when_it_differs_from_the_username():
+    out = support.scrub_text("folder djsin owned by DJ Sintax; djsinger stays",
+                             home="C:\\Users\\djsin\\", base_dir="D:\\Crates",
+                             username="DJ Sintax")
+    assert out == "folder <USER> owned by <USER>; djsinger stays"
+
+
+def test_scrub_hides_the_username_between_url_encoded_separators():
+    out = support.scrub_text("D%3A%5Cdjsin%5Cstuff and %2Fdjsin%2F",
+                             home="C:\\Users\\other", base_dir="D:\\Crates",
+                             username="djsin")
+    assert out == "D%3A%5C<USER>%5Cstuff and %2F<USER>%2F"
+
+
 def test_scrub_tolerates_empty_inputs():
     assert support.scrub_text("", home="/home/u", base_dir="/home/u/Music",
                               username="u") == ""

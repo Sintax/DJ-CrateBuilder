@@ -2,13 +2,18 @@
 import os
 import re
 import zipfile
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 TAIL_BYTES = 512 * 1024
 BODY_LIMIT = 6000
 _TOKEN = re.compile(r"(token=)[^\s&\"']+")
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+# Logs carry paths three ways: as typed, repr()-escaped (doubled backslashes),
+# and URL-encoded (%5C / %2F) — one separator pattern has to cover all three.
+_SEP = r"(?:[\\/]+|%5c|%2f)+"
+_WORD_START = r"(?:(?<![\w-])|(?<=%5c)|(?<=%2f))"
+_WORD_END = r"(?:(?![\w-])|(?=%5c)|(?=%2f))"
 
 
 def tail_bytes(path, limit=TAIL_BYTES):
@@ -27,25 +32,42 @@ def tail_bytes(path, limit=TAIL_BYTES):
     return data.decode("utf-8", errors="replace")
 
 
-def _both_slashes(path):
-    """A regex matching *path* with either slash in every separator."""
-    parts = re.split(r"[\\/]+", path.strip())
-    return r"[\\/]".join(re.escape(p) for p in parts if p)
+def _segments(path):
+    """The non-empty folder names of *path*, whichever slash it uses."""
+    return [p for p in re.split(r"[\\/]+", (path or "").strip()) if p]
+
+
+def _segment_pattern(segment):
+    """A regex matching one folder name as typed or URL-encoded."""
+    return "(?:%s|%s)" % (re.escape(segment), re.escape(quote(segment, safe="")))
+
+
+def _path_pattern(path):
+    """A regex matching *path* in any of the forms a log can carry it."""
+    lead = _SEP if re.match(r"\s*[\\/]", path or "") else ""
+    return lead + _SEP.join(_segment_pattern(p) for p in _segments(path))
+
+
+def _word_pattern(word):
+    """A regex matching *word* on its own, including between path separators."""
+    return _WORD_START + re.escape(word) + _WORD_END
 
 
 def scrub_text(text, *, home, base_dir, username, cookie_file=None):
     """Replace anything that identifies the machine or person. Longest
-    paths first so <LIBRARY> wins over <HOME> where they nest."""
+    paths first so <LIBRARY> wins over <HOME> where they nest; e-mails
+    before names so a name in the local part cannot expose the domain."""
     out = text or ""
     for value, tag in ((cookie_file, "<COOKIE_FILE>"),
                        (base_dir, "<LIBRARY>"), (home, "<HOME>")):
-        if value and value.strip():
-            out = re.sub(_both_slashes(value), tag, out, flags=re.IGNORECASE)
-    if username and username.strip():
-        out = re.sub(r"(?<![\w-])" + re.escape(username) + r"(?![\w-])",
-                     "<USER>", out, flags=re.IGNORECASE)
-    out = _TOKEN.sub(r"\1<redacted>", out)
+        if _segments(value):
+            out = re.sub(_path_pattern(value), tag, out, flags=re.IGNORECASE)
     out = _EMAIL.sub("<EMAIL>", out)
+    names = {n.strip().lower(): n.strip()
+             for n in (username, *_segments(home)[-1:]) if n and n.strip()}
+    for name in names.values():
+        out = re.sub(_word_pattern(name), "<USER>", out, flags=re.IGNORECASE)
+    out = _TOKEN.sub(r"\1<redacted>", out)
     out = _IPV4.sub("<IP>", out)
     return out
 
