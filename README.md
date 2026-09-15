@@ -75,6 +75,8 @@ Version 2.0 is a ground-up interface rework: the app is now a modern web UI runn
 - **Watch List sharing.** Export the channels you choose to a file another user can import — clashes with their existing entries are resolved on import. **🛠 Check Links** repairs every unresolved channel link in one pass.
 - **Database viewer.** Browse everything you've downloaded, grouped by platform / genre / channel, with search and resizable columns.
 - **Activity & debug logs in-app.** Both logs get proper viewers with filtering and search — no more digging for files.
+- **Report a problem.** One button on the About screen bundles the tail of both logs into a zip, with your user name, folders, e-mail and IP addresses blanked out, shows you the result, and opens a pre-filled GitHub issue to attach it to. Nothing is sent until you say so.
+- **Sign-in trouble pop-up.** Three login-shaped refusals in one run (login required, age-restricted, 403, bot check) raise a pop-up that says what to try with your cookie setting.
 - **Remote access, in development.** Pairing a phone or laptop to drive the app from a browser is built and wired, but switched off in current builds while it is finished. The Settings card shows it greyed out.
 
 ---
@@ -98,6 +100,7 @@ Version 2.0 is a ground-up interface rework: the app is now a modern web UI runn
 - **Tag Repair** — A **Repair Track Tags** backfill tool realigns genre tags with the folder each track is filed under and fills in missing Title, Encoded-by, or source URL. Changing a Watch List channel's genre also retags its already-downloaded files to match
 - **Database Viewer & Maintenance** — Browse the full downloads library grouped by platform / genre / channel, and run maintenance tools like **Remove Duplicates**, **Rebuild Database from Files** and **Folders Cleanup** *(viewer new in v2.0)*
 - **Downloads & Debug Logs** — Timestamped record of every download, skip, and error (`activity.log`) plus a separate diagnostic log (`debug.log`) with yt-dlp/cookie details — both with built-in viewers *(in-app viewers new in v2.0)*
+- **Bug reports with scrubbed logs** — **Report a problem** on the About screen previews an anonymised copy of both logs (home and library folders, user name, e-mails, IPs, cookie paths and tokens replaced with placeholders), saves them as a zip and opens a pre-filled GitHub issue for you to attach it to
 - **Remote Access** — Pair another device with a one-time code and control the app from a browser on your network *(built in v2.0 but still in development and switched off in current builds — see [Remote Access](#remote-access))*
 - **In-App Updates** — SHA-256-verified nightly builds installed from the Update screen, which also lists the components your install is running against the live build
 - **Light & Dark Theme** — Chosen under Settings ▸ Appearance, remembered per device
@@ -422,7 +425,7 @@ See [docs/Packaging_Guide.md](docs/Packaging_Guide.md) for detailed instructions
 
 ## FAQ&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
 
-See the built-in FAQ on the app's About screen for answers to common questions about bitrate, skip logic, throttle presets, folder organization, and more.
+See the built-in FAQ on the app's About screen for answers to common questions about bitrate, skip logic, throttle presets, folder organization, bug reports, and more.
 
 ---
 
@@ -433,7 +436,7 @@ See the built-in FAQ on the app's About screen for answers to common questions a
 - **Chrome 127+** blocks cookie extraction due to DPAPI encryption — use Firefox or export a cookie file
 - **Age-restricted videos** require age verification on the throwaway account, or the app falls back to anonymous download (which bypasses age gates via YouTube's embedded player)
 - **YouTube rate limiting** may occur during large batch downloads — enable Throttle Requests with Moderate or Aggressive presets for 200+ file batches
-- **VPN users** may encounter "login required" errors from YouTube — enabling Browser Cookies typically resolves this
+- **VPN users** may encounter "login required" errors from YouTube — enabling Browser Cookies typically resolves this; after three such refusals in one run the app raises a sign-in pop-up with the next thing to try
 - **Remote sessions** deliberately can't install updates or browse the host filesystem — use the desktop window for those (and Remote Access itself is switched off in current builds while it is finished)
 - **Linux** has had far less testing than Windows — expect more rough edges; the tray and run-at-startup options are Windows-only
 
