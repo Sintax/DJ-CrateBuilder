@@ -222,6 +222,9 @@ body { overflow: hidden; }
    down the screen. It scrolls instead, and renderQueueLog keeps the running
    line in view. */
 #dl-queue { height: 119px; overflow-y: auto; }
+/* The Clear beside the Queue title, for a kept run: sized to the title line
+   it sits on rather than to the toolbar buttons. */
+.cb-queue__clear { font-size: 11px; padding: 1px 7px; min-height: 20px; }
 .cb-log__now { background: var(--cb-accent-wash); border-radius: 4px; padding: 0 4px; margin: 0 -4px; }
 .cb-log__now .cb-log__title { color: var(--cb-text); font-weight: 500; }
 

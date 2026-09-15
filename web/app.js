@@ -1574,11 +1574,53 @@
     log.scrollTop += (line.top - box.top) - (box.height - line.height) / 2;
   }
 
+  /* The kept run's title line: which run, when it ended, and what it came to.
+     The batch's own closing tally is the truer count (tracks, not rows), so it
+     is preferred when the run left one. */
+  function lastRunMeta(last) {
+    const kind = last.job === 'watchlist' ? 'Watch List run' : 'Batch';
+    const at = new Date(last.finished_at * 1000);
+    const sameDay = at.toDateString() === new Date().toDateString();
+    const when = at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      + (sameDay ? '' : ' ' + at.toLocaleDateString([], { month: 'short', day: 'numeric' }));
+    const t = last.tally;
+    let came;
+    if (t && t.downloaded != null) {
+      came = `${num(t.downloaded)} downloaded · ${num(t.skipped)} skipped · `
+        + `${num(t.errors)} error${t.errors === 1 ? '' : 's'}`;
+    } else {
+      const n = (st) => last.rows.filter((r) => r.state === st).length;
+      came = `${n('done')} done · ${n('skipped')} skipped · `
+        + `${n('error')} error${n('error') === 1 ? '' : 's'}`;
+    }
+    const ended = last.tally && last.tally.cancelled ? 'cancelled'
+      : (last.ok === false ? 'failed' : 'finished');
+    return `${kind} ${ended} ${when} · ${came}`;
+  }
+
   function renderQueueLog() {
     const view = dlView();
     const log = $('#dl-queue');
     const meta = $('#dl-queue-meta');
+    const clear = $('#dl-queue-clear');
     log.innerHTML = '';
+    /* Only a kept run can be cleared — the button is hidden the rest of the
+       time so the title line reads as it always did. */
+    const last = !view.running && state && state.last_run;
+    if (clear) {
+      clear.hidden = !last;
+      if (last) gateWrite(clear, '');
+    }
+
+    if (last) {
+      last.rows.forEach((r) => {
+        const st = r.state || 'queued';
+        log.appendChild(queueLogLine(st, r.title || String(r.id), r.detail || '',
+          last.job === 'watchlist' ? WL_QROW_MARK : DL_MARK));
+      });
+      meta.textContent = lastRunMeta(last);
+      return;
+    }
 
     if (view.kind === 'watchlist') {
       const channels = wlQueueRows();
@@ -5967,6 +6009,10 @@
      about* names date from when this was a card on About. */
   const aboutUpdate = {
     status: null, result: null, checking: false, view: null,
+    // The components table starts folded; Show/Hide flips this and the
+    // choice survives re-renders (a check, a silent verdict) while the
+    // page is open.
+    componentsOpen: false,
     // Set by the update confirm's Stop Watch List and install while it waits
     // for the Watch List's job.finished; that handler calls and clears it.
     onWatchlistStopped: null,
@@ -6677,6 +6723,25 @@
       head.appendChild(tagNode('All current', 'cb-tag--ok'));
     }
     host.appendChild(head);
+    /* The list is detail most visits never need, so it starts folded and
+       the badge alone says whether anything would change. The toggle sits on
+       its own line under the title, not out to the right of it. */
+    const open = !!aboutUpdate.componentsOpen;
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'cb-btn cb-btn--quiet cb-btn--sm';
+    toggle.textContent = open ? 'Hide' : 'Show';
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    toggle.addEventListener('click', () => {
+      aboutUpdate.componentsOpen = !aboutUpdate.componentsOpen;
+      renderUpdate();
+    });
+    const toggleRow = document.createElement('div');
+    toggleRow.className = 'cb-row';
+    toggleRow.style.marginTop = '7px';
+    toggleRow.appendChild(toggle);
+    host.appendChild(toggleRow);
+    if (!open) return;
 
     const note = document.createElement('div');
     note.className = 'cb-mut cb-comp__note';
@@ -6839,6 +6904,14 @@
       await call('batch.clear');
       state.batch = [];
       renderBatch();
+    });
+    // The kept run in the queue panel (queue.last_run). Cleared on the host so
+    // every page — and a reload — agrees; the event repaints this one too.
+    $('#dl-queue-clear').addEventListener('click', async () => {
+      try { await call('queue.clear_last_run'); }
+      catch (_) { return; /* call() already toasted the reason */ }
+      state.last_run = null;
+      renderQueueLog();
     });
 
     $$('#dl-platform > span').forEach((seg) => {
@@ -7426,6 +7499,16 @@
         `${num(r.errors)} error${r.errors === 1 ? '' : 's'}`;
       toast((r.cancelled ? 'Batch cancelled — ' : 'Batch finished — ') + parts,
         !r.cancelled && r.errors > 0);
+    });
+    /* The run the host kept for the queue panel, or null once cleared. It
+       arrives just before job.finished, so the snapshot that resync asks for
+       already carries it — this handler is for a page that is not resyncing:
+       a Clear pressed on another device, or a run whose job.finished this
+       page missed. */
+    cbApi.on('queue.last_run', (last) => {
+      if (!state) return;
+      state.last_run = last || null;
+      renderQueueLog();
     });
     /* Its mirror: a job category has just been claimed. Emitted with the slot
        already taken, so the snapshot this asks for cannot come back claiming

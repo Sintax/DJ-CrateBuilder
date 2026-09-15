@@ -241,6 +241,127 @@ def test_the_running_line_is_kept_in_view_without_moving_the_page(app_js):
     assert body.count("scrollQueueLogToActive(log)") == 2
 
 
+# ── a finished run stays in the queue panel until Clear ──────────────────────
+# The panel is redrawn from live events and used to collapse to "Press Start"
+# the instant a run ended — an overnight Watch List download left nothing to
+# look at in the morning. The host keeps the run's final rows (snapshot
+# `last_run`, event queue.last_run); the panel shows them, with a small Clear
+# beside its title, until they are cleared or another run takes the panel.
+
+_LAST_RUN_HARNESS = """
+function node() {
+  const n = { children: [], textContent: '', className: '', style: {},
+              innerHTML: '', hidden: false,
+              appendChild(c) { this.children.push(c); },
+              querySelector() { return null; } };
+  return n;
+}
+const document = { createElement: node };
+const els = { '#dl-queue': node(), '#dl-queue-meta': node(), '#dl-queue-clear': node() };
+function $(sel) { return els[sel] || node(); }
+const DL_MARK = { done: '✓', active: '▶', skipped: '⊘', error: '✗', queued: '·' };
+const WL_QROW_MARK = { done: '✓', active: '⬇', skipped: '⊘', error: '✗', queued: '○' };
+const DL_LOG_CLASS = { done: 'downloaded', skipped: 'skipped', error: 'error', queued: 'default' };
+function num(n) { return String(n == null ? 0 : n); }
+const gated = [];
+function gateWrite(el) { gated.push(el === els['#dl-queue-clear']); }
+function scrollQueueLogToActive() {}
+function wlQueueRows() { return []; }
+const dl = { running: %(dl_running)s, rows: {}, current: null };
+const wl = { running: false, rows: [] };
+function dlView() { return { kind: 'batch', running: dl.running, current: null, marks: DL_MARK }; }
+const state = { batch: %(batch)s, last_run: %(last_run)s };
+%(line)s
+%(meta)s
+%(render)s
+renderQueueLog();
+const log = els['#dl-queue'];
+console.log(JSON.stringify({
+  lines: log.children.map((l) => l.children.map((s) => s.textContent).join('|')),
+  text: log.textContent,
+  meta: els['#dl-queue-meta'].textContent,
+  clearHidden: els['#dl-queue-clear'].hidden,
+  gated,
+}));
+"""
+
+_LAST_ROWS = [
+    {"id": "c1", "index": 0, "state": "done", "title": "Preview Channel", "detail": "3 tracks"},
+    {"id": "c2", "index": 1, "state": "skipped", "title": "Quiet Channel", "detail": "nothing pending"},
+    {"id": "c3", "index": 2, "state": "error", "title": "Gone Channel", "detail": "link unresolved"},
+]
+
+
+def _last_run(app_js, tmp_path, last_run, dl_running=False, batch=None):
+    return _run_node(tmp_path, "lastrun.mjs", _LAST_RUN_HARNESS % {
+        "dl_running": json.dumps(dl_running),
+        "batch": json.dumps(batch or []),
+        "last_run": json.dumps(last_run),
+        "line": _slice(app_js, "  function queueLogLine(", "  /* The log is boxed"),
+        "meta": _slice(app_js, "  function lastRunMeta(", "  function renderQueueLog()"),
+        "render": _slice(app_js, "  function renderQueueLog()",
+                         "  /* Every write control funnels through here"),
+    })
+
+
+def test_a_kept_watch_list_run_fills_the_panel_with_its_rows(app_js, tmp_path):
+    # 03:14 local, this morning — so the title line shows a time, not a date.
+    import datetime as _dt
+    at = _dt.datetime.now().replace(hour=3, minute=14, second=0, microsecond=0)
+    r = _last_run(app_js, tmp_path, {
+        "job": "watchlist", "finished_at": at.timestamp(), "ok": True,
+        "error": None, "rows": _LAST_ROWS, "tally": None})
+    assert r["lines"] == [
+        "✓  |Preview Channel|3 tracks",
+        "⊘  |Quiet Channel|nothing pending",
+        "✗  |Gone Channel|link unresolved",
+    ]
+    assert r["meta"].startswith("Watch List run finished ")
+    assert r["meta"].endswith(" · 1 done · 1 skipped · 1 error")
+    assert r["clearHidden"] is False
+    assert r["gated"] == [True]
+
+
+def test_a_kept_batch_prefers_its_own_tally_and_says_cancelled(app_js, tmp_path):
+    r = _last_run(app_js, tmp_path, {
+        "job": "batch", "finished_at": 1_700_000_000, "ok": True, "error": None,
+        "rows": _LAST_ROWS[:1],
+        "tally": {"downloaded": 4, "skipped": 2, "errors": 1, "cancelled": True}})
+    assert r["lines"] == ["✓  |Preview Channel|3 tracks"]
+    assert r["meta"].startswith("Batch cancelled ")
+    assert r["meta"].endswith(" · 4 downloaded · 2 skipped · 1 error")
+
+
+def test_the_kept_run_yields_to_a_live_one_and_hides_clear(app_js, tmp_path):
+    """While a batch runs the panel is the run's — the kept rows come back
+    only if the host still holds them once it ends (it replaces them)."""
+    r = _last_run(app_js, tmp_path, {
+        "job": "watchlist", "finished_at": 1, "ok": True, "error": None,
+        "rows": _LAST_ROWS, "tally": None},
+        dl_running=True, batch=[{"id": 1, "url": "https://x/y"}])
+    assert r["lines"] == ["·  |https://x/y|queued"]
+    assert r["clearHidden"] is True
+    assert r["gated"] == []
+
+
+def test_with_nothing_kept_the_panel_reads_as_before(app_js, tmp_path):
+    r = _last_run(app_js, tmp_path, None)
+    assert r["text"] == "Queue is empty — add links above, then press Start Downloads."
+    assert r["meta"] == "empty"
+    assert r["clearHidden"] is True
+
+
+def test_clear_asks_the_host_and_the_event_repaints_every_page(app_js, index_html):
+    assert 'id="dl-queue-clear"' in index_html
+    clear = _slice(app_js, "    $('#dl-queue-clear').addEventListener('click'",
+                   "    $$('#dl-platform > span')")
+    assert "await call('queue.clear_last_run');" in clear
+    assert "state.last_run = null;" in clear
+    handler = _slice(app_js, "    cbApi.on('queue.last_run', (last) => {", "    });")
+    assert "state.last_run = last || null;" in handler
+    assert "renderQueueLog();" in handler
+
+
 # ── the Skip row is the same setting the Settings screen shows ───────────────
 # skip_existing and skip_mode are drawn twice — the Downloads screen's Skip row
 # and the Downloads section of Settings. The row used to be filled from nothing

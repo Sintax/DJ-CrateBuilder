@@ -88,6 +88,16 @@ JOB_FINISHED = "job.finished"
 # was closed — until something else happened to trigger a refresh.
 JOB_STARTED = "job.started"
 
+# The Downloads screen's queue panel is redrawn from live queue.row events and
+# collapses the moment a run ends — so an overnight Watch List download left
+# nothing to look at in the morning. The service keeps the finished run's
+# final rows and announces them with this event (None once cleared); the
+# snapshot carries the same record as `last_run`. Memory only, by choice: it
+# is last night's result, not a record worth outliving the process.
+QUEUE_LAST_RUN = "queue.last_run"
+# The two job categories whose runs report queue rows.
+RUN_JOBS = ("batch", "watchlist")
+
 # What a crashed job is called in the error notification _start_job publishes.
 # Maintenance passes its own per-task title instead, since "Rebuild Database
 # from Files" is what the user pressed, not "Database maintenance".
@@ -864,6 +874,14 @@ class CrateBuilderService:
         self.events = EventBus()
         self._emit = Coalescer(self.events)
         self._jobs = {}
+        # The rows of each run in flight (job → {(index, id): row}), the
+        # batch's closing tally, and the finished run kept for the queue
+        # panel — see QUEUE_LAST_RUN. Their own lock: emit() is called from
+        # every worker thread, some of them while holding self._lock.
+        self._run_lock = threading.Lock()
+        self._run_rows = {}
+        self._run_tally = {}
+        self._last_run = None
         self._batch_runner = None
         self._watchlist_ops = None
         self._maintenance_ops = None
@@ -933,7 +951,64 @@ class CrateBuilderService:
     def emit(self, type, payload):
         if type == "notification" and self._notification_muted(payload):
             return
+        # Before the event goes out: a frontend that resyncs on job.finished
+        # must find the finished run already in the snapshot it asks for.
+        self._track_run(type, payload)
         self._emit.emit(type, payload)
+
+    def _track_run(self, type, payload):
+        """Keep the run's rows as they arrive; when the job ends, freeze what
+        it settled on as `last_run` (see QUEUE_LAST_RUN). A job that reported
+        no rows — a Watch List SCAN claims the same slot as a download —
+        leaves the kept run alone rather than blanking it."""
+        payload = payload or {}
+        job = payload.get("job")
+        if type == "batch.finished":
+            with self._run_lock:
+                self._run_tally["batch"] = {
+                    k: payload.get(k)
+                    for k in ("downloaded", "skipped", "errors", "cancelled")}
+            return
+        if job not in RUN_JOBS:
+            return
+        if type == JOB_STARTED:
+            with self._run_lock:
+                self._run_rows[job] = {}
+                self._run_tally.pop(job, None)
+        elif type == "queue.row":
+            with self._run_lock:
+                self._run_rows.setdefault(job, {})[
+                    (payload.get("index"), payload.get("id"))] = {
+                        k: payload.get(k)
+                        for k in ("id", "index", "state", "title", "detail")}
+        elif type == JOB_FINISHED:
+            with self._run_lock:
+                rows = self._run_rows.pop(job, {})
+                tally = self._run_tally.pop(job, None)
+                if not rows:
+                    return
+                self._last_run = {
+                    "job": job,
+                    "finished_at": time.time(),
+                    "ok": payload.get("ok", True),
+                    "error": payload.get("error"),
+                    "rows": sorted(rows.values(),
+                                   key=lambda r: (r["index"] is None,
+                                                  r["index"] or 0)),
+                    "tally": tally,
+                }
+                last = dict(self._last_run)
+            self.emit(QUEUE_LAST_RUN, last)
+
+    def queue_last_run(self):
+        with self._run_lock:
+            return dict(self._last_run) if self._last_run else None
+
+    def queue_clear_last_run(self):
+        with self._run_lock:
+            self._last_run = None
+        self.emit(QUEUE_LAST_RUN, None)
+        return None
 
     def _notification_muted(self, payload):
         """Settings ▸ Remote Access's three notification toggles, applied at
@@ -1178,6 +1253,8 @@ class CrateBuilderService:
                                                     p.get("delta", 0)),
             "batch.clear": lambda p: self.batch_clear(),
             "batch.skip": lambda p: self.batch_skip(p.get("id")),
+            "queue.last_run": lambda p: self.queue_last_run(),
+            "queue.clear_last_run": lambda p: self.queue_clear_last_run(),
             "download.start": lambda p: self.download_start(),
             "download.pause": lambda p: self.download_pause(),
             "download.resume": lambda p: self.download_resume(),
@@ -1288,6 +1365,7 @@ class CrateBuilderService:
             "counts": self.counts(library),
             "library": library,
             "batch": self.batch_list(),
+            "last_run": self.queue_last_run(),
             "watchlist": self.watchlist_list(),
             "running": {"batch": self._job_running("batch"),
                         "watchlist": self._job_running(WATCHLIST_JOB),
