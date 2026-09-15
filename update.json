@@ -1,11 +1,11 @@
 {
   "version": "2.0",
-  "build": 87,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.87.zip",
-  "sha256": "5d2f986424b31faab216920fd9138eb7e0ebcb9888a2f063b49cda9334d8486b",
-  "notes": "Two fixes: settings can no longer shift mid-download, and the app checks for updates on launch even during the startup scan.",
-  "base": 85,
-  "changes": "Two fixes: settings can no longer shift mid-download, and the app checks for updates on launch even during the startup scan.",
+  "build": 88,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.88.zip",
+  "sha256": "353c4e514456562ef367e47aaca8fd0363e418c91dfec009d369b8cc467a5412",
+  "notes": "New text-size setting; report-a-problem tool that scrubs your logs; sign-in trouble help; the queue now keeps your last run.",
+  "base": 88,
+  "changes": "New text-size setting; report-a-problem tool that scrubs your logs; sign-in trouble help; the queue now keeps your last run.",
   "notice": "",
   "ffmpeg": {
     "version": "9.0.1-essentials_build-www.gyan.dev+72a489ec",
@@ -25,6 +25,6 @@
     "pywebview": "6.2.1",
     "bottle": "0.13.4",
     "fastapi": "0.141.1",
-    "uvicorn": "0.52.4"
+    "uvicorn": "0.53.0"
   }
 }
