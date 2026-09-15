@@ -34,6 +34,7 @@
 ## Global Constraints
 
 - **No tkinter imports in `cratebuilder/`.**
+- **Subagent model floor.** Never dispatch an implementer or reviewer on Haiku. Each task below carries a **Model:** line; pass it as the Agent tool's `model` parameter. `sonnet` is the floor for small, single-file, well-specified changes; `opus` for anything that touches `web/app.js`, event wiring, privacy-sensitive scrubbing, or more than two files at once. Spec-compliance and code-quality reviewers always run on `opus` — review is where a wrong call costs the most. If a Sonnet implementer reports being unsure or its tests do not go green on the second attempt, re-dispatch the task on `opus` rather than iterating.
 - `cratebuilder/` modules use **one-line module docstrings**; `web/app.js` uses `/* ── section ── */` comments that explain *why*.
 - **Read the `changing-the-web-ui` skill before touching `web/`.** Every new RPC goes through `call()` in `app.js` (never `pywebview.api` directly); every new method is one entry in `_methods()` (`cratebuilder/service.py:1166-1272`); local-only methods carry the `fs.` prefix (`LOCAL_ONLY`, `service.py:105`).
 - Frontend tests are Python that read `web/app.js` as text (`tests/test_web_*_client.py`). Add static assertions for every new wiring point.
@@ -68,7 +69,11 @@ Task order: **Phase C (auth pop-up) → Phase A (import sanitising, ✅ done) �
 
 ## Phase C — Auth-failure pop-up
 
+> **✅ Completed 2026-09-15** on branch `worktree-feat+auth-popup-bug-reports` (C1 `375efea`/`da50bed`, C2 `9209cf4`, C3 `1a99a7f`/`3db66b6`/`5eaa8bd`). Deviation from 3c: if another dialog is open when the event lands, a toast is shown instead of the pop-up so typed text is never lost.
+
 ### Task C1: Label bot-check failures and define the auth reason set
+
+**Model:** `sonnet` — one substring table and a label in `download.py`; the tests pin every branch. *(Done.)*
 
 **Files:**
 - Modify: `cratebuilder/download.py:249-309`
@@ -77,7 +82,7 @@ Task order: **Phase C (auth pop-up) → Phase A (import sanitising, ✅ done) �
 **Interfaces:**
 - Produces: `AUTH_REASONS: tuple[str, ...]`, `is_auth_reason(reason: str) -> bool`, and the new reason string `"bot check"` from `classify_download_failure`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_download.py  (append)
@@ -106,12 +111,12 @@ def test_auth_reasons_cover_the_four_login_shaped_labels():
     assert not is_auth_reason(None)
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 Run: `python -m pytest tests/test_download.py -q -k "bot_check or sign_in or auth_reasons"`
 Expected: FAIL — `ImportError: cannot import name 'is_auth_reason'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `cratebuilder/download.py`, above `_CONDITION_MARKERS`:
 
@@ -136,12 +141,12 @@ In `classify_download_failure`, replace the `"sign in"` line so the bot-check te
     elif is_age:                   return Failure("failed", "age-restricted")
 ```
 
-- [ ] **Step 4: Run to verify they pass**
+- [x] **Step 4: Run to verify they pass**
 
 Run: `python -m pytest tests/test_download.py -q`
 Expected: PASS (all).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add cratebuilder/download.py tests/test_download.py
@@ -149,6 +154,8 @@ git commit -m "feat(download): label bot-check failures and define the auth reas
 ```
 
 ### Task C2: Count auth failures per run and emit `auth.trouble`
+
+**Model:** `sonnet` — two small edits inside an existing state machine, one test; the plan gives the exact code. *(Done on the main thread — too small to justify a subagent.)*
 
 **Files:**
 - Modify: `cratebuilder/batchrun.py:430-472` (`_settle`, `_reset`)
@@ -158,60 +165,51 @@ git commit -m "feat(download): label bot-check failures and define the auth reas
 - Consumes: `is_auth_reason` from Task C1.
 - Produces: event `auth.trouble` with payload `{"job": <job>, "count": <int>, "reason": <last reason>}`; constant `AUTH_WARN_THRESHOLD = 3`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Look at how `tests/test_batchrun.py` builds a `BatchRunner` with a fake `emit` (grep `def make_runner` or the first fixture in that file) and reuse that helper. The test drives `_settle` directly — it is the one place every failed track passes through.
 
 ```python
-# tests/test_batchrun.py (append)
-from cratebuilder import batchrun
-
-
-def _settle_failed(runner, reason):
-    spec = SimpleNamespace(url="https://youtu.be/x", genre="(none)", row_id=1,
-                           entry={}, title="t", save_dir="", platform="YouTube",
-                           channel_name="", channel_url="", channel_id=None,
-                           suppress_channel_url=False)
+# tests/test_batchrun.py (append) — reuse the file's Harness (its `emit` is a
+# Recorder with `.of(type)`) and the `_spec(tmp_path, title)` helper.
+def _settle_failed(harness, tmp_path, reason):
     tally = {"downloaded": 0, "skipped": 0, "errors": 0, "deferred": 0,
-             "stopped": False, "state": None, "detail": ""}
-    runner._settle(spec, "t", ("failed", reason, ""), tally)
+             "state": None, "detail": ""}
+    harness.runner._settle(_spec(tmp_path, "t"), "t", ("failed", reason, ""), tally)
 
 
-def test_third_auth_failure_emits_auth_trouble_once(runner_and_events):
-    runner, events = runner_and_events
-    runner._reset(5)
-    _settle_failed(runner, "login required")
-    _settle_failed(runner, "network error")     # not counted
-    _settle_failed(runner, "bot check")
-    assert not [e for e in events if e[0] == "auth.trouble"]
-    _settle_failed(runner, "age-restricted")
-    trouble = [e for e in events if e[0] == "auth.trouble"]
-    assert len(trouble) == 1
-    assert trouble[0][1]["count"] == 3
-    assert trouble[0][1]["reason"] == "age-restricted"
-    assert trouble[0][1]["job"] == runner._job
-    _settle_failed(runner, "login required")    # 4th: no second event this run
-    assert len([e for e in events if e[0] == "auth.trouble"]) == 1
+def test_third_auth_failure_emits_auth_trouble_once(tmp_path):
+    harness = Harness(tmp_path, TRACK_PROBE, [])
+    harness.runner._reset(5)
+    _settle_failed(harness, tmp_path, "login required")
+    _settle_failed(harness, tmp_path, "network error")     # not counted
+    _settle_failed(harness, tmp_path, "bot check")
+    assert harness.emit.of("auth.trouble") == []
+    _settle_failed(harness, tmp_path, "age-restricted")
+    assert harness.emit.of("auth.trouble") == [
+        {"job": harness.runner._job, "count": 3, "reason": "age-restricted"}]
+    _settle_failed(harness, tmp_path, "login required")    # 4th: no second event this run
+    assert len(harness.emit.of("auth.trouble")) == 1
 
 
-def test_reset_clears_the_auth_counter(runner_and_events):
-    runner, events = runner_and_events
-    runner._reset(3)
+def test_reset_clears_the_auth_counter(tmp_path):
+    harness = Harness(tmp_path, TRACK_PROBE, [])
+    harness.runner._reset(3)
     for _ in range(3):
-        _settle_failed(runner, "login required")
-    runner._reset(3)
-    _settle_failed(runner, "login required")
-    assert len([e for e in events if e[0] == "auth.trouble"]) == 1
+        _settle_failed(harness, tmp_path, "login required")
+    harness.runner._reset(3)
+    _settle_failed(harness, tmp_path, "login required")
+    assert len(harness.emit.of("auth.trouble")) == 1
 ```
 
-`runner_and_events` is a fixture returning `(runner, events)` where `events` is the list the fake `emit` appends `(name, payload)` to. If the file has no such fixture, add one next to its existing runner factory using the same constructor arguments that factory uses.
+(Check the attribute the runner stores its job name under — `grep -n "self._job" cratebuilder/batchrun.py` — and use that name in the assertion.)
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `python -m pytest tests/test_batchrun.py -q -k auth`
 Expected: FAIL — no `auth.trouble` event emitted.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 # cratebuilder/batchrun.py — module level, near the other constants
@@ -239,12 +237,12 @@ AUTH_WARN_THRESHOLD = 3
 
 Also initialise both attributes in `__init__` (`self._auth_failures = 0`, `self._auth_warned = False`) so a runner that has never been reset still has them.
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `python -m pytest tests/test_batchrun.py -q`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add cratebuilder/batchrun.py tests/test_batchrun.py
@@ -253,6 +251,8 @@ git commit -m "feat(batchrun): raise auth.trouble after three login-shaped failu
 
 ### Task C3: Frontend dialog
 
+**Model:** `opus` — touches `web/app.js` event wiring, a new dialog, text-sliced frontend tests, and needs a two-theme visual check.
+
 **Files:**
 - Modify: `web/app.js` — `subscribeDownloadEvents` (`:7350-7524`), new `openAuthTroubleDialog`.
 - Test: `tests/test_web_downloads_client.py` (static assertions).
@@ -260,7 +260,7 @@ git commit -m "feat(batchrun): raise auth.trouble after three login-shaped failu
 **Interfaces:**
 - Consumes: event `auth.trouble` `{job, count, reason}`; `state.settings.use_cookies`, `state.settings.cookie_method`, `state.settings.cookies_browser`; existing helpers `openModal`, `modalButton`, `modalNote`, `show('settings')`, `openCookieHowto(browser)` (`app.js:5681`), `dl.running`, `wl.running`.
 
-- [ ] **Step 1: Write the failing static test**
+- [x] **Step 1: Write the failing static test**
 
 ```python
 # tests/test_web_downloads_client.py (append)
@@ -278,12 +278,12 @@ def test_auth_trouble_event_opens_the_dialog(app_js):
 
 (`app_js` is the fixture the file already uses to load `web/app.js` as text; if it is named differently there, use that name.)
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `python -m pytest tests/test_web_downloads_client.py -q -k auth_trouble`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `web/app.js`, next to the other `dl`/`wl` state objects:
 
@@ -343,9 +343,11 @@ The dialog:
             + 'download is running — stop the run first, then change them.'));
         }
         const lab = document.createElement('label');
-        lab.className = 'cb-check';
+        lab.className = 'cb-row';
+        lab.style.cssText = 'gap:8px;cursor:pointer';
         refs.mute = document.createElement('input');
         refs.mute.type = 'checkbox';
+        refs.mute.className = 'cb-cbx';
         lab.append(refs.mute, document.createTextNode(
           ' Don’t show this again this session'));
         body.appendChild(lab);
@@ -364,16 +366,16 @@ The dialog:
   }
 ```
 
-Check `modalNote` and the `cb-check` class exist in `app.js`/`styles`; if the checkbox class is named differently in `index.html`'s settings markup, use that name so it themes correctly in dark mode.
+`modalNote`, `openModal`, `modalButton` and `openCookieHowto` all exist in `app.js`. There is no `cb-check` class: the app's checkbox pattern (see the *Skip files already downloaded* row in `index.html`) is a `cb-row` label wrapping a `cb-cbx` input, which is what the code above uses.
 
-- [ ] **Step 4: Run tests, then verify visually**
+- [x] **Step 4: Run tests, then verify visually**
 
 Run: `python -m pytest tests/test_web_downloads_client.py tests/test_web_wiring_client.py -q`
 Expected: PASS.
 
-Visual: `python web_window.py --screen downloads`; in the DevTools console (or a temporary line) run `cbApi._push('auth.trouble', {job:'batch', count:3, reason:'login required'})` in each of the three cookie states; check light and dark theme. Confirm *Open cookie settings* lands on Settings and *Read the how-to* opens the walkthrough.
+Visual: **close the installed DJ-CrateBuilder first** (single-instance lock — `web_window.py` hands off to a running install and exits), then `python web_window.py --screen downloads`; in the DevTools console (or a temporary line) run `cbApi._push('auth.trouble', {job:'batch', count:3, reason:'login required'})` in each of the three cookie states; check light and dark theme. Confirm *Open cookie settings* lands on Settings and *Read the how-to* opens the walkthrough.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/app.js tests/test_web_downloads_client.py
@@ -674,7 +676,11 @@ git commit -m "feat(web): tell the user which import entries were dropped"
 
 ## Phase B — Anonymised bug reports
 
+> **✅ Completed 2026-09-15** on the same branch (B1 `41c52be`/`344d563`/`d7dc85b`/`885e913`, B2 `a4cc1ae`/`963b910`, B3 `4323ecc`). Deviations: `username` comes from `getpass.getuser()` (spec 2b, not the home basename); the *Report a problem* button is built in `renderAbout` (no static About markup exists); the typed title/description are scrubbed too; `support.issue_url` needs the bare issues URL.
+
 ### Task B1: Pure support module
+
+**Model:** `opus` — new module whose whole job is scrubbing personal data from logs; a missed pattern leaks user paths or names into a public issue.
 
 **Files:**
 - Create: `cratebuilder/support.py`
@@ -689,7 +695,7 @@ git commit -m "feat(web): tell the user which import entries were dropped"
   - `issue_url(base_url, title, body) -> str` — `base_url?title=…&body=…`, body truncated to 6000 chars with a trailing `\n\n[log bundle attached]` line.
   - `build_bundle(zip_path, files: dict[str, str]) -> None` — writes each `{name: text}` into a zip with `ZIP_DEFLATED`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_support.py
@@ -753,12 +759,12 @@ def test_build_bundle_writes_named_members(tmp_path):
         assert zf.read("debug.log") == b"b\n"
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 Run: `python -m pytest tests/test_support.py -q`
 Expected: FAIL — `ModuleNotFoundError`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 """Anonymised bug-report bundles: log tails, scrubbing, and the GitHub issue link."""
@@ -831,12 +837,12 @@ def build_bundle(zip_path, files):
 
 Note the test for slashes expects `<LIBRARY>/a and <HOME>\b` — the separator *after* the placeholder is whatever followed the path in the source; the regex consumes only the path itself.
 
-- [ ] **Step 4: Run to verify they pass**
+- [x] **Step 4: Run to verify they pass**
 
 Run: `python -m pytest tests/test_support.py -q`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add cratebuilder/support.py tests/test_support.py
@@ -844,6 +850,8 @@ git commit -m "feat(support): anonymised log bundle helpers"
 ```
 
 ### Task B2: Service methods `support.preview` and `fs.support_send`
+
+**Model:** `sonnet` — two dispatch-table entries and thin methods over the B1 module; pattern is identical to the existing `logs_tail`.
 
 **Files:**
 - Modify: `cratebuilder/service.py` — `_methods()` (`:1166-1272`), new methods near `logs_tail` (`:2526`).
@@ -855,7 +863,7 @@ git commit -m "feat(support): anonymised log bundle helpers"
   - `support.preview` `{}` → `{"activity": str, "debug": str, "system": str}` (scrubbed; both transports — read-only).
   - `fs.support_send` `{"title": str, "description": str}` → `{"saved": path | None, "opened": bool}`; local only. Refuses an empty description.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_service_support.py
@@ -901,12 +909,12 @@ def test_send_writes_bundle_and_opens_issue(service, tmp_path, monkeypatch):
 
 `service` is whatever fixture the other service tests use for a sandboxed `CrateBuilderService` (see `tests/test_watchlist_share_service.py`).
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 Run: `python -m pytest tests/test_service_support.py -q`
 Expected: FAIL — unknown method.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Register in `_methods()`:
 
@@ -968,12 +976,12 @@ Methods (place after `logs_tail`):
 
 Add `import platform` and `from . import support` at the top of `service.py` alongside the existing imports; `datetime` and `about_info` are already available there (check with `graft grep "^from datetime\|^import datetime" --in cratebuilder/service.py`). Confirm `about_info()` returns `"issues_url"` and `"build"` keys — `service.py:321` maps `issues_url`; check the build key name with `graft skeleton cratebuilder/service.py` and adjust.
 
-- [ ] **Step 4: Run to verify they pass**
+- [x] **Step 4: Run to verify they pass**
 
 Run: `python -m pytest tests/test_service_support.py tests/test_server.py -q`
 Expected: PASS (the server tests confirm `fs.` methods are still refused remotely).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add cratebuilder/service.py tests/test_service_support.py
@@ -982,6 +990,8 @@ git commit -m "feat(service): support.preview and fs.support_send for bug report
 
 ### Task B3: Report dialog on the About screen
 
+**Model:** `opus` — four files across HTML, JS, the ui-contract and a generated module, plus the pywebview file dialog and a two-theme visual check.
+
 **Files:**
 - Modify: `web/index.html` (About screen — one button next to the existing *Submit Issues* link), `web/app.js` (`aboutOpen` wiring + `openReportDialog`), `UI-design/ui-contract.json` (tooltip `about.report`), then `python scripts/gen_ui_strings.py`.
 - Test: `tests/test_web_about_client.py`
@@ -989,7 +999,7 @@ git commit -m "feat(service): support.preview and fs.support_send for bug report
 **Interfaces:**
 - Consumes: `support.preview`, `fs.support_send`; `openModal`, `modalButton`, `modalNote`, `toast`, `state.host.transport`, `setDisabled`.
 
-- [ ] **Step 1: Write the failing static test**
+- [x] **Step 1: Write the failing static test**
 
 ```python
 def test_about_has_a_report_a_problem_flow(app_js, index_html):
@@ -1001,11 +1011,11 @@ def test_about_has_a_report_a_problem_flow(app_js, index_html):
     assert "Nothing is sent until you press" in app_js
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `python -m pytest tests/test_web_about_client.py -q -k report`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `index.html`, About screen, beside the existing issues link: `<button id="about-report" class="cb-btn cb-btn--quiet" data-tt="about.report">🐞 Report a problem</button>`.
 
@@ -1066,13 +1076,13 @@ Run: `python -m pytest tests/test_web_about_client.py -q -k report`
 
 Add a `.cb-log-preview` rule in the stylesheet using existing theme tokens (max-height 260px, `overflow:auto`, monospace, `background: var(--cb-panel)` or whatever the log viewer already uses — copy its class if one exists rather than adding a new one).
 
-- [ ] **Step 4: Run tests, then verify visually**
+- [x] **Step 4: Run tests, then verify visually**
 
 Run: `python -m pytest tests/test_web_about_client.py tests/test_web_wiring_client.py tests/test_ui_strings.py -q` (adjust the last name to the generated-strings test if it differs).
 
 Visual: `python web_window.py --screen about` → *Report a problem*; check the preview really has `<HOME>`/`<USER>` and no real path; press the button, cancel the Save dialog (nothing should open), then save for real and confirm the browser lands on GitHub with title and body filled. Both themes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/index.html web/app.js web/styles.css UI-design/ui-contract.json cratebuilder/ui_strings.py tests/test_web_about_client.py

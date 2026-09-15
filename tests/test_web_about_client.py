@@ -593,3 +593,16 @@ def test_before_any_check_the_live_column_is_blank_and_the_note_says_to_check(ap
 def test_no_status_draws_nothing(app_js, tmp_path):
     assert _components(app_js, tmp_path, None)["n"] == 0
     assert _components(app_js, tmp_path, {"components": {"rows": []}})["n"] == 0
+
+
+def test_about_has_a_report_a_problem_flow(app_js):
+    """The About screen is built in JS, so the button, its tooltip key and
+    the two host calls all live in app.js."""
+    assert "'about-report'" in app_js
+    assert "'about.report'" in app_js
+    assert "function openReportDialog(" in app_js
+    assert "call('support.preview'" in app_js
+    assert "call('fs.support_send'" in app_js
+    assert "Save bundle & open GitHub" in app_js
+    assert "Nothing is sent until you press" in app_js
+    assert "Available in the app window on the host machine." in app_js

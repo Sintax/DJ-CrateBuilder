@@ -2,9 +2,11 @@
 
 import ast
 import base64
+import getpass
 import io
 import itertools
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -16,6 +18,7 @@ from datetime import datetime
 from cratebuilder import (activitylog, debuglog, rebuild, startup, ui_strings,
                           util, ydl)
 from cratebuilder import scanproc
+from cratebuilder import support
 from cratebuilder import updater_core as ucore
 from cratebuilder import watchlist_share
 from cratebuilder.artwork import DEFAULT_COVER_ART_MODE, extract_cover
@@ -1335,6 +1338,9 @@ class CrateBuilderService:
                 p.get("name"), p.get("query"), bool(p.get("regex"))),
             "logs.download": lambda p: self.logs_download(p.get("name")),
             "logs.watch": lambda p: self.logs_watch(p.get("name"), p.get("on")),
+            "support.preview": lambda p: self.support_preview(),
+            "fs.support_send": lambda p: self.support_send(
+                p.get("title"), p.get("description")),
             "remote.config": lambda p: self.remote_config(),
             "remote.devices": lambda p: self.remote_devices(),
             "remote.pair_begin": lambda p: self.remote_pair_begin(),
@@ -2648,6 +2654,64 @@ class CrateBuilderService:
             start = end = size if offset is None else max(0, min(int(offset), size))
         return {"lines": lines, "offset": end, "start": start, "size": size,
                 "total_lines": len(all_lines), "path": path}
+
+    def _scrub_kwargs(self):
+        cookies = self._settings.cookie_config()
+        home = os.path.expanduser("~")
+        try:
+            username = getpass.getuser()
+        except Exception:
+            username = os.path.basename(home)
+        return dict(home=home,
+                    base_dir=str(self._settings.get("base_dir") or ""),
+                    username=username,
+                    cookie_file=(cookies.cookie_file or "").strip() or None)
+
+    def support_preview(self):
+        """The scrubbed report exactly as it would be sent — shown to the
+        user before anything is written or opened."""
+        kw = self._scrub_kwargs()
+        info = version_info()
+        return {
+            "activity": support.scrub_text(support.tail_bytes(self._log_path), **kw),
+            "debug": support.scrub_text(support.tail_bytes(self._debug_log_path), **kw),
+            "system": support.system_block(
+                app_version=info.get("version"), app_build=info.get("build"),
+                platform=platform.platform(), python=platform.python_version(),
+                transport=self.transport),
+        }
+
+    def support_send(self, title, description):
+        """Save the bundle where the user chooses, then open the pre-filled
+        issue page. Local only: it needs the Save dialog and the browser."""
+        if self.transport != LOCAL:
+            raise CBError("Reports are sent from the app window on the host machine.")
+        description = (description or "").strip()
+        if not description:
+            raise CBError("Describe the problem first — a sentence is enough.")
+        import webview
+        stamp = datetime.now().strftime("%Y%m%d-%H%M")
+        path = self._file_dialog(webview.SAVE_DIALOG,
+                                 save_filename=f"cratebuilder-report-{stamp}.zip",
+                                 file_types=("Zip archive (*.zip)",))
+        if not path:
+            return {"saved": None, "opened": False}
+        preview = self.support_preview()
+        kw = self._scrub_kwargs()
+        title = support.scrub_text(title or "", **kw)
+        description = support.scrub_text(description, **kw)
+        support.build_bundle(path, {
+            "report.txt": f"{title or ''}\n\n{description}\n\n{preview['system']}",
+            "activity.log": preview["activity"],
+            "debug.log": preview["debug"]})
+        body = f"{description}\n\n{preview['system']}"
+        issues = about_info().get("issues_url") or ""
+        try:
+            opened = self.open_url(support.issue_url(issues, title or "Bug report", body))
+            opened = bool(opened.get("opened"))
+        except CBError:
+            opened = False
+        return {"saved": path, "opened": opened}
 
     def logs_search(self, name, query, regex=False):
         """Every matching line in the whole file, server-side — not just the

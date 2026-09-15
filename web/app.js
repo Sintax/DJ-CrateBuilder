@@ -1953,6 +1953,12 @@
     skipping: {},     // channel id -> a Skip the host has been told about
   };
 
+  /* ── auth-trouble pop-up ──
+     The host says "three login-shaped failures" once per runner; the
+     frontend decides whether the user has already been told this job, or
+     asked not to be told again this session. */
+  const authTrouble = { shownFor: {}, muted: false };
+
   function wlPending() {
     return wl.cards.reduce((a, c) => a + (Number(c.new_count) || 0), 0);
   }
@@ -5829,6 +5835,60 @@
     });
   }
 
+  function openAuthTroubleDialog(p) {
+    const s = (state && state.settings) || {};
+    const running = dl.running || wl.running;
+    let lead, hint;
+    if (!s.use_cookies) {
+      lead = 'Several downloads were refused as if you weren’t signed in.';
+      hint = 'These sites often need a signed-in session. Set up a cookie '
+           + 'source in Settings ▸ Browser & Cookies — the how-to walks '
+           + 'through a throwaway browser profile or saving a cookie file.';
+    } else if (s.cookie_method === 'Cookie File') {
+      lead = 'Several downloads were refused even with your cookie file.';
+      hint = 'Your cookie file may have expired — export a fresh one from '
+           + 'your browser and point Settings at it.';
+    } else {
+      lead = `Several downloads were refused with ${s.cookies_browser || 'browser'} cookies on.`;
+      hint = 'Try switching browser cookies off and running again. If that '
+           + 'doesn’t help, the how-to explains a throwaway profile or a '
+           + 'saved cookie file.';
+    }
+    const refs = {};
+    openModal({
+      title: '🔐 Looks like a sign-in problem',
+      width: 520,
+      body(body) {
+        const a = document.createElement('p'); a.textContent = lead;
+        const b = document.createElement('p'); b.textContent = hint;
+        body.append(a, b);
+        if (running) {
+          body.appendChild(modalNote('Cookie settings are locked while a '
+            + 'download is running — stop the run first, then change them.'));
+        }
+        const lab = document.createElement('label');
+        lab.className = 'cb-row';
+        lab.style.cssText = 'gap:8px;cursor:pointer';
+        refs.mute = document.createElement('input');
+        refs.mute.type = 'checkbox';
+        refs.mute.className = 'cb-cbx';
+        lab.append(refs.mute, document.createTextNode(
+          ' Don’t show this again this session'));
+        body.appendChild(lab);
+      },
+      foot(foot, api) {
+        const settings = modalButton('Open cookie settings', 'cb-btn--warn',
+          () => { api.close(); show('settings'); });
+        const howto = modalButton('Read the how-to', 'cb-btn--quiet',
+          () => { api.close(); openCookieHowto(s.cookies_browser || 'Chrome'); });
+        const close = modalButton('Close', 'cb-btn--quiet', api.close);
+        close.style.marginLeft = 'auto';
+        foot.append(settings, howto, close);
+      },
+      onClose() { if (refs.mute && refs.mute.checked) authTrouble.muted = true; },
+    });
+  }
+
   /* Section-level help, keyed by the section name the contract's settings keys
      group under. These are the registry's `?` strings — about a whole card,
      not about one control. */
@@ -6022,6 +6082,7 @@
     'The updater runs only in the local window on the host machine — a ' +
     'browser somewhere else should not be able to replace the binary it is ' +
     'talking to. The build number above tells you whether the host is current.';
+  const ABOUT_REPORT_LOCAL_ONLY = 'Available in the app window on the host machine.';
 
   async function openUrl(url) {
     if (!url) { toast('No address for that link.', true); return; }
@@ -6085,6 +6146,78 @@
     return box;
   }
 
+  /* ── bug report ──
+     Preview first, send second: the user reads the scrubbed logs before a
+     single byte is written, and the Save dialog is the moment of consent.
+     The send button stays off until the preview has arrived and there is a
+     description, so an empty or blind report cannot be sent by accident. */
+  async function openReportDialog() {
+    const refs = {};
+    let preview = null;
+    const gate = () => {
+      if (!refs.go) return;
+      const reason = !preview ? 'Loading the preview…'
+        : (refs.desc.value.trim() ? '' : 'Describe the problem first — a sentence is enough.');
+      setDisabled(refs.go, !!reason, { reason });
+    };
+    const api = openModal({
+      title: '🐞 Report a problem',
+      width: 720,
+      body(body) {
+        refs.title = document.createElement('input');
+        refs.title.className = 'cb-in';
+        refs.title.placeholder = 'Short title (e.g. "Scan hangs on one channel")';
+        refs.desc = document.createElement('textarea');
+        refs.desc.className = 'cb-in';
+        refs.desc.rows = 4;
+        refs.desc.placeholder = 'What happened, and what you expected.';
+        refs.desc.addEventListener('input', gate);
+        const h = document.createElement('div');
+        h.className = 'cb-mut';
+        h.style.fontSize = '12.5px';
+        h.textContent = 'This is exactly what will be in the bundle — names, folders and cookies are already blanked out:';
+        refs.pre = document.createElement('pre');
+        refs.pre.className = 'cb-log cb-report-preview';
+        refs.pre.textContent = 'Loading the preview…';
+        body.append(labelled('Title', refs.title),
+          labelled('What happened', refs.desc), h, refs.pre,
+          modalNote('Nothing is sent until you press the button below. It saves a zip '
+                  + 'where you choose and opens a pre-filled GitHub issue — drag the '
+                  + 'zip onto that page. (A GitHub account is needed to post.)'));
+      },
+      foot(foot, api) {
+        refs.go = modalButton('Save bundle & open GitHub', 'cb-btn--warn', async () => {
+          api.busy(true);
+          try {
+            const res = await call('fs.support_send',
+              { title: refs.title.value, description: refs.desc.value });
+            if (!res || !res.saved) {
+              api.error('Cancelled — nothing was saved or sent.');
+            } else if (!res.opened) {
+              api.error(`Saved ${res.saved}, but the browser could not be opened. `
+                + 'Open the GitHub issues page yourself and drag the zip onto it.');
+            } else {
+              toast(`Saved ${res.saved} — finish the report on GitHub.`);
+              api.close();
+            }
+          } catch (err) { api.error(err && err.message || 'Could not send.'); }
+          finally { api.busy(false); }
+        });
+        const cancel = modalButton('Cancel', 'cb-btn--quiet', api.close);
+        cancel.style.marginLeft = 'auto';
+        foot.append(refs.go, cancel);
+        gate();
+      },
+      focus: () => refs.desc,
+    });
+    try { preview = await call('support.preview', {}); }
+    catch (_) { api.error('The host could not build the preview.'); return; }
+    if (!document.contains(refs.pre)) return;
+    refs.pre.textContent = preview.system + '\n── activity.log ──\n' + preview.activity
+                         + '\n── debug.log ──\n' + preview.debug;
+    gate();
+  }
+
   function renderAbout() {
     const host = $('#about-body');
     if (!host) return;
@@ -6134,10 +6267,22 @@
     const links = document.createElement('div');
     links.className = 'cb-row';
     links.style.cssText = 'gap:9px;flex-wrap:wrap';
+    /* fs.support_send needs the host's Save dialog and browser, so a remote
+       session sees the button greyed with the reason — the same line the
+       Watch List's export and import draw. */
+    const report = document.createElement('button');
+    report.id = 'about-report';
+    report.className = 'cb-btn cb-btn--quiet cb-btn--sm';
+    report.textContent = '🐞 Report a problem';
+    const local = state && state.host && state.host.transport === 'local';
+    setDisabled(report, !local, {
+      reason: tipPlus('about.report', ABOUT_REPORT_LOCAL_ONLY), ttKey: 'about.report' });
+    if (local) report.addEventListener('click', openReportDialog);
     links.append(
       aboutLinkButton('View on GitHub ↗', info.github_url, 'about.github'),
       aboutLinkButton('↗ Submit Issues / Suggestions', info.issues_url,
-                      'about.issues'));
+                      'about.issues'),
+      report);
     if (info.github_url) {
       const licence = aboutLinkButton('Licence',
         `${info.github_url.replace(/\/+$/, '')}/blob/main/LICENSE`);
@@ -7536,6 +7681,7 @@
        back still claiming the run is going. Both job categories resync here;
        neither reads its own terminal event for this. */
     cbApi.on('job.finished', (p) => {
+      if (p && p.job) delete authTrouble.shownFor[p.job];
       const job = p && p.job;
       if (job === 'batch') {
         dl.running = false;
@@ -7576,6 +7722,18 @@
         return;
       }
       refresh();
+    });
+    cbApi.on('auth.trouble', (p) => {
+      const job = (p && p.job) || 'batch';
+      if (authTrouble.muted || authTrouble.shownFor[job]) return;
+      authTrouble.shownFor[job] = true;
+      /* openModal closes whatever is up first, so a host-timed pop-up would
+         throw away the text someone is typing in Fix Link or a report. */
+      if (openDialog) {
+        toast('Several downloads were refused as if you weren’t signed in — check Settings ▸ Browser & Cookies.', true);
+        return;
+      }
+      openAuthTroubleDialog(p);
     });
     /* A run's closing summary. Display only, and never a state signal — the
        modal is settled by job.finished above, which is what the host emits

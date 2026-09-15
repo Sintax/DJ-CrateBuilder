@@ -239,6 +239,17 @@ def looks_age_restricted(error_text):
 # read at all. Every label below is written to fit it.
 REASON_WIDTH = 14
 
+# The failure labels that mean "YouTube/SoundCloud wanted a signed-in user":
+# what the Downloads screen's auth-trouble pop-up counts. "refused (403)" is
+# included because SoundCloud answers an expired session with a bare 403.
+AUTH_REASONS = ("login required", "age-restricted", "refused (403)", "bot check")
+
+
+def is_auth_reason(reason):
+    """True when *reason* is one of the login-shaped failure labels."""
+    return bool(reason) and reason in AUTH_REASONS
+
+
 # Failures that describe the wire or this machine rather than the track. Checked
 # in order, and ahead of the track-level markers so an HTTP 503 "Service
 # Unavailable" reads as a server wobble instead of claiming the track itself is
@@ -291,6 +302,7 @@ def classify_download_failure(error_text, is_age=False):
         return Failure("unavailable", permanent)
 
     if   "ffmpeg"        in lower: return Failure("failed", "FFmpeg missing")
+    elif "not a bot"     in lower: return Failure("failed", "bot check")
     elif "sign in"       in lower: return Failure("failed", "login required")
     elif is_age:                   return Failure("failed", "age-restricted")
 
