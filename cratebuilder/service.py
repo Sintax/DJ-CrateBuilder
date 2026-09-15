@@ -2,6 +2,7 @@
 
 import ast
 import base64
+import getpass
 import io
 import itertools
 import os
@@ -2578,9 +2579,14 @@ class CrateBuilderService:
 
     def _scrub_kwargs(self):
         cookies = self._settings.cookie_config()
-        return dict(home=os.path.expanduser("~"),
+        home = os.path.expanduser("~")
+        try:
+            username = getpass.getuser()
+        except Exception:
+            username = os.path.basename(home)
+        return dict(home=home,
                     base_dir=str(self._settings.get("base_dir") or ""),
-                    username=os.path.basename(os.path.expanduser("~")),
+                    username=username,
                     cookie_file=(cookies.cookie_file or "").strip() or None)
 
     def support_preview(self):
@@ -2619,8 +2625,12 @@ class CrateBuilderService:
             "debug.log": preview["debug"]})
         body = f"{description}\n\n{preview['system']}"
         issues = about_info().get("issues_url") or ""
-        opened = self.open_url(support.issue_url(issues, title or "Bug report", body))
-        return {"saved": path, "opened": bool(opened.get("opened"))}
+        try:
+            opened = self.open_url(support.issue_url(issues, title or "Bug report", body))
+            opened = bool(opened.get("opened"))
+        except CBError:
+            opened = False
+        return {"saved": path, "opened": opened}
 
     def logs_search(self, name, query, regex=False):
         """Every matching line in the whole file, server-side — not just the
