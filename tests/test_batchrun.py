@@ -833,3 +833,34 @@ def test_log_line_writes_a_timestamped_activity_line(service, tmp_path):
     written = (tmp_path / "activity.log").read_text(encoding="utf-8")
     assert written.endswith("| DOWNLOADED  | Title: T\n")
     assert written[:4].isdigit()
+
+
+# ── auth.trouble after repeated login-shaped failures ────────────────────────
+def _settle_failed(harness, tmp_path, reason):
+    tally = {"downloaded": 0, "skipped": 0, "errors": 0, "deferred": 0,
+             "state": None, "detail": ""}
+    harness.runner._settle(_spec(tmp_path, "t"), "t", ("failed", reason, ""), tally)
+
+
+def test_third_auth_failure_emits_auth_trouble_once(tmp_path):
+    harness = Harness(tmp_path, TRACK_PROBE, [])
+    harness.runner._reset(5)
+    _settle_failed(harness, tmp_path, "login required")
+    _settle_failed(harness, tmp_path, "network error")     # not counted
+    _settle_failed(harness, tmp_path, "bot check")
+    assert harness.emit.of("auth.trouble") == []
+    _settle_failed(harness, tmp_path, "age-restricted")
+    assert harness.emit.of("auth.trouble") == [
+        {"job": harness.runner._job, "count": 3, "reason": "age-restricted"}]
+    _settle_failed(harness, tmp_path, "login required")    # 4th: no second event this run
+    assert len(harness.emit.of("auth.trouble")) == 1
+
+
+def test_reset_clears_the_auth_counter(tmp_path):
+    harness = Harness(tmp_path, TRACK_PROBE, [])
+    harness.runner._reset(3)
+    for _ in range(3):
+        _settle_failed(harness, tmp_path, "login required")
+    harness.runner._reset(3)
+    _settle_failed(harness, tmp_path, "login required")
+    assert len(harness.emit.of("auth.trouble")) == 1

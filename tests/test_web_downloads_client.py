@@ -734,3 +734,22 @@ def test_start_adds_the_pasted_link_before_it_starts(app_js):
                    "$('#dl-cancel').addEventListener('click'")
     assert "if (pendingUrl() && !(await addToBatch())) return;" in start
     assert start.index("addToBatch()") < start.index("call('download.start')")
+
+
+def test_auth_trouble_event_opens_the_dialog(app_js):
+    assert "cbApi.on('auth.trouble'" in app_js
+    assert "function openAuthTroubleDialog(" in app_js
+    # once per job, and a session mute
+    assert "authTrouble.shownFor" in app_js
+    assert "authTrouble.muted" in app_js
+    # a dialog the user is already typing in must not be thrown away for it:
+    # once per job still, but a toast instead of the pop-up while one is open
+    handler = app_js[app_js.index("cbApi.on('auth.trouble'"):]
+    handler = handler[:handler.index("openAuthTroubleDialog(p);")]
+    assert "authTrouble.shownFor[job] = true;" in handler
+    assert "if (openDialog) {" in handler.split("authTrouble.shownFor[job] = true;")[1]
+    assert "check Settings ▸ Browser & Cookies" in handler
+    # the three cookie states each get their own copy
+    assert "switching browser cookies off" in app_js
+    assert "cookie file may have expired" in app_js
+    assert "Open cookie settings" in app_js

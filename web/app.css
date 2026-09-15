@@ -320,6 +320,10 @@ body { overflow: hidden; }
 .cb-screen--log .cb-pathbar, .cb-screen--log .cb-statbar { flex: none; }
 .cb-screen--log .cb-statbar { flex-wrap: wrap; row-gap: 2px; }
 .cb-log__tail { margin-left: auto; }
+/* The report dialog's preview borrows .cb-log's face; a pre inside a
+   modal body needs its own cap so the dialog, not the page, scrolls. */
+.cb-report-preview { margin: 0; max-height: 260px; overflow: auto; white-space: pre-wrap;
+  overflow-wrap: anywhere; border: 1px solid var(--cb-line-soft); border-radius: var(--cb-radius-sm); }
 
 /* Database viewer (3g/3h/3i) — same full-bleed breadcrumb+toolbar+content
    shape as .cb-screen--log, plus a tab strip and three swappable panels.
