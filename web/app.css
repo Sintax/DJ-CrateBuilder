@@ -31,6 +31,12 @@
 html, body { height: 100%; }
 body { overflow: hidden; }
 
+/* Text size (Settings ▸ Appearance). The whole page, so text, controls and
+   spacing grow together and every screen keeps its layout; Normal is the
+   size every rule below was written for and sets nothing. */
+html[data-text-size="large"] { zoom: 1.15; }
+html[data-text-size="xl"] { zoom: 1.3; }
+
 /* Must beat the display:flex on .cb-pad / .cb-card below. */
 [hidden] { display: none !important; }
 
