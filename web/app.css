@@ -187,7 +187,7 @@ body { overflow: hidden; }
 .cb-faq__chev { color: var(--cb-line); font-size: 11px; flex: none; }
 .cb-faq__a {
   padding: 0 12px 11px 32px; border-bottom: 1px solid var(--cb-line-soft);
-  font-size: 12px; line-height: 1.65; color: var(--cb-text-2); white-space: pre-line;
+  font-size: 12.5px; line-height: 1.65; color: var(--cb-text-2); white-space: pre-line;
 }
 .cb-foot-link { color: var(--cb-muted); text-decoration: none; }
 .cb-foot-link:hover { color: var(--cb-line); text-decoration: underline; }

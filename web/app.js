@@ -6161,7 +6161,7 @@
       setDisabled(refs.go, !!reason, { reason });
     };
     const api = openModal({
-      title: '🐞 Report a problem',
+      title: '🐞 Report a Bug',
       width: 720,
       body(body) {
         refs.title = document.createElement('input');
@@ -6273,7 +6273,7 @@
     const report = document.createElement('button');
     report.id = 'about-report';
     report.className = 'cb-btn cb-btn--quiet cb-btn--sm';
-    report.textContent = '🐞 Report a problem';
+    report.textContent = '🐞 Report a Bug';
     const local = state && state.host && state.host.transport === 'local';
     setDisabled(report, !local, {
       reason: tipPlus('about.report', ABOUT_REPORT_LOCAL_ONLY), ttKey: 'about.report' });
