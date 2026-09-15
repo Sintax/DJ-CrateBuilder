@@ -327,6 +327,8 @@ const wl = { running: false, cards: [], current: null, overall: null,
              rows: [], skipping: {} };
 const mt = { running: false, task: null, current: null, overall: null,
              note: null, view: null };
+const authTrouble = { shownFor: {}, muted: false };
+function openAuthTroubleDialog() {}
 let state = { counts: {} };
 const calls = [];
 const handlers = {};
@@ -469,6 +471,8 @@ const wl = { running: false, cards: [], current: null, overall: null,
              rows: [], skipping: {} };
 const mt = { running: false, task: null, current: null, overall: null,
              note: null, view: null };
+const authTrouble = { shownFor: {}, muted: false };
+function openAuthTroubleDialog() {}
 let state = { counts: {} };
 const handlers = {};
 const cbApi = { on(event, fn) { handlers[event] = fn; } };
