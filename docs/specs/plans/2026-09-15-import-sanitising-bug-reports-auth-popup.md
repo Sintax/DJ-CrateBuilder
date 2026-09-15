@@ -80,7 +80,7 @@ Task order: **Phase C (auth pop-up) → Phase A (import sanitising, ✅ done) �
 **Interfaces:**
 - Produces: `AUTH_REASONS: tuple[str, ...]`, `is_auth_reason(reason: str) -> bool`, and the new reason string `"bot check"` from `classify_download_failure`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_download.py  (append)
@@ -109,12 +109,12 @@ def test_auth_reasons_cover_the_four_login_shaped_labels():
     assert not is_auth_reason(None)
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 Run: `python -m pytest tests/test_download.py -q -k "bot_check or sign_in or auth_reasons"`
 Expected: FAIL — `ImportError: cannot import name 'is_auth_reason'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `cratebuilder/download.py`, above `_CONDITION_MARKERS`:
 
@@ -139,12 +139,12 @@ In `classify_download_failure`, replace the `"sign in"` line so the bot-check te
     elif is_age:                   return Failure("failed", "age-restricted")
 ```
 
-- [ ] **Step 4: Run to verify they pass**
+- [x] **Step 4: Run to verify they pass**
 
 Run: `python -m pytest tests/test_download.py -q`
 Expected: PASS (all).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add cratebuilder/download.py tests/test_download.py
@@ -153,7 +153,7 @@ git commit -m "feat(download): label bot-check failures and define the auth reas
 
 ### Task C2: Count auth failures per run and emit `auth.trouble`
 
-**Model:** `sonnet` — two small edits inside an existing state machine, one test; the plan gives the exact code.
+**Model:** `sonnet` — two small edits inside an existing state machine, one test; the plan gives the exact code. *(Done on the main thread — too small to justify a subagent.)*
 
 **Files:**
 - Modify: `cratebuilder/batchrun.py:430-472` (`_settle`, `_reset`)
@@ -163,60 +163,51 @@ git commit -m "feat(download): label bot-check failures and define the auth reas
 - Consumes: `is_auth_reason` from Task C1.
 - Produces: event `auth.trouble` with payload `{"job": <job>, "count": <int>, "reason": <last reason>}`; constant `AUTH_WARN_THRESHOLD = 3`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Look at how `tests/test_batchrun.py` builds a `BatchRunner` with a fake `emit` (grep `def make_runner` or the first fixture in that file) and reuse that helper. The test drives `_settle` directly — it is the one place every failed track passes through.
 
 ```python
-# tests/test_batchrun.py (append)
-from cratebuilder import batchrun
-
-
-def _settle_failed(runner, reason):
-    spec = SimpleNamespace(url="https://youtu.be/x", genre="(none)", row_id=1,
-                           entry={}, title="t", save_dir="", platform="YouTube",
-                           channel_name="", channel_url="", channel_id=None,
-                           suppress_channel_url=False)
+# tests/test_batchrun.py (append) — reuse the file's Harness (its `emit` is a
+# Recorder with `.of(type)`) and the `_spec(tmp_path, title)` helper.
+def _settle_failed(harness, tmp_path, reason):
     tally = {"downloaded": 0, "skipped": 0, "errors": 0, "deferred": 0,
-             "stopped": False, "state": None, "detail": ""}
-    runner._settle(spec, "t", ("failed", reason, ""), tally)
+             "state": None, "detail": ""}
+    harness.runner._settle(_spec(tmp_path, "t"), "t", ("failed", reason, ""), tally)
 
 
-def test_third_auth_failure_emits_auth_trouble_once(runner_and_events):
-    runner, events = runner_and_events
-    runner._reset(5)
-    _settle_failed(runner, "login required")
-    _settle_failed(runner, "network error")     # not counted
-    _settle_failed(runner, "bot check")
-    assert not [e for e in events if e[0] == "auth.trouble"]
-    _settle_failed(runner, "age-restricted")
-    trouble = [e for e in events if e[0] == "auth.trouble"]
-    assert len(trouble) == 1
-    assert trouble[0][1]["count"] == 3
-    assert trouble[0][1]["reason"] == "age-restricted"
-    assert trouble[0][1]["job"] == runner._job
-    _settle_failed(runner, "login required")    # 4th: no second event this run
-    assert len([e for e in events if e[0] == "auth.trouble"]) == 1
+def test_third_auth_failure_emits_auth_trouble_once(tmp_path):
+    harness = Harness(tmp_path, TRACK_PROBE, [])
+    harness.runner._reset(5)
+    _settle_failed(harness, tmp_path, "login required")
+    _settle_failed(harness, tmp_path, "network error")     # not counted
+    _settle_failed(harness, tmp_path, "bot check")
+    assert harness.emit.of("auth.trouble") == []
+    _settle_failed(harness, tmp_path, "age-restricted")
+    assert harness.emit.of("auth.trouble") == [
+        {"job": harness.runner._job, "count": 3, "reason": "age-restricted"}]
+    _settle_failed(harness, tmp_path, "login required")    # 4th: no second event this run
+    assert len(harness.emit.of("auth.trouble")) == 1
 
 
-def test_reset_clears_the_auth_counter(runner_and_events):
-    runner, events = runner_and_events
-    runner._reset(3)
+def test_reset_clears_the_auth_counter(tmp_path):
+    harness = Harness(tmp_path, TRACK_PROBE, [])
+    harness.runner._reset(3)
     for _ in range(3):
-        _settle_failed(runner, "login required")
-    runner._reset(3)
-    _settle_failed(runner, "login required")
-    assert len([e for e in events if e[0] == "auth.trouble"]) == 1
+        _settle_failed(harness, tmp_path, "login required")
+    harness.runner._reset(3)
+    _settle_failed(harness, tmp_path, "login required")
+    assert len(harness.emit.of("auth.trouble")) == 1
 ```
 
-`runner_and_events` is a fixture returning `(runner, events)` where `events` is the list the fake `emit` appends `(name, payload)` to. If the file has no such fixture, add one next to its existing runner factory using the same constructor arguments that factory uses.
+(Check the attribute the runner stores its job name under — `grep -n "self._job" cratebuilder/batchrun.py` — and use that name in the assertion.)
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `python -m pytest tests/test_batchrun.py -q -k auth`
 Expected: FAIL — no `auth.trouble` event emitted.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 # cratebuilder/batchrun.py — module level, near the other constants
@@ -244,12 +235,12 @@ AUTH_WARN_THRESHOLD = 3
 
 Also initialise both attributes in `__init__` (`self._auth_failures = 0`, `self._auth_warned = False`) so a runner that has never been reset still has them.
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `python -m pytest tests/test_batchrun.py -q`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add cratebuilder/batchrun.py tests/test_batchrun.py
@@ -350,9 +341,11 @@ The dialog:
             + 'download is running — stop the run first, then change them.'));
         }
         const lab = document.createElement('label');
-        lab.className = 'cb-check';
+        lab.className = 'cb-row';
+        lab.style.cssText = 'gap:8px;cursor:pointer';
         refs.mute = document.createElement('input');
         refs.mute.type = 'checkbox';
+        refs.mute.className = 'cb-cbx';
         lab.append(refs.mute, document.createTextNode(
           ' Don’t show this again this session'));
         body.appendChild(lab);
@@ -371,14 +364,14 @@ The dialog:
   }
 ```
 
-Check `modalNote` and the `cb-check` class exist in `app.js`/`styles`; if the checkbox class is named differently in `index.html`'s settings markup, use that name so it themes correctly in dark mode.
+`modalNote`, `openModal`, `modalButton` and `openCookieHowto` all exist in `app.js`. There is no `cb-check` class: the app's checkbox pattern (see the *Skip files already downloaded* row in `index.html`) is a `cb-row` label wrapping a `cb-cbx` input, which is what the code above uses.
 
 - [ ] **Step 4: Run tests, then verify visually**
 
 Run: `python -m pytest tests/test_web_downloads_client.py tests/test_web_wiring_client.py -q`
 Expected: PASS.
 
-Visual: `python web_window.py --screen downloads`; in the DevTools console (or a temporary line) run `cbApi._push('auth.trouble', {job:'batch', count:3, reason:'login required'})` in each of the three cookie states; check light and dark theme. Confirm *Open cookie settings* lands on Settings and *Read the how-to* opens the walkthrough.
+Visual: **close the installed DJ-CrateBuilder first** (single-instance lock — `web_window.py` hands off to a running install and exits), then `python web_window.py --screen downloads`; in the DevTools console (or a temporary line) run `cbApi._push('auth.trouble', {job:'batch', count:3, reason:'login required'})` in each of the three cookie states; check light and dark theme. Confirm *Open cookie settings* lands on Settings and *Read the how-to* opens the walkthrough.
 
 - [ ] **Step 5: Commit**
 
