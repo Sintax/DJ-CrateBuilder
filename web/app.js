@@ -52,8 +52,9 @@
     let top = r.bottom + 7;
     if (left + box.width > innerWidth - 10) left = innerWidth - box.width - 10;
     if (top + box.height > innerHeight - 10) top = r.top - box.height - 7;
-    el.style.left = Math.max(10, left) + 'px';
-    el.style.top = Math.max(10, top) + 'px';
+    const z = pageZoom();
+    el.style.left = (Math.max(10, left) / z) + 'px';
+    el.style.top = (Math.max(10, top) / z) + 'px';
 
     /* A disabled control already points aria-describedby at its own reason
        node (see describeReason); the live bubble borrows the attribute while
@@ -620,6 +621,39 @@
     return theme;
   }
 
+  /* Text size, kept per device like the theme. The app's sizes are fixed
+     pixels in some three hundred places, so a larger setting zooms the page
+     as a whole (app.css answers the attribute) rather than re-sizing text
+     inside boxes that would not grow with it. Normal clears the mark: it is
+     the size every rule was written for. */
+  const TEXT_SIZE_KEY = 'cb_text_size';
+  const TEXT_SIZES = ['normal', 'large', 'xl'];
+
+  function storedTextSize() {
+    try {
+      const raw = localStorage.getItem(TEXT_SIZE_KEY);
+      return TEXT_SIZES.includes(raw) ? raw : 'normal';
+    } catch (_) { return 'normal'; }
+  }
+
+  function applyTextSize(name) {
+    const size = TEXT_SIZES.includes(name) ? name : 'normal';
+    if (size === 'normal') document.documentElement.removeAttribute('data-text-size');
+    else document.documentElement.setAttribute('data-text-size', size);
+    try {
+      localStorage.setItem(TEXT_SIZE_KEY, size);
+    } catch (_) { /* storage refused — the choice lasts this page load */ }
+    return size;
+  }
+
+  /* Under that zoom a rectangle, a pointer position and innerWidth answer in
+     viewport pixels, while style.left and scrollTop are written in the page's
+     own, larger pixels. Engines with the standard zoom expose the factor;
+     older ones already answer in page pixels, so 1 is right there. */
+  function pageZoom() {
+    return document.documentElement.currentCSSZoom || 1;
+  }
+
   /* ── notifications (3n) ───────────────────────────────────────────────────
      Every `notification` the host pushes, kept client-side. There is no
      server-side inbox and the design does not ask for one: the host emits an
@@ -717,10 +751,11 @@
     if (bell) {
       bell.setAttribute('aria-expanded', 'true');
       const r = bell.getBoundingClientRect();
-      panel.style.top = (r.bottom + 8) + 'px';
+      const z = pageZoom();
+      panel.style.top = (r.bottom / z + 8) + 'px';
       panel.style.left =
-        Math.max(10, Math.min(r.right - panel.offsetWidth,
-                              innerWidth - panel.offsetWidth - 10)) + 'px';
+        Math.max(10, Math.min(r.right / z - panel.offsetWidth,
+                              innerWidth / z - panel.offsetWidth - 10)) + 'px';
     }
     renderNotifications();
     document.addEventListener('pointerdown', notesOutside, true);
@@ -1571,7 +1606,7 @@
     if (!active) return;
     const box = log.getBoundingClientRect();
     const line = active.getBoundingClientRect();
-    log.scrollTop += (line.top - box.top) - (box.height - line.height) / 2;
+    log.scrollTop += ((line.top - box.top) - (box.height - line.height) / 2) / pageZoom();
   }
 
   /* The kept run's title line: which run, when it ended, and what it came to.
@@ -3568,8 +3603,9 @@
         e.preventDefault();
         const startX = e.clientX;
         const startW = colset.widths[id];
+        const z = pageZoom();
         function onMove(ev) {
-          colset.widths[id] = Math.max(40, startW + (ev.clientX - startX));
+          colset.widths[id] = Math.max(40, startW + (ev.clientX - startX) / z);
           th.style.width = colset.widths[id] + 'px';
           dbSetTableWidth(theadRow, colset);
         }
@@ -3626,9 +3662,10 @@
     });
     document.body.appendChild(menu);
     const bw = menu.offsetWidth, bh = menu.offsetHeight;
-    let left = x, top = y;
-    if (left + bw > innerWidth - 10) left = innerWidth - bw - 10;
-    if (top + bh > innerHeight - 10) top = innerHeight - bh - 10;
+    const z = pageZoom();
+    let left = x / z, top = y / z;
+    if (left + bw > innerWidth / z - 10) left = innerWidth / z - bw - 10;
+    if (top + bh > innerHeight / z - 10) top = innerHeight / z - bh - 10;
     menu.style.left = Math.max(10, left) + 'px';
     menu.style.top = Math.max(10, top) + 'px';
     dbMenuEl = menu;
@@ -5941,11 +5978,28 @@
     row.append(lab, seg);
     card.appendChild(row);
 
-    const hint = document.createElement('div');
-    hint.className = 'cb-mut';
-    hint.style.fontSize = '11px';
-    hint.textContent = 'Kept on this device — the app window and each browser choose their own.';
-    card.appendChild(hint);
+    const sizeRow = document.createElement('div');
+    sizeRow.className = 'cb-set-row';
+    const sizeLab = document.createElement('span');
+    sizeLab.className = 'cb-lab';
+    sizeLab.textContent = 'Text size';
+    const sizeSel = document.createElement('select');
+    sizeSel.className = 'cb-sel';
+    sizeSel.id = 'settings-text-size';
+    sizeSel.setAttribute('aria-label', 'Text size');
+    [['normal', 'Normal'], ['large', 'Large'], ['xl', 'Extra-Large']]
+      .forEach(([name, label]) => {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = label;
+        sizeSel.appendChild(opt);
+      });
+    sizeSel.value = storedTextSize();
+    sizeSel.addEventListener('change', () => {
+      sizeSel.value = applyTextSize(sizeSel.value);
+    });
+    sizeRow.append(sizeLab, readOnlyOk(sizeSel));
+    card.appendChild(sizeRow);
   }
 
   function renderSettings() {
@@ -6272,7 +6326,7 @@
        Watch List's export and import draw. */
     const report = document.createElement('button');
     report.id = 'about-report';
-    report.className = 'cb-btn cb-btn--quiet cb-btn--sm';
+    report.className = 'cb-btn';
     report.textContent = '🐞 Report a Bug';
     const local = state && state.host && state.host.transport === 'local';
     setDisabled(report, !local, {
@@ -6281,8 +6335,7 @@
     links.append(
       aboutLinkButton('View on GitHub ↗', info.github_url, 'about.github'),
       aboutLinkButton('↗ Submit Issues / Suggestions', info.issues_url,
-                      'about.issues'),
-      report);
+                      'about.issues'));
     if (info.github_url) {
       const licence = aboutLinkButton('Licence',
         `${info.github_url.replace(/\/+$/, '')}/blob/main/LICENSE`);
@@ -6292,6 +6345,13 @@
       links.appendChild(licence);
     }
     host.appendChild(links);
+    /* A line of its own, at full size and in the app's red: the one thing
+       on this screen a user in trouble is looking for. */
+    const reportRow = document.createElement('div');
+    reportRow.className = 'cb-row';
+    reportRow.style.marginTop = '10px';
+    reportRow.appendChild(report);
+    host.appendChild(reportRow);
     if (info.note) {
       const note = modalNote(info.note);
       note.style.fontSize = '12px';
@@ -6874,7 +6934,7 @@
     const open = !!aboutUpdate.componentsOpen;
     const toggle = document.createElement('button');
     toggle.type = 'button';
-    toggle.className = 'cb-btn cb-btn--quiet cb-btn--sm';
+    toggle.className = 'cb-btn cb-btn--sm';
     toggle.textContent = open ? 'Hide' : 'Show';
     toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
     toggle.addEventListener('click', () => {

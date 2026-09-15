@@ -13,6 +13,14 @@
       document.documentElement.setAttribute('data-theme', 'dark');
     }
   } catch (e) { /* light */ }
+  /* The stored text size, for the same reason; app.js's applyTextSize
+     keeps the same key and values. */
+  try {
+    var size = localStorage.getItem('cb_text_size');
+    if (size === 'large' || size === 'xl') {
+      document.documentElement.setAttribute('data-text-size', size);
+    }
+  } catch (e) { /* normal */ }
 </script>
 <link rel="stylesheet" href="theme.css">
 <link rel="stylesheet" href="app.css">
