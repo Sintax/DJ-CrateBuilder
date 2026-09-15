@@ -8795,6 +8795,16 @@ class MP3DownloaderApp(tk.Tk):
              "rather not risk your main one.) Otherwise, try disconnecting your VPN, switching to a different VPN "
              "server, or waiting a while before retrying."),
 
+            ("Q: A pop-up says \"Looks like a sign-in problem\". What is it telling me?",
+             "A: Three or more tracks in the same run were refused for a login-shaped reason: login required, "
+             "age-restricted, a 403 refusal, or YouTube's \"confirm you're not a bot\" check. One failure can be a "
+             "fluke; three in a row usually means the site wants a signed-in session. The pop-up's advice depends on "
+             "your cookie setting: with Browser Cookies off it points you to the cookie setup; with browser cookies "
+             "on it suggests switching them off and trying again; with a cookie file it suggests exporting a fresh "
+             "one, since exported cookies expire. It shows once per run, and \"Don't show this again this session\" "
+             "silences it until the app is restarted. Cookie settings are locked while a download is running, so "
+             "stop the run before changing them."),
+
             ("Q: Why are some downloads marked \"unavailable\" or \"private\"?",
              "A: The video has been removed by the uploader, made private, or is restricted in your region. These "
              "cannot be downloaded."),
@@ -8815,6 +8825,13 @@ class MP3DownloaderApp(tk.Tk):
              "A: Yes. The URL field and \"Add to Batch\" stay enabled the whole time, and anything you queue waits for "
              "the next run. The batch that is running is a snapshot taken when you pressed \"Start Downloads\", so "
              "additions never join it mid-flight."),
+
+            ("Q: The queue panel still shows a run that finished hours ago. Is that a bug?",
+             "A: No, that's on purpose. When a run ends, the Downloads screen keeps its final rows in the queue "
+             "panel so you can see what an overnight Watch List download actually did. A small \"Clear\" beside the "
+             "panel's title empties it; starting another download replaces it. The kept rows live in memory only "
+             "and are gone after a restart. Nothing on disk is affected either way, and activity.log keeps the "
+             "permanent record."),
 
             ("Q: What does the Skip button on a batch row do?",
              "A: It passes over that URL, immediately. A URL that hasn't started yet is dropped without a single "
@@ -8929,7 +8946,10 @@ class MP3DownloaderApp(tk.Tk):
              "name, platform and genre, and nothing else from your machine (no counts, dates or folder paths). "
              "\"📥 Import List\" opens someone else's file and lets you pick which channels to add; a channel you "
              "already track (same link or same name) asks what to do, and your own entries are never changed "
-             "unless you say so."),
+             "unless you say so. The file is checked before anything is shown: only youtube.com and soundcloud.com "
+             "links are accepted, names and genres are trimmed and stripped of anything that couldn't be a folder "
+             "name, and a file over 4 MB is refused outright. Entries that fail the check are left out and the "
+             "picker says how many were dropped and why, so a short list isn't a mystery."),
 
             ("Q: What's the difference between \"Scan for new\" and \"Download All New\"?",
              "A: \"🔍 Scan for new\" only checks every watched channel for new uploads and updates the new-track "
@@ -8991,6 +9011,24 @@ class MP3DownloaderApp(tk.Tk):
              "opening the window. Closing the window with the X always asks first, and really does quit — nothing "
              "runs after that."),
 
+            # ── Getting help ──────────────────────────────────────────────
+            ("Q: How do I report a bug?",
+             "A: The About screen has a \"🐞 Report a problem\" button. Give the problem a title, describe what "
+             "happened and what you expected, and the dialog shows you a preview of exactly what will go in the "
+             "report: a short system summary plus the tail end of activity.log and debug.log. Press \"Save bundle & "
+             "open GitHub\" and the app saves those logs as a zip where you choose, then opens a pre-filled GitHub "
+             "issue in your browser; drag the zip onto that page and post it. Nothing leaves your machine until you "
+             "press that button, and posting needs a GitHub account. The button works only in the desktop window, "
+             "not from a remote browser session."),
+
+            ("Q: What personal information is in a bug report?",
+             "A: As little as the app can manage. Before you see the preview, your home folder, your library folder, "
+             "your Windows or Linux user name, e-mail addresses, IP addresses, cookie file paths and any tokens are "
+             "replaced with placeholders like <HOME> and <USER>, in the logs and in the text you typed. Track titles "
+             "and channel links are kept on purpose, because a bug can rarely be reproduced without them; read the "
+             "preview before sending if that matters to you. Each log is cut to its last 512 KB so the zip stays "
+             "small."),
+
             # ── Updates ───────────────────────────────────────────────────
             ("Q: How do updates work?",
              "A: The Update screen has a \"Check for updates\" button that turns into \"Update Now\" once a newer "
@@ -9002,8 +9040,9 @@ class MP3DownloaderApp(tk.Tk):
              "files, and relaunches — if a Watch List scan or download is running, \"Download and install\" stops "
              "it first and counts down a few seconds so you can still cancel. The Components table below the "
              "button lists what this install is running (Python, FFmpeg, yt-dlp and the rest) against the live "
-             "build, so you can see exactly what an update would change. Running from source instead of the "
-             "installer? There's nothing to self-update — git pull the latest changes."),
+             "build, so you can see exactly what an update would change; it starts folded behind a \"Show\" "
+             "button, and the badge beside it says on its own whether anything would change. Running from source "
+             "instead of the installer? There's nothing to self-update — git pull the latest changes."),
         ]
 
         # Every entry starts collapsed inside its own container frame, so an
