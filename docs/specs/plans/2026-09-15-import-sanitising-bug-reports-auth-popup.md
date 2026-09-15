@@ -69,6 +69,8 @@ Task order: **Phase C (auth pop-up) → Phase A (import sanitising, ✅ done) �
 
 ## Phase C — Auth-failure pop-up
 
+> **✅ Completed 2026-09-15** on branch `worktree-feat+auth-popup-bug-reports` (C1 `375efea`/`da50bed`, C2 `9209cf4`, C3 `1a99a7f`/`3db66b6`/`5eaa8bd`). Deviation from 3c: if another dialog is open when the event lands, a toast is shown instead of the pop-up so typed text is never lost.
+
 ### Task C1: Label bot-check failures and define the auth reason set
 
 **Model:** `sonnet` — one substring table and a label in `download.py`; the tests pin every branch. *(Done.)*
@@ -258,7 +260,7 @@ git commit -m "feat(batchrun): raise auth.trouble after three login-shaped failu
 **Interfaces:**
 - Consumes: event `auth.trouble` `{job, count, reason}`; `state.settings.use_cookies`, `state.settings.cookie_method`, `state.settings.cookies_browser`; existing helpers `openModal`, `modalButton`, `modalNote`, `show('settings')`, `openCookieHowto(browser)` (`app.js:5681`), `dl.running`, `wl.running`.
 
-- [ ] **Step 1: Write the failing static test**
+- [x] **Step 1: Write the failing static test**
 
 ```python
 # tests/test_web_downloads_client.py (append)
@@ -276,12 +278,12 @@ def test_auth_trouble_event_opens_the_dialog(app_js):
 
 (`app_js` is the fixture the file already uses to load `web/app.js` as text; if it is named differently there, use that name.)
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `python -m pytest tests/test_web_downloads_client.py -q -k auth_trouble`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `web/app.js`, next to the other `dl`/`wl` state objects:
 
@@ -366,14 +368,14 @@ The dialog:
 
 `modalNote`, `openModal`, `modalButton` and `openCookieHowto` all exist in `app.js`. There is no `cb-check` class: the app's checkbox pattern (see the *Skip files already downloaded* row in `index.html`) is a `cb-row` label wrapping a `cb-cbx` input, which is what the code above uses.
 
-- [ ] **Step 4: Run tests, then verify visually**
+- [x] **Step 4: Run tests, then verify visually**
 
 Run: `python -m pytest tests/test_web_downloads_client.py tests/test_web_wiring_client.py -q`
 Expected: PASS.
 
 Visual: **close the installed DJ-CrateBuilder first** (single-instance lock — `web_window.py` hands off to a running install and exits), then `python web_window.py --screen downloads`; in the DevTools console (or a temporary line) run `cbApi._push('auth.trouble', {job:'batch', count:3, reason:'login required'})` in each of the three cookie states; check light and dark theme. Confirm *Open cookie settings* lands on Settings and *Read the how-to* opens the walkthrough.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/app.js tests/test_web_downloads_client.py
@@ -674,6 +676,8 @@ git commit -m "feat(web): tell the user which import entries were dropped"
 
 ## Phase B — Anonymised bug reports
 
+> **✅ Completed 2026-09-15** on the same branch (B1 `41c52be`/`344d563`/`d7dc85b`/`885e913`, B2 `a4cc1ae`/`963b910`, B3 `4323ecc`). Deviations: `username` comes from `getpass.getuser()` (spec 2b, not the home basename); the *Report a problem* button is built in `renderAbout` (no static About markup exists); the typed title/description are scrubbed too; `support.issue_url` needs the bare issues URL.
+
 ### Task B1: Pure support module
 
 **Model:** `opus` — new module whose whole job is scrubbing personal data from logs; a missed pattern leaks user paths or names into a public issue.
@@ -691,7 +695,7 @@ git commit -m "feat(web): tell the user which import entries were dropped"
   - `issue_url(base_url, title, body) -> str` — `base_url?title=…&body=…`, body truncated to 6000 chars with a trailing `\n\n[log bundle attached]` line.
   - `build_bundle(zip_path, files: dict[str, str]) -> None` — writes each `{name: text}` into a zip with `ZIP_DEFLATED`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_support.py
@@ -755,12 +759,12 @@ def test_build_bundle_writes_named_members(tmp_path):
         assert zf.read("debug.log") == b"b\n"
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 Run: `python -m pytest tests/test_support.py -q`
 Expected: FAIL — `ModuleNotFoundError`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 """Anonymised bug-report bundles: log tails, scrubbing, and the GitHub issue link."""
@@ -833,12 +837,12 @@ def build_bundle(zip_path, files):
 
 Note the test for slashes expects `<LIBRARY>/a and <HOME>\b` — the separator *after* the placeholder is whatever followed the path in the source; the regex consumes only the path itself.
 
-- [ ] **Step 4: Run to verify they pass**
+- [x] **Step 4: Run to verify they pass**
 
 Run: `python -m pytest tests/test_support.py -q`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add cratebuilder/support.py tests/test_support.py
@@ -859,7 +863,7 @@ git commit -m "feat(support): anonymised log bundle helpers"
   - `support.preview` `{}` → `{"activity": str, "debug": str, "system": str}` (scrubbed; both transports — read-only).
   - `fs.support_send` `{"title": str, "description": str}` → `{"saved": path | None, "opened": bool}`; local only. Refuses an empty description.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_service_support.py
@@ -905,12 +909,12 @@ def test_send_writes_bundle_and_opens_issue(service, tmp_path, monkeypatch):
 
 `service` is whatever fixture the other service tests use for a sandboxed `CrateBuilderService` (see `tests/test_watchlist_share_service.py`).
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 Run: `python -m pytest tests/test_service_support.py -q`
 Expected: FAIL — unknown method.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Register in `_methods()`:
 
@@ -972,12 +976,12 @@ Methods (place after `logs_tail`):
 
 Add `import platform` and `from . import support` at the top of `service.py` alongside the existing imports; `datetime` and `about_info` are already available there (check with `graft grep "^from datetime\|^import datetime" --in cratebuilder/service.py`). Confirm `about_info()` returns `"issues_url"` and `"build"` keys — `service.py:321` maps `issues_url`; check the build key name with `graft skeleton cratebuilder/service.py` and adjust.
 
-- [ ] **Step 4: Run to verify they pass**
+- [x] **Step 4: Run to verify they pass**
 
 Run: `python -m pytest tests/test_service_support.py tests/test_server.py -q`
 Expected: PASS (the server tests confirm `fs.` methods are still refused remotely).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add cratebuilder/service.py tests/test_service_support.py
@@ -995,7 +999,7 @@ git commit -m "feat(service): support.preview and fs.support_send for bug report
 **Interfaces:**
 - Consumes: `support.preview`, `fs.support_send`; `openModal`, `modalButton`, `modalNote`, `toast`, `state.host.transport`, `setDisabled`.
 
-- [ ] **Step 1: Write the failing static test**
+- [x] **Step 1: Write the failing static test**
 
 ```python
 def test_about_has_a_report_a_problem_flow(app_js, index_html):
@@ -1007,11 +1011,11 @@ def test_about_has_a_report_a_problem_flow(app_js, index_html):
     assert "Nothing is sent until you press" in app_js
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `python -m pytest tests/test_web_about_client.py -q -k report`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `index.html`, About screen, beside the existing issues link: `<button id="about-report" class="cb-btn cb-btn--quiet" data-tt="about.report">🐞 Report a problem</button>`.
 
@@ -1072,13 +1076,13 @@ Run: `python -m pytest tests/test_web_about_client.py -q -k report`
 
 Add a `.cb-log-preview` rule in the stylesheet using existing theme tokens (max-height 260px, `overflow:auto`, monospace, `background: var(--cb-panel)` or whatever the log viewer already uses — copy its class if one exists rather than adding a new one).
 
-- [ ] **Step 4: Run tests, then verify visually**
+- [x] **Step 4: Run tests, then verify visually**
 
 Run: `python -m pytest tests/test_web_about_client.py tests/test_web_wiring_client.py tests/test_ui_strings.py -q` (adjust the last name to the generated-strings test if it differs).
 
 Visual: `python web_window.py --screen about` → *Report a problem*; check the preview really has `<HOME>`/`<USER>` and no real path; press the button, cancel the Save dialog (nothing should open), then save for real and confirm the browser lands on GitHub with title and body filled. Both themes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/index.html web/app.js web/styles.css UI-design/ui-contract.json cratebuilder/ui_strings.py tests/test_web_about_client.py
