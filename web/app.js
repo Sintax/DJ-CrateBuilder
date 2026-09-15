@@ -6036,6 +6036,7 @@
     'The updater runs only in the local window on the host machine — a ' +
     'browser somewhere else should not be able to replace the binary it is ' +
     'talking to. The build number above tells you whether the host is current.';
+  const ABOUT_REPORT_LOCAL_ONLY = 'Available in the app window on the host machine.';
 
   async function openUrl(url) {
     if (!url) { toast('No address for that link.', true); return; }
@@ -6099,6 +6100,78 @@
     return box;
   }
 
+  /* ── bug report ──
+     Preview first, send second: the user reads the scrubbed logs before a
+     single byte is written, and the Save dialog is the moment of consent.
+     The send button stays off until the preview has arrived and there is a
+     description, so an empty or blind report cannot be sent by accident. */
+  async function openReportDialog() {
+    const refs = {};
+    let preview = null;
+    const gate = () => {
+      if (!refs.go) return;
+      const reason = !preview ? 'Loading the preview…'
+        : (refs.desc.value.trim() ? '' : 'Describe the problem first — a sentence is enough.');
+      setDisabled(refs.go, !!reason, { reason });
+    };
+    const api = openModal({
+      title: '🐞 Report a problem',
+      width: 720,
+      body(body) {
+        refs.title = document.createElement('input');
+        refs.title.className = 'cb-in';
+        refs.title.placeholder = 'Short title (e.g. "Scan hangs on one channel")';
+        refs.desc = document.createElement('textarea');
+        refs.desc.className = 'cb-in';
+        refs.desc.rows = 4;
+        refs.desc.placeholder = 'What happened, and what you expected.';
+        refs.desc.addEventListener('input', gate);
+        const h = document.createElement('div');
+        h.className = 'cb-mut';
+        h.style.fontSize = '12.5px';
+        h.textContent = 'This is exactly what will be in the bundle — names, folders and cookies are already blanked out:';
+        refs.pre = document.createElement('pre');
+        refs.pre.className = 'cb-log cb-report-preview';
+        refs.pre.textContent = 'Loading the preview…';
+        body.append(labelled('Title', refs.title),
+          labelled('What happened', refs.desc), h, refs.pre,
+          modalNote('Nothing is sent until you press the button below. It saves a zip '
+                  + 'where you choose and opens a pre-filled GitHub issue — drag the '
+                  + 'zip onto that page. (A GitHub account is needed to post.)'));
+      },
+      foot(foot, api) {
+        refs.go = modalButton('Save bundle & open GitHub', 'cb-btn--warn', async () => {
+          api.busy(true);
+          try {
+            const res = await call('fs.support_send',
+              { title: refs.title.value, description: refs.desc.value });
+            if (!res || !res.saved) {
+              api.error('Cancelled — nothing was saved or sent.');
+            } else if (!res.opened) {
+              api.error(`Saved ${res.saved}, but the browser could not be opened. `
+                + 'Open the GitHub issues page yourself and drag the zip onto it.');
+            } else {
+              toast(`Saved ${res.saved} — finish the report on GitHub.`);
+              api.close();
+            }
+          } catch (err) { api.error(err && err.message || 'Could not send.'); }
+          finally { api.busy(false); }
+        });
+        const cancel = modalButton('Cancel', 'cb-btn--quiet', api.close);
+        cancel.style.marginLeft = 'auto';
+        foot.append(refs.go, cancel);
+        gate();
+      },
+      focus: () => refs.desc,
+    });
+    try { preview = await call('support.preview', {}); }
+    catch (_) { api.error('The host could not build the preview.'); return; }
+    if (!document.contains(refs.pre)) return;
+    refs.pre.textContent = preview.system + '\n── activity.log ──\n' + preview.activity
+                         + '\n── debug.log ──\n' + preview.debug;
+    gate();
+  }
+
   function renderAbout() {
     const host = $('#about-body');
     if (!host) return;
@@ -6148,10 +6221,22 @@
     const links = document.createElement('div');
     links.className = 'cb-row';
     links.style.cssText = 'gap:9px;flex-wrap:wrap';
+    /* fs.support_send needs the host's Save dialog and browser, so a remote
+       session sees the button greyed with the reason — the same line the
+       Watch List's export and import draw. */
+    const report = document.createElement('button');
+    report.id = 'about-report';
+    report.className = 'cb-btn cb-btn--quiet cb-btn--sm';
+    report.textContent = '🐞 Report a problem';
+    const local = state && state.host && state.host.transport === 'local';
+    setDisabled(report, !local, {
+      reason: tipPlus('about.report', ABOUT_REPORT_LOCAL_ONLY), ttKey: 'about.report' });
+    if (local) report.addEventListener('click', openReportDialog);
     links.append(
       aboutLinkButton('View on GitHub ↗', info.github_url, 'about.github'),
       aboutLinkButton('↗ Submit Issues / Suggestions', info.issues_url,
-                      'about.issues'));
+                      'about.issues'),
+      report);
     if (info.github_url) {
       const licence = aboutLinkButton('Licence',
         `${info.github_url.replace(/\/+$/, '')}/blob/main/LICENSE`);
