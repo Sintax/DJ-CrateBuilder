@@ -34,6 +34,7 @@
 ## Global Constraints
 
 - **No tkinter imports in `cratebuilder/`.**
+- **Subagent model floor.** Never dispatch an implementer or reviewer on Haiku. Each task below carries a **Model:** line; pass it as the Agent tool's `model` parameter. `sonnet` is the floor for small, single-file, well-specified changes; `opus` for anything that touches `web/app.js`, event wiring, privacy-sensitive scrubbing, or more than two files at once. Spec-compliance and code-quality reviewers always run on `opus` — review is where a wrong call costs the most. If a Sonnet implementer reports being unsure or its tests do not go green on the second attempt, re-dispatch the task on `opus` rather than iterating.
 - `cratebuilder/` modules use **one-line module docstrings**; `web/app.js` uses `/* ── section ── */` comments that explain *why*.
 - **Read the `changing-the-web-ui` skill before touching `web/`.** Every new RPC goes through `call()` in `app.js` (never `pywebview.api` directly); every new method is one entry in `_methods()` (`cratebuilder/service.py:1166-1272`); local-only methods carry the `fs.` prefix (`LOCAL_ONLY`, `service.py:105`).
 - Frontend tests are Python that read `web/app.js` as text (`tests/test_web_*_client.py`). Add static assertions for every new wiring point.
@@ -69,6 +70,8 @@ Task order: **Phase C (auth pop-up) → Phase A (import sanitising, ✅ done) �
 ## Phase C — Auth-failure pop-up
 
 ### Task C1: Label bot-check failures and define the auth reason set
+
+**Model:** `sonnet` — one substring table and a label in `download.py`; the tests pin every branch. *(Done.)*
 
 **Files:**
 - Modify: `cratebuilder/download.py:249-309`
@@ -149,6 +152,8 @@ git commit -m "feat(download): label bot-check failures and define the auth reas
 ```
 
 ### Task C2: Count auth failures per run and emit `auth.trouble`
+
+**Model:** `sonnet` — two small edits inside an existing state machine, one test; the plan gives the exact code.
 
 **Files:**
 - Modify: `cratebuilder/batchrun.py:430-472` (`_settle`, `_reset`)
@@ -252,6 +257,8 @@ git commit -m "feat(batchrun): raise auth.trouble after three login-shaped failu
 ```
 
 ### Task C3: Frontend dialog
+
+**Model:** `opus` — touches `web/app.js` event wiring, a new dialog, text-sliced frontend tests, and needs a two-theme visual check.
 
 **Files:**
 - Modify: `web/app.js` — `subscribeDownloadEvents` (`:7350-7524`), new `openAuthTroubleDialog`.
@@ -676,6 +683,8 @@ git commit -m "feat(web): tell the user which import entries were dropped"
 
 ### Task B1: Pure support module
 
+**Model:** `opus` — new module whose whole job is scrubbing personal data from logs; a missed pattern leaks user paths or names into a public issue.
+
 **Files:**
 - Create: `cratebuilder/support.py`
 - Test: `tests/test_support.py`
@@ -845,6 +854,8 @@ git commit -m "feat(support): anonymised log bundle helpers"
 
 ### Task B2: Service methods `support.preview` and `fs.support_send`
 
+**Model:** `sonnet` — two dispatch-table entries and thin methods over the B1 module; pattern is identical to the existing `logs_tail`.
+
 **Files:**
 - Modify: `cratebuilder/service.py` — `_methods()` (`:1166-1272`), new methods near `logs_tail` (`:2526`).
 - Test: `tests/test_service_support.py` (create)
@@ -981,6 +992,8 @@ git commit -m "feat(service): support.preview and fs.support_send for bug report
 ```
 
 ### Task B3: Report dialog on the About screen
+
+**Model:** `opus` — four files across HTML, JS, the ui-contract and a generated module, plus the pywebview file dialog and a two-theme visual check.
 
 **Files:**
 - Modify: `web/index.html` (About screen — one button next to the existing *Submit Issues* link), `web/app.js` (`aboutOpen` wiring + `openReportDialog`), `UI-design/ui-contract.json` (tooltip `about.report`), then `python scripts/gen_ui_strings.py`.
