@@ -1,6 +1,7 @@
 """browser_receive: window mode, quiet mode, parking before the page is up,
 the inbox RPCs, and what each of them emits."""
 import sqlite3
+from datetime import datetime
 from urllib.parse import quote
 
 import pytest
@@ -84,6 +85,41 @@ def test_a_burst_before_the_page_is_up_hands_over_one_and_queues_the_rest(servic
     assert len(notes) == 1 and notes[0]["level"] == "info"
     assert "2 more sends" in notes[0]["body"]
     assert _ready(service)["browser"]["pending"] == []
+
+
+def test_the_send_handed_over_is_not_also_left_in_the_inbox(service):
+    """Clicking the same link twice during launch parks it twice. The page
+    opens it once, so the copy must not linger as an inbox row the user has
+    to clear by hand — and the count the ping quotes is rows, not sends."""
+    service.browser_receive(_uri("channel", CHANNEL))
+    service.browser_receive(_uri("channel", CHANNEL))
+    service.browser_receive(_uri("track", TRACK))
+    snap = _ready(service)
+    assert snap["browser"]["pending"] == [{"kind": "channel", "url": CHANNEL}]
+    assert snap["browser"]["inbox_count"] == 1
+    assert [(r["kind"], r["url"]) for r in service.call("browser.inbox_list")] == [
+        ("track", TRACK)]
+    assert _of(service, BROWSER_INBOX) == [
+        {"count": 1, "added": {"kind": "track", "url": TRACK}}]
+    notes = _of(service, "notification")
+    assert len(notes) == 1 and "1 more send " in notes[0]["body"]
+
+
+def test_an_overflow_that_all_coalesces_says_nothing(service, settings):
+    """Every parked send already has its inbox row, so no row lands and there
+    is nothing new to announce."""
+    settings.set("browser_receive_mode", RECEIVE_MODE_QUIET)
+    service.browser_receive(_uri("channel", CHANNEL))
+    service.browser_receive(_uri("track", TRACK))
+    settings.set("browser_receive_mode", RECEIVE_MODE_WINDOW)
+    service.browser_receive(_uri("channel", CHANNEL))
+    service.browser_receive(_uri("track", TRACK))
+    before = len(_of(service, BROWSER_INBOX)), len(_of(service, "notification"))
+    snap = _ready(service)
+    assert snap["browser"]["pending"] == [{"kind": "channel", "url": CHANNEL}]
+    assert snap["browser"]["inbox_count"] == 2
+    assert (len(_of(service, BROWSER_INBOX)),
+            len(_of(service, "notification"))) == before
 
 
 def test_an_unreadable_inbox_count_never_costs_the_page_its_parked_sends(
@@ -225,6 +261,8 @@ def test_a_newer_contract_warns_and_brings_the_window_forward(service):
     assert result == {"action": "rejected"}
     note = _of(service, "notification")[-1]
     assert note["level"] == "warn" and "newer version" in note["body"]
+    # Recent Activity renders `at` as a date string; an epoch float reads as 1970.
+    assert datetime.fromisoformat(note["at"])
     assert service.brought_forward == 1
     assert _of(service, BROWSER_SEND) == []
 

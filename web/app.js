@@ -2581,6 +2581,11 @@
      nothing is added or queued until they pick one here. */
   function handleBrowserSend(send) {
     if (!send || !send.url) return;
+    /* A fresh send replaces whatever dialog is up. openModal already does
+       this for the channel flow; the track flow only switches screens, so
+       without it an Add Channel left over from the last send would float
+       above the Downloads form the user is now meant to fill in. */
+    closeModal();
     if (send.kind === 'channel') {
       show('watchlist');
       openAddChannel(send.url);
