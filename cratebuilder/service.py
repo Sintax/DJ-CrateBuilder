@@ -2473,7 +2473,13 @@ class CrateBuilderService:
         for this snapshot, so from this call on a live browser.send reaches
         the page, and nothing before it could have. A remote page's snapshot
         is not that moment — the send belongs to the desktop the browser is
-        on — so it neither drains nor flips the flag."""
+        on — so it neither drains nor flips the flag.
+
+        At most ONE parked send is handed over, however many were parked: the
+        page opens a dialog per send and opening the second closes the first,
+        so a launch-time burst would show the user only the last one and lose
+        the rest. The overflow goes where a send with nowhere to go belongs —
+        the Browser Inbox — and is announced, so nothing arrives silently."""
         pending = []
         # Counted BEFORE the drain: the parked sends exist nowhere else, so
         # nothing may consume them until the rest of this reply is in hand.
@@ -2486,7 +2492,35 @@ class CrateBuilderService:
                 # A start-minimised launch has just hidden the window the
                 # first bring-forward showed; this one lands after it.
                 self._bring_forward()
+                pending, overflow = pending[:1], pending[1:]
+                if overflow and self._queue_browser_overflow(overflow):
+                    count = self.browser_inbox_count()
         return {"inbox_count": count, "pending": pending}
+
+    def _queue_browser_overflow(self, overflow):
+        """Write the parked sends the page cannot open into the inbox, and say
+        so once for the whole batch. Returns whether the rows landed — a
+        database that will not take them must not cost the page its snapshot,
+        which is also the one hand-over point for the send it CAN open."""
+        try:
+            db = self._db_for_write()
+            for send in overflow:
+                db.add_inbox_item(url=send["url"], kind=send["kind"])
+        except Exception:
+            self.emit("notification", {
+                "level": "warn", "title": "Browser send",
+                "body": ("Could not queue the browser send — the database "
+                         "is unavailable."), "at": time.time()})
+            return False
+        count = self.browser_inbox_count()
+        self.emit(BROWSER_INBOX, {"count": count, "added": overflow[-1]})
+        n = len(overflow)
+        self.emit("notification", {
+            "level": "info", "title": "Browser sends queued",
+            "body": (f"{n} more send{'s' if n != 1 else ''} from your browser "
+                     f"went to the Browser Inbox while the app was starting."),
+            "at": time.time()})
+        return True
 
     def browser_inbox_count(self):
         """How many sends are waiting, or 0 if the database cannot say.
