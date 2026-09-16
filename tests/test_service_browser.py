@@ -252,6 +252,22 @@ def test_inbox_calls_without_a_database_are_empty_not_errors(service, tmp_path):
     assert not (tmp_path / "cratebuilder.db").exists()
 
 
+def test_every_inbox_call_is_local_only(service, settings):
+    """The extension runs on the host, so its sends are the host desktop's
+    queue: a paired phone must not be able to consume — or quietly discard —
+    what the person at the desk is about to act on. Refused server-side by
+    the `browser.` prefix in LOCAL_ONLY, like the handler toggle."""
+    settings.set("browser_receive_mode", RECEIVE_MODE_QUIET)
+    service.browser_receive(_uri("channel", CHANNEL))
+    row_id = service.call("browser.inbox_list")[0]["id"]
+    for method, params in (("browser.inbox_list", None),
+                           ("browser.inbox_take", {"id": row_id}),
+                           ("browser.inbox_remove", {"id": row_id})):
+        with pytest.raises(CBError):
+            service.call(method, params, transport=REMOTE)
+    assert service.browser_inbox_count() == 1       # nothing was taken
+
+
 # ── contract §4: errors ──────────────────────────────────────────────────────
 
 def test_a_newer_contract_warns_and_brings_the_window_forward(service):
