@@ -1228,10 +1228,6 @@ def main():
     placement = WindowPlacement(window, service)
     howto = HowtoWindow(service)
     service.on_open_howto = howto.open
-    # A browser send in window mode raises the window from the tray or the
-    # taskbar before the page opens its dialog. Thread-safe by restore_window's
-    # own contract — the listener thread is the usual caller.
-    service.on_bring_forward = lambda: restore_window(window)
     # One handler owns the whole close: the confirmation, then — only when
     # the close is going ahead — the teardown steps in this order. The
     # placement flush stays ahead of service.close because it still has a
@@ -1258,6 +1254,16 @@ def main():
         service.browser_receive(uri)
 
     def started():
+        # A browser send in window mode raises the window from the tray or the
+        # taskbar before the page opens its dialog. Thread-safe by
+        # restore_window's own contract — the listener thread is the usual
+        # caller. Bound here rather than beside the other hooks because
+        # show()/restore() each block up to 20 s waiting on pywebview's `shown`
+        # event, which cannot fire until this callback runs: a cold-start send
+        # calling it any earlier would stall the launch for ~40 s. Until it is
+        # bound, a send parks (window mode) or writes its inbox row (quiet
+        # mode), and the page's first snapshot drains the parked one.
+        service.on_bring_forward = lambda: restore_window(window)
         closer.add(start_push_bridge(window, service))
         # After the window exists, because it seeds itself by reading the
         # window's own size and position (see WindowPlacement.start).
