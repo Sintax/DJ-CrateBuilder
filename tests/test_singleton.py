@@ -91,3 +91,98 @@ def test_listener_stops_when_socket_closed():
     finally:
         if second:
             second.close()
+
+
+from cratebuilder.singleton import forward_add, listen_for_requests
+
+
+def test_forward_add_delivers_uri_to_on_add():
+    port = _free_port()
+    holder = acquire_single_instance(port)
+    assert holder is not None
+    try:
+        got = []
+        event = threading.Event()
+        listen_for_requests(holder, on_show=event.set,
+                            on_add=lambda u: (got.append(u), event.set()))
+        uri = "djcrate://add?v=1&kind=channel&url=https%3A%2F%2Fsoundcloud.com%2Fa"
+        forward_add(port, uri)
+        assert event.wait(timeout=2)
+        assert got == [uri]
+    finally:
+        holder.close()
+
+
+def test_show_still_dispatches_to_on_show_not_on_add():
+    port = _free_port()
+    holder = acquire_single_instance(port)
+    assert holder is not None
+    try:
+        shown = threading.Event()
+        added = []
+        listen_for_requests(holder, on_show=shown.set, on_add=added.append)
+        request_show(port)
+        assert shown.wait(timeout=2)
+        assert added == []
+    finally:
+        holder.close()
+
+
+def test_add_without_on_add_handler_is_ignored_not_fatal():
+    port = _free_port()
+    holder = acquire_single_instance(port)
+    assert holder is not None
+    try:
+        shown = threading.Event()
+        listen_for_requests(holder, on_show=shown.set)   # no on_add
+        forward_add(port, "djcrate://add?v=1")
+        request_show(port)                               # listener must survive
+        assert shown.wait(timeout=2)
+    finally:
+        holder.close()
+
+
+def test_oversized_line_is_capped_and_does_not_kill_listener():
+    port = _free_port()
+    holder = acquire_single_instance(port)
+    assert holder is not None
+    try:
+        got = []
+        event = threading.Event()
+
+        def on_add(u):
+            got.append(u)
+            if u == "djcrate://ok":
+                event.set()
+
+        listen_for_requests(holder, on_show=lambda: None, on_add=on_add)
+        with socket.create_connection(("127.0.0.1", port), timeout=1) as s:
+            s.sendall(b"add " + b"x" * 20000 + b"\n")
+        forward_add(port, "djcrate://ok")
+        assert event.wait(timeout=2)
+        assert got[-1] == "djcrate://ok"
+    finally:
+        holder.close()
+
+
+def test_a_throwing_on_add_does_not_kill_the_listener():
+    port = _free_port()
+    holder = acquire_single_instance(port)
+    assert holder is not None
+    try:
+        shown = threading.Event()
+
+        def boom(_uri):
+            raise RuntimeError("handler bug")
+
+        listen_for_requests(holder, on_show=shown.set, on_add=boom)
+        forward_add(port, "djcrate://add?v=1")
+        request_show(port)
+        assert shown.wait(timeout=2)
+    finally:
+        holder.close()
+
+
+def test_forward_add_is_a_noop_when_nothing_is_listening():
+    port = _free_port()
+    forward_add(port, "djcrate://add?v=1", timeout=0.2)   # must not raise
