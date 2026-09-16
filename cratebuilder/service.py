@@ -15,8 +15,8 @@ import time
 import webbrowser
 from datetime import datetime
 
-from cratebuilder import (activitylog, debuglog, rebuild, startup, ui_strings,
-                          util, ydl)
+from cratebuilder import (activitylog, browserlink, debuglog, protocolreg,
+                          rebuild, startup, ui_strings, util, ydl)
 from cratebuilder import scanproc
 from cratebuilder import support
 from cratebuilder import updater_core as ucore
@@ -78,6 +78,18 @@ UPDATE_JOB = "update"
 # event of its own, so without these a frontend settles a dead job as a
 # success (which is exactly what it used to do).
 JOB_FINISHED = "job.finished"
+
+# Browser-extension sends (djcrate://) — the receive side of the extension
+# repo's docs/specs/djcrate-uri-v1.md. Two receive modes, stored as the two
+# short words; the Settings screen shows the display strings.
+RECEIVE_MODE_WINDOW = "window"
+RECEIVE_MODE_QUIET = "quiet"
+RECEIVE_MODE_DISPLAY = {RECEIVE_MODE_WINDOW: "Bring window forward",
+                        RECEIVE_MODE_QUIET: "Collect quietly"}
+# The handler toggle is not a config key at all: its value IS the registry.
+BROWSER_HANDLER_KEY = "browser_handler"
+BROWSER_SEND = "browser.send"      # {kind, url} — window mode: open the flow
+BROWSER_INBOX = "browser.inbox"    # {count, added: {kind, url} | None}
 
 # Its mirror: a job category has just been CLAIMED. Emitted by _start_job with
 # the slot already taken, so a frontend resyncing on it cannot be answered with
@@ -498,6 +510,17 @@ def _cookie_method_from_display(value):
         raise ValueError(f"Unknown cookie method: {value!r}")
 
 
+def _receive_mode_to_display(value):
+    return RECEIVE_MODE_DISPLAY.get(value, RECEIVE_MODE_DISPLAY[RECEIVE_MODE_WINDOW])
+
+
+def _receive_mode_from_display(value):
+    for stored, display in RECEIVE_MODE_DISPLAY.items():
+        if value in (stored, display):
+            return stored
+    raise ValueError(f"Unknown receive mode: {value!r}")
+
+
 SETTINGS_BINDINGS = {
     "bitrate_quality": _simple_binding("bitrate_quality", _bitrate_to_display, _bitrate_from_display),
     "auto_dl_interval": _simple_binding("auto_download_interval"),
@@ -505,6 +528,7 @@ SETTINGS_BINDINGS = {
     "sleep_preset": _simple_binding("sleep_preset", _sleep_preset_to_display, _sleep_preset_from_display),
     "cover_art_mode": (_cover_art_mode_get, _cover_art_mode_set),
     "cookie_method": _simple_binding("cookie_method", _cookie_method_to_display, _cookie_method_from_display),
+    "browser_receive_mode": _simple_binding("browser_receive_mode", _receive_mode_to_display, _receive_mode_from_display),
 }
 
 
@@ -2213,6 +2237,9 @@ class CrateBuilderService:
             if flag is not None:
                 out[key] = self.remote_state.get_flag(flag)
                 continue
+            if key == BROWSER_HANDLER_KEY:
+                out[key] = protocolreg.protocol_is_registered()
+                continue
             get, _ = _binding(key)
             try:
                 out[key] = get(self._settings)
@@ -2226,6 +2253,8 @@ class CrateBuilderService:
         flag = REMOTE_SETTINGS_KEYS.get(key)
         if flag is not None:
             return {"key": key, "value": self.remote_state.get_flag(flag)}
+        if key == BROWSER_HANDLER_KEY:
+            return {"key": key, "value": protocolreg.protocol_is_registered()}
         get, _ = _binding(key)
         try:
             return {"key": key, "value": get(self._settings)}
@@ -2244,6 +2273,8 @@ class CrateBuilderService:
         if not key:
             raise CBError("No setting was named.")
         self._refuse_frozen_setting(key)
+        if key == BROWSER_HANDLER_KEY:
+            return self._set_browser_handler(value)
         flag = REMOTE_SETTINGS_KEYS.get(key)
         if flag is not None:
             if self.transport != LOCAL:
@@ -2330,6 +2361,22 @@ class CrateBuilderService:
         except KeyError:
             raise CBError("Unknown setting: run_at_startup")
         return {"key": "run_at_startup", "value": get(self._settings)}
+
+    def _set_browser_handler(self, value):
+        """Register or unregister the djcrate:// handler — the Run-at-login
+        shape: it edits the host's own registry, so local transport only, and
+        a failed write is refused rather than echoed back as if it took.
+        The reply reads the registry again, so the page shows what is true."""
+        if self.transport != LOCAL:
+            raise CBError("Browser integration can only be changed from the "
+                          "app window on the host machine.")
+        ok = (protocolreg.register_protocol() if value
+              else protocolreg.unregister_protocol())
+        if not ok:
+            raise CBError("Could not update the djcrate:// handler in the "
+                          "Windows registry.")
+        return {"key": BROWSER_HANDLER_KEY,
+                "value": protocolreg.protocol_is_registered()}
 
     # ── remote access (design 3j's Remote Access card) ────────────────────────
     # The card is live on the LOCAL mount and read-only on a remote one: every
