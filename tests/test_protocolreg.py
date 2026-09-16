@@ -70,6 +70,20 @@ def test_is_registered_reflects_state(monkeypatch):
     assert pr.protocol_is_registered() is True
 
 
+def test_is_registered_is_false_when_the_stored_command_is_stale(monkeypatch):
+    """After the app moves, is reinstalled, or switches source↔frozen, the key
+    is still there but points at a path that no longer launches anything. The
+    Settings toggle must read "off" then, not "on"."""
+    fake = _with_fake(monkeypatch)
+    pr.register_protocol()
+    assert pr.protocol_is_registered() is True         # matches: really on
+    fake.keys[r"Software\Classes\djcrate\shell\open\command"][""] = \
+        r'"C:\Old\Install\pythonw.exe" "C:\Old\Install\web_window.py" "%1"'
+    assert pr.protocol_is_registered() is False
+    pr.register_protocol()                             # re-register repairs it
+    assert pr.protocol_is_registered() is True
+
+
 def test_unregister_removes_everything(monkeypatch):
     fake = _with_fake(monkeypatch)
     pr.register_protocol()

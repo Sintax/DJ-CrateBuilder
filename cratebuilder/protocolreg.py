@@ -33,18 +33,25 @@ def _handler_command():
 
 
 def protocol_is_registered():
+    """True only when the stored command is the one THIS install would write.
+
+    Merely checking the value exists left the Settings toggle reading "on"
+    after the app moved, was reinstalled, or switched between source and
+    frozen — while djcrate:// launched a path that no longer works. A
+    mismatch reads as off, so flicking the toggle rewrites it.
+    """
     if winreg is None:
         return False
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, _COMMAND_KEY, 0,
                              winreg.KEY_READ)
         try:
-            winreg.QueryValueEx(key, "")
-            return True
+            stored = winreg.QueryValueEx(key, "")[0]
         finally:
             winreg.CloseKey(key)
-    except (FileNotFoundError, OSError):
+    except OSError:      # FileNotFoundError included — no key, no handler
         return False
+    return stored == _handler_command()
 
 
 def register_protocol():
