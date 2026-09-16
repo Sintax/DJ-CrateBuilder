@@ -388,7 +388,7 @@ const cbApi = { call: async (method, params) => {
 def _genre_harness(app_js, scenario):
     return _GENRE_HARNESS % {
         "code": _slice(app_js, "  const GENRE_PLATFORMS = ",
-                       "  function openAddChannel()"),
+                       "  function openAddChannel(prefill)"),
         "scenario": scenario,
     }
 
