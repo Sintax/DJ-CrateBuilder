@@ -961,6 +961,12 @@
       rows.push([num(unscanned.length),
         `channel${unscanned.length === 1 ? '' : 's'} never scanned`, 'cb-tag--grey']);
     }
+    const inbox = browserInboxCount();
+    if (inbox) {
+      rows.push([num(inbox),
+        `browser send${inbox === 1 ? '' : 's'} waiting in the Browser Inbox (Watch List)`,
+        'cb-tag--attn']);
+    }
     if (!rows.length) {
       box.appendChild(ovEmpty('Nothing needs attention.'));
       return;
@@ -2247,6 +2253,7 @@
   }
 
   function renderWatchlist() {
+    renderBrowserInbox();
     renderWatchlistToolbar();
     // The nav badge and the Overview's copy of the same number are fed from
     // these cards, so a scan reporting one channel moves all three.
@@ -2612,7 +2619,85 @@
     });
   }
 
-  function renderBrowserInbox() {}
+  function browserInboxCount() {
+    return (state && state.browser && state.browser.inbox_count) || 0;
+  }
+
+  /* Hidden at zero: the button is only news once quiet mode has queued
+     something, and a toolbar that always showed it would leave users who
+     never turned quiet mode on wondering what it is for. */
+  function renderBrowserInbox() {
+    const btn = $('#wl-inbox');
+    if (!btn) return;
+    const count = browserInboxCount();
+    btn.hidden = !count;
+    btn.textContent = `🌐 Browser Inbox (${num(count)})`;
+  }
+
+  function openBrowserInbox() {
+    let list = null;
+    const paint = async () => {
+      list.innerHTML = '';
+      let rows = [];
+      try {
+        rows = await cbApi.call('browser.inbox_list');
+      } catch (err) {
+        list.appendChild(modalNote(err.userFacing ? err.message
+          : 'The host could not read the inbox.'));
+        return;
+      }
+      if (!rows.length) { list.appendChild(modalNote('The inbox is empty.')); return; }
+      rows.forEach((row) => {
+        const line = document.createElement('div');
+        line.className = 'cb-row';
+        line.style.cssText = 'gap:8px;padding:6px 0;border-bottom:1px solid var(--cb-line-soft)';
+        const url = document.createElement('span');
+        url.className = 'cb-mono';
+        url.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px';
+        url.textContent = row.url;
+        url.title = row.url;
+        /* Process is the send arriving late: the same handler, the same
+           prefilled dialog, and the row is gone from the host before the
+           dialog opens so a Cancel there does not resurrect it. */
+        const process = modalButton('Process', 'cb-btn--fill cb-btn--sm', async () => {
+          try {
+            const send = await cbApi.call('browser.inbox_take', { id: row.id });
+            closeModal();
+            handleBrowserSend(send);
+          } catch (err) {
+            toast(err.userFacing ? err.message
+              : 'The host could not hand over that send.', true);
+            paint();
+          }
+        });
+        const remove = modalButton('Remove', 'cb-btn--quiet cb-btn--sm', async () => {
+          try { await cbApi.call('browser.inbox_remove', { id: row.id }); }
+          catch (_) { /* the browser.inbox event re-syncs the count either way */ }
+          paint();
+        });
+        line.append(tagNode(row.kind, 'cb-tag--grey'), url, process, remove);
+        list.appendChild(line);
+      });
+    };
+    openModal({
+      title: '🌐 Browser Inbox',
+      width: 640,
+      body(body) {
+        body.appendChild(modalNote(
+          'Sends collected while receive mode was "Collect quietly". Process ' +
+          'opens the same prefilled dialog a send would have opened straight ' +
+          'away; Remove discards it.'));
+        list = document.createElement('div');
+        body.appendChild(list);
+        paint();
+      },
+      foot(foot) {
+        const close = modalButton('Close', 'cb-btn--quiet', closeModal);
+        close.style.marginLeft = 'auto';
+        foot.appendChild(close);
+      },
+    });
+  }
 
   /* ── Remove (plain yes/no) ──────────────────────────────────────────────── */
 
@@ -7638,6 +7723,7 @@
     $('#wl-add').addEventListener('click', openAddChannel);
     $('#wl-export').addEventListener('click', openExportPicker);
     $('#wl-import').addEventListener('click', openImportPicker);
+    $('#wl-inbox').addEventListener('click', openBrowserInbox);
     $('#wl-links').addEventListener('click', runCheckLinks);
     $('#wl-dl-all').addEventListener('click',
       () => wlRun('watchlist.download_all_new', {}, 'Downloading every pending track…'));

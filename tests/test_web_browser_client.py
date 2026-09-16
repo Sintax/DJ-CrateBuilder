@@ -118,3 +118,67 @@ def test_a_channel_opens_add_channel_prefilled_and_a_track_prefills_downloads(ap
     assert r["events"] == ["input"]                           # renderBatch's trigger
     assert r["genreFocused"] is True
     assert any("pick a genre" in t for t in r["toasts"])
+
+
+# ── the inbox ────────────────────────────────────────────────────────────────
+
+@pytest.fixture(scope="module")
+def index_html():
+    with open(os.path.join(ROOT, "web", "index.html"), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def test_the_inbox_button_exists_hidden_and_is_wired(app_js, index_html):
+    assert 'id="wl-inbox" hidden' in index_html
+    assert 'data-tt="wl.browser_inbox"' in index_html
+    assert "$('#wl-inbox').addEventListener('click', openBrowserInbox);" in app_js
+    assert "renderBrowserInbox();" in _slice(app_js, "  function renderWatchlist()", "\n  }\n")
+
+
+def test_the_inbox_modal_processes_through_the_same_send_handler(app_js):
+    body = _slice(app_js, "  function openBrowserInbox()", "\n  }\n")
+    assert "cbApi.call('browser.inbox_list')" in body
+    assert "cbApi.call('browser.inbox_take', { id: row.id })" in body
+    assert "cbApi.call('browser.inbox_remove', { id: row.id })" in body
+    assert "handleBrowserSend(send)" in body
+
+
+def test_the_overview_counts_waiting_sends_under_needs_attention(app_js):
+    body = _slice(app_js, "  function renderOverviewAttention()", "\n  }\n")
+    assert "browserInboxCount()" in body
+    assert "Browser Inbox" in body
+
+
+_INBOX_HARNESS = """
+const num = (n) => Number(n || 0).toLocaleString();
+const els = {};
+function $(sel) {
+  const id = sel.slice(1);
+  if (!els[id]) els[id] = { id, hidden: false, textContent: '' };
+  return els[id];
+}
+let state = { browser: { inbox_count: 0 } };
+%(count)s
+%(render)s
+renderBrowserInbox();
+const empty = { hidden: $('#wl-inbox').hidden, text: $('#wl-inbox').textContent };
+state.browser.inbox_count = 3;
+renderBrowserInbox();
+const three = { hidden: $('#wl-inbox').hidden, text: $('#wl-inbox').textContent };
+state = null;
+renderBrowserInbox();
+const noState = { hidden: $('#wl-inbox').hidden };
+console.log(JSON.stringify({ empty, three, noState }));
+"""
+
+
+def test_the_inbox_button_hides_at_zero_and_counts_otherwise(app_js, tmp_path):
+    r = _run_node(tmp_path, "inboxbtn.mjs", _INBOX_HARNESS % {
+        "count": _slice(app_js, "  function browserInboxCount()",
+                        "  function renderBrowserInbox()"),
+        "render": _slice(app_js, "  function renderBrowserInbox()",
+                         "  function openBrowserInbox()"),
+    })
+    assert r["empty"]["hidden"] is True
+    assert r["three"] == {"hidden": False, "text": "🌐 Browser Inbox (3)"}
+    assert r["noState"]["hidden"] is True
