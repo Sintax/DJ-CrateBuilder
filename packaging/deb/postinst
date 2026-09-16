@@ -19,9 +19,11 @@ case "$1" in
         if command -v update-desktop-database >/dev/null 2>&1; then
             update-desktop-database -q /usr/share/applications || true
         fi
-        # Name us the default handler for djcrate:// (best-effort — the
-        # .desktop's MimeType line only says we can handle it).
-        command -v xdg-mime >/dev/null 2>&1 && xdg-mime default dj-cratebuilder.desktop x-scheme-handler/djcrate || true
+        # No `xdg-mime default` here: postinst runs as root, so it would only
+        # ever set root's association — not the association of whoever ends up
+        # using the app. The .desktop's `MimeType=x-scheme-handler/djcrate`
+        # line, refreshed above, is what makes us available to every user; the
+        # desktop environment picks us up from there on first use.
         if command -v gtk-update-icon-cache >/dev/null 2>&1; then
             gtk-update-icon-cache -q /usr/share/icons/hicolor || true
         fi
