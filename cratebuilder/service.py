@@ -79,18 +79,6 @@ UPDATE_JOB = "update"
 # success (which is exactly what it used to do).
 JOB_FINISHED = "job.finished"
 
-# Browser-extension sends (djcrate://) — the receive side of the extension
-# repo's docs/specs/djcrate-uri-v1.md. Two receive modes, stored as the two
-# short words; the Settings screen shows the display strings.
-RECEIVE_MODE_WINDOW = "window"
-RECEIVE_MODE_QUIET = "quiet"
-RECEIVE_MODE_DISPLAY = {RECEIVE_MODE_WINDOW: "Bring window forward",
-                        RECEIVE_MODE_QUIET: "Collect quietly"}
-# The handler toggle is not a config key at all: its value IS the registry.
-BROWSER_HANDLER_KEY = "browser_handler"
-BROWSER_SEND = "browser.send"      # {kind, url} — window mode: open the flow
-BROWSER_INBOX = "browser.inbox"    # {count, added: {kind, url} | None}
-
 # Its mirror: a job category has just been CLAIMED. Emitted by _start_job with
 # the slot already taken, so a frontend resyncing on it cannot be answered with
 # a snapshot that says nothing is running.
@@ -102,6 +90,18 @@ BROWSER_INBOX = "browser.inbox"    # {count, added: {kind, url} | None}
 # reading idle — offering a Scan that the host would refuse and a Cancel that
 # was closed — until something else happened to trigger a refresh.
 JOB_STARTED = "job.started"
+
+# Browser-extension sends (djcrate://) — the receive side of the extension
+# repo's docs/specs/djcrate-uri-v1.md. Two receive modes, stored as the two
+# short words; the Settings screen shows the display strings.
+RECEIVE_MODE_WINDOW = "window"
+RECEIVE_MODE_QUIET = "quiet"
+RECEIVE_MODE_DISPLAY = {RECEIVE_MODE_WINDOW: "Bring window forward",
+                        RECEIVE_MODE_QUIET: "Collect quietly"}
+# The handler toggle is not a config key at all: its value IS the registry.
+BROWSER_HANDLER_KEY = "browser_handler"
+BROWSER_SEND = "browser.send"      # {kind, url} — window mode: open the flow
+BROWSER_INBOX = "browser.inbox"    # {count, added: {kind, url} | None}
 
 # The Downloads screen's queue panel is redrawn from live queue.row events and
 # collapses the moment a run ends — so an overnight Watch List download left
@@ -936,6 +936,16 @@ class CrateBuilderService:
         # The desktop window's opener for the cookie setup guide's own
         # window (see cookies_howto_window). None everywhere else.
         self.on_open_howto = None
+        # The desktop window's "come forward" — web_window.py binds
+        # restore_window here. None everywhere else, and a browser send then
+        # only emits its event (a remote-only host has no window to raise).
+        self.on_bring_forward = None
+        # Window-mode browser sends that arrived before the app window had a
+        # page to show them on — a cold start by the protocol handler. The
+        # page's first snapshot drains them; see _browser_snapshot for why
+        # that is the one safe hand-over point.
+        self._browser_pending = []
+        self._local_page_ready = False
         self._installed_components_cache = None
         self._update_timer = None
         self._next_update_check_ts = None
@@ -1352,6 +1362,10 @@ class CrateBuilderService:
             "watchlist.import_done": lambda p: self.watchlist_import_done(
                 p.get("path"), p.get("added"), p.get("overwritten"),
                 p.get("skipped")),
+            "browser.inbox_list": lambda p: self.browser_inbox_list(),
+            "browser.inbox_take": lambda p: self.browser_inbox_take(p.get("id")),
+            "browser.inbox_remove":
+                lambda p: self.browser_inbox_remove(p.get("id")),
             "fs.reveal": lambda p: self.fs_reveal(p.get("path"),
                                                   p.get("mode", "folder")),
             "fs.open_url": lambda p: self.open_url(p.get("url")),
@@ -1412,6 +1426,7 @@ class CrateBuilderService:
             "next_auto_download": self.next_auto_download(),
             "platform": sys.platform,
             "genres": self.genres(),
+            "browser": self._browser_snapshot(),
             "capabilities": {
                 "update": self.transport == LOCAL,
                 "filesystem": self.transport == LOCAL,
@@ -2377,6 +2392,127 @@ class CrateBuilderService:
                           "Windows registry.")
         return {"key": BROWSER_HANDLER_KEY,
                 "value": protocolreg.protocol_is_registered()}
+
+    # ── browser extension (djcrate:// sends) ──────────────────────────────────
+    # Contract: the extension repo's docs/specs/djcrate-uri-v1.md; design:
+    # its docs/SPEC.md §10. Reached from the single-instance listener's
+    # thread and from the entry point, never from the page.
+
+    def browser_receive(self, uri):
+        """Act on one djcrate:// send. Never raises — the listener thread has
+        to survive whatever the browser hands it, and the entry point calls
+        this before the window exists.
+
+        Window mode brings the window forward and hands the send to the page,
+        live if it has one, otherwise parked for its first snapshot. Quiet
+        mode writes the inbox row and says so, and leaves the window alone —
+        that is the whole point of the mode. Contract errors surface as a
+        warning notification (bell + toast) rather than a dialog: the page
+        may not exist yet, and a modal that steals focus for a bad send is
+        worse than a note that waits.
+        """
+        result = browserlink.parse_djcrate_uri(uri)
+        if isinstance(result, browserlink.ParseError):
+            if not result.message:
+                return {"action": "ignored"}
+            self.emit("notification", {"level": "warn", "title": "Browser send",
+                                       "body": result.message, "at": time.time()})
+            self._bring_forward()
+            return {"action": "rejected"}
+        send = {"kind": result.kind, "url": result.url}
+        if self._settings.get("browser_receive_mode") == RECEIVE_MODE_QUIET:
+            try:
+                fresh = self._db_for_write().add_inbox_item(url=result.url,
+                                                            kind=result.kind)
+                count = self.browser_inbox_count()
+            except Exception:
+                # In quiet mode the inbox row IS the send, so a locked or
+                # corrupt database has lost it — report it the way a bad URI
+                # is reported rather than raise into the listener thread.
+                # Still no bring-forward: the mode's promise is that sends
+                # never pull the window up, and a failure is no exception.
+                self.emit("notification", {
+                    "level": "warn", "title": "Browser send",
+                    "body": ("Could not queue the browser send — the database "
+                             "is unavailable."), "at": time.time()})
+                return {"action": "rejected"}
+            self.emit(BROWSER_INBOX, {"count": count,
+                                      "added": send if fresh else None})
+            if fresh:
+                self.emit("notification", {
+                    "level": "info", "title": "Browser send queued",
+                    "body": (f"A {result.kind} from your browser is waiting in "
+                             f"the Browser Inbox ({count} pending)."),
+                    "at": time.time()})
+            return {"action": "queued", "fresh": fresh}
+        with self._lock:
+            ready = self._local_page_ready
+            if not ready:
+                self._browser_pending.append(send)
+        if ready:
+            self.emit(BROWSER_SEND, send)
+        self._bring_forward()
+        return {"action": "opened" if ready else "parked"}
+
+    def _bring_forward(self):
+        hook = self.on_bring_forward
+        if hook is None:
+            return
+        try:
+            hook()
+        except Exception:
+            pass                    # a window mid-close; the send still lands
+
+    def _browser_snapshot(self):
+        """The inbox count for every page, plus — for the app window only —
+        the window-mode sends that arrived before it had a page. Draining
+        them here is what makes a cold-start send open its dialog exactly
+        once: web/app.js's boot() registers its event handlers BEFORE it asks
+        for this snapshot, so from this call on a live browser.send reaches
+        the page, and nothing before it could have. A remote page's snapshot
+        is not that moment — the send belongs to the desktop the browser is
+        on — so it neither drains nor flips the flag."""
+        pending = []
+        if self.transport == LOCAL:
+            with self._lock:
+                self._local_page_ready = True
+                pending, self._browser_pending = self._browser_pending, []
+            if pending:
+                # A start-minimised launch has just hidden the window the
+                # first bring-forward showed; this one lands after it.
+                self._bring_forward()
+        return {"inbox_count": self.browser_inbox_count(), "pending": pending}
+
+    def browser_inbox_count(self):
+        db = self._db()
+        return db.inbox_count() if db is not None else 0
+
+    def browser_inbox_list(self):
+        db = self._db()
+        if db is None:
+            return []
+        return [{"id": r["id"], "kind": r["kind"], "url": r["url"],
+                 "received_at": r["received_at"]} for r in db.list_inbox()]
+
+    def browser_inbox_take(self, item_id):
+        """Hand one queued send to the page to open, and drop it from the
+        inbox — quiet mode's per-row Process. The page opens the same flow a
+        window-mode send would have."""
+        db = self._db()
+        row = db.get_inbox_item(item_id) if db is not None else None
+        if row is None:
+            raise CBError("That browser send is no longer in the inbox.")
+        db.remove_inbox_item(item_id)
+        self.emit(BROWSER_INBOX, {"count": db.inbox_count(), "added": None})
+        return {"kind": row["kind"], "url": row["url"]}
+
+    def browser_inbox_remove(self, item_id):
+        db = self._db()
+        if db is not None:
+            db.remove_inbox_item(item_id)
+        count = self.browser_inbox_count()
+        self.emit(BROWSER_INBOX, {"count": count, "added": None})
+        return {"count": count}
 
     # ── remote access (design 3j's Remote Access card) ────────────────────────
     # The card is live on the LOCAL mount and read-only on a remote one: every
