@@ -101,10 +101,14 @@ handleBrowserSend({ kind: 'track', url: '' });
 const untouched = { shown: shown.slice(), opened: opened.slice(),
   closed: closed.length };
 drainBrowserPending();
-console.log(JSON.stringify({ untouched, shown, opened, toasts,
-  closed: closed.length,
-  url: $('#dl-url').value, events: $('#dl-url').events,
-  genreFocused: $('#dl-genre').focused }));
+/* handleBrowserSend finishes its work a tick later (so a dying dialog's
+   re-open cannot land on top of it); this timer is queued behind both. */
+setTimeout(() => {
+  console.log(JSON.stringify({ untouched, shown, opened, toasts,
+    closed: closed.length,
+    url: $('#dl-url').value, events: $('#dl-url').events,
+    genreFocused: $('#dl-genre').focused }));
+}, 0);
 """
 
 
@@ -119,11 +123,62 @@ def test_a_channel_opens_add_channel_prefilled_and_a_track_prefills_downloads(ap
     assert r["shown"] == ["watchlist", "downloads"]
     assert r["opened"] == ["https://soundcloud.com/a"]
     # A second send replaces the first one's dialog instead of stacking on it.
-    assert r["closed"] == 2
+    # Two closes per send: once now, once on the tick the flow opens on.
+    assert r["closed"] == 4
     assert r["url"] == "https://www.youtube.com/watch?v=x"
     assert r["events"] == ["input"]                           # renderBatch's trigger
     assert r["genreFocused"] is True
     assert any("pick a genre" in t for t in r["toasts"])
+
+
+# A dialog whose onClose hands straight on to another one a tick later —
+# openGenreMoveConfirm → openEditChannel, and openFixLink → the next queued
+# Fix Link, both real. The send has to end up on top of that hand-over.
+_REOPEN_HARNESS = """
+let visible = null;            // the dialog on screen
+let openDialog = null;         // its handlers, the way openModal keeps them
+function closeModal() {
+  const dying = openDialog;
+  visible = null; openDialog = null;
+  if (dying && dying.onClose) dying.onClose();
+}
+function openEditChannel() { visible = { name: 'edit-channel' }; openDialog = {}; }
+function openAddChannel(prefill) {
+  visible = { name: 'add-channel', prefill: prefill || '' };
+  openDialog = {};
+}
+const shown = [];
+function show(name) { shown.push(name); }
+function toast() {}
+const els = {};
+function $(sel) {
+  const id = sel.slice(1);
+  if (!els[id]) els[id] = { id, value: '', dispatchEvent() {}, focus() {} };
+  return els[id];
+}
+global.Event = class { constructor(type) { this.type = type; } };
+// Up when the send lands: a confirm that re-opens Edit Channel on close.
+visible = { name: 'genre-move' };
+openDialog = { onClose: () => { setTimeout(openEditChannel, 0); } };
+%(fn)s
+handleBrowserSend({ kind: 'channel', url: 'https://soundcloud.com/a' });
+setTimeout(() => { console.log(JSON.stringify({ visible, shown })); }, 0);
+"""
+
+
+def test_a_send_lands_on_top_of_a_dialog_that_reopens_another_on_close(app_js,
+                                                                       tmp_path):
+    """Closing the confirm re-opens Edit Channel a tick later. If the send
+    opened its own dialog straight away, that re-open would land on top and
+    the user would be looking at Edit Channel instead of the Add Channel the
+    link they clicked was meant to fill in."""
+    r = _run_node(tmp_path, "browserreopen.mjs", _REOPEN_HARNESS % {
+        "fn": _slice(app_js, "  function handleBrowserSend(send)",
+                     "  function drainBrowserPending()"),
+    })
+    assert r["visible"] == {"name": "add-channel",
+                            "prefill": "https://soundcloud.com/a"}
+    assert r["shown"] == ["watchlist"]
 
 
 # ── the inbox ────────────────────────────────────────────────────────────────
@@ -153,6 +208,8 @@ def test_the_overview_counts_waiting_sends_under_needs_attention(app_js):
     body = _slice(app_js, "  function renderOverviewAttention()", "\n  }\n")
     assert "browserInboxCount()" in body
     assert "Browser Inbox" in body
+    # …and only on the host, where the button it points at is drawn.
+    assert "state.host.transport === 'local'" in body
 
 
 _INBOX_HARNESS = """
@@ -163,7 +220,7 @@ function $(sel) {
   if (!els[id]) els[id] = { id, hidden: false, textContent: '' };
   return els[id];
 }
-let state = { browser: { inbox_count: 0 } };
+let state = { host: { transport: 'local' }, browser: { inbox_count: 0 } };
 %(count)s
 %(render)s
 renderBrowserInbox();
@@ -171,14 +228,18 @@ const empty = { hidden: $('#wl-inbox').hidden, text: $('#wl-inbox').textContent 
 state.browser.inbox_count = 3;
 renderBrowserInbox();
 const three = { hidden: $('#wl-inbox').hidden, text: $('#wl-inbox').textContent };
+state.host.transport = 'remote';
+renderBrowserInbox();
+const remote = { hidden: $('#wl-inbox').hidden };
 state = null;
 renderBrowserInbox();
 const noState = { hidden: $('#wl-inbox').hidden };
-console.log(JSON.stringify({ empty, three, noState }));
+console.log(JSON.stringify({ empty, three, remote, noState }));
 """
 
 
-def test_the_inbox_button_hides_at_zero_and_counts_otherwise(app_js, tmp_path):
+def test_the_inbox_button_hides_at_zero_on_remote_and_counts_otherwise(app_js,
+                                                                       tmp_path):
     r = _run_node(tmp_path, "inboxbtn.mjs", _INBOX_HARNESS % {
         "count": _slice(app_js, "  function browserInboxCount()",
                         "  function renderBrowserInbox()"),
@@ -187,4 +248,7 @@ def test_the_inbox_button_hides_at_zero_and_counts_otherwise(app_js, tmp_path):
     })
     assert r["empty"]["hidden"] is True
     assert r["three"] == {"hidden": False, "text": "🌐 Browser Inbox (3)"}
+    # The inbox is the host desktop's; `browser.` is refused on the remote
+    # transport, so a paired device is never offered the button.
+    assert r["remote"]["hidden"] is True
     assert r["noState"]["hidden"] is True
