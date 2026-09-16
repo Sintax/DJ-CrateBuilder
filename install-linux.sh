@@ -301,7 +301,12 @@ if command -v update-desktop-database >/dev/null 2>&1; then
 fi
 # MimeType alone advertises that we CAN handle djcrate://; this names us as the
 # one that does, so the first click works without the user picking an app.
-command -v xdg-mime >/dev/null 2>&1 && xdg-mime default dj-cratebuilder.desktop x-scheme-handler/djcrate || true
+# The association is per-user, so it has to be written by the same user
+# everything above installed for. This script is meant to be run WITHOUT sudo
+# (it calls sudo itself, only for system packages) — but if it was started
+# with sudo anyway, hop back to the invoking user. -H so xdg-mime writes their
+# mimeapps.list and not root's.
+command -v xdg-mime >/dev/null 2>&1 && ${SUDO_USER:+sudo -u "$SUDO_USER" -H} xdg-mime default dj-cratebuilder.desktop x-scheme-handler/djcrate || true
 
 # ── Verify PATH ───────────────────────────────────────────────────────────
 if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
