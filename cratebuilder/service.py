@@ -127,7 +127,11 @@ JOB_TITLES = {
 # rule is that a browser elsewhere can never replace the binary it is talking
 # to, and that only the host may see the host's filesystem — so this is checked
 # here, not left to a client to respect.
-LOCAL_ONLY = ("update.", "fs.", "cookies.howto_window")
+#
+# "browser." is here because the extension runs on the host: its sends are the
+# host desktop's inbox, and a paired phone must not be able to consume (or
+# discard) what the person at the desk is about to act on.
+LOCAL_ONLY = ("update.", "fs.", "cookies.howto_window", "browser.")
 
 # logs.download only ever hands back a path (see CrateBuilderService.logs_download)
 # — never touches the host filesystem itself — so it's safe on the remote
