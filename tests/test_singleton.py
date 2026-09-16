@@ -160,6 +160,7 @@ def test_oversized_line_is_capped_and_does_not_kill_listener():
             s.sendall(b"add " + b"x" * 20000 + b"\n")
         forward_add(port, "djcrate://ok")
         assert event.wait(timeout=2)
+        assert len(got[0]) <= 8192
         assert got[-1] == "djcrate://ok"
     finally:
         holder.close()
