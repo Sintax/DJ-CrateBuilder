@@ -51,10 +51,51 @@ def request_show(port, timeout=0.5):
         pass
 
 
-def listen_for_show_requests(sock, on_show):
-    """Run on a daemon thread, calling on_show() for every connection
-    accepted on *sock*. *on_show* must marshal back to the UI thread itself
-    (this thread is not the Tk main thread). Returns once *sock* is closed.
+def forward_add(port, uri, timeout=0.5):
+    """Relay a djcrate:// URI to the already-running instance holding *port*.
+
+    Best-effort like request_show: called by a second launch that lost the
+    bind race while carrying a protocol-handler argument. Wire format per the
+    extension repo's docs/specs/djcrate-uri-v1.md §2: 'add <uri>\\n', UTF-8.
+    """
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout) as s:
+            s.sendall(b"add " + uri.encode("utf-8") + b"\n")
+    except OSError:
+        pass
+
+
+def _read_line(conn, cap=8192):
+    """Read one newline-terminated line (or until EOF/cap) from *conn*.
+
+    Replaces the old fixed conn.recv(16): the 'add' verb carries a URI that
+    doesn't fit in 16 bytes. The cap stops a hostile local writer growing the
+    buffer without bound; the timeout stops a silent connection parking the
+    listener thread forever.
+    """
+    chunks, total = [], 0
+    conn.settimeout(1.0)
+    try:
+        while total < cap:
+            data = conn.recv(1024)
+            if not data:
+                break
+            chunks.append(data)
+            total += len(data)
+            if b"\n" in data:
+                break
+    except OSError:
+        pass
+    return b"".join(chunks).split(b"\n", 1)[0].decode("utf-8", "replace").strip()
+
+
+def listen_for_requests(sock, on_show, on_add=None):
+    """Run on a daemon thread, dispatching one verb per connection accepted on
+    *sock*: 'show' (or a bare/legacy connection) calls on_show(); 'add <uri>'
+    calls on_add(uri) when a handler was given. Unknown verbs are ignored, and
+    a callback that raises is swallowed — nothing a browser sends may stop
+    the next connection being served. Callbacks run on this thread, not a UI
+    thread. Returns once *sock* is closed.
     """
     def _loop():
         while True:
@@ -63,13 +104,25 @@ def listen_for_show_requests(sock, on_show):
             except OSError:
                 return
             try:
-                conn.recv(16)
-            except OSError:
-                pass
+                line = _read_line(conn)
             finally:
                 conn.close()
-            on_show()
+            try:
+                if line.startswith("add "):
+                    if on_add is not None:
+                        on_add(line[4:].strip())
+                elif line == "show" or not line:
+                    on_show()
+                # anything else: unknown verb, ignore (contract §4)
+            except Exception:
+                pass
 
     t = threading.Thread(target=_loop, daemon=True)
     t.start()
     return t
+
+
+def listen_for_show_requests(sock, on_show):
+    """Back-compat alias from the two-verb widening; new callers should use
+    listen_for_requests."""
+    return listen_for_requests(sock, on_show)
