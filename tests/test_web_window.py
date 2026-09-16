@@ -268,6 +268,50 @@ def test_acquire_or_hand_off_hands_off_and_exits_when_already_running(monkeypatc
     assert asked == [49737]
 
 
+# ── djcrate:// protocol-handler launches ─────────────────────────────────────
+
+def test_djcrate_uri_arg_finds_the_protocol_argument_anywhere_in_argv():
+    uri = "djcrate://add?v=1&kind=channel&url=https%3A%2F%2Fsoundcloud.com%2Fa"
+    assert web_window.djcrate_uri_arg(["exe", uri]) == uri
+    assert web_window.djcrate_uri_arg(["exe", "--screen", "watchlist", uri]) == uri
+    assert web_window.djcrate_uri_arg(["exe"]) is None
+    assert web_window.djcrate_uri_arg(["exe", "--startup"]) is None
+    assert web_window.djcrate_uri_arg(["djcrate://not-argv0"]) is None
+
+
+def test_a_losing_launch_with_a_uri_forwards_it_instead_of_asking_for_show(monkeypatch):
+    forwarded, asked = [], []
+    monkeypatch.setattr(web_window, "acquire_single_instance", lambda port: None)
+    monkeypatch.setattr(web_window, "forward_add",
+                        lambda port, uri: forwarded.append((port, uri)))
+    monkeypatch.setattr(web_window, "request_show", asked.append)
+    with pytest.raises(SystemExit) as info:
+        web_window.acquire_or_hand_off(port=49737, uri="djcrate://add?v=1")
+    assert info.value.code == 0
+    assert forwarded == [(49737, "djcrate://add?v=1")]
+    assert asked == []
+
+
+def test_a_winning_launch_with_a_uri_keeps_the_lock(monkeypatch):
+    sentinel = object()
+    monkeypatch.setattr(web_window, "acquire_single_instance", lambda port: sentinel)
+    assert web_window.acquire_or_hand_off(port=0, uri="djcrate://add?v=1") is sentinel
+
+
+def test_main_wires_the_listener_and_the_bring_forward_hook():
+    """main() cannot run headless, so pin the wiring as text: the two-verb
+    listener with browser_receive as its add handler, the hook, and the
+    cold-start receive — each on its own line so a refactor that drops one
+    fails here and not in the field."""
+    src = inspect.getsource(web_window.main)
+    assert "uri = djcrate_uri_arg(sys.argv)" in src
+    assert "lock = acquire_or_hand_off(uri=uri)" in src
+    assert "service.on_bring_forward = lambda: restore_window(window)" in src
+    assert ("listen_for_requests(lock, on_show=lambda: restore_window(window),\n"
+            "                        on_add=service.browser_receive)") in src
+    assert "if uri:\n" in src and "service.browser_receive(uri)" in src
+
+
 def test_restore_window_shows_before_it_restores():
     """The order is the whole fix, not a style choice.
 
@@ -568,6 +612,30 @@ def test_a_refused_menu_action_is_logged_and_notified_never_raised(make_tray):
     assert service.logged == ["🔔 Tray: No new tracks pending."]
 
 
+def test_a_fresh_quiet_mode_send_raises_a_tray_balloon(make_tray):
+    tray, window, service, icons = make_tray()
+    tray._ensure()                                   # the icon is up
+    service.events.emit(web_window.BROWSER_INBOX,
+                        {"count": 2, "added": {"kind": "track", "url": "https://x"}})
+    assert icons[-1].notifications == [
+        ("Queued a track from your browser — 2 waiting in the Browser Inbox.",
+         web_window.WINDOW_TITLE)]
+
+
+def test_a_coalesced_or_processed_inbox_change_stays_silent(make_tray):
+    tray, window, service, icons = make_tray()
+    tray._ensure()
+    service.events.emit(web_window.BROWSER_INBOX, {"count": 1, "added": None})
+    assert icons[-1].notifications == []
+
+
+def test_no_icon_means_no_balloon_and_no_error(make_tray):
+    tray, window, service, icons = make_tray()
+    service.events.emit(web_window.BROWSER_INBOX,
+                        {"count": 1, "added": {"kind": "channel", "url": "https://x"}})
+    assert icons == []
+
+
 def test_quit_shows_the_window_then_closes_it_leaving_teardown_to_the_close(
         make_tray):
     """_tray_close: focus the app, then run the normal close confirmation.
@@ -782,6 +850,8 @@ class MainService(RecordingService):
         self.startup_update_checks = 0
         self.populates = 0
         self.on_update_restart = None
+        self.on_bring_forward = None
+        self.received = []           # djcrate:// URIs handed to the service
         self.placement = placement
         self.saved_placements = []
         self.closes = 0
@@ -804,6 +874,9 @@ class MainService(RecordingService):
     def populate_watchlist_from_folders(self):
         self.populates += 1
         return 0
+
+    def browser_receive(self, uri):
+        self.received.append(uri)
 
     def window_placement(self):
         return self.placement
@@ -831,11 +904,12 @@ def run_main(monkeypatch, settings=None, available=True, placement=("", False),
 
     monkeypatch.setattr(web_window, "CrateBuilderService",
                         lambda transport=None: service)
-    monkeypatch.setattr(web_window, "acquire_or_hand_off", lambda: object())
+    monkeypatch.setattr(web_window, "acquire_or_hand_off",
+                        lambda uri=None: object())
     monkeypatch.setattr(web_window, "prepare_runtime_workspace", lambda: None)
     monkeypatch.setattr(web_window, "serve_bundle_revalidated", lambda: None)
-    monkeypatch.setattr(web_window, "listen_for_show_requests",
-                        lambda lock, on_show: None)
+    monkeypatch.setattr(web_window, "listen_for_requests",
+                        lambda lock, on_show, on_add=None: None)
     monkeypatch.setattr(web_window.sys, "argv", ["web_window.py"])
     monkeypatch.setitem(web_window.webview.settings, "ALLOW_DOWNLOADS",
                         web_window.webview.settings.get("ALLOW_DOWNLOADS"))
