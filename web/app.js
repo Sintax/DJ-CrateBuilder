@@ -2518,7 +2518,7 @@
     return wrap;
   }
 
-  function openAddChannel() {
+  function openAddChannel(prefill) {
     let urlEl = null;
     let genreEl = null;
     openModal({
@@ -2528,6 +2528,9 @@
         urlEl.className = 'cb-in cb-mono';
         urlEl.style.fontSize = '12px';
         urlEl.placeholder = 'https://www.youtube.com/@…   or   https://soundcloud.com/…';
+        /* A browser-extension send arrives with the URL already known; the
+           #wl-add click passes its Event here, which is not one. */
+        if (typeof prefill === 'string') urlEl.value = prefill;
         body.appendChild(labelled('Channel / Playlist URL', urlEl, WL_URL_HINT));
         genreEl = genreSelect('(none)');
         body.appendChild(labelled('Genre',
@@ -2561,6 +2564,55 @@
       focus: () => urlEl,
     });
   }
+
+  /* ── browser extension sends ──────────────────────────────────────────────
+     A djcrate:// send the host received (the extension repo's
+     docs/specs/djcrate-uri-v1.md). Window mode hands it here as a
+     `browser.send` event — or, when it arrived before this page existed, in
+     the snapshot's browser.pending — and the page opens the flow the user
+     would have opened by hand, prefilled. The browser can't know a genre, so
+     nothing is added or queued until they pick one here. */
+  function handleBrowserSend(send) {
+    if (!send || !send.url) return;
+    if (send.kind === 'channel') {
+      show('watchlist');
+      openAddChannel(send.url);
+      return;
+    }
+    show('downloads');
+    const box = $('#dl-url');
+    box.value = send.url;
+    /* The input listener is what lets Start see a pasted link; a value set
+       by script does not fire it on its own. */
+    box.dispatchEvent(new Event('input'));
+    toast('Sent from your browser — pick a genre, then Add to Batch.');
+    $('#dl-genre').focus();
+  }
+
+  /* Sends the host parked while this window had no page. The host clears
+     the list as it serves the snapshot, so a reload never replays them. */
+  function drainBrowserPending() {
+    const pending = (state && state.browser && state.browser.pending) || [];
+    pending.forEach(handleBrowserSend);
+  }
+
+  function subscribeBrowserEvents() {
+    /* Only the app window acts on a live send: the extension runs on the
+       host, and a paired phone should not have a dialog appear because
+       someone clicked a button on the desktop. */
+    cbApi.on('browser.send', (send) => {
+      if (cbApi.transport !== 'local') return;
+      handleBrowserSend(send);
+    });
+    cbApi.on('browser.inbox', (p) => {
+      if (!state || !p) return;
+      state.browser = Object.assign({}, state.browser, { inbox_count: p.count || 0 });
+      renderBrowserInbox();
+      renderOverviewAttention();
+    });
+  }
+
+  function renderBrowserInbox() {}
 
   /* ── Remove (plain yes/no) ──────────────────────────────────────────────── */
 
@@ -5007,6 +5059,10 @@
     set('run_at_startup', remoteMount,
       'Run App on Startup can only be changed from the app window on the host machine.');
 
+    // The djcrate:// handler is the host's own registry entry — app window only.
+    set('browser_handler', remoteMount,
+      'Browser integration can only be changed from the app window on the host machine.');
+
     /* The save directory is the boundary a remote session is contained by
        (the host measures fs.reveal against it), so a remote browser must not
        be able to move it. The host refuses the write either way; this is the
@@ -5933,6 +5989,7 @@
     'Download Behavior': 'settings.download_behavior',
     'Browser Cookies': 'settings.cookies',
     'Downloads Database': 'settings.database',
+    'Browser Integration': 'settings.browser_integration',
     'Remote Access': 'remote.access_section',
   };
 
@@ -7886,12 +7943,14 @@
       subscribeSessionEvents();
       subscribeUpdateEvents();
       subscribeCleanupEvents();
+      subscribeBrowserEvents();
     }
     renderBell();
     await refresh();
     setHostOffline(false);
     bindTips(document);
     show(location.hash.slice(1) || 'overview');
+    drainBrowserPending();
   }
 
   /* Wired once, and outside boot()'s try — these are exactly the handlers that
