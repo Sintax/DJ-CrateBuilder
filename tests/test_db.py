@@ -286,13 +286,13 @@ def test_fresh_db_has_artwork_columns(tmp_path):
     assert _ARTWORK_COLUMNS <= _columns(db)
 
 
-def test_schema_version_is_7(tmp_path):
+def test_schema_version_is_8(tmp_path):
     db = _new_db(tmp_path)
     with db._conn() as conn:
         row = conn.execute(
             "SELECT value FROM schema_info WHERE key = 'version'").fetchone()
-    assert row["value"] == "7"
-    assert DownloadsDatabase.SCHEMA_VERSION == 7
+    assert row["value"] == "8"
+    assert DownloadsDatabase.SCHEMA_VERSION == 8
 
 
 def test_fresh_watchlist_has_no_scan_cutoff_column(tmp_path):
@@ -444,7 +444,7 @@ def test_v5_database_drops_scan_cutoff_without_data_loss(tmp_path):
             "SELECT value FROM schema_info WHERE key = 'version'"
         ).fetchone()["value"]
     assert "scan_cutoff_date" not in cols
-    assert version == "7"
+    assert version == "8"
 
     rows = db.get_all_watchlist_channels()
     assert len(rows) == 1
@@ -561,7 +561,7 @@ def test_v4_database_migrates_to_v5_without_data_loss(tmp_path):
     with db._conn() as conn:
         row = conn.execute(
             "SELECT value FROM schema_info WHERE key = 'version'").fetchone()
-    assert row["value"] == "7"
+    assert row["value"] == "8"
 
     # (c) ...and the pre-existing rows survived byte-for-byte.
     dl_rows = db.get_all_downloads()
@@ -946,3 +946,53 @@ def test_get_downloaded_video_ids_survives_duplicate_rows(tmp_path):
     _add(db, "va", "/x/a.mp3")
     _add(db, "va", "/x/a-copy.mp3")
     assert db.get_downloaded_video_ids() == {"va"}
+
+
+# ── browser inbox (schema v8) ────────────────────────────────────────────────
+
+def test_inbox_add_list_get_remove_count(tmp_path):
+    db = _new_db(tmp_path)
+    assert db.inbox_count() == 0
+    assert db.add_inbox_item(url="https://soundcloud.com/a", kind="channel",
+                             received_at=100) is True
+    assert db.add_inbox_item(url="https://soundcloud.com/a/b", kind="track",
+                             received_at=200) is True
+    assert db.inbox_count() == 2
+    rows = db.list_inbox()
+    assert [r["url"] for r in rows] == [
+        "https://soundcloud.com/a", "https://soundcloud.com/a/b"]
+    assert rows[0]["kind"] == "channel"
+    assert db.get_inbox_item(rows[1]["id"])["url"] == "https://soundcloud.com/a/b"
+    assert db.get_inbox_item(999999) is None
+    db.remove_inbox_item(rows[0]["id"])
+    assert db.inbox_count() == 1
+
+
+def test_inbox_duplicate_url_is_coalesced(tmp_path):
+    db = _new_db(tmp_path)
+    assert db.add_inbox_item(url="https://soundcloud.com/a", kind="channel") is True
+    assert db.add_inbox_item(url="https://soundcloud.com/a", kind="channel") is False
+    assert db.inbox_count() == 1
+
+
+def test_inbox_survives_reopen(tmp_path):
+    path = str(tmp_path / "t.db")
+    DownloadsDatabase(path).add_inbox_item(
+        url="https://soundcloud.com/a", kind="channel")
+    assert DownloadsDatabase(path).inbox_count() == 1
+
+
+def test_an_existing_v7_database_gains_the_inbox_table(tmp_path):
+    """The CREATE TABLE IF NOT EXISTS is the migration: a database opened by
+    this build gets the table, and its version stamp moves to 8."""
+    path = str(tmp_path / "old.db")
+    db = DownloadsDatabase(path)
+    with db._conn() as conn:
+        conn.execute("DROP TABLE browser_inbox")
+        conn.execute("UPDATE schema_info SET value = '7' WHERE key = 'version'")
+    reopened = DownloadsDatabase(path)
+    assert reopened.inbox_count() == 0
+    with reopened._conn() as conn:
+        assert conn.execute(
+            "SELECT value FROM schema_info WHERE key = 'version'"
+        ).fetchone()["value"] == "8"
