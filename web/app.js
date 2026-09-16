@@ -961,7 +961,11 @@
       rows.push([num(unscanned.length),
         `channel${unscanned.length === 1 ? '' : 's'} never scanned`, 'cb-tag--grey']);
     }
-    const inbox = browserInboxCount();
+    /* Only on the host: the Browser Inbox button this row points at is not
+       drawn on a paired device, so naming it there would send the user
+       looking for something that is not on their screen. */
+    const inbox = (state && state.host && state.host.transport === 'local')
+      ? browserInboxCount() : 0;
     if (inbox) {
       rows.push([num(inbox),
         `browser send${inbox === 1 ? '' : 's'} waiting in the Browser Inbox (Watch List)`,
@@ -2584,21 +2588,32 @@
     /* A fresh send replaces whatever dialog is up. openModal already does
        this for the channel flow; the track flow only switches screens, so
        without it an Add Channel left over from the last send would float
-       above the Downloads form the user is now meant to fill in. */
+       above the Downloads form the user is now meant to fill in.
+
+       Closed twice, either side of a tick. The first close runs the dying
+       dialog's onClose, and two of those hand straight on to another dialog
+       a tick later — Genre Move → Edit Channel, and Fix Link → the next
+       queued Fix Link. Done all in one go, that re-open lands after we have
+       finished and buries the send's own dialog. So: close, let those
+       re-opens happen, then close again and open the flow the send asked
+       for. onClose is left alone — several dialogs do real cleanup there. */
     closeModal();
-    if (send.kind === 'channel') {
-      show('watchlist');
-      openAddChannel(send.url);
-      return;
-    }
-    show('downloads');
-    const box = $('#dl-url');
-    box.value = send.url;
-    /* The input listener is what lets Start see a pasted link; a value set
-       by script does not fire it on its own. */
-    box.dispatchEvent(new Event('input'));
-    toast('Sent from your browser — pick a genre, then Add to Batch.');
-    $('#dl-genre').focus();
+    setTimeout(() => {
+      closeModal();
+      if (send.kind === 'channel') {
+        show('watchlist');
+        openAddChannel(send.url);
+        return;
+      }
+      show('downloads');
+      const box = $('#dl-url');
+      box.value = send.url;
+      /* The input listener is what lets Start see a pasted link; a value set
+         by script does not fire it on its own. */
+      box.dispatchEvent(new Event('input'));
+      toast('Sent from your browser — pick a genre, then Add to Batch.');
+      $('#dl-genre').focus();
+    }, 0);
   }
 
   /* Sends the host parked while this window had no page. The host clears
@@ -2633,12 +2648,16 @@
 
   /* Hidden at zero: the button is only news once quiet mode has queued
      something, and a toolbar that always showed it would leave users who
-     never turned quiet mode on wondering what it is for. */
+     never turned quiet mode on wondering what it is for. Hidden on a paired
+     device too — the inbox is the host desktop's, and the host refuses every
+     `browser.` call that does not come from its own window, so a button here
+     could only ever show an error. */
   function renderBrowserInbox() {
     const btn = $('#wl-inbox');
     if (!btn) return;
+    const local = !!(state && state.host && state.host.transport === 'local');
     const count = browserInboxCount();
-    btn.hidden = !count;
+    btn.hidden = !count || !local;
     btn.textContent = `🌐 Browser Inbox (${num(count)})`;
   }
 
@@ -2667,7 +2686,7 @@
         /* Process is the send arriving late: the same handler, the same
            prefilled dialog, and the row is gone from the host before the
            dialog opens so a Cancel there does not resurrect it. */
-        const process = modalButton('Process', 'cb-btn--fill cb-btn--sm', async () => {
+        const process = modalButton('Process', 'cb-btn--fill', async () => {
           try {
             const send = await cbApi.call('browser.inbox_take', { id: row.id });
             closeModal();
@@ -2678,7 +2697,7 @@
             paint();
           }
         });
-        const remove = modalButton('Remove', 'cb-btn--quiet cb-btn--sm', async () => {
+        const remove = modalButton('Remove', 'cb-btn--quiet', async () => {
           try { await cbApi.call('browser.inbox_remove', { id: row.id }); }
           catch (err) {
             toast(err.userFacing ? err.message
