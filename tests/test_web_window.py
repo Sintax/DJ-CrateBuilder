@@ -852,6 +852,12 @@ class MainService(RecordingService):
         self.on_update_restart = None
         self.on_bring_forward = None
         self.received = []           # djcrate:// URIs handed to the service
+        # What on_bring_forward was AT each browser_receive call. A cold-start
+        # send runs before webview.start(), where show()/restore() would block
+        # on an event the loop has not raised yet — so the hook must still be
+        # unbound here, and this is what proves it.
+        self.hook_when_received = []
+        self.listener_on_add = None  # the add handler main() armed the socket with
         self.placement = placement
         self.saved_placements = []
         self.closes = 0
@@ -877,6 +883,7 @@ class MainService(RecordingService):
 
     def browser_receive(self, uri):
         self.received.append(uri)
+        self.hook_when_received.append(self.on_bring_forward)
 
     def window_placement(self):
         return self.placement
@@ -893,7 +900,7 @@ class MainService(RecordingService):
 
 
 def run_main(monkeypatch, settings=None, available=True, placement=("", False),
-             screens=()):
+             screens=(), argv=("web_window.py",)):
     """main() with every real edge stubbed. Returns what it wired up."""
     service = MainService(settings=settings, placement=placement)
     window = MainWindow()
@@ -908,9 +915,11 @@ def run_main(monkeypatch, settings=None, available=True, placement=("", False),
                         lambda uri=None: object())
     monkeypatch.setattr(web_window, "prepare_runtime_workspace", lambda: None)
     monkeypatch.setattr(web_window, "serve_bundle_revalidated", lambda: None)
-    monkeypatch.setattr(web_window, "listen_for_requests",
-                        lambda lock, on_show, on_add=None: None)
-    monkeypatch.setattr(web_window.sys, "argv", ["web_window.py"])
+    def listen(lock, on_show, on_add=None):
+        service.listener_on_add = on_add
+
+    monkeypatch.setattr(web_window, "listen_for_requests", listen)
+    monkeypatch.setattr(web_window.sys, "argv", list(argv))
     monkeypatch.setitem(web_window.webview.settings, "ALLOW_DOWNLOADS",
                         web_window.webview.settings.get("ALLOW_DOWNLOADS"))
     # The tray is reached through the lazy import inside _ensure(), so this is
@@ -1014,6 +1023,48 @@ def test_main_fills_an_empty_watch_list_before_the_window_exists(monkeypatch):
     started()
 
     assert service.populates == 1
+    close_the_window(window)
+
+
+def test_main_arms_the_socket_with_the_services_own_browser_receive(monkeypatch):
+    """The `add` verb must reach the service unwrapped. A lambda or a partial
+    here would still pass the source-text pin above while dropping the call.
+
+    Compared with == rather than is: Python builds a fresh bound-method object
+    on every attribute access, so `is` could never hold — but two bound methods
+    are equal only when they are the same function on the same instance, which
+    is exactly the claim. No wrapper compares equal to one."""
+    service, window, _, started, _ = run_main(monkeypatch)
+
+    assert service.listener_on_add == service.browser_receive
+    close_the_window(window)
+
+
+def test_a_cold_start_send_is_received_before_the_gui_loop_raises_the_window(
+        monkeypatch):
+    """A launch that IS the protocol-handler invocation hands its URI straight
+    to the service — but with on_bring_forward still unbound.
+
+    That is the whole point of binding the hook inside started(). Bound any
+    earlier, this call would end in restore_window → show()/restore(), each
+    of which blocks up to 20 s waiting on a `shown` event that webview.start()
+    has not raised yet: a cold-start send would freeze the launch for ~40 s
+    before the window appeared. Unbound, the send parks (window mode) or
+    writes its inbox row (quiet mode) and the page's first snapshot drains it,
+    by which time the hook is live."""
+    uri = "djcrate://add?v=1&kind=channel&url=https%3A%2F%2Fsoundcloud.com%2Fa"
+    service, window, _, started, _ = run_main(monkeypatch,
+                                              argv=["web_window.py", uri])
+
+    assert service.received == [uri]
+    assert service.hook_when_received == [None]     # NOT bound yet
+    assert service.on_bring_forward is None
+
+    started()                                       # the GUI loop is up
+
+    assert service.on_bring_forward is not None
+    service.on_bring_forward()
+    assert window.actions[-2:] == ["show", "restore"]
     close_the_window(window)
 
 
