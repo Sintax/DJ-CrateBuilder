@@ -50,6 +50,7 @@ EXPECTED_DEFAULTS = {
     "auto_add_to_watchlist": True,
     "auto_download_interval": "1 day",
     "run_at_startup": False,
+    "browser_receive_mode": "window",
     "minimize_to_tray": True,
     "start_minimized": False,
     "watchlist_scan_on_startup": True,

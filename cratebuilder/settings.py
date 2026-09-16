@@ -40,6 +40,7 @@ def _schema_defaults():
         "auto_add_to_watchlist": True,
         "auto_download_interval": "1 day",
         "run_at_startup": False,
+        "browser_receive_mode": "window",   # 'window' | 'quiet' — see service.RECEIVE_MODE_*
         "minimize_to_tray": True,
         "start_minimized": False,
         "watchlist_scan_on_startup": True,
