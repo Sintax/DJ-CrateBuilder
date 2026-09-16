@@ -299,6 +299,9 @@ echo "  ✓ Desktop entry: created"
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database -q "$DESKTOP_DIR" || true
 fi
+# MimeType alone advertises that we CAN handle djcrate://; this names us as the
+# one that does, so the first click works without the user picking an app.
+command -v xdg-mime >/dev/null 2>&1 && xdg-mime default dj-cratebuilder.desktop x-scheme-handler/djcrate || true
 
 # ── Verify PATH ───────────────────────────────────────────────────────────
 if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
