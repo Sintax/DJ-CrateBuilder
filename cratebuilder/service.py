@@ -2415,8 +2415,10 @@ class CrateBuilderService:
         if isinstance(result, browserlink.ParseError):
             if not result.message:
                 return {"action": "ignored"}
-            self.emit("notification", {"level": "warn", "title": "Browser send",
-                                       "body": result.message, "at": time.time()})
+            self.emit("notification", {
+                "level": "warn", "title": "Browser send",
+                "body": result.message,
+                "at": datetime.now().isoformat(timespec="seconds")})
             self._bring_forward()
             return {"action": "rejected"}
         send = {"kind": result.kind, "url": result.url}
@@ -2433,7 +2435,8 @@ class CrateBuilderService:
                 self.emit("notification", {
                     "level": "warn", "title": "Browser send",
                     "body": ("Could not queue the browser send — the database "
-                             "is unavailable."), "at": time.time()})
+                             "is unavailable."),
+                    "at": datetime.now().isoformat(timespec="seconds")})
                 return {"action": "rejected"}
             # Outside the guard on purpose: the row has landed, so a count
             # that cannot be read must not turn a queued send into a refusal.
@@ -2445,7 +2448,7 @@ class CrateBuilderService:
                     "level": "info", "title": "Browser send queued",
                     "body": (f"A {result.kind} from your browser is waiting in "
                              f"the Browser Inbox ({count} pending)."),
-                    "at": time.time()})
+                    "at": datetime.now().isoformat(timespec="seconds")})
             return {"action": "queued", "fresh": fresh}
         with self._lock:
             ready = self._local_page_ready
@@ -2493,6 +2496,11 @@ class CrateBuilderService:
                 # first bring-forward showed; this one lands after it.
                 self._bring_forward()
                 pending, overflow = pending[:1], pending[1:]
+                # The same link clicked twice during launch parks twice. The
+                # page is about to open it, so a copy in the inbox is a row
+                # the user would have to clear by hand after acting on it.
+                handed = pending[0]["url"]
+                overflow = [s for s in overflow if s["url"] != handed]
                 if overflow and self._queue_browser_overflow(overflow):
                     count = self.browser_inbox_count()
         return {"inbox_count": count, "pending": pending}
@@ -2501,25 +2509,34 @@ class CrateBuilderService:
         """Write the parked sends the page cannot open into the inbox, and say
         so once for the whole batch. Returns whether the rows landed — a
         database that will not take them must not cost the page its snapshot,
-        which is also the one hand-over point for the send it CAN open."""
+        which is also the one hand-over point for the send it CAN open.
+
+        The batch is counted in ROWS, not sends: add_inbox_item coalesces a
+        url the inbox already holds, and "2 more sends" pointing at one new
+        row is a number the user cannot reconcile with what they see."""
+        landed = []
         try:
             db = self._db_for_write()
             for send in overflow:
-                db.add_inbox_item(url=send["url"], kind=send["kind"])
+                if db.add_inbox_item(url=send["url"], kind=send["kind"]):
+                    landed.append(send)
         except Exception:
             self.emit("notification", {
                 "level": "warn", "title": "Browser send",
                 "body": ("Could not queue the browser send — the database "
-                         "is unavailable."), "at": time.time()})
+                         "is unavailable."),
+                "at": datetime.now().isoformat(timespec="seconds")})
             return False
+        if not landed:
+            return False        # every send already had its row; nothing new
         count = self.browser_inbox_count()
-        self.emit(BROWSER_INBOX, {"count": count, "added": overflow[-1]})
-        n = len(overflow)
+        self.emit(BROWSER_INBOX, {"count": count, "added": landed[-1]})
+        n = len(landed)
         self.emit("notification", {
             "level": "info", "title": "Browser sends queued",
             "body": (f"{n} more send{'s' if n != 1 else ''} from your browser "
                      f"went to the Browser Inbox while the app was starting."),
-            "at": time.time()})
+            "at": datetime.now().isoformat(timespec="seconds")})
         return True
 
     def browser_inbox_count(self):

@@ -80,6 +80,8 @@ const opened = [];
 function openAddChannel(prefill) { opened.push(prefill); }
 const toasts = [];
 function toast(m) { toasts.push(m); }
+const closed = [];
+function closeModal() { closed.push(true); }
 const els = {};
 function $(sel) {
   const id = sel.slice(1);
@@ -96,9 +98,11 @@ const state = { browser: { pending: [
 %(drain)s
 handleBrowserSend(null);
 handleBrowserSend({ kind: 'track', url: '' });
-const untouched = { shown: shown.slice(), opened: opened.slice() };
+const untouched = { shown: shown.slice(), opened: opened.slice(),
+  closed: closed.length };
 drainBrowserPending();
 console.log(JSON.stringify({ untouched, shown, opened, toasts,
+  closed: closed.length,
   url: $('#dl-url').value, events: $('#dl-url').events,
   genreFocused: $('#dl-genre').focused }));
 """
@@ -111,9 +115,11 @@ def test_a_channel_opens_add_channel_prefilled_and_a_track_prefills_downloads(ap
         "drain": _slice(app_js, "  function drainBrowserPending()",
                         "  function subscribeBrowserEvents()"),
     })
-    assert r["untouched"] == {"shown": [], "opened": []}      # empty sends do nothing
+    assert r["untouched"] == {"shown": [], "opened": [], "closed": 0}  # empty sends do nothing
     assert r["shown"] == ["watchlist", "downloads"]
     assert r["opened"] == ["https://soundcloud.com/a"]
+    # A second send replaces the first one's dialog instead of stacking on it.
+    assert r["closed"] == 2
     assert r["url"] == "https://www.youtube.com/watch?v=x"
     assert r["events"] == ["input"]                           # renderBatch's trigger
     assert r["genreFocused"] is True
