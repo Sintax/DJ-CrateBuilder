@@ -284,11 +284,12 @@ cat > "$DESKTOP_DIR/dj-cratebuilder.desktop" << EOF
 Type=Application
 Name=DJ-CrateBuilder
 Comment=Batch download audio from YouTube and SoundCloud as MP3
-Exec=$BIN_LINK
+Exec=$BIN_LINK %u
 $ICON_LINE
 Terminal=false
 Categories=AudioVideo;Audio;Music;
 Keywords=youtube;soundcloud;mp3;download;dj;music;
+MimeType=x-scheme-handler/djcrate;
 EOF
 chmod +x "$DESKTOP_DIR/dj-cratebuilder.desktop"
 echo "  ✓ Desktop entry: created"
