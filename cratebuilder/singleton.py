@@ -7,8 +7,11 @@ process that tries to bind the same port gets OSError, which is our "already
 running" signal. The lock-holder also listens on the socket so a second
 launch can ask it to restore its window instead of just exiting silently.
 """
+import logging
 import socket
 import threading
+
+from cratebuilder import debuglog
 
 # Fixed, obscure loopback port in the private range (49152-65535). Not
 # configurable by design (YAGNI) — see the design doc's trade-off note.
@@ -74,8 +77,12 @@ def _read_line(conn, cap=8192):
     listener thread forever.
     """
     chunks, total = [], 0
-    conn.settimeout(1.0)
     try:
+        # Inside the try, not before it: settimeout raises on a socket the
+        # peer has already torn down, and an exception escaping here would
+        # leave the listener's while loop — killing the listener for the
+        # rest of the run over one dropped connection.
+        conn.settimeout(1.0)
         while total < cap:
             data = conn.recv(1024)
             if not data:
@@ -115,7 +122,11 @@ def listen_for_requests(sock, on_show, on_add=None):
                     on_show()
                 # anything else: unknown verb, ignore (contract §4)
             except Exception:
-                pass
+                # Still swallowed — nothing a browser sends may stop the next
+                # connection being served — but a swallowed failure that
+                # leaves no trace is undiagnosable, so it gets one line.
+                logging.getLogger(debuglog.SERVICE_LOGGER_NAME).debug(
+                    "singleton: dispatch failed", exc_info=True)
 
     t = threading.Thread(target=_loop, daemon=True)
     t.start()

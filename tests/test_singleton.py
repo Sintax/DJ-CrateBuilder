@@ -3,6 +3,7 @@ import socket
 import threading
 import time
 
+from cratebuilder import singleton
 from cratebuilder.singleton import (
     acquire_single_instance, request_show, listen_for_show_requests,
     SINGLE_INSTANCE_PORT)
@@ -187,3 +188,18 @@ def test_a_throwing_on_add_does_not_kill_the_listener():
 def test_forward_add_is_a_noop_when_nothing_is_listening():
     port = _free_port()
     forward_add(port, "djcrate://add?v=1", timeout=0.2)   # must not raise
+
+
+def test_a_connection_that_cannot_be_timed_out_is_just_an_empty_line():
+    """settimeout raises on a socket the peer has already torn down. It used
+    to sit outside the try, so that exception escaped the listener's while
+    loop and killed the listener for the rest of the run — one dropped
+    connection and djcrate:// stopped working until the app restarted."""
+    class Dead:
+        def settimeout(self, _secs):
+            raise OSError("socket is closed")
+
+        def recv(self, _n):        # pragma: no cover - must never be reached
+            raise AssertionError("recv on a socket that cannot be timed out")
+
+    assert singleton._read_line(Dead()) == ""
