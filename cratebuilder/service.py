@@ -2424,7 +2424,6 @@ class CrateBuilderService:
             try:
                 fresh = self._db_for_write().add_inbox_item(url=result.url,
                                                             kind=result.kind)
-                count = self.browser_inbox_count()
             except Exception:
                 # In quiet mode the inbox row IS the send, so a locked or
                 # corrupt database has lost it — report it the way a bad URI
@@ -2436,6 +2435,9 @@ class CrateBuilderService:
                     "body": ("Could not queue the browser send — the database "
                              "is unavailable."), "at": time.time()})
                 return {"action": "rejected"}
+            # Outside the guard on purpose: the row has landed, so a count
+            # that cannot be read must not turn a queued send into a refusal.
+            count = self.browser_inbox_count()
             self.emit(BROWSER_INBOX, {"count": count,
                                       "added": send if fresh else None})
             if fresh:
@@ -2473,6 +2475,9 @@ class CrateBuilderService:
         is not that moment — the send belongs to the desktop the browser is
         on — so it neither drains nor flips the flag."""
         pending = []
+        # Counted BEFORE the drain: the parked sends exist nowhere else, so
+        # nothing may consume them until the rest of this reply is in hand.
+        count = self.browser_inbox_count()
         if self.transport == LOCAL:
             with self._lock:
                 self._local_page_ready = True
@@ -2481,11 +2486,19 @@ class CrateBuilderService:
                 # A start-minimised launch has just hidden the window the
                 # first bring-forward showed; this one lands after it.
                 self._bring_forward()
-        return {"inbox_count": self.browser_inbox_count(), "pending": pending}
+        return {"inbox_count": count, "pending": pending}
 
     def browser_inbox_count(self):
-        db = self._db()
-        return db.inbox_count() if db is not None else 0
+        """How many sends are waiting, or 0 if the database cannot say.
+
+        Degrades rather than raises, like the library counters do: this number
+        is read on every snapshot, so a locked or corrupt database must cost
+        the page a badge, not its boot."""
+        try:
+            db = self._db()
+            return db.inbox_count() if db is not None else 0
+        except Exception:
+            return 0
 
     def browser_inbox_list(self):
         db = self._db()
