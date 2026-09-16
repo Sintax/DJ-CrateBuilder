@@ -2597,7 +2597,10 @@
   }
 
   /* Sends the host parked while this window had no page. The host clears
-     the list as it serves the snapshot, so a reload never replays them. */
+     the list as it serves the snapshot, so a reload never replays them, and
+     it hands over at most one — opening a second dialog would close the
+     first, so any extra sends from a launch-time burst go to the Browser
+     Inbox instead, and the host says so. */
   function drainBrowserPending() {
     const pending = (state && state.browser && state.browser.pending) || [];
     pending.forEach(handleBrowserSend);
@@ -2640,7 +2643,7 @@
       list.innerHTML = '';
       let rows = [];
       try {
-        rows = await cbApi.call('browser.inbox_list');
+        rows = (await cbApi.call('browser.inbox_list')) || [];
       } catch (err) {
         list.appendChild(modalNote(err.userFacing ? err.message
           : 'The host could not read the inbox.'));
@@ -2672,7 +2675,10 @@
         });
         const remove = modalButton('Remove', 'cb-btn--quiet cb-btn--sm', async () => {
           try { await cbApi.call('browser.inbox_remove', { id: row.id }); }
-          catch (_) { /* the browser.inbox event re-syncs the count either way */ }
+          catch (err) {
+            toast(err.userFacing ? err.message
+              : 'The host could not remove that send.', true);
+          }
           paint();
         });
         line.append(tagNode(row.kind, 'cb-tag--grey'), url, process, remove);

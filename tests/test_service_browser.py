@@ -60,9 +60,30 @@ def test_a_send_before_the_page_is_up_is_parked_then_handed_over_once(service):
     assert service.brought_forward == 1
     first = _ready(service)
     assert first["browser"]["pending"] == [{"kind": "channel", "url": CHANNEL}]
+    assert first["browser"]["inbox_count"] == 0   # one send needs no overflow
     assert service.brought_forward == 2          # shown again as it is handed over
     second = _ready(service)
     assert second["browser"]["pending"] == []
+
+
+def test_a_burst_before_the_page_is_up_hands_over_one_and_queues_the_rest(service):
+    """The page opens a dialog per send and the second would close the first,
+    so only the oldest is handed over — the rest go to the Browser Inbox."""
+    second = "https://soundcloud.com/another"
+    service.browser_receive(_uri("channel", CHANNEL))
+    service.browser_receive(_uri("channel", second))
+    service.browser_receive(_uri("track", TRACK))
+    snap = _ready(service)
+    assert snap["browser"]["pending"] == [{"kind": "channel", "url": CHANNEL}]
+    assert snap["browser"]["inbox_count"] == 2
+    assert [(r["kind"], r["url"]) for r in service.call("browser.inbox_list")] == [
+        ("channel", second), ("track", TRACK)]
+    assert _of(service, BROWSER_INBOX) == [
+        {"count": 2, "added": {"kind": "track", "url": TRACK}}]
+    notes = _of(service, "notification")
+    assert len(notes) == 1 and notes[0]["level"] == "info"
+    assert "2 more sends" in notes[0]["body"]
+    assert _ready(service)["browser"]["pending"] == []
 
 
 def test_an_unreadable_inbox_count_never_costs_the_page_its_parked_sends(
