@@ -294,6 +294,12 @@ EOF
 chmod +x "$DESKTOP_DIR/dj-cratebuilder.desktop"
 echo "  ✓ Desktop entry: created"
 
+# Refresh the desktop-file cache so the djcrate:// association takes effect
+# immediately (best-effort — matches packaging/deb/postinst).
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q "$DESKTOP_DIR" || true
+fi
+
 # ── Verify PATH ───────────────────────────────────────────────────────────
 if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
     echo ""
