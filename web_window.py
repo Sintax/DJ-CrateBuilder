@@ -688,9 +688,17 @@ def djcrate_uri_arg(argv):
 
     Hand-parsed like host_allow_args: this entry point has no parser. argv[0]
     is skipped — it is the script or exe, never a payload.
+
+    A token carrying a literal double quote is dropped rather than used. The
+    registry handler is `"<exe>" "%1"`, so a quote inside the URI is the one
+    character that can close that argument early and let the rest of the
+    string be read as further arguments; a real djcrate:// URI never contains
+    one (the extension percent-encodes it).
     """
     for token in argv[1:]:
         if token.startswith("djcrate://"):
+            if '"' in token:
+                return None
             return token
     return None
 

@@ -279,6 +279,15 @@ def test_djcrate_uri_arg_finds_the_protocol_argument_anywhere_in_argv():
     assert web_window.djcrate_uri_arg(["djcrate://not-argv0"]) is None
 
 
+def test_djcrate_uri_arg_refuses_a_token_carrying_a_quote():
+    """The registry handler is `"<exe>" "%1"`, so a double quote inside the
+    URI is the one character that could close that argument early and let the
+    rest be read as further arguments. A real send never contains one."""
+    assert web_window.djcrate_uri_arg(
+        ['exe', 'djcrate://add?v=1&url=x" --screen watchlist']) is None
+    assert web_window.djcrate_uri_arg(['exe', 'djcrate://"']) is None
+
+
 def test_a_losing_launch_with_a_uri_forwards_it_instead_of_asking_for_show(monkeypatch):
     forwarded, asked = [], []
     monkeypatch.setattr(web_window, "acquire_single_instance", lambda port: None)
