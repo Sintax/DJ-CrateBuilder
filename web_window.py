@@ -30,10 +30,10 @@ import webview
 
 from cratebuilder import updater_core as ucore
 from cratebuilder import util
-from cratebuilder.service import (JOB_FINISHED, LOCAL, CBError,
+from cratebuilder.service import (BROWSER_INBOX, JOB_FINISHED, LOCAL, CBError,
                                   CrateBuilderService, app_icon_path)
 from cratebuilder.singleton import (SINGLE_INSTANCE_PORT, acquire_single_instance,
-                                    listen_for_show_requests, request_show)
+                                    forward_add, listen_for_requests, request_show)
 
 REMOTE_PORT = 8770
 
@@ -291,6 +291,13 @@ class WindowTray:
         if icon is not None:
             icon.notify(message, WINDOW_TITLE)
 
+    def _balloon(self, message):
+        """A tray balloon when the icon is up, and nothing otherwise — with
+        the window visible the page's own toast and bell carry the news."""
+        icon = self._icon
+        if icon is not None:
+            icon.notify(message, WINDOW_TITLE)
+
     # ── window lifecycle ─────────────────────────────────────────────────────
     def on_minimized(self):
         """Minimize button → hide to the system tray when that option is on.
@@ -465,6 +472,12 @@ class WindowTray:
             self._current = payload
         elif type == "progress.overall":
             self._overall = payload
+        elif type == BROWSER_INBOX:
+            added = payload.get("added")
+            if added:
+                self._balloon(
+                    f"Queued a {added.get('kind')} from your browser — "
+                    f"{int(payload.get('count') or 0)} waiting in the Browser Inbox.")
         elif type == JOB_FINISHED:
             job = payload.get("job")
             if self._current is not None and self._current.get("job") in (job, None):
@@ -670,19 +683,37 @@ def run_self_test_if_requested(argv=None):
     sys.exit(cb_selftest.run(argv[pos]))
 
 
-def acquire_or_hand_off(port=SINGLE_INSTANCE_PORT):
+def djcrate_uri_arg(argv):
+    """The djcrate:// URI a protocol-handler launch carries, or None.
+
+    Hand-parsed like host_allow_args: this entry point has no parser. argv[0]
+    is skipped — it is the script or exe, never a payload.
+    """
+    for token in argv[1:]:
+        if token.startswith("djcrate://"):
+            return token
+    return None
+
+
+def acquire_or_hand_off(port=SINGLE_INSTANCE_PORT, uri=None):
     """Claim the single-instance lock, or hand off to the instance that
     already holds it and exit.
 
     Shares SINGLE_INSTANCE_PORT with the tkinter app deliberately — both
-    own the same database and must never run together. Returns the bound
-    lock socket on success; the caller must keep a reference to it for the
-    whole process lifetime, or it is garbage-collected and the lock silently
-    released.
+    own the same database and must never run together. A launch carrying a
+    djcrate:// URI (the OS answering a browser send) forwards the payload to
+    the running instance instead of asking it to show its window — the
+    running app decides whether to surface, per its receive mode. Returns the
+    bound lock socket on success; the caller must keep a reference to it for
+    the whole process lifetime, or it is garbage-collected and the lock
+    silently released.
     """
     lock = acquire_single_instance(port)
     if lock is None:
-        request_show(port)
+        if uri:
+            forward_add(port, uri)
+        else:
+            request_show(port)
         sys.exit(0)
     return lock
 
@@ -1147,7 +1178,8 @@ def main():
     if not os.path.isfile(index):
         sys.exit(f"web bundle missing: {index}")
 
-    lock = acquire_or_hand_off()
+    uri = djcrate_uri_arg(sys.argv)
+    lock = acquire_or_hand_off(uri=uri)
     prepare_runtime_workspace()
 
     screen = ""
@@ -1196,6 +1228,10 @@ def main():
     placement = WindowPlacement(window, service)
     howto = HowtoWindow(service)
     service.on_open_howto = howto.open
+    # A browser send in window mode raises the window from the tray or the
+    # taskbar before the page opens its dialog. Thread-safe by restore_window's
+    # own contract — the listener thread is the usual caller.
+    service.on_bring_forward = lambda: restore_window(window)
     # One handler owns the whole close: the confirmation, then — only when
     # the close is going ahead — the teardown steps in this order. The
     # placement flush stays ahead of service.close because it still has a
@@ -1212,7 +1248,14 @@ def main():
     # exits the process.
     service.on_update_restart = closer.force_close
     window.events.minimized += tray.on_minimized
-    listen_for_show_requests(lock, lambda: restore_window(window))
+    listen_for_requests(lock, on_show=lambda: restore_window(window),
+                        on_add=service.browser_receive)
+    if uri:
+        # This launch WAS the protocol-handler invocation and won the bind.
+        # Window mode parks the send until the page's first snapshot (the
+        # bridge below has nothing to push to yet); quiet mode writes its
+        # inbox row right now, before any window exists.
+        service.browser_receive(uri)
 
     def started():
         closer.add(start_push_bridge(window, service))
