@@ -5,9 +5,10 @@ from urllib.parse import quote
 
 import pytest
 
+from cratebuilder.db import DownloadsDatabase
 from cratebuilder.service import (BROWSER_INBOX, BROWSER_SEND, LOCAL, REMOTE,
-                                  RECEIVE_MODE_QUIET, CBError,
-                                  CrateBuilderService)
+                                  RECEIVE_MODE_QUIET, RECEIVE_MODE_WINDOW,
+                                  CBError, CrateBuilderService)
 from cratebuilder.settings import Settings
 
 
@@ -62,6 +63,24 @@ def test_a_send_before_the_page_is_up_is_parked_then_handed_over_once(service):
     assert service.brought_forward == 2          # shown again as it is handed over
     second = _ready(service)
     assert second["browser"]["pending"] == []
+
+
+def test_an_unreadable_inbox_count_never_costs_the_page_its_parked_sends(
+        service, settings, monkeypatch):
+    """The snapshot is the only hand-over point, so it must not fail after it
+    has drained — nor before, over a number the page can live without."""
+    settings.set("browser_receive_mode", RECEIVE_MODE_QUIET)
+    service.browser_receive(_uri("track", TRACK))       # brings a database into being
+    settings.set("browser_receive_mode", RECEIVE_MODE_WINDOW)
+    service.browser_receive(_uri("channel", CHANNEL))   # parks
+
+    def _boom(self):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(DownloadsDatabase, "inbox_count", _boom)
+    snap = _ready(service)
+    assert snap["browser"]["inbox_count"] == 0
+    assert snap["browser"]["pending"] == [{"kind": "channel", "url": CHANNEL}]
 
 
 def test_a_send_after_the_page_is_up_is_emitted_live(service):
@@ -158,6 +177,16 @@ def test_inbox_list_take_and_remove(service, settings):
 def test_taking_a_row_that_is_gone_is_a_user_facing_error(service):
     with pytest.raises(CBError):
         service.call("browser.inbox_take", {"id": 12345})
+
+
+def test_taking_an_unknown_id_from_a_real_inbox_is_a_user_facing_error(service,
+                                                                       settings):
+    """The database exists and has rows — only this id is missing."""
+    settings.set("browser_receive_mode", RECEIVE_MODE_QUIET)
+    service.browser_receive(_uri("channel", CHANNEL))
+    with pytest.raises(CBError):
+        service.call("browser.inbox_take", {"id": 12345})
+    assert service.browser_inbox_count() == 1       # nothing was dropped
 
 
 def test_inbox_calls_without_a_database_are_empty_not_errors(service, tmp_path):
