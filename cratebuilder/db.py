@@ -81,7 +81,7 @@ def _row_richness(row):
 
 
 class DownloadsDatabase:
-    SCHEMA_VERSION = 7
+    SCHEMA_VERSION = 8
 
     # True when the v6 migration could not drop watchlist.scan_cutoff_date and
     # the legacy NOT NULL column is still there. Nothing reads it, but an
@@ -258,6 +258,12 @@ class DownloadsDatabase:
                     );
                     CREATE INDEX IF NOT EXISTS idx_unavail_channel_url
                         ON unavailable_tracks(channel_url);
+                    CREATE TABLE IF NOT EXISTS browser_inbox (
+                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                        url         TEXT NOT NULL UNIQUE,
+                        kind        TEXT NOT NULL,
+                        received_at INTEGER NOT NULL
+                    );
                 """)
                 # ── Migrations for pre-existing databases ──────────────────
                 # Older DBs (schema v1) lack the channel_id columns. Add them
@@ -327,6 +333,12 @@ class DownloadsDatabase:
                 except Exception:
                     self._legacy_cutoff_column = False
 
+                # schema v8: browser_inbox — sends the browser extension made
+                # while receive mode was "Collect quietly", kept until the
+                # user processes or discards them (extension repo, SPEC §10).
+                # The CREATE TABLE IF NOT EXISTS above IS the migration: an
+                # existing database gains the table on its next open, and
+                # url is UNIQUE so a repeated send coalesces at the row.
                 conn.execute(
                     "INSERT OR REPLACE INTO schema_info (key, value) VALUES (?, ?)",
                     ("version", str(self.SCHEMA_VERSION))
@@ -1078,6 +1090,42 @@ class DownloadsDatabase:
         except Exception as e:
             self._log("error", f"add_watchlist_channel failed: {e}")
             return None
+
+    # ── browser inbox ─────────────────────────────────────────────────────────
+
+    def add_inbox_item(self, *, url, kind, received_at=None):
+        """Queue a browser-extension send for later processing. A URL already
+        pending is silently coalesced (returns False); a fresh row returns
+        True, which is what drives the tray ping."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO browser_inbox (url, kind, received_at) "
+                "VALUES (?, ?, ?)",
+                (url, kind, int(received_at if received_at is not None
+                                else time.time())))
+            return cur.rowcount == 1
+
+    def list_inbox(self):
+        """All pending browser sends, oldest first."""
+        with self._conn() as conn:
+            return conn.execute(
+                "SELECT id, url, kind, received_at FROM browser_inbox "
+                "ORDER BY received_at, id").fetchall()
+
+    def get_inbox_item(self, item_id):
+        with self._conn() as conn:
+            return conn.execute(
+                "SELECT id, url, kind, received_at FROM browser_inbox "
+                "WHERE id = ?", (item_id,)).fetchone()
+
+    def remove_inbox_item(self, item_id):
+        with self._conn() as conn:
+            conn.execute("DELETE FROM browser_inbox WHERE id = ?", (item_id,))
+
+    def inbox_count(self):
+        with self._conn() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM browser_inbox").fetchone()[0]
 
     def update_watchlist_scan_result(self, channel_id, *, timestamp,
                                       pending_count, pending_entries, status,
