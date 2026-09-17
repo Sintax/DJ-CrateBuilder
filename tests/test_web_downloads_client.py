@@ -163,7 +163,7 @@ def test_the_queue_log_is_boxed_rather_than_floored(app_css):
     """min-height let the card grow one line per queued track the moment a
     run started. It has to be a fixed height that scrolls."""
     rule = _slice(app_css, "#dl-queue {", "}")
-    assert "height: 119px" in rule and "min-height" not in rule
+    assert "height: 178px" in rule and "min-height" not in rule   # nine lines
     assert "overflow-y: auto" in rule
 
 
@@ -229,7 +229,7 @@ def test_the_running_line_is_kept_in_view_without_moving_the_page(app_js):
     """A boxed log can hide the line that matters. scrollIntoView would drag
     the screen behind it, and offsetTop answers relative to whichever ancestor
     happens to be positioned — neither is safe here."""
-    fn = _slice(app_js, "  function scrollQueueLogToActive(",
+    fn = _slice(app_js, "  function scrollBoxToActive(",
                 "  function renderQueueLog()")
     assert "getBoundingClientRect" in fn
     assert "scrollIntoView" not in fn
@@ -238,7 +238,20 @@ def test_the_running_line_is_kept_in_view_without_moving_the_page(app_js):
     # borrows this same log.
     body = _slice(app_js, "  function renderQueueLog()",
                   "  /* Every write control funnels through here")
-    assert body.count("scrollQueueLogToActive(log)") == 2
+    assert body.count("scrollBoxToActive(log, '.cb-log__now')") == 2
+
+
+def test_the_batch_rows_are_boxed_and_follow_the_running_row(app_css, app_js):
+    """The Batch queue card used to grow one row per URL past four. It is a
+    fixed four-row box now, so like the log it has to scroll to the row that
+    is downloading — in both the manual batch and the borrowed Watch List
+    view."""
+    rule = _slice(app_css, "#dl-rows {", "}")
+    assert "height: 171px" in rule and "min-height" not in rule
+    assert "overflow-y: auto" in rule
+    for start, end in [("  function renderBatch()", "  /* One line of the queue log"),
+                       ("  function renderWatchlistQueue()", "  function renderBatch()")]:
+        assert "scrollBoxToActive(host, '.cb-qrow.is-active');" in _slice(app_js, start, end), start
 
 
 # ── a finished run stays in the queue panel until Clear ──────────────────────
@@ -265,7 +278,7 @@ const DL_LOG_CLASS = { done: 'downloaded', skipped: 'skipped', error: 'error', q
 function num(n) { return String(n == null ? 0 : n); }
 const gated = [];
 function gateWrite(el) { gated.push(el === els['#dl-queue-clear']); }
-function scrollQueueLogToActive() {}
+function scrollBoxToActive() {}
 function wlQueueRows() { return []; }
 const dl = { running: %(dl_running)s, rows: {}, current: null };
 const wl = { running: false, rows: [] };
@@ -297,7 +310,7 @@ def _last_run(app_js, tmp_path, last_run, dl_running=False, batch=None):
         "dl_running": json.dumps(dl_running),
         "batch": json.dumps(batch or []),
         "last_run": json.dumps(last_run),
-        "line": _slice(app_js, "  function queueLogLine(", "  /* The log is boxed"),
+        "line": _slice(app_js, "  function queueLogLine(", "  /* The queue log and the batch rows"),
         "meta": _slice(app_js, "  function lastRunMeta(", "  function renderQueueLog()"),
         "render": _slice(app_js, "  function renderQueueLog()",
                          "  /* Every write control funnels through here"),
@@ -699,6 +712,7 @@ const gates = [];
 function setStartDisabled(off, why) { gates.push([!!off, why]); }
 function gateWrite() {}
 function renderQueueLog() {}
+function scrollBoxToActive() {}
 %(pending)s
 %(batch)s
 const out = {};

@@ -44,8 +44,8 @@ def svc(tmp_path):
 def test_about_constants_come_from_the_monolith(contract_about):
     info = about_info()
     assert info["created_by"] == contract_about["created_by"]
-    assert info["contact_email"] == contract_about["contact_email"]
     assert info["description"] == contract_about["description"]
+    assert "contact_email" not in info
     assert info["github_url"].startswith("https://github.com/")
     assert info["issues_url"].startswith(info["github_url"])
 
@@ -135,14 +135,8 @@ def test_open_url_opens_a_web_link_locally(svc, monkeypatch):
     assert opened == ["https://github.com/Sintax/DJ-CrateBuilder"]
 
 
-def test_open_url_opens_a_mailto_link(svc, monkeypatch):
-    opened = []
-    monkeypatch.setattr(service_mod.webbrowser, "open", opened.append)
-    svc.call("fs.open_url", {"url": "mailto:CorruptSintax@Gmail.com"})
-    assert opened == ["mailto:CorruptSintax@Gmail.com"]
-
-
 @pytest.mark.parametrize("url", [
+    "mailto:someone@example.com",   # the About screen no longer has a mail link
     "file:///C:/Windows/System32/cmd.exe",
     "javascript:alert(1)",
     "vbscript:msgbox(1)",
@@ -154,8 +148,7 @@ def test_open_url_opens_a_mailto_link(svc, monkeypatch):
     12345,
     ["https://example.com"],
 ])
-def test_open_url_refuses_anything_that_is_not_a_web_or_mail_link(svc, monkeypatch,
-                                                                 url):
+def test_open_url_refuses_anything_that_is_not_a_web_link(svc, monkeypatch, url):
     """webbrowser.open falls through to the OS handler, where a file: URL stops
     being navigation and starts being execution."""
     opened = []

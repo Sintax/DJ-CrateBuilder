@@ -202,10 +202,12 @@ html[data-text-size="xl"] { zoom: 1.15; --cb-vh: calc(1vh / 1.15); --cb-vw: calc
 .cb-foot-link { color: var(--cb-muted); text-decoration: none; }
 .cb-foot-link:hover { color: var(--cb-line); text-decoration: underline; }
 
-/* Batch queue rows. The floor keeps four rows' worth of the card open before
-   the list has to earn its height — a .cb-qrow measures 42.75px. Past four the
-   list grows as it always did. */
-#dl-rows { min-height: 171px; }
+/* Batch queue rows. Four rows' worth of the card, always — a .cb-qrow measures
+   42.75px. A fixed height, not a floor: a floor let the fifth URL (or a Watch
+   List run's fifth channel) push everything below it down the screen. Past
+   four the list scrolls instead, and the renderers keep the running row in
+   view. */
+#dl-rows { height: 171px; overflow-y: auto; }
 .cb-qrow {
   display: flex; align-items: center; gap: 10px;
   padding: 8px 0; border-bottom: 1px solid var(--cb-line-row);
@@ -225,13 +227,13 @@ html[data-text-size="xl"] { zoom: 1.15; --cb-vh: calc(1vh / 1.15); --cb-vw: calc
 
 /* Bottom Queue log — the currently-downloading line gets the design's tinted
    row treatment; everything else is plain .cb-log text. */
-/* Six lines at the 19.8px .cb-log line box, on a content-box height, so the
+/* Nine lines at the 19.8px .cb-log line box, on a content-box height, so the
    running queue reads as a list rather than a peephole. A fixed height, not a
    floor: one line per queued item meant the card grew from six lines to as
    many as the batch had the moment it started, walking everything below it
    down the screen. It scrolls instead, and renderQueueLog keeps the running
    line in view. */
-#dl-queue { height: 119px; overflow-y: auto; }
+#dl-queue { height: 178px; overflow-y: auto; }
 /* The Clear beside the Queue title, for a kept run: sized to the title line
    it sits on rather than to the toolbar buttons. */
 .cb-queue__clear { font-size: 11px; padding: 1px 7px; min-height: 20px; }

@@ -328,7 +328,6 @@ ABOUT_NOTE = ("*(For any bugs encountered, submit them easily using the "
 # Which monolith module constant fills which About field.
 ABOUT_CONSTANTS = {
     "created_by": "ABOUT_CREATED_BY",
-    "contact_email": "ABOUT_CONTACT_EMAIL",
     "description": "ABOUT_DESCRIPTION",
     "github_url": "GITHUB_URL",
     "issues_url": "GITHUB_ISSUES_URL",
@@ -337,10 +336,10 @@ ABOUT_CONSTANTS = {
 ABOUT_FAQ_OWNER = "_build_about_tab"
 ABOUT_FAQ_NAME = "faq"
 
-# What fs.open_url will hand to the host's browser. mailto is the author's
-# contact link; nothing else is a scheme a page of ours has any reason to open,
-# and file:/ javascript: on os.startfile is how a link becomes an execution.
-OPENABLE_URL_SCHEMES = ("http", "https", "mailto")
+# What fs.open_url will hand to the host's browser. Nothing else is a scheme a
+# page of ours has any reason to open, and file:/ javascript: on os.startfile
+# is how a link becomes an execution.
+OPENABLE_URL_SCHEMES = ("http", "https")
 
 # about_info parses a 13k-line file, so the result is kept until the file
 # changes underneath it. Keyed by path -> (stat signature, payload).
@@ -3051,8 +3050,8 @@ class CrateBuilderService:
         return {"opened": True}
 
     def open_url(self, url):
-        """Open *url* in the host's own browser — the About screen's GitHub,
-        Submit Issues and mailto links, exactly as `_build_about_tab` does.
+        """Open *url* in the host's own browser — the About screen's GitHub
+        and Submit Issues links, exactly as `_build_about_tab` does.
 
         Remote never reaches this (the LOCAL_ONLY "fs." prefix refuses it
         before dispatch, and this repeats the check the way fs_reveal does);
@@ -3068,7 +3067,7 @@ class CrateBuilderService:
         url = url.strip() if isinstance(url, str) else ""
         scheme = url.split(":", 1)[0].lower() if ":" in url else ""
         if scheme not in OPENABLE_URL_SCHEMES:
-            raise CBError("Only web and mail links can be opened from here.")
+            raise CBError("Only web links can be opened from here.")
         try:
             webbrowser.open(url)
         except Exception as exc:
