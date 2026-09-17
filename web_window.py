@@ -1133,9 +1133,16 @@ def prepare_runtime_workspace():
     path deliberately leaves it for the updater; see docs/specs/
     2026-08-29-webui-local-updater-design.md), then normalises the working
     directory — a Run-key startup launch begins in C:\\Windows\\System32,
-    which poisons CPython's last-resort temp-dir fallback.
+    which poisons CPython's last-resort temp-dir fallback. The packaged build
+    also retires duplicate dist-info folders an older updater left behind,
+    so the Update page reports the package version actually installed.
     """
     ucore.purge_dir(ucore.default_workspace())
+    if ucore.is_frozen():
+        try:
+            ucore.retire_duplicate_dist_infos(ucore.install_dir())
+        except Exception:                                # never block the window
+            pass
     try:
         os.chdir(util.runtime_data_dir())
     except OSError:
