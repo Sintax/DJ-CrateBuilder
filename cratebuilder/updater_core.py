@@ -397,6 +397,60 @@ def _stale_dist_infos(staged_dir, app_dir):
     return stale
 
 
+def _version_key(text):
+    """Sort key ordering dotted versions numerically per segment (0.53.0 > 0.9.9)."""
+    return tuple((0, int(p)) if p.isdecimal() else (1, p)
+                 for p in re.split(r"[.\-+]", text))
+
+
+_RETIRED_SUFFIX = ".retired"
+
+
+def retire_duplicate_dist_infos(app_dir):
+    """Keep only the newest dist-info per package in app_dir and app_dir/_internal.
+
+    Older updaters could overlay a bumped package without retiring its old
+    metadata, and a delta never re-ships an unchanged dist-info, so the app
+    sweeps once per launch. Each loser is renamed out of the dist-info
+    namespace first, then deleted: a locked file can make rmtree stop half
+    way, and a half-emptied dist-info folder crashes importlib.metadata where
+    the untouched one merely misreported. Never raises — this runs before
+    the window opens. Returns the removed paths.
+    """
+    removed = []
+    for parent in (os.path.abspath(app_dir),
+                   os.path.join(os.path.abspath(app_dir), "_internal")):
+        try:
+            names = os.listdir(parent)
+        except OSError:
+            continue
+        groups = {}
+        for name in names:
+            path = os.path.join(parent, name)
+            if not os.path.isdir(path):
+                continue
+            if name.endswith(".dist-info" + _RETIRED_SUFFIX):
+                shutil.rmtree(path, ignore_errors=True)      # an earlier sweep's leftover
+                continue
+            m = _DIST_INFO_DIR.match(name)
+            if m:
+                groups.setdefault(_dist_key(name), []).append((m.group(2), name))
+        for entries in groups.values():
+            if len(entries) < 2:
+                continue
+            entries.sort(key=lambda e: (_version_key(e[0]), e[1]))
+            for _ver, name in entries[:-1]:
+                path = os.path.join(parent, name)
+                retired = path + _RETIRED_SUFFIX
+                try:
+                    os.replace(path, retired)
+                except OSError:
+                    continue
+                shutil.rmtree(retired, ignore_errors=True)
+                removed.append(path)
+    return sorted(removed)
+
+
 def apply_update(staged_dir, app_dir, backup_dir, _copyfn=shutil.copy2):
     """Replace ``app_dir`` files with ``staged_dir`` files, with rollback.
 

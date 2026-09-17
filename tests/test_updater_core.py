@@ -244,6 +244,116 @@ def test_apply_update_rollback_restores_a_retired_dist_info(tmp_path):
     assert not (app / "_internal" / "uvicorn-0.53.0.dist-info" / "METADATA").exists()
 
 
+# ── retire_duplicate_dist_infos (the launch-time sweep) ──────────────────────
+# The retirement above only runs inside an update, and the update that first
+# ships it is still applied by the previous build's updater.exe — so an install
+# that already carries two folders keeps both. A delta never re-ships an
+# unchanged dist-info either. The app therefore sweeps its own install folder
+# once per launch: same package, several dist-info folders → keep the newest.
+def test_retire_duplicate_dist_infos_keeps_only_the_newest_version(tmp_path):
+    app = tmp_path / "app"
+    internal = app / "_internal"
+    _write(str(internal / "uvicorn-0.52.4.dist-info" / "METADATA"), "Version: 0.52.4")
+    _write(str(internal / "uvicorn-0.53.0.dist-info" / "METADATA"), "Version: 0.53.0")
+    # Sorts above 0.53.0 as text; must lose to it as a version.
+    _write(str(internal / "uvicorn-0.9.9.dist-info" / "METADATA"), "Version: 0.9.9")
+    _write(str(internal / "certifi-2026.7.22.dist-info" / "METADATA"), "keep")
+    _write(str(internal / "uvicorn_worker-1.0.dist-info" / "METADATA"), "keep")
+    _write(str(internal / "uvicorn" / "__init__.py"), "keep")   # the package itself
+
+    removed = uc.retire_duplicate_dist_infos(str(app))
+
+    assert sorted(removed) == sorted([
+        str(internal / "uvicorn-0.52.4.dist-info"),
+        str(internal / "uvicorn-0.9.9.dist-info"),
+    ])
+    assert not (internal / "uvicorn-0.52.4.dist-info").exists()
+    assert not (internal / "uvicorn-0.9.9.dist-info").exists()
+    assert (internal / "uvicorn-0.53.0.dist-info" / "METADATA").exists()
+    assert (internal / "certifi-2026.7.22.dist-info" / "METADATA").exists()
+    assert (internal / "uvicorn_worker-1.0.dist-info" / "METADATA").exists()
+    assert (internal / "uvicorn" / "__init__.py").exists()
+
+
+def test_retire_duplicate_dist_infos_also_sweeps_the_install_root(tmp_path):
+    # PyInstaller < 6 laid the metadata beside the exe rather than in _internal.
+    app = tmp_path / "app"
+    _write(str(app / "yt_dlp-2026.1.1.dist-info" / "METADATA"), "old")
+    _write(str(app / "yt_dlp-2026.2.2.dist-info" / "METADATA"), "new")
+
+    removed = uc.retire_duplicate_dist_infos(str(app))
+
+    assert removed == [str(app / "yt_dlp-2026.1.1.dist-info")]
+    assert (app / "yt_dlp-2026.2.2.dist-info" / "METADATA").exists()
+
+
+def test_retire_duplicate_dist_infos_with_nothing_to_do(tmp_path):
+    app = tmp_path / "app"
+    _write(str(app / "_internal" / "certifi-2026.7.22.dist-info" / "METADATA"), "x")
+    _write(str(app / "_internal" / "uvicorn-0.53.0.dist-info" / "METADATA"), "x")
+
+    assert uc.retire_duplicate_dist_infos(str(app)) == []
+    assert (app / "_internal" / "certifi-2026.7.22.dist-info" / "METADATA").exists()
+    assert (app / "_internal" / "uvicorn-0.53.0.dist-info" / "METADATA").exists()
+
+
+def test_retire_duplicate_dist_infos_never_raises(tmp_path):
+    # A missing install folder (or one the process can't list) is a no-op:
+    # this runs on every launch and must never keep the window from opening.
+    assert uc.retire_duplicate_dist_infos(str(tmp_path / "nope")) == []
+    # str.isdigit accepts characters int() rejects (superscript two); a folder
+    # named that way must not turn the launch-time sweep into a crash.
+    app = tmp_path / "app"
+    _write(str(app / "foo-1.².dist-info" / "METADATA"), "x")
+    _write(str(app / "foo-1.0.dist-info" / "METADATA"), "x")
+    uc.retire_duplicate_dist_infos(str(app))          # must not raise
+
+
+def test_retire_duplicate_dist_infos_only_looks_at_directories_one_level_deep(tmp_path):
+    app = tmp_path / "app"
+    _write(str(app / "_internal" / "uvicorn-0.53.0.dist-info" / "METADATA"), "x")
+    _write(str(app / "_internal" / "uvicorn-0.1.0.dist-info"), "a file, not a folder")
+    _write(str(app / "_internal" / "deeper" / "uvicorn-0.2.0.dist-info" / "METADATA"), "x")
+
+    assert uc.retire_duplicate_dist_infos(str(app)) == []
+    assert (app / "_internal" / "uvicorn-0.1.0.dist-info").is_file()
+    assert (app / "_internal" / "deeper" / "uvicorn-0.2.0.dist-info" / "METADATA").exists()
+
+
+def test_retire_duplicate_dist_infos_groups_by_normalised_name(tmp_path):
+    # PEP 503: `foo.bar`, `foo_bar` and `Foo-Bar` are one distribution.
+    app = tmp_path / "app"
+    _write(str(app / "_internal" / "foo.bar-1.0.dist-info" / "METADATA"), "x")
+    _write(str(app / "_internal" / "foo_bar-2.0.dist-info" / "METADATA"), "x")
+
+    removed = uc.retire_duplicate_dist_infos(str(app))
+
+    assert removed == [str(app / "_internal" / "foo.bar-1.0.dist-info")]
+    assert (app / "_internal" / "foo_bar-2.0.dist-info" / "METADATA").exists()
+
+
+def test_retire_duplicate_dist_infos_renames_before_deleting(tmp_path, monkeypatch):
+    # A locked file can stop rmtree half way. The loser is moved out of the
+    # dist-info namespace first, so importlib.metadata never meets a folder
+    # with its METADATA gone — and the leftover is swept on the next launch.
+    app = tmp_path / "app"
+    old = app / "_internal" / "uvicorn-0.52.4.dist-info"
+    _write(str(old / "METADATA"), "x")
+    _write(str(app / "_internal" / "uvicorn-0.53.0.dist-info" / "METADATA"), "x")
+    monkeypatch.setattr(uc.shutil, "rmtree", lambda p, ignore_errors=False: None)
+
+    removed = uc.retire_duplicate_dist_infos(str(app))
+
+    assert removed == [str(old)]
+    assert not old.exists()
+    assert (app / "_internal" / "uvicorn-0.52.4.dist-info.retired" / "METADATA").exists()
+
+    monkeypatch.undo()
+    assert uc.retire_duplicate_dist_infos(str(app)) == []
+    assert not (app / "_internal" / "uvicorn-0.52.4.dist-info.retired").exists()
+    assert (app / "_internal" / "uvicorn-0.53.0.dist-info" / "METADATA").exists()
+
+
 # ── launch_updater_command ──────────────────────────────────────────────────
 
 def test_launch_updater_command_prefers_updater_exe(tmp_path):

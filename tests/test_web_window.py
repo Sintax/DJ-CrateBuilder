@@ -347,6 +347,40 @@ def test_prepare_runtime_workspace_swallows_an_unchdirable_directory(monkeypatch
     web_window.prepare_runtime_workspace()    # must not raise
 
 
+def _quiet_workspace(tmp_path, monkeypatch):
+    monkeypatch.setattr(web_window.ucore, "default_workspace", lambda: "")
+    monkeypatch.setattr(web_window.ucore, "purge_dir", lambda p: None)
+    monkeypatch.setattr(web_window.util, "runtime_data_dir", lambda: str(tmp_path))
+
+
+def test_prepare_runtime_workspace_sweeps_duplicate_dist_infos_when_frozen(
+        tmp_path, monkeypatch):
+    """The packaged build tidies its own install folder on every launch: an
+    update applied by an older updater.exe can leave two dist-info folders
+    for one package, and the Update page then reports the older version."""
+    _quiet_workspace(tmp_path, monkeypatch)
+    monkeypatch.setattr(web_window.ucore, "is_frozen", lambda: True)
+    monkeypatch.setattr(web_window.ucore, "install_dir", lambda: "C:/install")
+    swept = []
+    monkeypatch.setattr(web_window.ucore, "retire_duplicate_dist_infos", swept.append)
+
+    web_window.prepare_runtime_workspace()
+
+    assert swept == ["C:/install"]
+
+
+def test_prepare_runtime_workspace_leaves_a_source_checkout_alone(
+        tmp_path, monkeypatch):
+    _quiet_workspace(tmp_path, monkeypatch)
+    monkeypatch.setattr(web_window.ucore, "is_frozen", lambda: False)
+    swept = []
+    monkeypatch.setattr(web_window.ucore, "retire_duplicate_dist_infos", swept.append)
+
+    web_window.prepare_runtime_workspace()
+
+    assert swept == []
+
+
 # ── the system tray ──────────────────────────────────────────────────────────
 # WindowTray over fakes: no pystray icon is ever raised, no window is ever
 # created, and every menu callback runs inline instead of on its own thread.
