@@ -14,14 +14,14 @@
 set -e
 
 BUILD_OVERRIDE="${1:-}"
-APP_VERSION="2.0"
+APP_VERSION="2.1"
 PKG_NAME="dj-cratebuilder"
 SCRIPT_NAME="DJ-CrateBuilder_v2.0.py"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 
-# Package version mirrors the app's own version.build (e.g. 2.0.73): read
+# Package version mirrors the app's own version.build (e.g. 2.1.90): read
 # APP_BUILD straight from the source so the .deb filename, the About screen,
 # and update-linux.json all speak the same number. An optional CLI arg
 # overrides the derived build (used only for one-off manual builds).

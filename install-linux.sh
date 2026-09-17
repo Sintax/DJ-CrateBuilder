@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# DJ-CrateBuilder v2.0 — Linux Installer
+# DJ-CrateBuilder v2.1 — Linux Installer
 #
 # Self-bootstrapping. Download this one file and run it with:
 #
@@ -16,7 +16,7 @@
 set -e
 
 APP_NAME="DJ-CrateBuilder"
-APP_VERSION="2.0"
+APP_VERSION="2.1"
 INSTALL_DIR="$HOME/.local/share/DJ-CrateBuilder"
 BIN_LINK="$HOME/.local/bin/dj-cratebuilder"
 DESKTOP_DIR="$HOME/.local/share/applications"
@@ -25,7 +25,7 @@ REPO_TARBALL="https://github.com/Sintax/DJ-CrateBuilder/archive/refs/heads/main.
 
 echo ""
 echo "  ┌─────────────────────────────────────────┐"
-echo "  │   DJ-CrateBuilder v2.0 — Linux Setup    │"
+echo "  │   DJ-CrateBuilder v2.1 — Linux Setup    │"
 echo "  └─────────────────────────────────────────┘"
 echo ""
 
