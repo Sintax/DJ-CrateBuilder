@@ -117,6 +117,10 @@ JOB_TITLES = {
 # here, not left to a client to respect.
 LOCAL_ONLY = ("update.", "fs.", "cookies.howto_window")
 
+# The Watch List's next-run line, without the monolith's emoji: the web UI
+# draws a Core Line clock in front of it instead.
+NEXT_RUN_PREFIX = "Next auto-download:  "
+
 # logs.download only ever hands back a path (see CrateBuilderService.logs_download)
 # — never touches the host filesystem itself — so it's safe on the remote
 # transport too; Task 11's /logs/<name> route is what makes that path useful
@@ -3578,9 +3582,10 @@ class CrateBuilderService:
 
     def next_auto_download(self):
         """The next scheduled run as {ts, text} — the snapshot's copy of what
-        `automation.next_run` pushes."""
+        `automation.next_run` pushes. The web UI draws its own clock glyph
+        before the text, so the monolith's emoji prefix is left off."""
         ts = self._auto_dl_next_ts
-        return {"ts": ts, "text": util.next_run_label(ts)}
+        return {"ts": ts, "text": util.next_run_label(ts, prefix=NEXT_RUN_PREFIX)}
 
     def _auto_download_loop(self):
         """Wait out the interval, run once, repeat. Never raises.
