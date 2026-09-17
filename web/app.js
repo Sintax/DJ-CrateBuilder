@@ -5967,6 +5967,11 @@
     'Remote Access': 'remote.access_section',
   };
 
+  /* The column balancer would otherwise decide the split by height, so a long
+     save path or a larger text size could push Download Behavior across to the
+     right; pinning the right column's first card keeps it bottom-left. */
+  const RIGHT_COLUMN_FIRST = 'Browser Cookies';
+
   /* The Appearance section: the one Settings control that writes to this
      device rather than to the host (see applyTheme). renderSettings seeds
      the section ahead of the contract's, with no keys, and this fills its
@@ -6107,6 +6112,7 @@
         rows += 1;
       }
       if (rows > 6 || sec.name === 'Remote Access') card.classList.add('cb-span-2');
+      if (sec.name === RIGHT_COLUMN_FIRST) card.classList.add('cb-set-card--col2');
 
       if (SECTION_EXTRAS[sec.name]) SECTION_EXTRAS[sec.name](card);
       if (sec.name === 'Remote Access') {
