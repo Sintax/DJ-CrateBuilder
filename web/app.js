@@ -1074,7 +1074,7 @@
     $('#ov-new').textContent = num(pending);
     $('#ov-new-sub').textContent =
       `new tracks across ${num(channels)} channel${channels === 1 ? '' : 's'}`;
-    $('#ov-dl-all').textContent = `⬇ Download All New (${num(pending)})`;
+    $('#ov-dl-all').textContent = `Download All New (${num(pending)})`;
     gateWrite($('#ov-dl-all'),
       wl.running ? WL_BUSY_REASON : (pending ? '' : WL_NOTHING_PENDING),
       'wl.download_all_new');
@@ -1187,7 +1187,8 @@
 
   function updatePauseLabel() {
     const b = $('#dl-pause');
-    b.textContent = dl.paused ? '▶ Resume' : '⏸ Pause';
+    b.textContent = dl.paused ? 'Resume' : 'Pause';
+    b.setAttribute('data-ic', dl.paused ? 'play' : 'pause');
   }
 
   /* A Watch List run has no pause — the reason the Overview's card gives, said
@@ -1350,8 +1351,9 @@
     gateWrite($('#ov-pause'),
       !job ? OV_IDLE_REASON : (job.pausable ? '' : job.pauseReason),
       'main.pause_batch');
-    $('#ov-pause').textContent = dl.paused && job && job.pausable
-      ? '▶ Resume' : '⏸ Pause';
+    const ovPaused = dl.paused && job && job.pausable;
+    $('#ov-pause').textContent = ovPaused ? 'Resume' : 'Pause';
+    $('#ov-pause').setAttribute('data-ic', ovPaused ? 'play' : 'pause');
     gateWrite($('#ov-cancel'), job ? '' : OV_IDLE_REASON,
       job && job.key === 'maintenance' ? 'settings.maintenance_cancel'
                                        : 'main.cancel_batch');
@@ -1362,7 +1364,8 @@
   function skipBtn(row, warn) {
     const b = document.createElement('button');
     b.className = 'cb-btn cb-btn--sm cb-icon ' + (warn ? 'cb-btn--warn' : 'cb-btn--quiet');
-    b.textContent = warn ? '⏭ Skip' : '⏭';
+    b.textContent = warn ? 'Skip' : '';
+    b.setAttribute('data-ic', 'skip');
     /* Three different things to say, and the registry has all three: a row
        already marked, a row waiting its turn in a running batch (`warn` is
        false only there and at rest), and the row being downloaded right now,
@@ -1392,7 +1395,8 @@
       wlGate(b, 'Skipped — moving to the next channel.', 'wl.card_cancel');
       return b;
     }
-    b.textContent = '⏭ Skip';
+    b.textContent = 'Skip';
+    b.setAttribute('data-ic', 'skip');
     wlGate(b, writeBlocked(), 'wl.card_cancel');
     b.addEventListener('click', async () => {
       wl.skipping[row.id] = true;
@@ -1546,13 +1550,14 @@
 
       if (!running) {
         el.appendChild(skipBtn(row, false));
-        [['▲', 'main.row_up', () => call('batch.move', { id: row.id, delta: -1 })],
-         ['▼', 'main.row_down', () => call('batch.move', { id: row.id, delta: 1 })],
-         ['✕', 'main.row_remove', () => call('batch.remove', { id: row.id })],
-        ].forEach(([label, ttKey, action]) => {
+        [['▲', 'main.row_up', () => call('batch.move', { id: row.id, delta: -1 }), null],
+         ['▼', 'main.row_down', () => call('batch.move', { id: row.id, delta: 1 }), null],
+         ['', 'main.row_remove', () => call('batch.remove', { id: row.id }), 'close'],
+        ].forEach(([label, ttKey, action, icon]) => {
           const b = document.createElement('button');
           b.className = 'cb-btn cb-btn--quiet cb-btn--sm cb-icon';
           b.textContent = label;
+          if (icon) b.setAttribute('data-ic', icon);
           b.setAttribute('data-tt', ttKey);
           b.addEventListener('click', async () => {
             await action();
@@ -1807,13 +1812,15 @@
     const title = document.createElement('span');
     title.className = 'cb-mtitle';
     title.textContent = opts.title || '';
+    if (opts.icon) title.setAttribute('data-ic', opts.icon);
     modal.setAttribute('aria-label', opts.title || 'Dialog');
     head.appendChild(title);
     if (opts.tag) head.appendChild(tagNode(opts.tag.text, opts.tag.cls));
     const closeBtn = document.createElement('button');
     closeBtn.className = 'cb-btn cb-btn--quiet cb-btn--sm';
     closeBtn.style.cssText = 'margin-left:auto;padding:3px 8px';
-    closeBtn.textContent = '✕';
+    closeBtn.textContent = '';
+    closeBtn.setAttribute('data-ic', 'close');
     if (opts.closeTtKey) closeBtn.setAttribute('data-tt', opts.closeTtKey);
     closeBtn.addEventListener('click', closeModal);
     head.appendChild(closeBtn);
@@ -1867,10 +1874,11 @@
     return api;
   }
 
-  function modalButton(label, cls, onClick, ttKey) {
+  function modalButton(label, cls, onClick, ttKey, icon) {
     const b = document.createElement('button');
     b.className = ('cb-btn cb-btn--sm ' + (cls || '')).trim();
     b.textContent = label;
+    if (icon) b.setAttribute('data-ic', icon);
     if (ttKey) b.setAttribute('data-tt', ttKey);
     b.addEventListener('click', onClick);
     return b;
@@ -1957,7 +1965,7 @@
   /* Both Download-All-New buttons — the Watch List's own and the Overview's —
      close for the same reason, so they say it in the same words. */
   const WL_NOTHING_PENDING = 'No new tracks pending across any channels. Run ' +
-    '🔍 Scan for new first.';
+    'Scan for new first.';
   /* Cancellation is immediate: a channel listing runs in a child process the
      cancel kills mid-flight, and a download aborts at its next chunk. */
   const WL_CANCEL_ALL_NOTE = 'Stopping the Watch List run now.';
@@ -2010,8 +2018,8 @@
   }
   function wlBusyReason(row) {
     return row.status === 'downloading'
-      ? 'This channel is downloading — press ✕ Cancel on the card to stop it first.'
-      : 'This channel is being scanned — press ✕ Cancel on the card to stop it first.';
+      ? 'This channel is downloading — press Cancel on the card to stop it first.'
+      : 'This channel is being scanned — press Cancel on the card to stop it first.';
   }
   function fmtDate(ts) {
     const secs = Number(ts);
@@ -2049,10 +2057,11 @@
     setDisabled(el, !!reason, { reason: tipPlus(ttKey, reason || ''), ttKey });
   }
 
-  function wlActionButton(label, ttKey, cls, onClick, disabledReason) {
+  function wlActionButton(label, ttKey, cls, onClick, disabledReason, icon) {
     const b = document.createElement('button');
     b.className = ('cb-btn cb-btn--sm ' + (cls || '')).trim();
     b.textContent = label;
+    if (icon) b.setAttribute('data-ic', icon);
     wlGate(b, disabledReason, ttKey);
     if (!disabledReason) b.addEventListener('click', onClick);
     return b;
@@ -2146,34 +2155,34 @@
     actions.className = 'cb-wlcard__actions';
     const why = writeBlocked() || (busy ? wlBusyReason(row) : '');
     actions.append(
-      wlActionButton('🔍 Scan', 'wl.card_scan', 'cb-btn--quiet',
+      wlActionButton('Scan', 'wl.card_scan', 'cb-btn--quiet',
         () => wlRun('watchlist.scan', { channel_id: row.id }),
         why || (dl.running ? TOOLTIPS['main.scan_batch_conflict'] : '') ||
-          (wl.running ? WL_BUSY_REASON : '')),
-      wlActionButton('⚡ Force Download', 'wl.card_force', 'cb-btn--quiet',
+          (wl.running ? WL_BUSY_REASON : ''), 'search'),
+      wlActionButton('Force Download', 'wl.card_force', 'cb-btn--quiet',
         () => wlRun('watchlist.force_download', { channel_id: row.id }),
-        why || (wl.running ? WL_BUSY_REASON : '')),
-      wlActionButton(`⬇ Download New (${num(row.new_count)})`, 'wl.card_download_new', '',
+        why || (wl.running ? WL_BUSY_REASON : ''), 'bolt'),
+      wlActionButton(`Download New (${num(row.new_count)})`, 'wl.card_download_new', '',
         () => wlRun('watchlist.download_new', { channel_id: row.id }),
         why || (row.new_count ? '' :
-          'Nothing pending for this channel — run 🔍 Scan first.')));
+          'Nothing pending for this channel — run Scan first.'), 'download'));
     if (row.unresolved) {
-      actions.appendChild(wlActionButton('🛠 Fix Link', 'wl.card_fix_link', 'cb-btn--fix',
-        () => openFixLink(row), why));
+      actions.appendChild(wlActionButton('Fix Link', 'wl.card_fix_link', 'cb-btn--fix',
+        () => openFixLink(row), why, 'wrench'));
     }
     actions.append(
-      wlActionButton('✏ Edit', 'wl.card_edit', 'cb-btn--quiet',
-        () => openEditChannel(row), why),
+      wlActionButton('Edit', 'wl.card_edit', 'cb-btn--quiet',
+        () => openEditChannel(row), why, 'edit'),
       busy
-        ? wlActionButton('✕ Cancel', 'wl.card_cancel', 'cb-btn--warn',
+        ? wlActionButton('Cancel', 'wl.card_cancel', 'cb-btn--warn',
             async () => {
               try {
                 await call('watchlist.cancel', { channel_id: row.id });
                 toast(WL_CANCEL_ONE_NOTE);
               } catch (_) { /* call() already toasted the reason */ }
-            }, writeBlocked())
-        : wlActionButton('✕ Remove', 'wl.card_remove', 'cb-btn--quiet',
-            () => openRemoveChannel(row), writeBlocked()));
+            }, writeBlocked(), 'close')
+        : wlActionButton('Remove', 'wl.card_remove', 'cb-btn--quiet',
+            () => openRemoveChannel(row), writeBlocked(), 'close'));
     card.appendChild(actions);
     return card;
   }
@@ -2239,7 +2248,7 @@
       blocked || (wl.running ? '' : 'No Watch List scan or download is running.'),
       'wl.cancel_all');
     $('#wl-cancel').className = 'cb-btn ' + (wl.running ? 'cb-btn--warn' : 'cb-btn--quiet');
-    $('#wl-dl-all').textContent = `⬇ Download All New (${num(pending)})`;
+    $('#wl-dl-all').textContent = `Download All New (${num(pending)})`;
     /* The host builds this string with the monolith's own next_run_label, so
        the wording lives in one place rather than being re-derived here. */
     const next = $('#wl-next-dl');
@@ -2643,7 +2652,8 @@
         tools.style.cssText = 'gap:8px;flex-wrap:wrap';
         folderBtn = document.createElement('button');
         folderBtn.className = 'cb-btn cb-btn--quiet cb-btn--sm';
-        folderBtn.textContent = local ? '📂 Open Folder' : '📋 Copy folder path';
+        folderBtn.textContent = local ? 'Open Folder' : 'Copy folder path';
+        folderBtn.setAttribute('data-ic', local ? 'folder' : 'clipboard');
         setDisabled(folderBtn, true, {
           reason: (TOOLTIPS['wl.card_open_folder'] ? TOOLTIPS['wl.card_open_folder'] + '\n\n' : '') +
             'Looking the folder up on the host…',
@@ -2651,23 +2661,24 @@
 
         const openLink = document.createElement('button');
         openLink.className = 'cb-btn cb-btn--quiet cb-btn--sm';
-        openLink.textContent = '🌐 Open Link';
+        openLink.textContent = 'Open Link';
+        openLink.setAttribute('data-ic', 'globe');
         const safe = dbSafeLink(currentUrl);
         if (safe) {
           openLink.addEventListener('click', () => window.open(safe, '_blank', 'noopener'));
         } else {
           setDisabled(openLink, true, {
             reason: currentUrl ? 'Only http and https links can be opened.'
-                               : 'This channel has no link yet — use 🛠 Smart-Edit Link.',
+                               : 'This channel has no link yet — use Smart-Edit Link.',
           });
         }
 
-        const smart = modalButton('🛠 Smart-Edit Link', 'cb-btn--quiet', () => {
+        const smart = modalButton('Smart-Edit Link', 'cb-btn--quiet', () => {
           /* Closes this dialog before Fix Link opens — the design's rule that
              two modal grabs never fight over focus. */
           closeModal();
           openFixLink(row);
-        }, 'wl.card_smart_edit');
+        }, 'wl.card_smart_edit', 'wrench');
         tools.append(folderBtn, openLink, smart);
         body.appendChild(tools);
 
@@ -2857,8 +2868,9 @@
     let advance = false;
 
     const api = openModal({
-      title: `🛠 Fix Link — ${row.name}` +
+      title: `Fix Link — ${row.name}` +
              (opts.queue ? ` (${opts.queue.index} of ${opts.queue.total})` : ''),
+      icon: 'wrench',
       width: 608,
       tag: { text: 'Unresolved', cls: 'cb-tag--attn' },
       /* Deferred a tick: this fires from inside closeModal, and the next
@@ -4458,7 +4470,8 @@
     const ids = dbCheckedChannels();
     if (!ids.length) { toast('Tick at least one channel first.', true); return; }
     openModal({
-      title: '🧹 Folders Cleanup ‹Smart›',
+      title: 'Folders Cleanup ‹Smart›',
+      icon: 'broom',
       width: 520,
       body(body) {
         body.appendChild(modalNote(TOOLTIPS['db.folders_cleanup'] || ''));
@@ -4497,7 +4510,8 @@
   function cleanupOpenDialog() {
     const refs = {};
     openModal({
-      title: '🧹 Folders Cleanup ‹Smart›',
+      title: 'Folders Cleanup ‹Smart›',
+      icon: 'broom',
       tag: { text: 'Running', cls: 'cb-tag--fill' },
       width: 760,
       onClose() { cl.view = null; },
@@ -4999,8 +5013,9 @@
     if (howto) {
       const browser = val('cookies_browser') || 'Firefox';
       howto.textContent = UNREADABLE_BROWSERS[browser]
-        ? `📖 How-To: Using ${browser} Cookies via a Cookie File`
-        : `📖 How-To: Setting Up a Dedicated ${browser} Profile`;
+        ? `How-To: Using ${browser} Cookies via a Cookie File`
+        : `How-To: Setting Up a Dedicated ${browser} Profile`;
+      howto.setAttribute('data-ic', 'book');
       setDisabled(howto, !cookiesOn, cookiesOn
         ? { ttKey: 'settings.firefox_profile_howto' } : { reason: cookiesReason });
     }
@@ -5130,8 +5145,9 @@
      whether the run can skip an item. */
   const MAINT_TASKS = {
     'db.rebuild': {
-      label: '🔄 Rebuild Database from Files',
-      title: '🔄 Rebuild Database',
+      label: 'Rebuild Database from Files',
+      title: 'Rebuild Database',
+      icon: 'refresh',
       tt: 'settings.rebuild_db',
       run: 'Rebuild Database',
       unit: 'channel folder',
@@ -5146,8 +5162,9 @@
       ],
     },
     'db.dedupe': {
-      label: '🧹 Remove Duplicates',
-      title: '🧹 Remove Duplicates',
+      label: 'Remove Duplicates',
+      title: 'Remove Duplicates',
+      icon: 'broom',
       tt: 'settings.dedupe_db',
       run: 'Remove Duplicates',
       unit: 'step',
@@ -5163,8 +5180,9 @@
       ],
     },
     'db.repair_tags': {
-      label: '🏷 Repair Track Tags',
-      title: '🏷 Repair Track Tags',
+      label: 'Repair Track Tags',
+      title: 'Repair Track Tags',
+      icon: 'tag',
       tt: 'settings.repair_tags',
       run: 'Repair Tags',
       unit: 'track',
@@ -5182,8 +5200,9 @@
       ],
     },
     'db.fetch_artwork': {
-      label: '🖼 Fetch Missing Artwork',
-      title: '🖼 Fetch Missing Artwork',
+      label: 'Fetch Missing Artwork',
+      title: 'Fetch Missing Artwork',
+      icon: 'image',
       tt: 'settings.fetch_artwork',
       run: 'Fetch Artwork',
       unit: 'track',
@@ -5223,6 +5242,7 @@
     } catch (_) { return; }   // call() already toasted the reason
     openModal({
       title: spec.title,
+      icon: spec.icon,
       width: 520,
       body(body) {
         spec.confirm(preview).forEach((line) => body.appendChild(modalNote(line)));
@@ -5267,6 +5287,7 @@
     const refs = {};
     openModal({
       title: spec.title,
+      icon: spec.icon,
       tag: { text: 'Running', cls: 'cb-tag--fill' },
       width: 520,
       onClose() { mt.view = null; },
@@ -5492,13 +5513,15 @@
 
       const activityBtn = document.createElement('button');
       activityBtn.className = 'cb-btn cb-btn--quiet cb-btn--sm';
-      activityBtn.textContent = '📋 Activity Log';
+      activityBtn.textContent = 'Activity Log';
+      activityBtn.setAttribute('data-ic', 'clipboard');
       activityBtn.setAttribute('data-tt', 'settings.activity_log');
       activityBtn.addEventListener('click', () => show('activity-log'));
 
       const debugBtn = document.createElement('button');
       debugBtn.className = 'cb-btn cb-btn--quiet cb-btn--sm';
-      debugBtn.textContent = '🔍 Debug Log';
+      debugBtn.textContent = 'Debug Log';
+      debugBtn.setAttribute('data-ic', 'search');
       debugBtn.setAttribute('data-tt', 'settings.debug_log');
       debugBtn.addEventListener('click', () => show('debug-log'));
 
@@ -5521,7 +5544,8 @@
       row.style.cssText = 'gap:8px;flex-wrap:wrap';
       const openDb = document.createElement('button');
       openDb.className = 'cb-btn cb-btn--sm';
-      openDb.textContent = '🗂 Open Database';
+      openDb.textContent = 'Open Database';
+      openDb.setAttribute('data-ic', 'database');
       openDb.addEventListener('click', () => show('database'));
       row.appendChild(readOnlyOk(openDb));
       Object.keys(MAINT_TASKS).forEach((task) => {
@@ -5529,6 +5553,7 @@
         const b = document.createElement('button');
         b.className = 'cb-btn cb-btn--warn cb-btn--sm';
         b.textContent = spec.label;
+        b.setAttribute('data-ic', spec.icon);
         b.addEventListener('click', () => maintConfirm(task));
         setDisabled(b, mt.running,
           { reason: MAINT_BUSY_REASON, ttKey: spec.tt });
@@ -5540,7 +5565,8 @@
       if (mt.running) {
         const back = document.createElement('button');
         back.className = 'cb-btn cb-btn--sm';
-        back.textContent = '⏳ Show progress';
+        back.textContent = 'Show progress';
+        back.setAttribute('data-ic', 'clock');
         back.addEventListener('click', () => {
           if (mt.task === CLEANUP_TASK) { if (!cl.view) cleanupOpenDialog(); return; }
           if (!mt.view && MAINT_TASKS[mt.task]) maintOpenProgress(mt.task);
@@ -5773,7 +5799,8 @@
       page = await call('cookies.howto', { browser });
     } catch (_) { return; }          // call() already toasted the reason
     openModal({
-      title: `📖 ${page.title}`,
+      title: page.title,
+      icon: 'book',
       width: 720,
       body(body) {
         const box = document.createElement('div');
@@ -5896,7 +5923,8 @@
     }
     const refs = {};
     openModal({
-      title: '🔐 Looks like a sign-in problem',
+      title: 'Looks like a sign-in problem',
+      icon: 'lock',
       width: 520,
       body(body) {
         const a = document.createElement('p'); a.textContent = lead;
@@ -6150,10 +6178,11 @@
     await dbCopyText(url, 'link — open it in this browser');
   }
 
-  function aboutLinkButton(label, url, ttKey) {
+  function aboutLinkButton(label, url, ttKey, icon, iconAt) {
     const b = document.createElement('button');
     b.className = 'cb-btn cb-btn--quiet cb-btn--sm';
     b.textContent = label;
+    if (icon) b.setAttribute(iconAt === 'end' ? 'data-ic-end' : 'data-ic', icon);
     if (ttKey) b.setAttribute('data-tt', ttKey);
     b.addEventListener('click', () => openUrl(url));
     return b;
@@ -6218,7 +6247,8 @@
       setDisabled(refs.go, !!reason, { reason });
     };
     const api = openModal({
-      title: '🐞 Report a Bug',
+      title: 'Report a Bug',
+      icon: 'bug',
       width: 720,
       body(body) {
         refs.title = document.createElement('input');
@@ -6319,15 +6349,16 @@
     const report = document.createElement('button');
     report.id = 'about-report';
     report.className = 'cb-btn';
-    report.textContent = '🐞 Report a Bug';
+    report.textContent = 'Report a Bug';
+    report.setAttribute('data-ic', 'bug');
     const local = state && state.host && state.host.transport === 'local';
     setDisabled(report, !local, {
       reason: tipPlus('about.report', ABOUT_REPORT_LOCAL_ONLY), ttKey: 'about.report' });
     if (local) report.addEventListener('click', openReportDialog);
     links.append(
-      aboutLinkButton('View on GitHub ↗', info.github_url, 'about.github'),
-      aboutLinkButton('↗ Submit Issues / Suggestions', info.issues_url,
-                      'about.issues'));
+      aboutLinkButton('View on GitHub', info.github_url, 'about.github', 'ext-link', 'end'),
+      aboutLinkButton('Submit Issues / Suggestions', info.issues_url,
+                      'about.issues', 'ext-link'));
     if (info.github_url) {
       const licence = aboutLinkButton('Licence',
         `${info.github_url.replace(/\/+$/, '')}/blob/main/LICENSE`);
