@@ -1,5 +1,5 @@
 ; ============================================================================
-; DJ-CrateBuilder v2.0 — Inno Setup Installer (Windows)
+; DJ-CrateBuilder v2.1 — Inno Setup Installer (Windows)
 ; Installs to Program Files with admin privileges
 ; ============================================================================
 ;
@@ -10,13 +10,13 @@
 ;   3. (Optional) Update SetupIconFile to your .ico path.
 ;
 ; The build number is read from APP_BUILD in ..\DJ-CrateBuilder_v2.0.py at
-; compile time, so the installer reports the same "2.0.<build>" the app does
+; compile time, so the installer reports the same "2.1.<build>" the app does
 ; and the output file is already named for it. Override with
 ;   ISCC /DBUILD=73 <this file>
 ;
 ; ============================================================================
 
-#define AppMajor "2.0"
+#define AppMajor "2.1"
 
 #ifndef BUILD
   #define SourcePy AddBackslash(SourcePath) + "..\DJ-CrateBuilder_v2.0.py"

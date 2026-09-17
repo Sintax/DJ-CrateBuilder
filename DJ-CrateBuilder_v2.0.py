@@ -62,7 +62,7 @@ from cratebuilder.settings import (
 # Version & About — edit these values to update the app info
 # ══════════════════════════════════════════════════════════════════════════════
 APP_NAME    = "DJ-CrateBuilder"
-APP_VERSION = "2.0"
+APP_VERSION = "2.1"
 # Nightly build number. The display version stays pinned at APP_VERSION; only
 # this integer increments for small in-place updates. Bump it for every build
 # you publish to the nightly channel. Publish with: python scripts/release.py
@@ -90,7 +90,7 @@ UPDATE_MANIFEST_URL_LINUX = (
 UPDATE_BTN_CHECK  = "  ⟳  Check for updates  "
 UPDATE_BTN_UPDATE = "  ⟳  Update Now  "
 
-# Full version string shown to the user, e.g. "2.0.73".
+# Full version string shown to the user, e.g. "2.1.90".
 APP_VERSION_FULL = f"{APP_VERSION}.{APP_BUILD}"
 
 # ── Add or remove lines below to customize the About tab content. ──────────
@@ -9032,7 +9032,7 @@ class MP3DownloaderApp(tk.Tk):
              "interval beside the button, and the Overview's Update card shows the verdict. Updates come from the "
              "nightly channel on the project's GitHub repository and are SHA-256 verified before anything is "
              "installed; most are small delta payloads containing only the files that changed. The display version "
-             "stays pinned at 2.0 and only the build number advances. Installing one closes the app, swaps the "
+             "stays pinned at 2.1 and only the build number advances. Installing one closes the app, swaps the "
              "files, and relaunches — if a Watch List scan or download is running, \"Download and install\" stops "
              "it first and counts down a few seconds so you can still cancel. The Components table below the "
              "button lists what this install is running (Python, FFmpeg, yt-dlp and the rest) against the live "
