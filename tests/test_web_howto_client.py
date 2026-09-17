@@ -123,7 +123,7 @@ function modalButton(label, cls, onClick) { return { label, cls, onClick, style:
 function openModal(opts) {
   const body = mkEl(), foot = mkEl();
   opts.body(body, {}); opts.foot(foot, { close() {} });
-  modals.push({ title: opts.title, lines: body.children[0].children.length });
+  modals.push({ title: opts.title, icon: opts.icon, lines: body.children[0].children.length });
 }
 function howtoLineClass() { return ''; }
 %(fn)s
@@ -155,7 +155,7 @@ def test_a_host_that_cannot_open_a_window_gets_the_modal_quietly(app_js, tmp_pat
                                               "cookies.howto"]
     assert r["toasts"] == []
     assert r["opened"] == []
-    assert r["modals"] == [{"title": "📖 T", "lines": 2}]
+    assert r["modals"] == [{"title": "T", "icon": "book", "lines": 2}]
 
 
 def test_a_browser_opens_the_guide_page_as_a_popup(app_js, tmp_path):
@@ -172,7 +172,7 @@ def test_a_blocked_popup_falls_back_to_the_modal(app_js, tmp_path):
     r = _open(app_js, tmp_path, "remote", popup="null")
     assert len(r["opened"]) == 1
     assert r["hostCalls"] == [["cookies.howto", {"browser": "Firefox"}]]
-    assert r["modals"] == [{"title": "📖 T", "lines": 2}]
+    assert r["modals"] == [{"title": "T", "icon": "book", "lines": 2}]
 
 
 def test_the_gate_closes_itself_before_handing_over_to_the_guide(app_js):
