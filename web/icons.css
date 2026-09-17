@@ -17,6 +17,8 @@
 /* Flex hosts (.cb-btn) space the glyph with their gap; inline ones need a gap of their own. */
 [data-ic]:not(.cb-btn)::before { margin-right: .4em; }
 [data-ic-end]:not(.cb-btn)::after { margin-left: .35em; }
+/* A heading never breaks between its glyph and its word when a row squeezes it. */
+.cb-h[data-ic] { white-space: nowrap; }
 
 :root {
   /* Pause */
