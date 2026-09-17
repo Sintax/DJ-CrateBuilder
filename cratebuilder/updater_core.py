@@ -355,6 +355,48 @@ def _iter_files(root):
             yield ap, os.path.relpath(ap, root)
 
 
+# ── dist-info retirement ──────────────────────────────────────────────────────
+# PEP 427 wheel naming: `<dist>-<version>.dist-info`, `<dist>` already has its
+# `-` folded to `_`, so the first `-` splits name from version.
+_DIST_INFO_DIR = re.compile(r"^([A-Za-z0-9_.]+)-(.+)\.dist-info$")
+
+
+def _dist_key(dirname):
+    """PEP-503 normalised distribution name of a dist-info dir, or None."""
+    m = _DIST_INFO_DIR.match(dirname)
+    if not m:
+        return None
+    return re.sub(r"[-_.]+", "-", m.group(1)).lower()
+
+
+def _incoming_dist_infos(staged_dir):
+    """Distinct (parent_rel, dirname) of every dist-info dir in the staged tree."""
+    seen = set()
+    for _abs, rel in _iter_files(staged_dir):
+        parts = rel.split(os.sep)
+        for i, part in enumerate(parts[:-1]):
+            if _DIST_INFO_DIR.match(part):
+                seen.add((os.path.join(*parts[:i]) if i else "", part))
+    return sorted(seen)
+
+
+def _stale_dist_infos(staged_dir, app_dir):
+    """(parent_rel, dirname) of app_dir dist-info dirs superseded by staged ones."""
+    stale = []
+    for parent_rel, incoming in _incoming_dist_infos(staged_dir):
+        key = _dist_key(incoming)
+        parent_abs = os.path.join(app_dir, parent_rel)
+        try:
+            siblings = os.listdir(parent_abs)
+        except OSError:
+            continue
+        for name in siblings:
+            if name != incoming and _dist_key(name) == key \
+                    and os.path.isdir(os.path.join(parent_abs, name)):
+                stale.append((parent_rel, name))
+    return stale
+
+
 def apply_update(staged_dir, app_dir, backup_dir, _copyfn=shutil.copy2):
     """Replace ``app_dir`` files with ``staged_dir`` files, with rollback.
 
@@ -369,18 +411,30 @@ def apply_update(staged_dir, app_dir, backup_dir, _copyfn=shutil.copy2):
       2. Copy the staged file into place.
 
     Files present in app_dir but absent from the staged tree are left alone
-    (an update is additive/replacement, not a destructive sync).
+    (an update is additive/replacement, not a destructive sync), with one
+    exception: an older ``<name>-<ver>.dist-info`` folder of a package whose
+    newer ``.dist-info`` is arriving is moved to ``backup_dir`` first. Two
+    dist-info folders side by side make ``importlib.metadata`` report the
+    older version, so a bumped package would look un-bumped forever.
 
     On any error mid-swap, every change made so far is rolled back: copied
-    files removed and backed-up originals restored. Returns True on success,
-    raises the original exception after rolling back on failure.
+    files removed, backed-up originals restored and retired dist-info folders
+    put back. Returns True on success, raises the original exception after
+    rolling back on failure.
 
     ``_copyfn`` is injectable for tests (to simulate a mid-swap failure).
     """
     os.makedirs(backup_dir, exist_ok=True)
     moved = []    # (backup_abs, original_abs) pairs we relocated
     copied = []   # target_abs files we wrote (that had no prior original)
+    retired = []  # (backup_abs, original_abs) stale dist-info dirs we moved
     try:
+        for parent_rel, name in _stale_dist_infos(staged_dir, app_dir):
+            original = os.path.join(app_dir, parent_rel, name)
+            backup = os.path.join(backup_dir, parent_rel, name)
+            os.makedirs(os.path.dirname(backup) or ".", exist_ok=True)
+            shutil.move(original, backup)
+            retired.append((backup, original))
         for staged_abs, rel in _iter_files(staged_dir):
             target = os.path.join(app_dir, rel)
             os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
@@ -394,7 +448,8 @@ def apply_update(staged_dir, app_dir, backup_dir, _copyfn=shutil.copy2):
             _copyfn(staged_abs, target)
         return True
     except Exception:
-        # Roll back: undo fresh copies, then restore moved-aside originals.
+        # Roll back: undo fresh copies, restore moved-aside originals, then
+        # put retired dist-info folders back.
         for target in copied:
             try:
                 if os.path.exists(target):
@@ -405,6 +460,11 @@ def apply_update(staged_dir, app_dir, backup_dir, _copyfn=shutil.copy2):
             try:
                 if os.path.exists(original):
                     os.remove(original)
+                shutil.move(backup, original)
+            except OSError:
+                pass
+        for backup, original in retired:
+            try:
                 shutil.move(backup, original)
             except OSError:
                 pass
