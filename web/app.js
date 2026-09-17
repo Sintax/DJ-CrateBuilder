@@ -1469,6 +1469,7 @@
       host.appendChild(el);
     });
     bindTips(host);
+    scrollBoxToActive(host, '.cb-qrow.is-active');
     renderQueueLog();
   }
 
@@ -1568,6 +1569,7 @@
       host.appendChild(el);
     });
     bindTips(host);
+    scrollBoxToActive(host, '.cb-qrow.is-active');
     renderQueueLog();
   }
 
@@ -1595,18 +1597,19 @@
     return line;
   }
 
-  /* The log is boxed at its idle height (app.css) so the card cannot grow with
-     the queue — which means the running line can sit below the fold, and the
-     box has to follow it. Scrolled by hand rather than with scrollIntoView,
-     which would scroll the screen behind it too, and measured off the two
-     rectangles rather than offsetTop, which answers relative to whichever
-     ancestor happens to be positioned. */
-  function scrollQueueLogToActive(log) {
-    const active = log.querySelector('.cb-log__now');
+  /* The queue log and the batch rows are both boxed at their idle height
+     (app.css) so neither card can grow with the queue — which means the
+     running line can sit below the fold, and the box has to follow it.
+     Scrolled by hand rather than with scrollIntoView, which would scroll the
+     screen behind it too, and measured off the two rectangles rather than
+     offsetTop, which answers relative to whichever ancestor happens to be
+     positioned. */
+  function scrollBoxToActive(box, selector) {
+    const active = box.querySelector(selector);
     if (!active) return;
-    const box = log.getBoundingClientRect();
+    const outer = box.getBoundingClientRect();
     const line = active.getBoundingClientRect();
-    log.scrollTop += ((line.top - box.top) - (box.height - line.height) / 2) / pageZoom();
+    box.scrollTop += ((line.top - outer.top) - (outer.height - line.height) / 2) / pageZoom();
   }
 
   /* The kept run's title line: which run, when it ended, and what it came to.
@@ -1672,7 +1675,7 @@
       if (!channels.length) log.textContent = 'Starting the Watch List run…';
       meta.textContent = `${channels.length} channel` +
         `${channels.length === 1 ? '' : 's'} · ${settled} processed`;
-      scrollQueueLogToActive(log);
+      scrollBoxToActive(log, '.cb-log__now');
       return;
     }
 
@@ -1701,7 +1704,7 @@
         DL_MARK));
     });
     meta.textContent = `${rows.length} track${rows.length === 1 ? '' : 's'} · ${processed} processed`;
-    scrollQueueLogToActive(log);
+    scrollBoxToActive(log, '.cb-log__now');
   }
 
   /* Every write control funnels through here so a read-only session (or one
@@ -6294,22 +6297,11 @@
     avatar.width = 44;
     avatar.height = 44;
     avatar.style.cssText = 'border-radius:6px;display:block;flex:none';
-    const who = document.createElement('div');
-    who.style.cssText = 'display:flex;flex-direction:column;gap:3px;padding-top:3px';
     const person = document.createElement('span');
     person.className = 'cb-about-val';
+    person.style.cssText = 'padding-top:3px';
     person.textContent = info.created_by || '';
-    const mail = document.createElement('a');
-    mail.href = '#about';
-    mail.style.cssText = 'font-size:12.5px;text-decoration:underline';
-    mail.textContent = info.contact_email || '';
-    mail.setAttribute('data-tt', 'about.mail');
-    mail.addEventListener('click', (e) => {
-      e.preventDefault();
-      openUrl(`mailto:${info.contact_email || ''}`);
-    });
-    who.append(person, mail);
-    author.append(avatar, who);
+    author.append(avatar, person);
     host.appendChild(aboutRow('Created by', author));
 
     const built = document.createElement('span');

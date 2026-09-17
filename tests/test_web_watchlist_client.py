@@ -586,6 +586,7 @@ function bindTips() {}
 function call() { return Promise.resolve(); }
 function renderBatch() {}
 function renderQueueLog() {}
+function scrollBoxToActive() {}
 function toast() {}
 %(panel)s
 

@@ -69,8 +69,7 @@ APP_VERSION = "2.0"
 APP_BUILD   = 88
 
 ABOUT_CREATED_BY    = "Corrupt Sintax"
-ABOUT_CONTACT_EMAIL = "CorruptSintax@Gmail.com"
-ABOUT_DESCRIPTION   = "Vibe-Coded entirely with Claude-AI"
+ABOUT_DESCRIPTION   = "Vibe-Coded entirely with Claude-Code inside the VS-Code harness."
 GITHUB_URL        = "https://github.com/Sintax/DJ-CrateBuilder"
 GITHUB_ISSUES_URL = "https://github.com/Sintax/DJ-CrateBuilder/issues/new"
 # Raw manifest for the in-app updater. Lives on a dedicated `nightly` branch so
@@ -95,11 +94,10 @@ UPDATE_BTN_UPDATE = "  ⟳  Update Now  "
 APP_VERSION_FULL = f"{APP_VERSION}.{APP_BUILD}"
 
 # ── Add or remove lines below to customize the About tab content. ──────────
-# ── Each tuple is  ("Label", "Value")  and will display as a row.  An ──────
-# ── optional third element is an email address, shown as a clickable ───────
-# ── mailto link on a second line beneath the value. ────────────────────────
+# ── Each tuple is  ("Label", "Value")  and will display as a row.  The ─────
+# ── "Created by" row also carries the author's avatar. ─────────────────────
 ABOUT_FIELDS = [
-    ("Created by",   ABOUT_CREATED_BY, ABOUT_CONTACT_EMAIL),
+    ("Created by",   ABOUT_CREATED_BY),
     ("Built with",   ABOUT_DESCRIPTION),
 ]
 # ══════════════════════════════════════════════════════════════════════════════
@@ -8623,16 +8621,15 @@ class MP3DownloaderApp(tk.Tk):
         info_col = tk.Frame(top_sec, bg=BG)
         info_col.pack(side="left", anchor="n")
 
-        for field in ABOUT_FIELDS:
-            label, value, email = (tuple(field) + (None,))[:3]
+        for label, value in ABOUT_FIELDS:
             row = tk.Frame(info_col, bg=BG)
             row.pack(fill="x", pady=(0, 14))
             tk.Label(row, text=label, font=("Segoe UI", 12, "bold"),
                      fg=TEXT, bg=BG, width=14, anchor="w"
                      ).pack(side="left", anchor="n")
-            if email:
-                # The author's avatar, sized to sit level with the name/email
-                # pair beside it. Held on self so Tk can't garbage-collect the
+            if value == ABOUT_CREATED_BY:
+                # The author's avatar, sized to sit level with the name
+                # beside it. Held on self so Tk can't garbage-collect the
                 # PhotoImage out of the label; missing file = no picture.
                 avatar = about_avatar_path()
                 if avatar:
@@ -8647,14 +8644,6 @@ class MP3DownloaderApp(tk.Tk):
             val_col.pack(side="left", padx=(8, 0))
             tk.Label(val_col, text=value, font=("Segoe UI", 11),
                      fg=TEXT, bg=BG, anchor="w").pack(anchor="w")
-            if email:
-                mail_lbl = tk.Label(
-                    val_col, text=email, font=("Segoe UI", 11, "underline"),
-                    fg=LINK_COL, bg=BG, cursor="hand2", anchor="w")
-                mail_lbl.pack(anchor="w", pady=(3, 0))
-                mail_lbl.bind("<Button-1>", lambda _e, a=email:
-                              webbrowser.open(f"mailto:{a}"))
-                Tooltip(mail_lbl, "Write to the author in your mail client")
 
         self._github_btn = _about_btn(
             info_col, "View on GitHub",

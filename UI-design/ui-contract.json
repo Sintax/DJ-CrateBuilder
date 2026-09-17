@@ -236,7 +236,6 @@
     "remote.revoke_all": { "text": "Drops every paired device and issues a fresh pairing code on the host.", "source": "new", "screen": "3j" },
     "remote.browse_folder": { "text": "Opens a native folder picker on the host machine. Remote browsers get a path field instead — the host validates it before saving.", "source": "new", "screen": "3j" },
 
-    "about.mail": { "text": "Write to the author in your mail client", "source": "py", "py_line": 8588, "screen": "3n" },
     "about.github": { "text": "Opens the DJ-CrateBuilder GitHub page in your browser. Check here for the latest releases and update notes.", "source": "py", "py_line": 8594, "screen": "3n" },
     "about.issues": { "text": "Opens the GitHub 'Create new issue' form in your browser, where you can report a bug or suggest a feature.", "source": "py", "py_line": 8602, "screen": "3n" },
     "about.report": { "text": "Send a bug report: your description plus the last part of activity.log and debug.log with your user name, folders and cookies blanked out. You see everything before it goes.", "source": "new", "screen": "3n" },
@@ -258,10 +257,9 @@
   },
 
   "about": {
-    "$comment": "ABOUT_FIELDS at DJ-CrateBuilder_v2.0.py:100; values at :70-72. Avatar from about_avatar_path() — assets/about_avatar.png, 44x44.",
+    "$comment": "ABOUT_FIELDS at DJ-CrateBuilder_v2.0.py:99; values at :71-72. Avatar from about_avatar_path() — assets/about_avatar.png, 44x44. No contact address: the Created by row is name and avatar only.",
     "created_by": "Corrupt Sintax",
-    "contact_email": "CorruptSintax@Gmail.com",
-    "description": "Vibe-Coded entirely with Claude-AI",
+    "description": "Vibe-Coded entirely with Claude-Code inside the VS-Code harness.",
     "avatar": "assets/about_avatar.png",
     "build_status": "You're on build {APP_BUILD}.",
     "note": "*(For any bugs encountered or suggestions you'd like to make, submit them using the Submit Issues/Suggestions button.)",

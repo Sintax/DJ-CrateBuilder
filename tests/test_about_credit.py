@@ -1,4 +1,4 @@
-"""About tab: the author credit and its clickable mailto sub-line."""
+"""About tab: the author credit, with no contact address anywhere on it."""
 import tkinter as tk
 
 
@@ -13,32 +13,27 @@ def _labels(app, text):
             if isinstance(w, tk.Label) and w.cget("text") == text]
 
 
-def test_created_by_shows_the_name_not_the_email(cb_mod):
+def test_created_by_shows_the_name_not_an_email(cb_mod):
     assert cb_mod.ABOUT_CREATED_BY == "Corrupt Sintax"
     assert "@" not in cb_mod.ABOUT_CREATED_BY
-    assert "@" in cb_mod.ABOUT_CONTACT_EMAIL
+    assert not hasattr(cb_mod, "ABOUT_CONTACT_EMAIL")
 
 
-def test_about_fields_carry_the_email_as_an_optional_third_element(cb_mod):
+def test_about_fields_are_label_value_pairs(cb_mod):
     by_label = {f[0]: f for f in cb_mod.ABOUT_FIELDS}
-    assert by_label["Created by"][1] == cb_mod.ABOUT_CREATED_BY
-    assert by_label["Created by"][2] == cb_mod.ABOUT_CONTACT_EMAIL
-    assert len(by_label["Built with"]) == 2   # rows without an email still work
+    assert by_label["Created by"] == ("Created by", cb_mod.ABOUT_CREATED_BY)
+    assert by_label["Built with"] == ("Built with", cb_mod.ABOUT_DESCRIPTION)
+    assert all(len(f) == 2 for f in cb_mod.ABOUT_FIELDS)
 
 
-def test_name_and_email_render_as_two_stacked_labels(shared_app, cb_mod):
+def test_built_with_names_the_harness(cb_mod):
+    assert cb_mod.ABOUT_DESCRIPTION == (
+        "Vibe-Coded entirely with Claude-Code inside the VS-Code harness.")
+
+
+def test_the_credit_renders_the_name_and_no_address(shared_app, cb_mod):
     name = _labels(shared_app, cb_mod.ABOUT_CREATED_BY)
-    mail = _labels(shared_app, cb_mod.ABOUT_CONTACT_EMAIL)
-    assert len(name) == 1 and len(mail) == 1
-    assert mail[0].master is name[0].master        # same value column
-    assert mail[0].cget("cursor") == "hand2"
-    assert "underline" in str(mail[0].cget("font"))
-
-
-def test_clicking_the_email_opens_a_mailto_url(shared_app, cb_mod,
-                                               monkeypatch, show):
-    opened = []
-    monkeypatch.setattr(cb_mod.webbrowser, "open", opened.append)
-    mail = show(_labels(shared_app, cb_mod.ABOUT_CONTACT_EMAIL)[0])
-    mail.event_generate("<Button-1>", when="now")
-    assert opened == [f"mailto:{cb_mod.ABOUT_CONTACT_EMAIL}"]
+    assert len(name) == 1
+    # The name's value column used to hold a second, underlined mailto label.
+    assert [w for w in name[0].master.winfo_children()
+            if isinstance(w, tk.Label)] == name
