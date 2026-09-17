@@ -19,7 +19,7 @@ import time
 import pytest
 
 from cratebuilder import util
-from cratebuilder.service import CBError, CrateBuilderService
+from cratebuilder.service import NEXT_RUN_PREFIX, CBError, CrateBuilderService
 from cratebuilder.settings import Settings
 
 
@@ -145,7 +145,9 @@ def test_the_next_run_is_announced_and_carried_in_the_snapshot(make_service):
 
     assert seen, "the scheduler never said when it would run"
     assert seen[0] == service.snapshot()["next_auto_download"]
-    assert seen[0]["text"] == util.next_run_label(seen[0]["ts"])
+    assert seen[0]["text"] == util.next_run_label(
+        seen[0]["ts"], prefix=NEXT_RUN_PREFIX)
+    assert seen[0]["text"].startswith("Next auto-download:")
 
 
 def test_the_same_next_run_is_never_announced_twice(make_service):

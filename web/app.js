@@ -869,6 +869,22 @@
       meta.appendChild(link);
     }
     body.append(text, meta);
+    if (!n.read) {
+      const foot = document.createElement('div');
+      foot.className = 'cb-row';
+      foot.style.marginTop = '4px';
+      const read = document.createElement('button');
+      read.className = 'cb-notif__link';
+      read.textContent = 'Mark as read';
+      read.addEventListener('click', () => {
+        n.read = true;
+        saveNotes();
+        renderBell();
+        renderNotifications();
+      });
+      foot.appendChild(read);
+      body.appendChild(foot);
+    }
     row.append(dot, body);
     return row;
   }

@@ -98,6 +98,9 @@ html[data-text-size="xl"] { zoom: 1.15; --cb-vh: calc(1vh / 1.15); --cb-vw: calc
 /* Settings: the balancer would move the split as paths wrap and text grows,
    so the right column is pinned to start at a fixed card instead. */
 .cb-set-card--col2 { break-before: column; }
+/* A glyph host with no text yet (the next-run line before the snapshot lands)
+   shows nothing rather than a stray icon. */
+[data-ic]:empty::before { display: none; }
 /* Update page: the components table. The row an update would change is the
    one that stands out; the others sit quiet. */
 .cb-comp { overflow-x: auto; margin-top: 4px; }
@@ -193,14 +196,14 @@ html[data-text-size="xl"] { zoom: 1.15; --cb-vh: calc(1vh / 1.15); --cb-vw: calc
   display: flex; gap: 9px; align-items: baseline; width: 100%;
   padding: 10px 12px; border: 0; border-bottom: 1px solid var(--cb-line-soft);
   background: var(--cb-surface); text-align: left; cursor: pointer;
-  font: 500 12.5px var(--cb-font); color: var(--cb-text);
+  font: 500 14px var(--cb-font); color: var(--cb-text);
 }
 .cb-faq__q:hover { background: var(--cb-surface-alt); }
 .cb-faq > :last-child { border-bottom: none; }
 .cb-faq__chev { color: var(--cb-line); font-size: 11px; flex: none; }
 .cb-faq__a {
   padding: 0 12px 11px 32px; border-bottom: 1px solid var(--cb-line-soft);
-  font-size: 12.5px; line-height: 1.65; color: var(--cb-text-2); white-space: pre-line;
+  font-size: 14px; line-height: 1.65; color: var(--cb-text-2); white-space: pre-line;
 }
 .cb-foot-link { color: var(--cb-muted); text-decoration: none; }
 .cb-foot-link:hover { color: var(--cb-line); text-decoration: underline; }
