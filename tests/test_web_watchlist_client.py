@@ -802,9 +802,11 @@ def test_the_meta_line_is_bold(app_js):
     assert ".cb-wlcard__meta { font-size: 11px; font-weight: 700; }" in css
 
 
-def test_the_share_buttons_are_the_extra_small_size(index_html):
-    assert ('class="cb-btn cb-btn--quiet cb-btn--xs" id="wl-export"' in index_html)
-    assert ('class="cb-btn cb-btn--quiet cb-btn--xs" id="wl-import"' in index_html)
+def test_the_share_buttons_are_the_extra_small_size_in_the_app_red(index_html):
+    """Plain .cb-btn is the red-bordered, red-text button; --quiet was the
+    grey one."""
+    assert ('class="cb-btn cb-btn--xs" id="wl-export"' in index_html)
+    assert ('class="cb-btn cb-btn--xs" id="wl-import"' in index_html)
     with open(os.path.join(ROOT, "web", "app.css"), encoding="utf-8") as fh:
         assert ".cb-btn--xs {" in fh.read()
 
