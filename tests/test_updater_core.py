@@ -181,6 +181,69 @@ def test_apply_update_rolls_back_on_failure(tmp_path):
     assert (app / "b.txt").read_text() == "OLD-b"
 
 
+# A package bump ships the new `<name>-<ver>.dist-info` folder; the old one
+# is not in the payload, so the additive overlay left it in place. With two
+# side by side, importlib.metadata answers with whichever sorts first — the
+# older — and the Update page reported build 89's uvicorn as still 0.52.4.
+def test_apply_update_retires_the_older_dist_info_of_a_bumped_package(tmp_path):
+    app = tmp_path / "app"; staged = tmp_path / "staged"; backup = tmp_path / "bak"
+    old = app / "_internal" / "uvicorn-0.52.4.dist-info"
+    _write(str(old / "METADATA"), "Version: 0.52.4")
+    _write(str(old / "RECORD"), "old")
+    _write(str(app / "_internal" / "certifi-2026.7.22.dist-info" / "METADATA"),
+           "Version: 2026.7.22")                          # untouched package
+    # A different package that merely shares the prefix must not be retired.
+    _write(str(app / "_internal" / "uvicorn_worker-1.0.dist-info" / "METADATA"),
+           "Version: 1.0")
+    _write(str(staged / "_internal" / "uvicorn-0.53.0.dist-info" / "METADATA"),
+           "Version: 0.53.0")
+
+    assert uc.apply_update(str(staged), str(app), str(backup)) is True
+
+    assert not old.exists()
+    assert (app / "_internal" / "uvicorn-0.53.0.dist-info" / "METADATA").exists()
+    assert (app / "_internal" / "certifi-2026.7.22.dist-info" / "METADATA").exists()
+    assert (app / "_internal" / "uvicorn_worker-1.0.dist-info" / "METADATA").exists()
+    # Retired, not destroyed: it sits in the backup tree for rollback.
+    assert (backup / "_internal" / "uvicorn-0.52.4.dist-info" / "METADATA").read_text() \
+        == "Version: 0.52.4"
+
+
+def test_apply_update_a_bump_of_the_same_version_keeps_its_own_folder(tmp_path):
+    app = tmp_path / "app"; staged = tmp_path / "staged"; backup = tmp_path / "bak"
+    _write(str(app / "_internal" / "uvicorn-0.53.0.dist-info" / "METADATA"), "old")
+    _write(str(app / "_internal" / "uvicorn-0.53.0.dist-info" / "RECORD"), "keep")
+    _write(str(staged / "_internal" / "uvicorn-0.53.0.dist-info" / "METADATA"), "new")
+
+    assert uc.apply_update(str(staged), str(app), str(backup)) is True
+
+    assert (app / "_internal" / "uvicorn-0.53.0.dist-info" / "METADATA").read_text() == "new"
+    assert (app / "_internal" / "uvicorn-0.53.0.dist-info" / "RECORD").read_text() == "keep"
+
+
+def test_apply_update_rollback_restores_a_retired_dist_info(tmp_path):
+    app = tmp_path / "app"; staged = tmp_path / "staged"; backup = tmp_path / "bak"
+    old = app / "_internal" / "uvicorn-0.52.4.dist-info"
+    _write(str(old / "METADATA"), "Version: 0.52.4")
+    _write(str(staged / "_internal" / "uvicorn-0.53.0.dist-info" / "METADATA"),
+           "Version: 0.53.0")
+    _write(str(staged / "z.txt"), "NEW-z")
+
+    calls = {"n": 0}
+    def flaky_copy(src, dst):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("disk full")
+        import shutil
+        shutil.copy2(src, dst)
+
+    with pytest.raises(OSError):
+        uc.apply_update(str(staged), str(app), str(backup), _copyfn=flaky_copy)
+
+    assert (old / "METADATA").read_text() == "Version: 0.52.4"
+    assert not (app / "_internal" / "uvicorn-0.53.0.dist-info" / "METADATA").exists()
+
+
 # ── launch_updater_command ──────────────────────────────────────────────────
 
 def test_launch_updater_command_prefers_updater_exe(tmp_path):
