@@ -95,6 +95,9 @@ html[data-text-size="xl"] { zoom: 1.15; --cb-vh: calc(1vh / 1.15); --cb-vw: calc
 .cb-card { overflow-wrap: anywhere; }
 /* Full-width sections interrupt the flow rather than claiming two tracks. */
 .cb-span-2 { column-span: all; }
+/* Settings: the balancer would move the split as paths wrap and text grows,
+   so the right column is pinned to start at a fixed card instead. */
+.cb-set-card--col2 { break-before: column; }
 /* Update page: the components table. The row an update would change is the
    one that stands out; the others sit quiet. */
 .cb-comp { overflow-x: auto; margin-top: 4px; }
@@ -655,6 +658,7 @@ input[type="radio"].cb-cbx {
    off the edge — degrading is not the same as supporting a mobile breakpoint. */
 @media (max-width: 1099px) {
   .cb-grid-2 { column-count: 1; }
+  .cb-set-card--col2 { break-before: auto; }
   .cb-grid-ov, .cb-grid-3, .cb-ov-cols { grid-template-columns: minmax(0, 1fr); }
   .cb-screen { max-width: none; }
 }
