@@ -1,11 +1,11 @@
 {
-  "version": "2.0",
-  "build": 90,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.90.zip",
-  "sha256": "b1b90d293e033a32e9e8dfdbcb61b9a3274001a1dc661862236cbc78159ac4ec",
-  "notes": "Updates now clean up old files properly, per-entry Mark as read on the Watch List, plus small layout fixes.",
-  "base": 90,
-  "changes": "Updates now clean up old files properly, per-entry Mark as read on the Watch List, plus small layout fixes.",
+  "version": "2.1",
+  "build": 91,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.1.91.zip",
+  "sha256": "442590f5c2fceddc40adb35d77e6f86b1babafce48e3dc843b6b574529fd9753",
+  "notes": "Version 2.1 is here. Under-the-hood update cleanup improvements.",
+  "base": 91,
+  "changes": "Version 2.1 is here. Under-the-hood update cleanup improvements.",
   "notice": "",
   "ffmpeg": {
     "version": "9.0.1-essentials_build-www.gyan.dev+72a489ec",
