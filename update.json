@@ -1,11 +1,11 @@
 {
   "version": "2.0",
-  "build": 88,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.88.zip",
-  "sha256": "353c4e514456562ef367e47aaca8fd0363e418c91dfec009d369b8cc467a5412",
-  "notes": "New text-size setting; report-a-problem tool that scrubs your logs; sign-in trouble help; the queue now keeps your last run.",
+  "build": 89,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.0.89.zip",
+  "sha256": "682672e367f5fd24f4b5d4edcc6a7466f97989c85cec60ca1d00c55b92f634ee",
+  "notes": "A cleaner look: consistent line icons throughout, red import/export buttons, and a tidier Batch queue.",
   "base": 88,
-  "changes": "New text-size setting; report-a-problem tool that scrubs your logs; sign-in trouble help; the queue now keeps your last run.",
+  "changes": "A cleaner look: consistent line icons throughout, red import/export buttons, and a tidier Batch queue.",
   "notice": "",
   "ffmpeg": {
     "version": "9.0.1-essentials_build-www.gyan.dev+72a489ec",
