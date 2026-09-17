@@ -294,7 +294,7 @@ def test_download_all_new_carries_the_live_count_and_closes_at_zero(app_js, tmp_
     # Check Links has nothing to check once every entry resolves.
     assert r["idle"]["wl-links"]["off"] is False
     assert r["nothingPending"]["wl-links"]["off"] is True
-    assert r["label"] == "⬇ Download All New (0)"
+    assert r["label"] == "Download All New (0)"
 
 
 def test_the_next_scheduled_run_is_shown_beside_the_toolbar(app_js, tmp_path):
@@ -601,7 +601,9 @@ function render(rows) {
                name: r.children[2].textContent,
                tag: r.children[3].textContent,
                buttons: r.children.slice(4).map(function (b) {
-                 return b.textContent; }) };
+                 return b.textContent; }),
+               icons: r.children.slice(4).map(function (b) {
+                 return b.attrs['data-ic']; }) };
     }),
   };
 }
@@ -633,7 +635,8 @@ def test_the_borrowed_panel_lists_the_runs_channels_like_the_tkinter_one(
     assert [x["mark"] for x in multi["rows"]] == ["✓", "⬇", "○"]
     assert [x["tag"] for x in multi["rows"]] == ["Done", "Downloading",
                                                  "Pending"]
-    assert [x["buttons"] for x in multi["rows"]] == [[], ["⏭ Skip"], []]
+    assert [x["buttons"] for x in multi["rows"]] == [[], ["Skip"], []]
+    assert [x["icons"] for x in multi["rows"]] == [[], ["skip"], []]
 
     single = r["single"]
     assert single["header"] == "⬇  Watch List — downloading 1 of 1 channel"
@@ -699,7 +702,7 @@ def test_smart_edit_closes_the_edit_dialog_before_opening_fix_link(app_js):
     """3m's modal-grab rule: two dialogs must never be open at once. Ordering,
     so there is nothing to execute — the assertion is that the close call
     precedes the open call inside the one handler."""
-    handler = _slice(app_js, "const smart = modalButton('🛠 Smart-Edit Link'",
+    handler = _slice(app_js, "const smart = modalButton('Smart-Edit Link'",
                      "tools.append(")
     assert handler.index("closeModal()") < handler.index("openFixLink(row)")
 
