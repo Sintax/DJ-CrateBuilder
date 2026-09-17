@@ -8,6 +8,7 @@ sliced out of app.js verbatim like the other client tests.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -93,7 +94,8 @@ function remoteAccessAvailable() { return true; }
 function setDisabled(el, disabled, opts) { el.disabled = !!disabled; el.opts = opts || {}; }
 function bindTips() {}
 function writeBlocked() { return ''; }
-const howto = { id: 'cookie-howto', textContent: '' };
+const howto = { id: 'cookie-howto', textContent: '',
+                setAttribute(k, v) { this.attrs = this.attrs || {}; this.attrs[k] = v; } };
 const grid = { querySelector: () => null };
 function $(sel) {
   if (sel === '#settings-grid') return grid;
@@ -103,7 +105,8 @@ function $(sel) {
 function $$() { return []; }
 %(fn)s
 applySettingsDependencies();
-const on = { text: howto.textContent, off: howto.disabled, tt: howto.opts.ttKey };
+const on = { text: howto.textContent, off: howto.disabled, tt: howto.opts.ttKey,
+             icon: howto.attrs['data-ic'] };
 state.settings.cookies_browser = 'Brave';
 applySettingsDependencies();
 const brave = howto.textContent;
@@ -130,10 +133,11 @@ def test_the_howto_button_names_the_browser_and_greys_with_cookies_off(app_js, t
                  "  /* One setting, drawn twice"),
     })
 
-    assert r["on"] == {"text": "📖 How-To: Setting Up a Dedicated Firefox Profile",
-                       "off": False, "tt": "settings.firefox_profile_howto"}
-    assert r["brave"] == "📖 How-To: Setting Up a Dedicated Brave Profile"
-    assert r["chrome"] == "📖 How-To: Using Chrome Cookies via a Cookie File"
+    assert r["on"] == {"text": "How-To: Setting Up a Dedicated Firefox Profile",
+                       "off": False, "tt": "settings.firefox_profile_howto",
+                       "icon": "book"}
+    assert r["brave"] == "How-To: Setting Up a Dedicated Brave Profile"
+    assert r["chrome"] == "How-To: Using Chrome Cookies via a Cookie File"
     assert r["off"] == {"off": True, "reason": "Turn on Use Browser Cookies first."}
 
 
@@ -624,3 +628,26 @@ def test_the_sidebar_names_the_app_in_full_with_the_mount_tag_beneath(index_html
     assert row.count('</div>') == 2          # the name's row closes before the tag
     with open(os.path.join(ROOT, "web", "app.css"), encoding="utf-8") as fh:
         assert ".cb-brandrow { display: flex; flex-direction: column;" in fh.read()
+
+
+# ── buttons and headings draw Core Line glyphs, not emoji ────────────────────
+
+# Every emoji the swap retired from a button, heading, dialog title or menu
+# label. The queue-log marks (✓ ⊘ ✗ ○ ⬇ in DL_MARK / WL_QROW_MARK), the ⚠ in
+# prose, and the → on links are deliberately not here.
+SWAPPED_EMOJI = "⏸⬇⏭⚡🔍🛠🧹🔄🏷📂🗂🖼👁⚙✏📋📤📥🐞↗🌐📖❔⏳🔐✕"
+
+
+def test_index_links_the_icon_sheet_and_no_button_starts_with_an_emoji(index_html):
+    """The glyph is a `data-ic` attribute painted by icons.css, so the label
+    stays a plain text node; an emoji left in the text would draw twice."""
+    links = re.findall(r'<link rel="stylesheet" href="([^"]+)">', index_html)
+    assert links.index("icons.css") == links.index("app.css") + 1
+    assert links.index("icons.css") < links.index("theme-dark.css")
+
+    offenders = []
+    for m in re.finditer(r"<(button|h4)[^>]*>([^<]*)", index_html):
+        text = m.group(2).strip()
+        if text and text[0] in SWAPPED_EMOJI:
+            offenders.append(m.group(0))
+    assert offenders == []

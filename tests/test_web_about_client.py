@@ -625,7 +625,8 @@ def test_report_a_bug_stands_on_its_own_line_full_size_and_red(app_js):
                 "    if (info.note) {")
     assert "report.className = 'cb-btn';" in fn
     assert "cb-btn--quiet" not in fn and "cb-btn--sm" not in fn
-    assert "'🐞 Report a Bug'" in fn
+    assert "'Report a Bug'" in fn
+    assert "report.setAttribute('data-ic', 'bug')" in fn
     # Its own row, appended after the links row — not inside it.
     assert "reportRow.appendChild(report)" in fn
     assert fn.index("host.appendChild(links)") < fn.index("host.appendChild(reportRow)")
