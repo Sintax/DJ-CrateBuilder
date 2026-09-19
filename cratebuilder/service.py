@@ -115,7 +115,8 @@ JOB_TITLES = {
 # rule is that a browser elsewhere can never replace the binary it is talking
 # to, and that only the host may see the host's filesystem — so this is checked
 # here, not left to a client to respect.
-LOCAL_ONLY = ("update.", "fs.", "cookies.howto_window")
+LOCAL_ONLY = ("update.", "fs.", "cookies.howto_window", "app.quit",
+              "app.close_seen")
 
 # The Watch List's next-run line, without the monolith's emoji: the web UI
 # draws a Core Line clock in front of it instead.
@@ -912,9 +913,30 @@ class CrateBuilderService:
         # a service nothing has wired it into (every test, the remote-only
         # entry points) — the worker treats that as "nothing to call".
         self.on_update_restart = None
+        # Set by update_cancel(); the apply worker checks it between phases
+        # and hands it to ucore.download. Cleared by _start_job's guard for
+        # the update job — under the job lock, right before the slot is
+        # claimed — so the clear can neither wipe a live job's cancel (the
+        # guard never runs while one holds the slot) nor race a cancel that
+        # lands the instant the slot is taken.
+        self._update_cancel = threading.Event()
         # The desktop window's opener for the cookie setup guide's own
         # window (see cookies_howto_window). None everywhere else.
         self.on_open_howto = None
+        # The desktop window's "close without asking", invoked by app.quit
+        # once the page's own close dialog has been answered. None on a
+        # service nothing has wired it into.
+        self.on_quit = None
+        # The page's receipt for app.close_requested (see app_close_seen).
+        self.on_close_seen = None
+        # Whether the local page has booted far enough to be asked a
+        # question: flipped by the first state.snapshot served over the LOCAL
+        # transport, which the page only requests after its event handlers
+        # are subscribed (web/app.js boot()). WindowClose reads this to decide
+        # between the in-page close dialog and the native one — a page that
+        # never booted cannot answer, and a close it never hears would leave
+        # an app that cannot be quit.
+        self.page_ready = False
         self._installed_components_cache = None
         self._update_timer = None
         self._next_update_check_ts = None
@@ -1352,9 +1374,12 @@ class CrateBuilderService:
                 p.get("device_id") or p.get("token_hash")),
             "update.check": lambda p: self.update_check(),
             "update.apply": lambda p: self.update_apply(),
+            "update.cancel": lambda p: self.update_cancel(),
             "update.status": lambda p: self.update_status(),
             "update.set_interval":
                 lambda p: self.update_set_interval(p.get("value")),
+            "app.quit": lambda p: self.app_quit(),
+            "app.close_seen": lambda p: self.app_close_seen(),
         }
 
     def _unavailable(self, what):
@@ -1364,6 +1389,8 @@ class CrateBuilderService:
 
     def snapshot(self):
         """Everything the shell needs on connect; all else arrives as deltas."""
+        if self.transport == LOCAL:
+            self.page_ready = True
         library = self.library_stats()
         return {
             "app": {"name": "DJ-CrateBuilder", **version_info()},
@@ -1461,6 +1488,30 @@ class CrateBuilderService:
             raise CBError("The guide cannot open in its own window here.")
         opener(page["browser"], page["title"])
         return {"opened": True, "browser": page["browser"]}
+
+    def app_quit(self):
+        """The page's own close dialog answered "close": let the desktop
+        window go without asking again (web_window.py hands in its
+        force_close). Named in LOCAL_ONLY outright — a paired browser must
+        never be able to shut the host's app down. A service with no hook
+        wired (the headless mounts, every test) has nothing to close and
+        says so quietly rather than failing the page's click."""
+        hook = self.on_quit
+        if hook is None:
+            return {"ok": False}
+        hook()
+        return {"ok": True}
+
+    def app_close_seen(self):
+        """The page's receipt that app.close_requested reached a handler and
+        the close question is on screen. The desktop window waits briefly
+        for this after asking; without it the page is taken to be hung or
+        gone, and the native dialog asks instead. Host-only like app.quit —
+        a remote browser cannot vouch for the host's own page."""
+        hook = self.on_close_seen
+        if hook is not None:
+            hook()
+        return {"ok": True}
 
     # ── library / database ────────────────────────────────────────────────────
 
@@ -3215,6 +3266,12 @@ class CrateBuilderService:
         component_rows = components.compare(
             self._installed_components(), components.offered_versions(manifest))
 
+        cancel = self._update_cancel
+
+        def guard():
+            self._require_idle_for_update()
+            cancel.clear()
+
         def worker():
             ws = ucore.default_workspace()
             ucore.purge_dir(ws)
@@ -3238,17 +3295,25 @@ class CrateBuilderService:
                         "total_mb": (total // 1048576) if total else None,
                     })
 
-                ucore.download(dl_url, zip_path, progress_cb=progress)
+                ucore.download(dl_url, zip_path, progress_cb=progress,
+                               cancel=cancel)
 
                 self.emit("update.progress", {"phase": "verify"})
                 if not ucore.verify_sha256(zip_path, sha256):
                     raise CBError(
                         "checksum mismatch — the download may be corrupt")
+                if cancel.is_set():
+                    raise ucore.UpdateCancelled("cancelled after verify")
 
                 self.emit("update.progress", {"phase": "stage"})
                 staged = os.path.join(ws, "staged")
                 ucore.purge_dir(staged)
                 ucore.extract_zip(zip_path, staged)
+                # The last checkpoint. Past update.restarting the updater
+                # process owns the staged payload and a cancel is a no-op:
+                # nothing below ever looks at the event again.
+                if cancel.is_set():
+                    raise ucore.UpdateCancelled("cancelled after stage")
 
                 # update.progress is coalesced (cratebuilder/events.py); flush
                 # its last pending frame so it can never arrive after the
@@ -3265,6 +3330,26 @@ class CrateBuilderService:
                     flags = 0x00000008 | 0x00000200  # DETACHED | NEW_PROCESS_GROUP
                 subprocess.Popen(cmd, close_fds=True, creationflags=flags,
                                  cwd=app_dir)
+            except ucore.UpdateCancelled:
+                # A cancel is the user's own decision, not a failure: it must
+                # not become the error notification / job.finished ok=False
+                # that _start_job stamps on a worker that raises. So it is
+                # absorbed here — same flush-then-purge as the error path —
+                # and announced by a dedicated update.cancelled event rather
+                # than a flag threaded through _start_job's generic
+                # job.finished; the page closes its dialog on that event and
+                # resyncs on the ok=True job.finished that follows it.
+                self._emit.flush()
+                ucore.purge_dir(ws)
+                self.emit("notification", {
+                    "level": "info",
+                    "title": "Update",
+                    "body": f"Update cancelled — still on build {current}.",
+                    "at": datetime.now().isoformat(timespec="seconds"),
+                    "job": UPDATE_JOB,
+                })
+                self.emit("update.cancelled", {"build": current})
+                return
             except Exception:
                 # Flush first so the last progress frame lands before the
                 # error notification/job.finished that supersede it, then
@@ -3289,8 +3374,19 @@ class CrateBuilderService:
                     pass
 
         job_id = self._start_job(UPDATE_JOB, worker, title="Update",
-                                 guard=self._require_idle_for_update)
+                                 guard=guard)
         return {"job_id": job_id, "build": build, "notes": notes}
+
+    def update_cancel(self):
+        """Ask the running apply to stop. Honoured through download, verify
+        and stage; once update.restarting has gone out the updater process
+        owns the payload and the request is silently too late. No job at all
+        is not an error either — the dialog's Cancel can race the worker's
+        own end, and a refusal would only turn a no-op into a toast."""
+        if not self._job_running(UPDATE_JOB):
+            return {"cancelled": False}
+        self._update_cancel.set()
+        return {"cancelled": True}
 
     def update_status(self):
         """Everything the web UI's Update screen renders besides the

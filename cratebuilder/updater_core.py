@@ -313,28 +313,62 @@ def verify_sha256(path, expected):
     return sha256_file(path) == str(expected).strip().lower()
 
 
-def download(url, dest_path, progress_cb=None, timeout=30.0, _opener=None):
+class UpdateCancelled(Exception):
+    """The user cancelled the update before anything was handed off.
+
+    Raised by ``download`` when its *cancel* event is set, and by the
+    service's apply worker at its own checkpoints, so one exception type
+    means "stop, purge, nothing changed" all the way up.
+    """
+
+
+def _cancelled(cancel):
+    """True when a cancel event was given and has been set."""
+    return cancel is not None and cancel.is_set()
+
+
+def download(url, dest_path, progress_cb=None, timeout=30.0, _opener=None,
+             cancel=None):
     """Stream ``url`` to ``dest_path``, calling progress_cb(done, total).
 
     total is the Content-Length when known, else None. Writes to a ``.part``
     file first and renames on success so a half-finished download is never
     mistaken for a complete one.
+
+    *cancel* is an optional ``threading.Event``-like object (anything with
+    ``is_set()``). It is checked before the request and between chunks; once
+    set, the stream is abandoned, the ``.part`` file is deleted, and
+    ``UpdateCancelled`` is raised. "Between chunks" means when ``resp.read()``
+    returns, so a stalled socket can delay the cancel by up to ``timeout``.
     """
+    if _cancelled(cancel):
+        raise UpdateCancelled("update cancelled before the download began")
     opener = _opener or urllib.request.urlopen
     os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
     part = dest_path + ".part"
     req = urllib.request.Request(
         url, headers={"User-Agent": "DJ-CrateBuilder-Updater"})
-    with opener(req, timeout=timeout) as resp:
-        total = resp.headers.get("Content-Length")
-        total = int(total) if total and total.isdigit() else None
-        done = 0
-        with open(part, "wb") as f:
-            for block in iter(lambda: resp.read(65536), b""):
-                f.write(block)
-                done += len(block)
-                if progress_cb:
-                    progress_cb(done, total)
+    try:
+        with opener(req, timeout=timeout) as resp:
+            total = resp.headers.get("Content-Length")
+            total = int(total) if total and total.isdigit() else None
+            done = 0
+            with open(part, "wb") as f:
+                for block in iter(lambda: resp.read(65536), b""):
+                    if _cancelled(cancel):
+                        raise UpdateCancelled("update cancelled mid-download")
+                    f.write(block)
+                    done += len(block)
+                    if progress_cb:
+                        progress_cb(done, total)
+    except UpdateCancelled:
+        # The `with` blocks above have already closed the file by the time
+        # this runs, so the delete cannot collide with an open handle.
+        try:
+            os.remove(part)
+        except OSError:
+            pass
+        raise
     os.replace(part, dest_path)
     return dest_path
 

@@ -133,6 +133,60 @@ def test_download_streams_and_reports_progress(tmp_path):
     assert not (tmp_path / "out" / "app.zip.part").exists()   # .part renamed away
 
 
+class _Flag:
+    """The one method download() needs of a threading.Event."""
+    def __init__(self, on=False):
+        self.on = on
+    def is_set(self):
+        return self.on
+
+
+def test_download_with_a_preset_cancel_raises_and_leaves_no_part(tmp_path):
+    opened = []
+    def opener(req, timeout=None):
+        opened.append(req.full_url)
+        return _FakeDownloadResp(b"x" * 10)
+    dest = tmp_path / "out" / "app.zip"
+
+    with pytest.raises(uc.UpdateCancelled):
+        uc.download("https://host/app.zip", str(dest), _opener=opener,
+                    cancel=_Flag(on=True))
+
+    assert opened == []                       # never even asked the server
+    assert not dest.exists()
+    assert not (tmp_path / "out" / "app.zip.part").exists()
+
+
+def test_download_cancelled_between_chunks_deletes_the_part_file(tmp_path):
+    body = b"x" * (70000)   # > one 64KiB chunk, so there IS a between-chunks
+    flag = _Flag()
+    def opener(req, timeout=None):
+        return _FakeDownloadResp(body)
+    dest = tmp_path / "out" / "app.zip"
+    seen = []
+
+    def progress(done, total):
+        seen.append(done)
+        flag.on = True                        # cancel after the first chunk
+
+    with pytest.raises(uc.UpdateCancelled):
+        uc.download("https://host/app.zip", str(dest), progress_cb=progress,
+                    _opener=opener, cancel=flag)
+
+    assert seen == [65536]                    # stopped reading after chunk one
+    assert not dest.exists()
+    assert not (tmp_path / "out" / "app.zip.part").exists()
+
+
+def test_download_without_a_cancel_is_unchanged(tmp_path):
+    body = b"y" * 10
+    def opener(req, timeout=None):
+        return _FakeDownloadResp(body)
+    dest = tmp_path / "app.zip"
+    uc.download("https://host/app.zip", str(dest), _opener=opener, cancel=None)
+    assert dest.read_bytes() == body
+
+
 # ── apply_update (the file swap + rollback) ───────────────────────────────────
 def _write(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)

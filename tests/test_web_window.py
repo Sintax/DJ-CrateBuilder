@@ -8,6 +8,7 @@ the bind decision is a pure function.
 """
 import inspect
 import sys
+import threading
 
 import pytest
 
@@ -39,6 +40,12 @@ class RecordingService:
         self.counted = 0             # how often counts() was asked — see fix 10
         self.logged = []
         self.events = EventBus()
+        # False until the page's first state.snapshot, as on the real
+        # service: WindowClose falls back to the native dialog until then.
+        self.page_ready = False
+
+    def emit(self, type, payload):
+        self.events.emit(type, payload)
 
     def call(self, method, params=None, transport=None):
         self.calls.append({"method": method, "params": params,
@@ -816,6 +823,8 @@ class MainService(RecordingService):
         self.startup_update_checks = 0
         self.populates = 0
         self.on_update_restart = None
+        self.on_quit = None
+        self.on_close_seen = None
         self.placement = placement
         self.saved_placements = []
         self.closes = 0
@@ -1048,6 +1057,203 @@ def test_main_flushes_the_placement_before_it_closes_the_service(monkeypatch):
 # The monolith's _on_window_close, ported: the X button and the tray's Close
 # always ask first, and a "No" leaves the app exactly as it was — which is why
 # WindowClose owns the whole close instead of sharing the `closing` event.
+#
+# Two ways of asking. A booted page (service.page_ready) is asked in-page:
+# the OS close is cancelled, app.close_requested goes out over the bridge
+# from a helper thread, the page's receipt comes back as app.close_seen, and
+# its "close" as app.quit → force_close. A page that never booted cannot hear
+# the question, so the native dialog stays for it — the tests below that
+# leave page_ready False are that fallback — and one that never sends the
+# receipt is given the native dialog by the helper thread.
+
+def _closer(window):
+    """The WindowClose main() wired as the one closing handler."""
+    (handler,) = window.events.closing.handlers
+    return handler.__self__
+
+
+def _asked(window, timeout=2):
+    """Wait for the helper thread that carries the question to finish."""
+    asker = _closer(window)._asker
+    assert asker is not None, "the page was never asked"
+    asker.join(timeout)
+    assert not asker.is_alive(), "the helper thread is still waiting"
+
+
+def test_a_booted_page_is_asked_in_page_and_nothing_is_torn_down(monkeypatch):
+    service, window, _, started, icons = run_main(
+        monkeypatch, settings={"minimize_to_tray": True})
+    started()
+    window.events.minimized.handlers[0].__self__.hide()   # raise the tray icon
+    service.page_ready = True
+    heard = []
+    service.events.subscribe(lambda t, p: heard.append((t, p)))
+
+    assert close_the_window(window) is False    # the OS close is cancelled
+    service.on_close_seen()                     # the page's receipt
+    _asked(window)
+
+    assert heard == [("app.close_requested", {})]
+    assert window.confirms == []                # no native dialog
+    assert service.closes == 0
+    assert icons[0].stopped is False
+    # The push bridge carried the question to the page, and stays up.
+    assert any("app.close_requested" in js for js in window.js)
+    before = len(window.js)
+    service.events.emit("state.patch", {"counts": {"pending_new": 1}})
+    assert len(window.js) > before
+
+    service.page_ready = False
+    close_the_window(window)                    # real cleanup for the test
+
+
+def test_the_question_never_goes_out_on_the_closing_thread(monkeypatch):
+    """`closing` runs on the WinForms UI thread, and the bridge's
+    evaluate_js blocks on a reply only that thread can produce — an emit
+    from the closing handler itself deadlocks the window (reproduced on a
+    real pywebview 6.2.1 window). So the emit must reach the bridge from
+    some other thread, and `closing` must return without waiting on it."""
+    service, window, _, started, _ = run_main(monkeypatch)
+    started()
+    service.page_ready = True
+    emitted_on = []
+    real_emit = service.emit
+
+    def recording_emit(type, payload):
+        emitted_on.append(threading.current_thread())
+        real_emit(type, payload)
+    service.emit = recording_emit
+    pushed_on = []
+    real_evaluate = window.evaluate_js
+
+    def recording_evaluate(script):
+        pushed_on.append(threading.current_thread())
+        real_evaluate(script)
+    window.evaluate_js = recording_evaluate
+
+    closing_thread = threading.current_thread()
+    assert close_the_window(window) is False
+    service.on_close_seen()
+    _asked(window)
+
+    assert len(emitted_on) == 1 and emitted_on[0] is not closing_thread
+    assert pushed_on and all(t is not closing_thread for t in pushed_on)
+    assert emitted_on[0].daemon is True
+
+    service.page_ready = False
+    close_the_window(window)                    # real cleanup for the test
+
+
+def test_the_pages_close_answer_closes_without_asking_again(monkeypatch):
+    """app.quit → on_quit → force_close: the question was already put, in
+    the page, so the close it raises goes straight to the teardown."""
+    service, window, _, started, icons = run_main(
+        monkeypatch, settings={"minimize_to_tray": True})
+    started()
+    window.events.minimized.handlers[0].__self__.hide()   # raise the tray icon
+    service.page_ready = True
+
+    assert close_the_window(window) is False    # asked the page
+    service.on_close_seen()
+    _asked(window)
+    service.on_quit()                           # the page said "close"
+
+    assert window.actions[-1] == "destroy"
+    assert close_the_window(window) is not False    # what the destroy raises
+    assert window.confirms == []                # never a native dialog
+    assert service.closes == 1
+    assert icons[0].stopped is True
+
+
+def test_a_page_that_never_acknowledges_gets_the_native_dialog(monkeypatch):
+    """The bus and the bridge swallow every failure, so a hung or vanished
+    page looks exactly like a listening one — until its receipt fails to
+    arrive. Then the helper thread asks natively, and YES closes."""
+    monkeypatch.setattr(web_window, "CLOSE_ACK_TIMEOUT", 0.05)
+    service, window, _, started, _ = run_main(monkeypatch)
+    started()
+    service.page_ready = True
+    window.confirm_answer = False
+
+    assert close_the_window(window) is False    # asked the page first
+    _asked(window)                              # ... which never answered
+
+    assert window.confirms == [(web_window.CLOSE_CONFIRM_TITLE,
+                                web_window.CLOSE_CONFIRM_BODY)]
+    assert "destroy" not in window.actions      # "No" leaves it open
+    assert service.closes == 0
+
+    window.confirm_answer = True
+    assert close_the_window(window) is False    # asked the page again
+    _asked(window)
+    assert len(window.confirms) == 2
+    assert window.actions[-1] == "destroy"      # YES went through force_close
+    close_the_window(window)                    # what the destroy raises
+    assert len(window.confirms) == 2            # and asked nothing more
+    assert service.closes == 1
+
+
+def test_a_wedged_renderer_still_gets_the_native_dialog(monkeypatch):
+    """The bridge's evaluate_js blocks until the page runs the script, with
+    no timeout of its own. A renderer that never does must not hold the
+    waiter — and with it every later X — so the emit runs on a thread the
+    waiter does not join, and the native dialog still arrives on time."""
+    monkeypatch.setattr(web_window, "CLOSE_ACK_TIMEOUT", 0.05)
+    service, window, _, started, _ = run_main(monkeypatch)
+    started()
+    service.page_ready = True
+    window.confirm_answer = False
+    stuck = threading.Event()
+    window.evaluate_js = lambda script: stuck.wait()   # the page never runs it
+
+    assert close_the_window(window) is False
+    _asked(window)                                 # the waiter finished anyway
+    assert window.confirms == [(web_window.CLOSE_CONFIRM_TITLE,
+                                web_window.CLOSE_CONFIRM_BODY)]
+    assert "destroy" not in window.actions
+    stuck.set()                                    # let the emit thread go
+    service.page_ready = False
+    close_the_window(window)                       # real cleanup for the test
+
+
+def test_a_second_x_while_the_question_is_out_asks_nothing_new(monkeypatch):
+    monkeypatch.setattr(web_window, "CLOSE_ACK_TIMEOUT", 0.2)
+    service, window, _, started, _ = run_main(monkeypatch)
+    started()
+    service.page_ready = True
+    heard = []
+    service.events.subscribe(lambda t, p: heard.append(t))
+
+    assert close_the_window(window) is False
+    assert close_the_window(window) is False    # in flight: cancelled, no emit
+    service.on_close_seen()
+    _asked(window)
+
+    assert heard == ["app.close_requested"]
+    assert window.confirms == []
+
+    service.page_ready = False
+    close_the_window(window)                    # real cleanup for the test
+
+
+def test_an_unbooted_page_falls_back_to_the_native_dialog(monkeypatch):
+    service, window, _, started, _ = run_main(monkeypatch)
+    started()
+    assert service.page_ready is False
+    heard = []
+    service.events.subscribe(lambda t, p: heard.append((t, p)))
+    window.confirm_answer = False
+
+    assert close_the_window(window) is False
+
+    assert window.confirms == [(web_window.CLOSE_CONFIRM_TITLE,
+                                web_window.CLOSE_CONFIRM_BODY)]
+    assert heard == []                          # the page was never asked
+    assert service.closes == 0
+
+    window.confirm_answer = True
+    close_the_window(window)                    # real cleanup for the test
+
 
 def test_a_declined_close_touches_nothing(monkeypatch):
     """The teardown steps must not have run: pywebview executes every closing
