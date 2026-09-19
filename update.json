@@ -1,11 +1,11 @@
 {
   "version": "2.1",
-  "build": 91,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.1.91.zip",
-  "sha256": "442590f5c2fceddc40adb35d77e6f86b1babafce48e3dc843b6b574529fd9753",
-  "notes": "Version 2.1 is here. Under-the-hood update cleanup improvements.",
+  "build": 92,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.1.92.zip",
+  "sha256": "68d1148b1a9ee40095bb93097acb36108990784f433dc562c8f7de0fe34eaa89",
+  "notes": "Overview Recent activity widened to 5 entries and the app version now appears in the title bar.",
   "base": 91,
-  "changes": "Version 2.1 is here. Under-the-hood update cleanup improvements.",
+  "changes": "Overview Recent activity widened to 5 entries and the app version now appears in the title bar.",
   "notice": "",
   "ffmpeg": {
     "version": "9.0.1-essentials_build-www.gyan.dev+72a489ec",
