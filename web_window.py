@@ -31,7 +31,8 @@ import webview
 from cratebuilder import updater_core as ucore
 from cratebuilder import util
 from cratebuilder.service import (JOB_FINISHED, LOCAL, CBError,
-                                  CrateBuilderService, app_icon_path)
+                                  CrateBuilderService, app_icon_path,
+                                  version_info)
 from cratebuilder.singleton import (SINGLE_INSTANCE_PORT, acquire_single_instance,
                                     listen_for_show_requests, request_show)
 
@@ -1193,8 +1194,12 @@ def main():
     frame = {"width": WINDOW_SIZE[0], "height": WINDOW_SIZE[1],
              "min_size": MIN_SIZE, "hidden": start_minimized}
     frame.update(window_placement_kwargs(service))
+    # The frame title carries the version; WINDOW_TITLE stays the bare app
+    # name for the tray, whose summary and notifications are not version stamps.
+    _ver = version_info().get("version")
+    window_title = f"{WINDOW_TITLE} v{_ver}" if _ver else WINDOW_TITLE
     window = webview.create_window(
-        WINDOW_TITLE,
+        window_title,
         index + screen,
         js_api=JsApi(service),
         **frame,
