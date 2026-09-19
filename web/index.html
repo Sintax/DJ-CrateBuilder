@@ -21,11 +21,20 @@
       document.documentElement.setAttribute('data-text-size', size);
     }
   } catch (e) { /* normal */ }
+  /* The stored colour theme, for the same reason; app.js's applyAccent
+     keeps the same key and values. Red is the sheets' own colour, so only
+     green marks the page. */
+  try {
+    if (localStorage.getItem('cb_accent') === 'green') {
+      document.documentElement.setAttribute('data-accent', 'green');
+    }
+  } catch (e) { /* red */ }
 </script>
 <link rel="stylesheet" href="theme.css">
 <link rel="stylesheet" href="app.css">
 <link rel="stylesheet" href="icons.css">
 <link rel="stylesheet" href="theme-dark.css">
+<link rel="stylesheet" href="theme-green.css">
 </head>
 <body>
 

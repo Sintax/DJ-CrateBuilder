@@ -98,7 +98,26 @@ out.card = {
   rows: card.children.length,
   labels: card.children.map((row) => row.children[0].textContent),
 };
-const sizeSel = card.children[1].children[1];
+const accentSel = card.children[1].children[1];
+function accentSnapshot() {
+  let stored;
+  try { stored = localStorage.getItem('cb_accent'); } catch (_) { stored = 'refused'; }
+  return { attr: document.documentElement.attrs['data-accent'] || null, stored };
+}
+out.accent = {
+  tag: accentSel.tag, id: accentSel.id, readOk: accentSel.dataset.readOk,
+  options: accentSel.children.map((o) => [o.value, o.textContent]),
+  value: accentSel.value, initial: storedAccent(),
+};
+accentSel.value = 'green';
+accentSel.listeners.change();
+out.accentGreen = accentSnapshot();
+applyAccent('bogus');
+out.accentBogus = accentSnapshot();
+accentSel.value = 'red';
+accentSel.listeners.change();
+out.accentRed = accentSnapshot();
+const sizeSel = card.children[2].children[1];
 function sizeSnapshot() {
   let stored;
   try { stored = localStorage.getItem('cb_text_size'); } catch (_) { stored = 'refused'; }
@@ -134,6 +153,9 @@ out.refusedApply = snapshot();
 out.refusedSize = storedTextSize();
 applyTextSize('large');
 out.refusedSizeApply = sizeSnapshot();
+out.refusedAccent = storedAccent();
+applyAccent('green');
+out.refusedAccentApply = accentSnapshot();
 console.log(JSON.stringify(out));
 """
 
@@ -178,10 +200,95 @@ def test_the_card_draws_two_radio_options_reading_the_stored_theme(result):
         ["light", "Light", "radio", "false", 0, "1", False],
         ["dark", "Dark", "radio", "true", 0, "1", True],
     ]
-    # Two labelled rows and nothing else: the "kept on this device" hint
+    # Three labelled rows and nothing else: the "kept on this device" hint
     # that used to follow the theme switch is gone.
-    assert card["rows"] == 2
-    assert card["labels"] == ["Theme", "Text size"]
+    assert card["rows"] == 3
+    assert card["labels"] == ["Theme", "Colour theme", "Text size"]
+
+
+# ── colour theme ─────────────────────────────────────────────────────────────
+
+def test_the_colour_theme_control_is_a_select_of_red_and_green_reading_the_store(result):
+    """A dropdown between the theme switch and text size: Red first because
+    it is the default, live in a read-only remote session like the others."""
+    accent = result["accent"]
+    assert (accent["tag"], accent["id"], accent["readOk"]) == ("select", "settings-accent", "1")
+    assert accent["options"] == [["red", "Red"], ["green", "Green"]]
+    assert accent["initial"] == "red"
+    assert accent["value"] == "red"
+
+
+def test_choosing_green_marks_the_page_and_remembers_it(result):
+    """Red is the design's own colour, so it clears the mark rather than
+    setting one; green sets it for theme-green.css to answer. An unknown
+    value falls back to red."""
+    assert result["accentGreen"] == {"attr": "green", "stored": "green"}
+    assert result["accentBogus"] == {"attr": None, "stored": "red"}
+    assert result["accentRed"] == {"attr": None, "stored": "red"}
+
+
+def test_a_store_that_refuses_still_colours_the_page(result):
+    assert result["refusedAccent"] == "red"
+    assert result["refusedAccentApply"] == {"attr": "green", "stored": "refused"}
+
+
+def test_index_applies_the_stored_accent_before_any_stylesheet_loads():
+    html = _read("index.html")
+    key = re.search(r"const ACCENT_KEY = '([^']+)'", _read("app.js")).group(1)
+    assert key == "cb_accent"
+    assert html.index(f"localStorage.getItem('{key}')") < html.index('href="theme.css"')
+    assert "setAttribute('data-accent', 'green')" in html
+    # Last, so its overrides win over both the light and the dark sheet.
+    assert html.index('href="theme-dark.css"') < html.index('href="theme-green.css"')
+
+
+# The accent tokens: the six the design paints its red with, plus the ink a
+# neon fill needs in place of white. theme-green.css must re-declare exactly
+# these, for light and again for dark, and no others — the status colours
+# (--cb-err and its log twin) stay red so an error still reads as one.
+_ACCENT_TOKENS = {"--cb-line", "--cb-line-soft", "--cb-line-row", "--cb-accent",
+                  "--cb-accent-hover", "--cb-accent-wash", "--cb-fill-ink"}
+
+
+def test_the_green_sheet_recolours_the_accent_tokens_for_both_grounds():
+    css = _read("theme-green.css")
+    light = _tokens(css, ':root[data-accent="green"] {')
+    dark = _tokens(css, ':root[data-accent="green"][data-theme="dark"] {')
+    assert light == _ACCENT_TOKENS, sorted(light ^ _ACCENT_TOKENS)
+    assert dark == _ACCENT_TOKENS, sorted(dark ^ _ACCENT_TOKENS)
+    for token in ("--cb-err", "--cb-log-error", "--cb-warn"):
+        assert token not in _strip_comments(css)
+
+
+def test_the_green_sheet_never_reaches_a_page_that_did_not_ask():
+    css = _strip_comments(_read("theme-green.css"))
+    for group in re.findall(r"(?:^|\})\s*([^{}]+)\{", css):
+        for selector in group.split(","):
+            assert selector.strip().startswith(':root[data-accent="green"]'), \
+                selector.strip()
+
+
+def test_the_green_sheet_covers_every_red_the_design_sheet_hard_codes():
+    """theme.css paints five things with literal reds rather than tokens
+    (selection, the pressed button, the progress bar and its overall fill,
+    the menu hover); the dark sheet re-paints four of them. Green has to
+    re-paint every one for both grounds or a red edge shows through."""
+    css = _strip_comments(_read("theme-green.css"))
+    for selector in ("::selection", ".cb-btn:active", ".cb-bar {",
+                     ".cb-bar__fill--overall", ".cb-menu > *:hover"):
+        assert css.count(selector) >= 2, selector
+
+
+def test_the_green_sheet_re_letters_every_white_on_accent_fill():
+    """A neon fill cannot carry white text. These are every element theme.css
+    and app.css fill with --cb-accent and letter in #fff; each must be
+    re-lettered in the ink token or its label vanishes into the fill."""
+    css = _strip_comments(_read("theme-green.css"))
+    ink = css[css.index("{ color: var(--cb-fill-ink); }") - 400:
+              css.index("{ color: var(--cb-fill-ink); }")]
+    for cls in (".cb-btn--fill", ".cb-seg > .is-on", ".cb-tag--fill",
+                ".cb-nav__count", ".cb-bell__count"):
+        assert cls in ink, cls
 
 
 # ── text size ────────────────────────────────────────────────────────────────

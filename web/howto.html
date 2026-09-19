@@ -12,10 +12,16 @@
       document.documentElement.setAttribute('data-theme', 'dark');
     }
   } catch (e) { /* light */ }
+  try {
+    if (localStorage.getItem('cb_accent') === 'green') {
+      document.documentElement.setAttribute('data-accent', 'green');
+    }
+  } catch (e) { /* red */ }
 </script>
 <link rel="stylesheet" href="theme.css">
 <link rel="stylesheet" href="app.css">
 <link rel="stylesheet" href="theme-dark.css">
+<link rel="stylesheet" href="theme-green.css">
 <style>
   /* The guide fills its own window instead of sitting in a modal, so the
      card's height cap comes off and the window's scrollbar is the only one. */
