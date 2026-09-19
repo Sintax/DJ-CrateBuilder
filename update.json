@@ -1,11 +1,11 @@
 {
   "version": "2.1",
-  "build": 92,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.1.92.zip",
-  "sha256": "68d1148b1a9ee40095bb93097acb36108990784f433dc562c8f7de0fe34eaa89",
-  "notes": "Overview Recent activity widened to 5 entries and the app version now appears in the title bar.",
+  "build": 93,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.1.93.zip",
+  "sha256": "ec71cde20683c975ee50acb48e8c75e737a42e5f3d7d507bb0b05c488e925f08",
+  "notes": "Added colour theme support \u2014 choose Green or Blue in Settings.",
   "base": 91,
-  "changes": "Overview Recent activity widened to 5 entries and the app version now appears in the title bar.",
+  "changes": "Added colour theme support \u2014 choose Green or Blue in Settings.",
   "notice": "",
   "ffmpeg": {
     "version": "9.0.1-essentials_build-www.gyan.dev+72a489ec",
