@@ -1,11 +1,11 @@
 {
   "version": "2.1",
-  "build": 93,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.1.93.zip",
-  "sha256": "ec71cde20683c975ee50acb48e8c75e737a42e5f3d7d507bb0b05c488e925f08",
-  "notes": "Added colour theme support \u2014 choose Green or Blue in Settings.",
-  "base": 91,
-  "changes": "Added colour theme support \u2014 choose Green or Blue in Settings.",
+  "build": 94,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.1.94.zip",
+  "sha256": "ab089e4a360cb90cee269b78f5589859333a4a168058f1064a71313041671dd8",
+  "notes": "You can now cancel an update download; closing the app shows an in-app confirmation.",
+  "base": 94,
+  "changes": "You can now cancel an update download; closing the app shows an in-app confirmation.",
   "notice": "",
   "ffmpeg": {
     "version": "9.0.1-essentials_build-www.gyan.dev+72a489ec",
