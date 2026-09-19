@@ -923,13 +923,13 @@
     return el;
   }
 
-  /* Recent activity is the notification feed, three deep — the same entries
+  /* Recent activity is the notification feed, five deep — the same entries
      the bell holds, which is what the design shows in both places. */
   function renderOverviewRecent() {
     const box = $('#ov-recent');
     if (!box) return;
     box.innerHTML = '';
-    const recent = notes.items.slice(0, 3);
+    const recent = notes.items.slice(0, 5);
     if (!recent.length) {
       box.appendChild(ovEmpty('Nothing yet — finished scans, batches and ' +
                               'errors land here.'));
