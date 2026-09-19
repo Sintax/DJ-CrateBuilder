@@ -62,7 +62,8 @@ def service(tmp_path, monkeypatch):
 
 
 def _fake_download(_unused=None, contents=b"zip-bytes"):
-    def download(url, dest, progress_cb=None, timeout=30.0, _opener=None):
+    def download(url, dest, progress_cb=None, timeout=30.0, _opener=None,
+                 cancel=None):
         os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
         with open(dest, "wb") as fh:
             fh.write(contents)
@@ -534,6 +535,259 @@ def test_apply_checksum_mismatch_purges_workspace(service, monkeypatch):
     notes = waiter.of_type("notification")
     assert notes and "checksum mismatch" in notes[-1]["body"]
     assert not os.path.exists(ws_holder["path"])
+
+
+# ── update.cancel ────────────────────────────────────────────────────────────
+# The dialog's Cancel button. Honoured through download / verify / stage; a
+# cancel is the user's own choice, so it must never surface as the error
+# notification and ok=False that a worker which raises would produce.
+
+def test_cancel_with_no_job_is_a_quiet_no(service):
+    assert service.call("update.cancel") == {"cancelled": False}
+    assert not service._update_cancel.is_set()
+
+
+def test_cancel_during_download_purges_and_says_so(service, monkeypatch):
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: MANIFEST)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 1})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
+
+    # A download that blocks until the test has cancelled, then behaves like
+    # the real one: notices the event between chunks and raises.
+    release = threading.Event()
+    seen = {}
+
+    def slow_download(url, dest, progress_cb=None, timeout=30.0,
+                      _opener=None, cancel=None):
+        seen["cancel"] = cancel
+        assert release.wait(5), "the test never cancelled"
+        if cancel is not None and cancel.is_set():
+            raise service_mod.ucore.UpdateCancelled("cancelled")
+        raise AssertionError("download ran on without a cancel")
+    monkeypatch.setattr(service_mod.ucore, "download", slow_download)
+    monkeypatch.setattr(service_mod.ucore, "verify_sha256",
+                        lambda path, sha: pytest.fail("verify ran after a cancel"))
+
+    ws_holder = {}
+    real_default_ws = service_mod.ucore.default_workspace
+    def tracking_ws():
+        path = real_default_ws()
+        ws_holder["path"] = path
+        return path
+    monkeypatch.setattr(service_mod.ucore, "default_workspace", tracking_ws)
+
+    waiter = _Waiter(service)
+    service.update_apply()
+    assert service.call("update.cancel") == {"cancelled": True}
+    release.set()
+    waiter.wait()
+
+    assert seen["cancel"] is service._update_cancel
+    finished = waiter.of_type("job.finished")
+    assert finished[-1]["ok"] is True
+    assert finished[-1]["error"] is None
+    notes = waiter.of_type("notification")
+    assert [n["level"] for n in notes] == ["info"]
+    assert notes[0]["title"] == "Update"
+    assert notes[0]["body"] == "Update cancelled — still on build 1."
+    assert waiter.of_type("update.cancelled") == [{"build": 1}]
+    assert waiter.of_type("update.restarting") == []
+    assert not os.path.exists(ws_holder["path"])
+    assert not service._job_running(UPDATE_JOB)
+
+
+def test_cancel_after_stage_still_stops_before_the_handoff(service, monkeypatch):
+    """The event is checked after verify and after extract too — a cancel
+    that lands while the zip is being unpacked must not reach Popen."""
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: MANIFEST)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 1})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
+    monkeypatch.setattr(service_mod.ucore, "download", _fake_download(None))
+    monkeypatch.setattr(service_mod.ucore, "verify_sha256", lambda path, sha: True)
+
+    def cancelling_extract(zip_path, dest_dir):
+        os.makedirs(dest_dir, exist_ok=True)
+        service.call("update.cancel")
+        return dest_dir
+    monkeypatch.setattr(service_mod.ucore, "extract_zip", cancelling_extract)
+    monkeypatch.setattr(service_mod.subprocess, "Popen",
+                        lambda *a, **k: pytest.fail("Popen ran after a cancel"))
+    restarted = []
+    service.on_update_restart = lambda: restarted.append(True)
+
+    waiter = _Waiter(service)
+    service.update_apply()
+    waiter.wait()
+
+    assert waiter.of_type("update.restarting") == []
+    assert waiter.of_type("update.cancelled") == [{"build": 1}]
+    assert waiter.of_type("job.finished")[-1]["ok"] is True
+    assert restarted == []
+
+
+def test_cancel_before_the_job_exists_then_again_once_it_does(service, monkeypatch):
+    """The page's Cancel is live while update.apply is still fetching the
+    manifest — before _start_job has claimed the slot. That first cancel
+    finds no job (and must not arm the event: the guard's clear would wipe
+    it anyway); the page asks again once update.apply has returned, and
+    that one lands."""
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 1})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
+    manifest_gate = threading.Event()
+    fetching = threading.Event()
+
+    def slow_fetch(url):
+        fetching.set()
+        assert manifest_gate.wait(5)
+        return MANIFEST
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", slow_fetch)
+    download_gate = threading.Event()
+
+    def slow_download(url, dest, progress_cb=None, timeout=30.0,
+                      _opener=None, cancel=None):
+        assert download_gate.wait(5)
+        if cancel is not None and cancel.is_set():
+            raise service_mod.ucore.UpdateCancelled("cancelled")
+        raise AssertionError("download ran on without a cancel")
+    monkeypatch.setattr(service_mod.ucore, "download", slow_download)
+
+    waiter = _Waiter(service)
+    applier = threading.Thread(target=service.update_apply, daemon=True)
+    applier.start()
+    assert fetching.wait(5)
+    assert service.call("update.cancel") == {"cancelled": False}   # no job yet
+    manifest_gate.set()
+    applier.join(5)
+    assert service._job_running(UPDATE_JOB)
+    assert service.call("update.cancel") == {"cancelled": True}    # the retry
+    download_gate.set()
+    waiter.wait()
+
+    assert waiter.of_type("update.cancelled") == [{"build": 1}]
+    assert waiter.of_type("job.finished")[-1]["ok"] is True
+
+
+def test_a_second_apply_cannot_clear_a_live_jobs_cancel(service, monkeypatch):
+    """The clear lives in _start_job's guard, which never runs while the
+    slot is held: a refused second apply leaves the first one's cancel."""
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: MANIFEST)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 1})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
+    gate = threading.Event()
+
+    def slow_download(url, dest, progress_cb=None, timeout=30.0,
+                      _opener=None, cancel=None):
+        assert gate.wait(5)
+        raise service_mod.ucore.UpdateCancelled("cancelled")
+    monkeypatch.setattr(service_mod.ucore, "download", slow_download)
+
+    waiter = _Waiter(service)
+    service.update_apply()
+    service.call("update.cancel")
+    with pytest.raises(CBError):
+        service.update_apply()
+    assert service._update_cancel.is_set()
+    gate.set()
+    waiter.wait()
+
+
+def test_a_stale_cancel_does_not_carry_into_the_next_apply(service, monkeypatch):
+    """The event is cleared by _start_job's guard for the update job, so a
+    cancel from an earlier run cannot abort the next one before it starts."""
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: MANIFEST)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 1})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
+    monkeypatch.setattr(service_mod.ucore, "download", _fake_download(None))
+    monkeypatch.setattr(service_mod.ucore, "verify_sha256", lambda path, sha: True)
+    monkeypatch.setattr(service_mod.ucore, "extract_zip",
+                        lambda z, d: os.makedirs(d, exist_ok=True) or d)
+    monkeypatch.setattr(service_mod.subprocess, "Popen", lambda *a, **k: None)
+    service._update_cancel.set()
+
+    waiter = _Waiter(service)
+    service.update_apply()
+    waiter.wait()
+
+    assert waiter.of_type("update.cancelled") == []
+    assert waiter.of_type("update.restarting") == [{"build": 99}]
+
+
+def test_remote_transport_refuses_update_cancel(tmp_path):
+    remote = CrateBuilderService(transport=REMOTE,
+                                 settings=Settings(path=str(tmp_path / "c.json")),
+                                 db_path=str(tmp_path / "db.sqlite"))
+    try:
+        with pytest.raises(CBError):
+            remote.call("update.cancel")
+    finally:
+        remote.close()
+
+
+# ── app.quit ─────────────────────────────────────────────────────────────────
+# The page's close dialog answered "close". Host-only by name: a paired
+# browser must never be able to shut the desktop app down.
+
+def test_app_quit_calls_the_hook_on_local(service):
+    quits = []
+    service.on_quit = lambda: quits.append(True)
+    assert service.call("app.quit", transport=LOCAL) == {"ok": True}
+    assert quits == [True]
+
+
+def test_app_quit_without_a_hook_does_nothing(service):
+    assert service.call("app.quit") == {"ok": False}
+
+
+def test_app_quit_is_refused_over_remote(tmp_path):
+    remote = CrateBuilderService(transport=REMOTE,
+                                 settings=Settings(path=str(tmp_path / "c.json")),
+                                 db_path=str(tmp_path / "db.sqlite"))
+    quits = []
+    remote.on_quit = lambda: quits.append(True)
+    seen = []
+    remote.on_close_seen = lambda: seen.append(True)
+    try:
+        for method in ("app.quit", "app.close_seen"):
+            with pytest.raises(CBError):
+                remote.call(method)
+            with pytest.raises(CBError):
+                remote.call(method, transport=REMOTE)
+    finally:
+        remote.close()
+    assert quits == [] and seen == []
+
+
+def test_app_close_seen_is_the_pages_receipt(service):
+    assert service.call("app.close_seen") == {"ok": True}    # no hook: fine
+    seen = []
+    service.on_close_seen = lambda: seen.append(True)
+    assert service.call("app.close_seen", transport=LOCAL) == {"ok": True}
+    assert seen == [True]
+
+
+def test_page_ready_flips_on_the_first_local_snapshot(service, tmp_path):
+    assert service.page_ready is False
+    service.call("state.snapshot", transport=LOCAL)
+    assert service.page_ready is True
+
+    remote = CrateBuilderService(transport=REMOTE,
+                                 settings=Settings(path=str(tmp_path / "c.json")),
+                                 db_path=str(tmp_path / "db.sqlite"))
+    try:
+        remote.call("state.snapshot", transport=REMOTE)
+        assert remote.page_ready is False
+    finally:
+        remote.close()
 
 
 # ── update.status / update.set_interval ──────────────────────────────────────

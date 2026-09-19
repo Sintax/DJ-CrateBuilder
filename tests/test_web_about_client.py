@@ -414,6 +414,39 @@ def test_a_refused_install_reopens_the_confirm_with_the_hosts_reason(
     assert r["view"] is None and r["go"] is True
 
 
+def test_a_cancel_pressed_while_apply_is_in_flight_is_asked_again(
+        app_js, tmp_path):
+    """update.apply fetches the manifest before the job exists; a Cancel
+    pressed in that gap finds nothing to cancel on the host. Once apply
+    has returned, the dialog's cancelRequested is honoured with a second
+    update.cancel — and only then."""
+    r = _flow(app_js, tmp_path, "flow7.mjs", False, """
+  let release = null;
+  const realCall = call;
+  call = (method) => method === 'update.apply'
+    ? new Promise((res) => { calls.push(method); release = res; })
+    : realCall(method);
+  aboutBeginApply = () => { began += 1; aboutUpdate.view = { cancelRequested: false }; };
+  aboutConfirmUpdate();
+  const pending = btn(modal.foot, 'Download and install').listeners.click();
+  const duringApply = calls.slice();
+  aboutUpdate.view.cancelRequested = true;       // Cancel pressed in the gap
+  release({});
+  await pending;
+  await Promise.resolve();
+  const withCancel = calls.slice();
+  calls.length = 0;
+  call = realCall;
+  aboutUpdate.view = { cancelRequested: false };
+  await aboutStartApply();
+  await Promise.resolve();
+  console.log(JSON.stringify({ duringApply, withCancel, without: calls }));
+""")
+    assert r["duringApply"] == ["update.apply"]
+    assert r["withCancel"] == ["update.apply", "update.cancel"]
+    assert r["without"] == ["update.apply"]
+
+
 def test_the_watch_lists_job_finished_wakes_the_waiting_confirm(app_js):
     """The hook the modal leaves is honoured by the real handler — and cleared
     before it runs, so a countdown can never be started twice."""
@@ -632,3 +665,280 @@ def test_report_a_bug_stands_on_its_own_line_full_size_and_red(app_js):
     assert fn.index("host.appendChild(links)") < fn.index("host.appendChild(reportRow)")
     start = fn.index("links.append(")
     assert "report" not in fn[start:fn.index(");", start)]
+
+
+# ── the progress modal's real Cancel ─────────────────────────────────────────
+# The "Updating DJ-CrateBuilder" dialog is locked (no X, no Escape, no click
+# on the dim) and carries a Cancel that really stops the host's worker. The
+# modal shell's `locked` option is run for real below, against a stub DOM; the
+# dialog's own functions run against a stub modal like the flow harness's.
+
+_PROGRESS_HARNESS = """
+const aboutUpdate = { status: null, result: null, checking: false, view: null };
+const cbApi = { transport: 'local' };
+const calls = [];
+async function call(method) { calls.push(method); return {}; }
+const everything = [];
+function makeEl(tag) {
+  const el = {
+    tag, children: [], listeners: {}, attrs: {}, style: {},
+    className: '', textContent: '', disabled: false, focused: false,
+    appendChild(c) { this.children.push(c); return c; },
+    append(...cs) { cs.forEach((c) => this.children.push(c)); },
+    addEventListener(name, fn) { this.listeners[name] = fn; },
+    setAttribute(k, v) { this.attrs[k] = v; },
+    focus() { this.focused = true; },
+    replaceWith(other) {
+      for (const p of everything) {
+        const i = p.children.indexOf(this);
+        if (i !== -1) p.children[i] = other;
+      }
+    },
+  };
+  everything.push(el);
+  return el;
+}
+const document = { createElement: makeEl };
+let modal = null;
+let closes = 0;
+function openModal(opts) {
+  if (modal) closeModal();
+  const body = makeEl('div'), foot = makeEl('div');
+  const api = { body, foot, close: closeModal, busy() {}, error() {} };
+  modal = { opts, body, foot, api };
+  if (opts.body) opts.body(body, api);
+  if (opts.foot) opts.foot(foot, api);
+  return api;
+}
+function closeModal() {
+  if (!modal) return;
+  closes += 1;
+  const dying = modal; modal = null;
+  if (dying.opts.onClose) dying.opts.onClose();
+}
+function modalButton(label, cls, onClick) {
+  const b = makeEl('button'); b.className = 'cb-btn cb-btn--sm ' + (cls || '');
+  b.textContent = label; b.listeners.click = onClick; return b;
+}
+function modalNote(text) { const p = makeEl('p'); p.className = 'cb-mnote'; p.textContent = text; return p; }
+function btn(el, text) {
+  if (el.tag === 'button' && el.textContent.indexOf(text) !== -1) return el;
+  for (const c of el.children) { const h = btn(c, text); if (h) return h; }
+  return null;
+}
+SLICES
+async function main() {
+SCRIPT
+}
+main();
+"""
+
+
+def _progress(app_js, tmp_path, name, script):
+    slices = _slice(app_js, "  /* Step two: the progress modal",
+                    "  /* Re-fetches update.status")
+    source = _PROGRESS_HARNESS.replace("SLICES", slices).replace("SCRIPT", script)
+    return _run_node(tmp_path, name, source)
+
+
+def test_the_progress_modal_is_locked_and_its_cancel_asks_the_host(
+        app_js, tmp_path):
+    out = _progress(app_js, tmp_path, "progress_cancel.js", """
+      aboutBeginApply();
+      const cancel = btn(modal.foot, 'Cancel');
+      const before = { locked: modal.opts.locked, label: cancel.textContent,
+                       disabled: cancel.disabled, cls: cancel.className,
+                       margin: cancel.style.marginLeft,
+                       note: modal.foot.children[0].textContent,
+                       requested: !!aboutUpdate.view.cancelRequested };
+      cancel.listeners.click();
+      await Promise.resolve();
+      console.log(JSON.stringify({ before, calls,
+        after: { label: cancel.textContent, disabled: cancel.disabled,
+                 requested: aboutUpdate.view.cancelRequested },
+        stillOpen: !!modal }));
+    """)
+    assert out["before"]["locked"] is True
+    assert out["before"]["label"] == "Cancel"
+    assert out["before"]["disabled"] is False
+    assert "cb-btn--warn" in out["before"]["cls"]
+    assert out["before"]["margin"] == "auto"
+    assert out["before"]["note"] == (
+        "Cancel stops the download and leaves the app on its current build.")
+    assert out["before"]["requested"] is False
+    assert out["calls"] == ["update.cancel"]
+    assert out["after"] == {"label": "Cancelling…", "disabled": True,
+                            "requested": True}
+    # The click only asks; the dialog waits for the host's update.cancelled.
+    assert out["stillOpen"] is True
+
+
+def test_update_cancelled_closes_the_dialog(app_js, tmp_path):
+    out = _progress(app_js, tmp_path, "progress_cancelled.js", """
+      aboutBeginApply();
+      aboutCancelledApply();
+      const closedOnce = closes;
+      aboutCancelledApply();                 // nothing open: a no-op
+      console.log(JSON.stringify({ closedOnce, closes, view: aboutUpdate.view,
+                                   open: !!modal }));
+    """)
+    assert out["closedOnce"] == 1
+    assert out["closes"] == 1
+    assert out["view"] is None
+    assert out["open"] is False
+
+
+def test_restarting_disables_cancel_past_the_point_of_no_return(
+        app_js, tmp_path):
+    out = _progress(app_js, tmp_path, "progress_restarting.js", """
+      aboutBeginApply();
+      btn(modal.foot, 'Cancel').listeners.click();   // lost the race
+      aboutShowRestarting(65);
+      const cancel = btn(modal.foot, 'Cancel');
+      console.log(JSON.stringify({ disabled: cancel.disabled, label: cancel.textContent,
+                                   status: aboutUpdate.view.status.textContent }));
+    """)
+    assert out["disabled"] is True
+    assert out["label"] == "Cancel"          # not left reading "Cancelling…"
+    assert "build 65" in out["status"]
+
+
+def test_a_failed_apply_swaps_cancel_for_a_close_that_can_dismiss(
+        app_js, tmp_path):
+    out = _progress(app_js, tmp_path, "progress_failed.js", """
+      aboutBeginApply();
+      aboutSettleApply({ ok: false });
+      const cancel = btn(modal.foot, 'Cancel');
+      const close = btn(modal.foot, 'Close');
+      const snap = { cancelGone: !cancel, closeCls: close && close.className,
+                     closeMargin: close && close.style.marginLeft,
+                     focused: close && close.focused,
+                     note: aboutUpdate.view.note.textContent };
+      close.listeners.click();
+      console.log(JSON.stringify({ ...snap, open: !!modal, view: aboutUpdate.view }));
+    """)
+    assert out["cancelGone"] is True
+    assert "cb-btn--quiet" in out["closeCls"]
+    assert out["closeMargin"] == "auto"
+    assert out["focused"] is True
+    assert out["note"] == "You can close this window and try again."
+    assert out["open"] is False
+    assert out["view"] is None
+
+
+def test_the_old_close_does_not_stop_it_note_is_gone(app_js):
+    assert "Closing this window does not stop the update" not in app_js
+
+
+def test_update_cancelled_is_subscribed_beside_the_other_update_events(app_js):
+    fn = _slice(app_js, "  function subscribeUpdateEvents()",
+                "  let booted = false;")
+    assert "cbApi.on('update.cancelled', () => aboutCancelledApply());" in fn
+
+
+# ── openModal's `locked` option, run for real ────────────────────────────────
+
+_MODAL_HARNESS = """
+function makeEl(tag) {
+  return {
+    tag, children: [], listeners: {}, attrs: {}, style: {}, parent: null,
+    className: '', textContent: '', disabled: false, tabIndex: 0,
+    offsetParent: {}, focused: 0,
+    appendChild(c) { this.children.push(c); c.parent = this; return c; },
+    append(...cs) { cs.forEach((c) => this.appendChild(c)); },
+    addEventListener(name, fn) { this.listeners[name] = fn; },
+    setAttribute(k, v) { this.attrs[k] = v; },
+    remove() { if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this); },
+    focus() { this.focused += 1; document.activeElement = this; },
+    contains(el) { for (let e = el; e; e = e.parent) if (e === this) return true; return false; },
+  };
+}
+const docListeners = {};
+const document = {
+  body: makeEl('body'), activeElement: null,
+  createElement: makeEl,
+  addEventListener(name, fn) { docListeners[name] = fn; },
+  removeEventListener(name) { delete docListeners[name]; },
+};
+function $$(sel, root) {
+  let out = [];
+  const walk = (el) => { if (el.tag === 'button') out.push(el); el.children.forEach(walk); };
+  walk(root);
+  return out;
+}
+function tagNode() { return makeEl('span'); }
+function hideTip() {}
+function bindTips() {}
+SLICES
+function modalButton(label, cls, onClick) {
+  const b = makeEl('button'); b.className = 'cb-btn cb-btn--sm ' + (cls || '');
+  b.textContent = label; b.listeners.click = onClick; return b;
+}
+function headButtons() {
+  const dim = document.body.children[0];
+  return dim ? dim.children[0].children[0].children.filter((c) => c.tag === 'button').length : -1;
+}
+function tryEscape() {
+  if (docListeners.keydown) docListeners.keydown({ key: 'Escape', stopPropagation() {} });
+}
+function tryDim() {
+  const dim = document.body.children[0];
+  if (dim) dim.listeners.mousedown({ target: dim });
+}
+function isOpen() { return document.body.children.length > 0; }
+SCRIPT
+"""
+
+
+def _modal(app_js, tmp_path, name, script):
+    slices = _slice(app_js, "  let openDialog = null;",
+                    "  function modalButton(")
+    return _run_node(tmp_path, name,
+                     _MODAL_HARNESS.replace("SLICES", slices).replace("SCRIPT", script))
+
+
+def test_a_locked_modal_has_no_x_and_ignores_escape_and_the_dim(app_js, tmp_path):
+    out = _modal(app_js, tmp_path, "modal_locked.js", """
+      let cancel = null;
+      openModal({ title: 'T', locked: true,
+                  foot(foot) { cancel = modalButton('Cancel', '', () => {}); foot.append(cancel); } });
+      const xButtons = headButtons();
+      tryEscape();
+      const afterEscape = isOpen();
+      tryDim();
+      const afterDim = isOpen();
+      const focusedCancel = cancel.focused;
+      /* Tab is still trapped: with one focusable, Tab wraps back onto it. */
+      let prevented = 0;
+      document.activeElement = cancel;
+      docListeners.keydown({ key: 'Tab', shiftKey: false, preventDefault() { prevented += 1; } });
+      closeModal();
+      console.log(JSON.stringify({ xButtons, afterEscape, afterDim, focusedCancel,
+                                   prevented, afterClose: isOpen() }));
+    """)
+    assert out["xButtons"] == 0
+    assert out["afterEscape"] is True
+    assert out["afterDim"] is True
+    assert out["focusedCancel"] == 1
+    assert out["prevented"] == 1
+    assert out["afterClose"] is False        # closeModal() itself still works
+
+
+def test_an_unlocked_modal_keeps_its_three_casual_exits(app_js, tmp_path):
+    out = _modal(app_js, tmp_path, "modal_unlocked.js", """
+      openModal({ title: 'T' });
+      const xButtons = headButtons();
+      tryEscape();
+      const afterEscape = isOpen();
+      openModal({ title: 'T' });
+      tryDim();
+      const afterDim = isOpen();
+      openModal({ title: 'T', locked: false });
+      const xWhenFalse = headButtons();
+      closeModal();
+      console.log(JSON.stringify({ xButtons, afterEscape, afterDim, xWhenFalse }));
+    """)
+    assert out["xButtons"] == 1
+    assert out["afterEscape"] is False
+    assert out["afterDim"] is False
+    assert out["xWhenFalse"] == 1

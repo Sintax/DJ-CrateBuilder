@@ -1835,10 +1835,14 @@
   }
 
   /* opts: {title, tag:{text,cls}, width, body(bodyEl, api), foot(footEl, api),
-            onClose}. `api` is {close, error(msg), busy(flag), body, foot}. */
+            onClose, locked}. `api` is {close, error(msg), busy(flag), body, foot}.
+     `locked` drops the three casual exits (X, Escape, the dim) for a dialog
+     whose only honest ways out are its own buttons — the update download,
+     where "closed" would otherwise look like "stopped". */
   function openModal(opts) {
     closeModal();
     const restore = document.activeElement;
+    const locked = !!opts.locked;
 
     const dim = document.createElement('div');
     dim.className = 'cb-dim';
@@ -1864,7 +1868,7 @@
     closeBtn.setAttribute('data-ic', 'close');
     if (opts.closeTtKey) closeBtn.setAttribute('data-tt', opts.closeTtKey);
     closeBtn.addEventListener('click', closeModal);
-    head.appendChild(closeBtn);
+    if (!locked) head.appendChild(closeBtn);
 
     const body = document.createElement('div');
     body.className = 'cb-mbody';
@@ -1891,7 +1895,7 @@
     };
 
     function onKey(e) {
-      if (e.key === 'Escape') { e.stopPropagation(); closeModal(); return; }
+      if (e.key === 'Escape') { e.stopPropagation(); if (!locked) closeModal(); return; }
       if (e.key !== 'Tab') return;
       const items = modalFocusables(modal);
       if (!items.length) return;
@@ -1901,7 +1905,7 @@
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
       else if (!modal.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
     }
-    dim.addEventListener('mousedown', (e) => { if (e.target === dim) closeModal(); });
+    dim.addEventListener('mousedown', (e) => { if (e.target === dim && !locked) closeModal(); });
     document.addEventListener('keydown', onKey, true);
 
     openDialog = { dim, onKey, restore, onClose: opts.onClose };
@@ -6727,17 +6731,28 @@
       aboutUpdate.view = null;
       aboutConfirmUpdate(err && err.userFacing ? err.message
         : 'The host could not start the update.');
+      return;
     }
+    /* Cancel pressed while update.apply was still fetching the manifest
+       found no job to cancel (the host cannot set the flag for a job that
+       does not exist yet). Now that the job exists, ask again. */
+    const refs = aboutUpdate.view;
+    if (refs && refs.cancelRequested) call('update.cancel').catch(() => {});
   }
 
   /* Step two: the progress modal, painted from update.progress until
      update.restarting says the window is about to close on its own, or
-     settled as failed by job.finished (subscribeUpdateEvents, below). */
+     settled as failed by job.finished (subscribeUpdateEvents, below).
+     Locked, because the only two ways out are real ones: Cancel, which
+     stops the host's worker, and the app restarting. An X that merely hid
+     the dialog would leave a download running behind a screen that says
+     nothing is. */
   function aboutBeginApply() {
     const refs = {};
     openModal({
       title: 'Updating DJ-CrateBuilder',
       width: 460,
+      locked: true,
       onClose() { if (aboutUpdate.view === refs) aboutUpdate.view = null; },
       body(body) {
         // Left at this until the first real update.progress payload —
@@ -6752,14 +6767,31 @@
         bar.appendChild(refs.fill);
         body.append(refs.status, bar);
       },
-      foot(foot) {
+      foot(foot, api) {
+        refs.api = api;
         refs.note = modalNote(
-          'Closing this window does not stop the update — the app will '
-          + 'restart on its own to finish it.');
-        foot.appendChild(refs.note);
+          'Cancel stops the download and leaves the app on its current build.');
+        refs.cancel = modalButton('Cancel', 'cb-btn--warn', () => {
+          refs.cancelRequested = true;
+          refs.cancel.disabled = true;
+          refs.cancel.textContent = 'Cancelling…';
+          call('update.cancel').catch(() => {});
+        });
+        refs.cancel.style.marginLeft = 'auto';
+        foot.append(refs.note, refs.cancel);
       },
     });
     aboutUpdate.view = refs;
+  }
+
+  /* update.cancelled: the host purged its workspace and is staying on the
+     current build. The dialog just goes; the Update screen's controls come
+     back on the ok=true job.finished that follows (that handler already
+     re-fetches update.status, and doing it here would read "running"). */
+  function aboutCancelledApply() {
+    const refs = aboutUpdate.view;
+    if (!refs) return;
+    closeModal();
   }
 
   function aboutPaintApplyProgress(p) {
@@ -6785,6 +6817,13 @@
     refs.status.textContent = build
       ? `Restarting to finish the update to build ${build}…`
       : 'Restarting to finish the update…';
+    /* Past the point of no return: the updater process owns the payload —
+       and a Cancel that lost the race must not be left reading
+       "Cancelling…" over a restart that is going ahead. */
+    if (refs.cancel) {
+      refs.cancel.disabled = true;
+      refs.cancel.textContent = 'Cancel';
+    }
   }
 
   /* job.finished for the update job category: the only reliable "it's over"
@@ -6805,6 +6844,15 @@
         + 'the notification for details.';
       if (refs.note) {
         refs.note.textContent = 'You can close this window and try again.';
+      }
+      /* The dialog is locked, so a failed run needs a way out of its own:
+         Cancel (there is nothing left to cancel) becomes Close. */
+      if (refs.cancel && refs.api) {
+        const close = modalButton('Close', 'cb-btn--quiet', refs.api.close);
+        close.style.marginLeft = 'auto';
+        refs.cancel.replaceWith(close);
+        refs.cancel = null;
+        close.focus();
       }
     }
   }
@@ -7932,6 +7980,7 @@
   function subscribeUpdateEvents() {
     cbApi.on('update.progress', (p) => aboutPaintApplyProgress(p));
     cbApi.on('update.restarting', (p) => aboutShowRestarting(p && p.build));
+    cbApi.on('update.cancelled', () => aboutCancelledApply());
     /* The silent auto-check timer found something — reflect it on the Update
        screen if it's open, exactly as a manual Check for updates would, so
        Update Now lights up without the user having to ask again. */
@@ -8012,6 +8061,92 @@
       setHostOffline(false);
       showPairing(info || {});
     });
+    /* The desktop window's X (or the tray's Close) cancelled the OS close
+       and asked here instead, so the question is drawn in the app's own
+       theme. app.close_seen is the receipt: the window waits a moment for
+       it and, hearing nothing (a page that is hung or gone), falls back to
+       its native dialog rather than leaving an app that cannot be quit. */
+    cbApi.on('app.close_requested', () => {
+      // The bus is shared with every paired browser; only the host's own
+      // window has an X, and only it may answer.
+      if (cbApi.transport !== 'local') return;
+      showCloseConfirm();
+      call('app.close_seen').catch(() => {});
+    });
+  }
+
+  /* ── the window's close question ──────────────────────────────────────────
+     Not an openModal dialog, on purpose: openModal closes whatever is open,
+     and the X can land over an update in progress (whose locked dialog is
+     the only place its Cancel lives) or an Edit with text typed into it.
+     So this is its own layer above the dialog stack (.cb-dim--close), with
+     its own Escape and Tab handling — on window, capture phase, so the
+     dialog underneath never hears them. Every casual exit — Escape, the dim,
+     Stay open — leaves everything exactly as it was; only the warn button
+     goes back to the host, as app.quit, which closes without asking twice.
+     Focus lands on Stay open so a stray Enter keeps the app running. */
+
+  let closeAsk = null;
+
+  function showCloseConfirm() {
+    if (closeAsk) { closeAsk.stay.focus(); return; }
+    const restore = document.activeElement;
+
+    const dim = document.createElement('div');
+    dim.className = 'cb-dim cb-dim--close';
+    const modal = document.createElement('div');
+    modal.className = 'cb-modal';
+    modal.style.maxWidth = '420px';
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-label', 'Close DJ-CrateBuilder');
+
+    const head = document.createElement('div');
+    head.className = 'cb-mhead';
+    const title = document.createElement('span');
+    title.className = 'cb-mtitle';
+    title.textContent = 'Close DJ-CrateBuilder';
+    head.appendChild(title);
+
+    const body = document.createElement('div');
+    body.className = 'cb-mbody';
+    const q = document.createElement('div');
+    q.textContent = 'Are you sure you want to close DJ-CrateBuilder?';
+    body.append(q, modalNote("Auto-downloads won't run while it's closed."));
+
+    const foot = document.createElement('div');
+    foot.className = 'cb-mfoot';
+    const stay = modalButton('Stay open', 'cb-btn--quiet', () => dismiss());
+    const quit = modalButton('Close DJ-CrateBuilder', 'cb-btn--warn', () => {
+      quit.disabled = true;
+      call('app.quit').catch(() => {});
+    });
+    foot.append(stay, quit);
+
+    function dismiss() {
+      if (!closeAsk) return;
+      closeAsk = null;
+      window.removeEventListener('keydown', onKey, true);
+      dim.remove();
+      if (restore && restore.focus) {
+        try { restore.focus(); } catch (_) { /* element left the DOM */ }
+      }
+    }
+    function onKey(e) {
+      if (e.key === 'Escape') { e.stopPropagation(); dismiss(); return; }
+      if (e.key !== 'Tab') return;
+      e.stopPropagation();
+      e.preventDefault();
+      (document.activeElement === stay ? quit : stay).focus();
+    }
+    dim.addEventListener('mousedown', (e) => { if (e.target === dim) dismiss(); });
+    window.addEventListener('keydown', onKey, true);
+
+    modal.append(head, body, foot);
+    dim.appendChild(modal);
+    document.body.appendChild(dim);
+    closeAsk = { dim, stay, dismiss };
+    stay.focus();
   }
 
   /* A host that is down at first paint must not leave a blank page either —

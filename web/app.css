@@ -261,10 +261,11 @@ html[data-text-size="xl"] { zoom: 1.15; --cb-vh: calc(1vh / 1.15); --cb-vw: calc
 
 /* Tooltips — JS-driven so focus and Escape work (theme.css covers hover only).
    The bubble is a <body> child, so it stacks against every other fixed layer
-   there: dialogs (.cb-dim, 100), the notification panel (.cb-notif, 85) and
-   the toast (90) all carry or overlap tooltip hosts, and a bubble below any
-   of them is drawn under the window it was hovered in. Only the pairing
-   screen (200) stays above it — it has no tooltips and hides the bubble. */
+   there: dialogs (.cb-dim, 100), the close question over them (.cb-dim--close,
+   110), the notification panel (.cb-notif, 85) and the toast (90) all carry
+   or overlap tooltip hosts, and a bubble below any of them is drawn under the
+   window it was hovered in. Only the pairing screen (200) stays above it — it
+   has no tooltips and hides the bubble. */
 .cb-tip {
   position: fixed; z-index: 150; max-width: 300px; width: max-content;
   background: var(--cb-text); color: var(--cb-bg);
@@ -439,6 +440,10 @@ a.cb-wlcard__name { border-bottom: 1px dotted var(--cb-line); }
   padding: 30px; box-sizing: border-box;
   display: flex; align-items: center; justify-content: center;
 }
+/* The window's close question. Its own layer above any open dialog, because
+   it must not evict one: an update in progress keeps its Cancel, an Edit
+   keeps what was typed. Same card classes, so it looks like every other. */
+.cb-dim--close { z-index: 110; }
 .cb-modal {
   background: var(--cb-surface);
   border: 1px solid var(--cb-line);
