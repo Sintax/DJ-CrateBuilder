@@ -1,0 +1,75 @@
+/* DJ-CrateBuilder web UI — the green colour theme, as an overlay.
+   theme.css is the design's drop-in and stays untouched; this file re-declares
+   only its six ACCENT tokens — the line, its two tints, the fill, its hover and
+   its wash — under one attribute, once for the light ground and once for the
+   dark, plus the handful of component rules where theme.css and theme-dark.css
+   paint the red as a literal rather than a token. index.html sets
+   data-accent="green" on <html> before first paint (from localStorage) and
+   app.js's applyAccent toggles it live; with the attribute absent, nothing in
+   this file applies.
+
+   The status colours are deliberately NOT here: --cb-err, --cb-log-error and
+   the warn button stay red, so a failed download still looks like a failure
+   whichever accent the page wears. The warn button is re-pinned to red below
+   precisely because theme.css fills it from --cb-line, which this sheet turns
+   green.
+
+   The green is neon, not the reds' deep tone, and that changes one rule: a
+   neon fill cannot carry white text, so every element theme.css and app.css
+   fill with the accent and letter in #fff is re-lettered below in near-black
+   ink (--cb-fill-ink) — dark on neon is the readable pairing, ≈ 13:1 on
+   #39FF14. On the dark ground the line is the neon itself; on the light
+   ground it is pulled down just enough (#00B33C) for a 1px hairline and a
+   link to still read on white, with the fills kept at full neon. */
+
+:root[data-accent="green"] {
+  --cb-line: #00B33C;
+  --cb-line-soft: rgba(0, 179, 60, .30);
+  --cb-line-row: rgba(0, 179, 60, .24);
+  --cb-accent: #1EE83A;
+  --cb-accent-hover: #46F55C;
+  --cb-accent-wash: rgba(30, 232, 58, .10);
+  --cb-fill-ink: #0B1A0E;
+}
+
+:root[data-accent="green"][data-theme="dark"] {
+  --cb-line: #39FF14;
+  --cb-line-soft: rgba(57, 255, 20, .34);
+  --cb-line-row: rgba(57, 255, 20, .24);
+  --cb-accent: #39FF14;
+  --cb-accent-hover: #6BFF4D;
+  --cb-accent-wash: rgba(57, 255, 20, .12);
+  --cb-fill-ink: #06100A;
+}
+
+/* White lettering on a neon fill is unreadable; these are every element the
+   two sheets fill with --cb-accent and letter in #fff. */
+:root[data-accent="green"] .cb-btn--fill,
+:root[data-accent="green"] .cb-seg > .is-on,
+:root[data-accent="green"] .cb-tag--fill,
+:root[data-accent="green"] .cb-nav__count,
+:root[data-accent="green"] .cb-bell__count { color: var(--cb-fill-ink); }
+
+/* The literals theme.css paints the accent with, re-painted for the light
+   ground… */
+:root[data-accent="green"] ::selection { background: rgba(30, 232, 58, .30); }
+:root[data-accent="green"] .cb-btn:active { background: rgba(30, 232, 58, .22); }
+:root[data-accent="green"] .cb-bar { border-color: rgba(0, 179, 60, .4); }
+:root[data-accent="green"] .cb-bar__fill--overall { background: rgba(30, 232, 58, .55); }
+:root[data-accent="green"] .cb-menu > *:hover { background: rgba(30, 232, 58, .14); }
+
+/* …and the ones theme-dark.css paints, for the dark ground. Both attributes
+   on the selector so these outrank the dark sheet's own single-attribute
+   rules by specificity, not by load order alone. */
+:root[data-accent="green"][data-theme="dark"] ::selection { background: rgba(57, 255, 20, .38); }
+:root[data-accent="green"][data-theme="dark"] .cb-btn:active { background: rgba(57, 255, 20, .22); }
+:root[data-accent="green"][data-theme="dark"] .cb-bar { border-color: rgba(57, 255, 20, .40); }
+:root[data-accent="green"][data-theme="dark"] .cb-bar__fill--overall { background: rgba(57, 255, 20, .60); }
+:root[data-accent="green"][data-theme="dark"] .cb-menu > *:hover { background: rgba(57, 255, 20, .16); }
+
+/* The destructive button keeps the design's reds on both grounds: the
+   literal fills theme.css and theme-dark.css use, not the now-green tokens. */
+:root[data-accent="green"] .cb-btn--warn { background: #CC0000; border-color: #CC0000; }
+:root[data-accent="green"] .cb-btn--warn:hover { background: #B00000; }
+:root[data-accent="green"][data-theme="dark"] .cb-btn--warn { background: #E00000; border-color: #E00000; }
+:root[data-accent="green"][data-theme="dark"] .cb-btn--warn:hover { background: #F21414; }

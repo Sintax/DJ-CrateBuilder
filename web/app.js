@@ -646,6 +646,31 @@
     return size;
   }
 
+  /* Colour theme, kept per device like the other two. Red is the design's
+     own colour, so it clears the mark: every sheet was painted for it. Green
+     sets the mark for theme-green.css, which re-declares only the accent
+     tokens — the status reds (errors, failed rows) keep their colour so a
+     failure still looks like one whichever accent the page wears. */
+  const ACCENT_KEY = 'cb_accent';
+  const ACCENTS = ['red', 'green'];
+
+  function storedAccent() {
+    try {
+      const raw = localStorage.getItem(ACCENT_KEY);
+      return ACCENTS.includes(raw) ? raw : 'red';
+    } catch (_) { return 'red'; }
+  }
+
+  function applyAccent(name) {
+    const accent = ACCENTS.includes(name) ? name : 'red';
+    if (accent === 'red') document.documentElement.removeAttribute('data-accent');
+    else document.documentElement.setAttribute('data-accent', accent);
+    try {
+      localStorage.setItem(ACCENT_KEY, accent);
+    } catch (_) { /* storage refused — the choice lasts this page load */ }
+    return accent;
+  }
+
   /* Under that zoom a rectangle, a pointer position and innerWidth answer in
      viewport pixels, while style.left and scrollTop are written in the page's
      own, larger pixels. Engines with the standard zoom expose the factor;
@@ -6029,6 +6054,28 @@
     paint(storedTheme());
     row.append(lab, seg);
     card.appendChild(row);
+
+    const accentRow = document.createElement('div');
+    accentRow.className = 'cb-set-row';
+    const accentLab = document.createElement('span');
+    accentLab.className = 'cb-lab';
+    accentLab.textContent = 'Colour theme';
+    const accentSel = document.createElement('select');
+    accentSel.className = 'cb-sel';
+    accentSel.id = 'settings-accent';
+    accentSel.setAttribute('aria-label', 'Colour theme');
+    [['red', 'Red'], ['green', 'Green']].forEach(([name, label]) => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = label;
+      accentSel.appendChild(opt);
+    });
+    accentSel.value = storedAccent();
+    accentSel.addEventListener('change', () => {
+      accentSel.value = applyAccent(accentSel.value);
+    });
+    accentRow.append(accentLab, readOnlyOk(accentSel));
+    card.appendChild(accentRow);
 
     const sizeRow = document.createElement('div');
     sizeRow.className = 'cb-set-row';
