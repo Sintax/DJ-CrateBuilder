@@ -6459,7 +6459,7 @@
     const faqHead = document.createElement('div');
     faqHead.className = 'cb-row';
     const faqKick = document.createElement('span');
-    faqKick.className = 'cb-kick';
+    faqKick.className = 'cb-sect';
     faqKick.textContent = 'Frequently Asked Questions';
     const faqBtns = document.createElement('div');
     faqBtns.className = 'cb-row';
@@ -6869,6 +6869,21 @@
     renderUpdate();
   }
 
+  /* "Last checked" wants one fixed shape (MM/DD/YYYY hh:mm:ss AM/PM), not
+     whatever the device locale would pick, so it is spelled out here rather
+     than left to toLocaleString. A zero/missing stamp means no check yet. */
+  function formatCheckedAt(ts) {
+    if (!ts) return 'Never';
+    const d = new Date(ts * 1000);
+    if (isNaN(d.getTime())) return 'Never';
+    const two = (n) => String(n).padStart(2, '0');
+    const h24 = d.getHours();
+    const h12 = h24 % 12 || 12;
+    return `${two(d.getMonth() + 1)}/${two(d.getDate())}/${d.getFullYear()} `
+      + `${two(h12)}:${two(d.getMinutes())}:${two(d.getSeconds())} `
+      + (h24 < 12 ? 'AM' : 'PM');
+  }
+
   /* The controls only — split from renderUpdate() so the tests can drive
      them against a stub host without the identity line's about.info. */
   function renderUpdateControls(host) {
@@ -6933,7 +6948,24 @@
       }
     }
     upRow.append(checkBtn, updateBtn);
+    const buildNo = (result && result.current_build != null)
+      ? result.current_build
+      : (about.info && about.info.build != null ? about.info.build : null);
+    if (buildNo != null) {
+      const onBuild = document.createElement('span');
+      onBuild.className = 'cb-mut';
+      onBuild.style.fontSize = '12px';
+      onBuild.textContent = `on build (${buildNo})`;
+      upRow.appendChild(onBuild);
+    }
 
+    const everyRow = document.createElement('div');
+    everyRow.className = 'cb-row';
+    everyRow.style.cssText = 'gap:9px;flex-wrap:wrap;align-items:center';
+    const everyLab = document.createElement('span');
+    everyLab.className = 'cb-mut';
+    everyLab.style.fontSize = '12px';
+    everyLab.textContent = 'Auto-check for updates every:';
     const every = document.createElement('select');
     every.className = 'cb-sel';
     every.style.width = '150px';
@@ -6962,8 +6994,13 @@
         renderUpdate();
       });
     }
-    upRow.appendChild(every);
-    host.append(upHead, upRow);
+    everyRow.append(everyLab, every);
+
+    const lastLine = document.createElement('div');
+    lastLine.className = 'cb-mut';
+    lastLine.style.cssText = 'font-size:12px';
+    lastLine.textContent = `Last checked: ${formatCheckedAt(status && status.last_check)}`;
+    host.append(upHead, upRow, lastLine, everyRow);
 
     if (isLocal) {
       const statusLine = document.createElement('div');
@@ -6978,7 +7015,7 @@
         const nextLine = document.createElement('div');
         nextLine.className = 'cb-mut';
         nextLine.style.cssText = 'font-size:11.5px';
-        nextLine.textContent = `Next check: ${new Date(next * 1000).toLocaleString()}`;
+        nextLine.textContent = `Next check: ${formatCheckedAt(next)}`;
         host.appendChild(nextLine);
       }
     } else {
