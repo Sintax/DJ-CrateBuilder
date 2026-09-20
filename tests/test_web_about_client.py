@@ -54,6 +54,7 @@ const TOOLTIPS = {};
 const ABOUT_UPDATER_NOTE = 'remote note';
 const WL_CANCEL_ALL_NOTE = 'STOPPING-NOW';
 const aboutUpdate = { status: null, result: null, checking: false, view: null };
+const about = { info: null, loading: false, open: {} };
 const wl = { running: false };
 const cbApi = { transport: 'local' };
 const calls = [];
@@ -108,8 +109,57 @@ main();
 
 
 def _slices(app_js):
-    return _slice(app_js, "  function renderUpdateControls(host)",
-                  "  function renderUpdate()")
+    return (_slice(app_js, "  function formatCheckedAt(ts)",
+                   "  /* The controls only")
+            + _slice(app_js, "  function renderUpdateControls(host)",
+                     "  function renderUpdate()"))
+
+
+_LAYOUT_HARNESS = _HARNESS.split("function renderWith(")[0] + """
+function layout(status, result) {
+  aboutUpdate.status = status;
+  aboutUpdate.result = result;
+  about.info = { build: 94 };
+  const host = makeEl('div');
+  renderUpdateControls(host);
+  const upRow = host.children[1];
+  return {
+    buttonRow: upRow.children.map((c) => c.textContent),
+    lines: host.children.map((c) => c.textContent),
+    everyRow: host.children[3].children.map((c) => c.tag + ':' + c.textContent),
+  };
+}
+console.log(JSON.stringify({
+  never: layout({ options: ['day'], interval: 'day', last_check: 0 }, null),
+  checked: layout({ options: ['day'], interval: 'day',
+                    last_check: new Date(2026, 8, 20, 15, 4, 9).getTime() / 1000 },
+                  { reachable: true, valid: true, available: false,
+                    current_build: 95, can_self_update: true }),
+  am: formatCheckedAt(new Date(2026, 0, 5, 0, 7, 3).getTime() / 1000),
+  noon: formatCheckedAt(new Date(2026, 0, 5, 12, 0, 0).getTime() / 1000),
+}));
+"""
+
+
+def test_the_update_controls_sit_on_three_lines(app_js, tmp_path):
+    """Buttons first with the running build at their end, then when the
+    last check ran, then the labelled auto-check interval on its own line."""
+    r = _run_node(tmp_path, "aboutlayout.mjs",
+                  _LAYOUT_HARNESS % {"slices": _slices(app_js)})
+
+    assert r["never"]["buttonRow"][-1] == "on build (94)"
+    assert r["never"]["lines"][2] == "Last checked: Never"
+    assert r["never"]["everyRow"] == ["span:Auto-check for updates every:", "select:"]
+
+    assert r["checked"]["buttonRow"][-1] == "on build (95)"
+    assert r["checked"]["lines"][2] == "Last checked: 09/20/2026 03:04:09 PM"
+    assert r["am"] == "01/05/2026 12:07:03 AM"
+    assert r["noon"] == "01/05/2026 12:00:00 PM"
+
+
+def test_the_faq_title_reads_as_a_section_heading(app_js):
+    about = _slice(app_js, "  function renderAbout()", "  function aboutUpdateStatusLine(")
+    assert "faqKick.className = 'cb-sect';" in about
 
 
 def test_the_card_never_grows_a_separate_stop_button(app_js, tmp_path):
