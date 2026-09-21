@@ -3152,6 +3152,13 @@ class CrateBuilderService:
         key = "UPDATE_MANIFEST_URL_LINUX" if ucore.is_linux() else "UPDATE_MANIFEST_URL"
         return urls.get(key)
 
+    def _installer_url(self):
+        """The platform's release page, for the auto-repair fallback link when
+        the in-app updater can't bridge the gap. Mirrors the URLs the Linux
+        refusal in update_apply already hard-codes."""
+        tag = "linux-v2.0" if ucore.is_linux() else "v2.0"
+        return f"https://github.com/Sintax/DJ-CrateBuilder/releases/tag/{tag}"
+
     def update_check(self):
         """Fetch the manifest and report what it says — never raises for an
         unreachable host or an invalid manifest; that is itself the result
@@ -3180,6 +3187,10 @@ class CrateBuilderService:
             "notice": None,
             "components": None,
             "can_self_update": ucore.can_self_update(),
+            "base": None,
+            "needs_full": False,
+            "full_available": False,
+            "installer_url": self._installer_url(),
             "checked_at": time.time(),
         }
         self._last_update_result = result
@@ -3199,6 +3210,18 @@ class CrateBuilderService:
         result["latest_build"] = int(manifest["build"])
         result["components"] = components.offered_versions(manifest)
         result["available"] = ucore.is_update_available(manifest, current)
+        # The delta-baseline guard: a delta payload landing on an install older
+        # than its baseline would install partially. When that's the case and a
+        # retained full is on offer, the app can auto-repair; otherwise the UI
+        # points the user at the full installer.
+        try:
+            result["base"] = int(manifest["base"])
+        except (KeyError, TypeError, ValueError):
+            result["base"] = None
+        result["needs_full"] = ucore.needs_full_reinstall(manifest, current)
+        result["full_available"] = bool(
+            result["needs_full"] and ucore.full_payload(manifest)
+            and not ucore.is_linux() and ucore.can_self_update())
         if result["available"]:
             # "changes" / "notice" are the manifest's styled-UI split of the
             # legacy "notes" blob (release.py writes all three); a manifest
@@ -3260,8 +3283,23 @@ class CrateBuilderService:
                 "the in-app updater.")
         self._require_idle_for_update()
 
-        dl_url = manifest["url"]
-        sha256 = manifest["sha256"]
+        # Delta-baseline guard: an install older than the delta's baseline would
+        # install partially. Bridge the gap by installing the retained full
+        # build first (auto-repair); the next check picks up the rest. The Linux
+        # and can_self_update refusals above guarantee this only runs on a
+        # Windows frozen, self-updatable install.
+        install_build = build
+        full_repair = ucore.needs_full_reinstall(manifest, current)
+        if full_repair:
+            fp = ucore.full_payload(manifest)
+            if not fp:
+                raise CBError(
+                    "You're several builds behind, and the in-app updater can't "
+                    "safely bridge this gap. Download and run the latest "
+                    "installer instead:\n\n" + self._installer_url())
+            dl_url, sha256, install_build = fp["url"], fp["sha256"], fp["build"]
+        else:
+            dl_url, sha256 = manifest["url"], manifest["sha256"]
         notes = str(manifest.get("notes", "")).strip() or None
         component_rows = components.compare(
             self._installed_components(), components.offered_versions(manifest))
@@ -3285,7 +3323,7 @@ class CrateBuilderService:
             # though the update itself succeeded. Nothing after the handoff
             # boundary runs inside this try.
             try:
-                zip_path = os.path.join(ws, f"build-{build}.zip")
+                zip_path = os.path.join(ws, f"build-{install_build}.zip")
 
                 def progress(done, total):
                     self.emit("update.progress", {
@@ -3320,7 +3358,7 @@ class CrateBuilderService:
                 # events that supersede it — the same reason MaintenanceOps
                 # flushes before its own terminal notification.
                 self._emit.flush()
-                self.emit("update.restarting", {"build": build})
+                self.emit("update.restarting", {"build": install_build})
                 app_dir = ucore.install_dir()
                 cmd = ucore.launch_updater_command(
                     os.getpid(), staged, app_dir, sys.executable,
@@ -3365,8 +3403,14 @@ class CrateBuilderService:
             # if the restart callback below misbehaves — the app is about to
             # exit either way, and there is no user-facing failure to report.
             # Logged here, not earlier, so activity.log only ever records an
-            # update that is actually going to be applied.
-            self.log_line(activitylog.updated(current, build, component_rows))
+            # update that is actually going to be applied. A full-repair installs
+            # the baseline build, not the latest, so its component diff (which is
+            # the latest build's) doesn't apply — log a plain catching-up line.
+            if full_repair:
+                self.log_line(activitylog.catching_up(install_build))
+            else:
+                self.log_line(
+                    activitylog.updated(current, install_build, component_rows))
             if self.on_update_restart is not None:
                 try:
                     self.on_update_restart()
@@ -3891,6 +3935,13 @@ class CrateBuilderService:
                 "notice": result["notice"],
                 "can_self_update": result["can_self_update"],
                 "checked_at": result["checked_at"],
+                # The delta-baseline guard verdict rides along so a user who
+                # only saw the silent check (never a manual one) still gets
+                # the too-far-behind UI instead of a bare Update Now.
+                "base": result["base"],
+                "needs_full": result["needs_full"],
+                "full_available": result["full_available"],
+                "installer_url": result["installer_url"],
             })
             self.emit("notification", {
                 "level": "info",

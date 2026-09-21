@@ -113,6 +113,8 @@ def test_check_reports_unreachable(service, monkeypatch):
         "current_build": result["current_build"], "latest_build": None,
         "notes": None, "notice": None, "components": None,
         "can_self_update": result["can_self_update"],
+        "base": None, "needs_full": False, "full_available": False,
+        "installer_url": result["installer_url"],
         "checked_at": result["checked_at"],
     }
 
@@ -124,6 +126,75 @@ def test_check_reports_invalid_manifest(service, monkeypatch):
     assert result["reachable"] is True
     assert result["valid"] is False
     assert result["available"] is False
+
+
+# ── update.check: the delta-baseline guard fields ────────────────────────────
+
+GUARD_MANIFEST = {
+    "build": 99, "url": "https://example.invalid/build-99.zip",
+    "sha256": "a" * 64, "base": 90,
+    "full_url": "https://example.invalid/full-90.zip", "full_sha256": "b" * 64,
+}
+
+
+def test_check_reports_base_and_no_guard_when_at_or_past_the_baseline(
+        service, monkeypatch):
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest",
+                        lambda url: GUARD_MANIFEST)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 95})
+    result = service.update_check()
+    assert result["base"] == 90
+    assert result["needs_full"] is False
+    assert result["full_available"] is False
+    assert result["installer_url"].endswith("/releases/tag/v2.0")
+
+
+def test_check_flags_needs_full_and_full_available_on_a_stale_frozen_install(
+        service, monkeypatch):
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest",
+                        lambda url: GUARD_MANIFEST)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 80})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
+    result = service.update_check()
+    assert result["base"] == 90
+    assert result["needs_full"] is True
+    assert result["full_available"] is True
+
+
+def test_check_needs_full_without_a_full_payload_cannot_auto_repair(
+        service, monkeypatch):
+    manifest = {k: v for k, v in GUARD_MANIFEST.items()
+                if k not in ("full_url", "full_sha256")}
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: manifest)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 80})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
+    result = service.update_check()
+    assert result["needs_full"] is True
+    assert result["full_available"] is False
+
+
+def test_check_full_available_false_on_a_source_install(service, monkeypatch):
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest",
+                        lambda url: GUARD_MANIFEST)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 80})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: False)
+    result = service.update_check()
+    assert result["needs_full"] is True
+    assert result["full_available"] is False
+
+
+def test_check_installer_url_is_platform_specific(service, monkeypatch):
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: None)
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: True)
+    assert service.update_check()["installer_url"].endswith(
+        "/releases/tag/linux-v2.0")
 
 
 def test_check_persists_last_update_check(service, monkeypatch):
@@ -445,6 +516,114 @@ def test_apply_logs_not_listed_for_a_manifest_without_the_block(service, monkeyp
     lines = [ln for ln in _activity_lines(service) if "UPDATED" in ln]
     assert len(lines) == 1
     assert lines[0].endswith("| Components: not listed")
+
+
+# ── update.apply: the delta-baseline auto-repair ─────────────────────────────
+
+
+def test_apply_downloads_the_full_payload_when_too_far_behind(
+        service, monkeypatch, tmp_path):
+    """An install older than the delta's baseline installs the retained full
+    build first: the full URL/SHA are used, the staged zip and restart event
+    carry the baseline build, and the log is a plain catching-up line."""
+    manifest = dict(GUARD_MANIFEST)
+    service._log_path = str(tmp_path / "activity.log")
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: manifest)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 80})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
+
+    seen = {}
+
+    def fake_download(url, dest, progress_cb=None, timeout=30.0,
+                      _opener=None, cancel=None):
+        seen["url"] = url
+        seen["dest"] = dest
+        os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+        with open(dest, "wb") as fh:
+            fh.write(b"zip")
+        return dest
+    monkeypatch.setattr(service_mod.ucore, "download", fake_download)
+
+    def fake_verify(path, sha):
+        seen["sha"] = sha
+        return True
+    monkeypatch.setattr(service_mod.ucore, "verify_sha256", fake_verify)
+    monkeypatch.setattr(service_mod.ucore, "extract_zip",
+                        lambda z, d: os.makedirs(d, exist_ok=True) or d)
+    monkeypatch.setattr(service_mod.subprocess, "Popen", lambda *a, **k: None)
+    service.on_update_restart = None
+
+    waiter = _Waiter(service)
+    result = service.update_apply()
+    waiter.wait()
+
+    assert seen["url"] == manifest["full_url"]
+    assert seen["sha"] == manifest["full_sha256"]
+    assert os.path.basename(seen["dest"]) == "build-90.zip"
+    assert waiter.of_type("update.restarting") == [{"build": 90}]
+    # The reported build stays the latest — that's what the user was offered.
+    assert result["build"] == 99
+
+    lines = [ln for ln in _activity_lines(service) if "UPDATED" in ln]
+    assert len(lines) == 1
+    assert "Catching up to build 90" in lines[0]
+    assert "more on the next check" in lines[0]
+    assert "Components:" not in lines[0]
+
+
+def test_apply_raises_with_the_installer_link_when_no_full_payload(
+        service, monkeypatch):
+    manifest = {k: v for k, v in GUARD_MANIFEST.items()
+                if k not in ("full_url", "full_sha256")}
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: manifest)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 80})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
+    with pytest.raises(CBError, match="releases/tag/v2.0"):
+        service.update_apply()
+
+
+def test_apply_uses_the_delta_when_the_install_is_new_enough(
+        service, monkeypatch, tmp_path):
+    """current >= base: the ordinary delta payload is downloaded, not the full,
+    and the log records the normal component diff."""
+    manifest = dict(GUARD_MANIFEST)
+    service._log_path = str(tmp_path / "activity.log")
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: manifest)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 95})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
+
+    seen = {}
+
+    def fake_download(url, dest, progress_cb=None, timeout=30.0,
+                      _opener=None, cancel=None):
+        seen["url"] = url
+        seen["dest"] = dest
+        os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+        with open(dest, "wb") as fh:
+            fh.write(b"zip")
+        return dest
+    monkeypatch.setattr(service_mod.ucore, "download", fake_download)
+    monkeypatch.setattr(service_mod.ucore, "verify_sha256", lambda path, sha: True)
+    monkeypatch.setattr(service_mod.ucore, "extract_zip",
+                        lambda z, d: os.makedirs(d, exist_ok=True) or d)
+    monkeypatch.setattr(service_mod.subprocess, "Popen", lambda *a, **k: None)
+    service.on_update_restart = None
+
+    waiter = _Waiter(service)
+    service.update_apply()
+    waiter.wait()
+
+    assert seen["url"] == manifest["url"]
+    assert os.path.basename(seen["dest"]) == "build-99.zip"
+    assert waiter.of_type("update.restarting") == [{"build": 99}]
+    lines = [ln for ln in _activity_lines(service) if "UPDATED" in ln]
+    assert lines and "Build: 95 -> 99" in lines[0]
 
 
 def test_failed_apply_writes_no_updated_line(service, monkeypatch, tmp_path):
@@ -871,7 +1050,13 @@ def test_timer_fire_emits_available_only_when_newer(service, monkeypatch):
         "build": 99, "current_build": 1, "notes": "test build", "notice": None,
         "can_self_update": available[0]["can_self_update"],
         "checked_at": available[0]["checked_at"],
+        # MANIFEST carries no `base`, so the guard is inert but the fields
+        # still ride along for the client (installer_url is platform-derived).
+        "base": None, "needs_full": False, "full_available": False,
+        "installer_url": available[0]["installer_url"],
     }]
+    assert available[0]["installer_url"].endswith("/releases/tag/v2.0") or \
+        available[0]["installer_url"].endswith("/releases/tag/linux-v2.0")
     # Re-armed for the next interval.
     assert service._update_timer is not None
 

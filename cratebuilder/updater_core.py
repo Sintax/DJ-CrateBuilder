@@ -138,6 +138,38 @@ def validate_manifest(manifest):
     return True, ""
 
 
+def needs_full_reinstall(manifest, current_build):
+    """True when the manifest offers a DELTA whose baseline is newer than the
+    running build, so applying it would leave a partial install. Defensive:
+    any missing/malformed field returns False (no guard) — a full payload
+    (base == build) is always safe, so it also returns False."""
+    if not isinstance(manifest, dict):
+        return False
+    try:
+        build = int(manifest["build"])
+        base = int(manifest["base"])
+        current = int(current_build)
+    except (KeyError, TypeError, ValueError):
+        return False
+    return base < build and current < base
+
+
+def full_payload(manifest):
+    """The retained full build's download, or None. Validates like
+    validate_manifest: non-empty url, 64-hex sha256. build == base."""
+    if not isinstance(manifest, dict):
+        return None
+    url = str(manifest.get("full_url", "")).strip()
+    sha = str(manifest.get("full_sha256", "")).strip()
+    if not url or len(sha) != 64 or any(c not in "0123456789abcdefABCDEF" for c in sha):
+        return None
+    try:
+        base = int(manifest["base"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return {"url": url, "sha256": sha, "build": base}
+
+
 FFMPEG_VERSION_FILE = "ffmpeg.version"
 
 

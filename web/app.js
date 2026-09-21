@@ -6508,6 +6508,18 @@
     if (!result.available) {
       return `You're on the latest build (${result.current_build}).`;
     }
+    /* Too far behind the delta baseline to bridge in one hop: either the app
+       fetches the retained full build first (auto-repair), or, when no full is
+       on offer, the user reinstalls from the installer. */
+    if (result.needs_full) {
+      if (result.full_available) {
+        return `You're several builds behind. Updating installs build `
+          + `${result.base} first and restarts, then offers the rest on the `
+          + `next check.`;
+      }
+      return `You're too far behind to update in place — download and run the `
+        + `full installer to catch up (build ${result.latest_build}).`;
+    }
     return `Update available: build ${result.latest_build} — you're on `
       + `${result.current_build}.`;
   }
@@ -6678,6 +6690,17 @@
           + `${result.current_build}.`);
         lead.classList.add('cb-mnote--lead');
         body.appendChild(lead);
+        /* Auto-repair heads-up: this install is older than the delta baseline,
+           so the update installs the retained full build first and picks up the
+           rest on the next check. Only shown when that hop can actually run. */
+        if (result.needs_full && result.full_available) {
+          const jump = document.createElement('div');
+          jump.className = 'cb-warnbox';
+          jump.textContent = `You're several builds behind. This installs build `
+            + `${result.base} first and restarts, then offers the rest on the `
+            + `next check.`;
+          body.appendChild(jump);
+        }
         /* What is in the build comes first and reads larger than a hint —
            it is the one thing here the user is deciding on — set off in
            bold quotation marks. Then the scan notice, boxed. */
@@ -6931,7 +6954,19 @@
       // update.status happened to fail while update.check succeeded.
       const available = !!(result && result.available);
       const canSelf = !!(result && result.can_self_update);
-      if (available && canSelf && !running) {
+      // Too far behind the delta baseline to bridge in-app, and no retained
+      // full to auto-repair from: send the user to the full installer instead
+      // of the (unsafe) delta.
+      const fullBlocked = !!(result && result.needs_full)
+        && !(result && result.full_available);
+      if (available && canSelf && !running && fullBlocked) {
+        updateBtn.textContent = '⤓ Get the full installer';
+        setDisabled(updateBtn, false, { ttText:
+          "You're too far behind to update in place. Opens the release page "
+          + 'so you can download and run the full installer.' });
+        updateBtn.addEventListener('click',
+          () => openUrl(result.installer_url));
+      } else if (available && canSelf && !running) {
         setDisabled(updateBtn, false, { ttKey: 'about.update_now' });
         updateBtn.addEventListener('click', () => aboutConfirmUpdate());
       } else {
@@ -8028,6 +8063,8 @@
         current_build: p.current_build, latest_build: p.build,
         notes: p.notes, notice: p.notice, can_self_update: p.can_self_update,
         checked_at: p.checked_at,
+        base: p.base, needs_full: p.needs_full,
+        full_available: p.full_available, installer_url: p.installer_url,
       };
       state.update = aboutUpdate.result;
       renderUpdate();
