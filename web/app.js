@@ -2323,6 +2323,19 @@
     }
     wl.cards.forEach((row) => host.appendChild(wlCardNode(row)));
     bindTips(host);
+    const scanning = wl.cards.find((row) => row.status === 'scanning');
+    if (scanning) wlKeepInView(host.querySelector(`[data-cid="${scanning.id}"]`));
+  }
+
+  /* Scan for new walks the list top to bottom, one channel at a time; with
+     more channels than fit in the strip the card being scanned would slide
+     out of sight. The strip follows it — only on the hop to a new channel,
+     never on the download frames that repaint a card several times a
+     second, or the user could not scroll away from a long download. */
+  function wlKeepInView(node) {
+    if (node && typeof node.scrollIntoView === 'function') {
+      node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
   }
 
   /* A watchlist.card event replaces exactly one card. Rebuilding the whole
@@ -2332,6 +2345,7 @@
     if (!card || card.id == null) return;
     const idx = wl.cards.findIndex((c) => c.id === card.id);
     if (idx === -1) { wl.cards.push(card); renderWatchlist(); return; }
+    const wasScanning = wl.cards[idx].status === 'scanning';
     wl.cards[idx] = card;
     const host = $('#wl-cards');
     const old = host.querySelector(`[data-cid="${card.id}"]`);
@@ -2339,6 +2353,7 @@
     const node = wlCardNode(card);
     host.replaceChild(node, old);
     bindTips(node);
+    if (card.status === 'scanning' && !wasScanning) wlKeepInView(node);
     renderWatchlistToolbar();
     renderOverviewWatch();
     renderOverviewAttention();
@@ -7035,15 +7050,18 @@
     lastLine.className = 'cb-mut';
     lastLine.style.cssText = 'font-size:12px';
     lastLine.textContent = `Last checked: ${formatCheckedAt(status && status.last_check)}`;
-    host.append(upHead, upRow, lastLine, everyRow);
+    host.append(upHead, upRow, everyRow);
 
+    /* "Last checked" is always drawn — remote sessions and a page that has
+       never checked included — and sits directly above "Next check" so the
+       two timestamps read as a pair. */
     if (isLocal) {
       const statusLine = document.createElement('div');
       statusLine.className = 'cb-mut';
       statusLine.style.cssText = 'font-size:12px;margin-top:2px';
       statusLine.textContent = aboutUpdate.checking
         ? 'Checking for updates…' : aboutUpdateStatusLine(result);
-      host.appendChild(statusLine);
+      host.append(statusLine, lastLine);
 
       const next = status && status.next_check;
       if (next) {
@@ -7057,7 +7075,7 @@
       const warn = document.createElement('div');
       warn.className = 'cb-warnbox';
       warn.textContent = ABOUT_UPDATER_NOTE;
-      host.appendChild(warn);
+      host.append(lastLine, warn);
     }
   }
 
