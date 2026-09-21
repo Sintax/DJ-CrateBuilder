@@ -43,6 +43,15 @@ def updated(current_build, new_build, rows):
             f"Components: {summary}")
 
 
+def catching_up(new_build):
+    """One UPDATED entry for a delta-baseline auto-repair hop: the install was
+    too far behind the delta baseline to bridge, so it reinstalls the retained
+    full build and picks up the rest on the next check. No component diff — the
+    latest build's components don't describe the baseline being installed."""
+    return (f"UPDATED     | Catching up to build {new_build}; "
+            "more on the next check")
+
+
 def separator(label=""):
     """The centred rule that opens and closes a batch."""
     if not label:

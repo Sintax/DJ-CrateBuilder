@@ -64,6 +64,68 @@ def test_manifest_non_int_build_fails():
     assert ok is False and "build" in reason
 
 
+# ── needs_full_reinstall (the delta-baseline guard) ───────────────────────────
+def test_full_payload_is_always_safe():
+    """A full publish sets base == build; applying it over any install is
+    complete, so the guard never fires."""
+    m = {"build": 100, "base": 100}
+    assert uc.needs_full_reinstall(m, 50) is False
+    assert uc.needs_full_reinstall(m, 100) is False
+    assert uc.needs_full_reinstall(m, 120) is False
+
+
+def test_delta_is_safe_when_current_at_or_past_the_baseline():
+    """A delta (base < build) is complete for any install already >= base."""
+    m = {"build": 100, "base": 90}
+    assert uc.needs_full_reinstall(m, 90) is False
+    assert uc.needs_full_reinstall(m, 95) is False
+    assert uc.needs_full_reinstall(m, 99) is False
+
+
+def test_delta_is_unsafe_only_when_current_below_the_baseline():
+    m = {"build": 100, "base": 90}
+    assert uc.needs_full_reinstall(m, 89) is True
+    assert uc.needs_full_reinstall(m, 1) is True
+
+
+def test_needs_full_is_false_when_base_missing_or_malformed():
+    assert uc.needs_full_reinstall({"build": 100}, 50) is False
+    assert uc.needs_full_reinstall({"build": 100, "base": "x"}, 50) is False
+    assert uc.needs_full_reinstall({"base": 90}, 50) is False
+    assert uc.needs_full_reinstall(None, 50) is False
+    assert uc.needs_full_reinstall({"build": 100, "base": 90}, "x") is False
+
+
+# ── full_payload (the retained full build's download) ─────────────────────────
+def test_full_payload_reads_a_valid_block():
+    m = {"build": 100, "base": 90, "full_url": "https://x/full.zip",
+         "full_sha256": "a" * 64}
+    assert uc.full_payload(m) == {"url": "https://x/full.zip",
+                                  "sha256": "a" * 64, "build": 90}
+
+
+def test_full_payload_build_is_the_baseline_not_the_latest():
+    m = {"build": 100, "base": 90, "full_url": "u", "full_sha256": "b" * 64}
+    assert uc.full_payload(m)["build"] == 90
+
+
+def test_full_payload_is_none_when_fields_absent():
+    assert uc.full_payload({"build": 100, "base": 90}) is None
+    assert uc.full_payload(None) is None
+
+
+def test_full_payload_rejects_a_bad_sha():
+    m = {"build": 100, "base": 90, "full_url": "u", "full_sha256": "short"}
+    assert uc.full_payload(m) is None
+    m2 = {"build": 100, "base": 90, "full_url": "u", "full_sha256": "z" * 64}
+    assert uc.full_payload(m2) is None
+
+
+def test_full_payload_none_without_a_parseable_base():
+    m = {"build": 100, "full_url": "u", "full_sha256": "a" * 64}
+    assert uc.full_payload(m) is None
+
+
 # ── sha256 helpers ────────────────────────────────────────────────────────────
 def test_sha256_and_verify_roundtrip(tmp_path):
     p = tmp_path / "payload.bin"

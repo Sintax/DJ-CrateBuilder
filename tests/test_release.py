@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 import sys
+import types
 
 import pytest
 
@@ -174,6 +175,20 @@ def test_record_build_deps_preserves_the_delta_baseline(rel, tmp_path,
     assert state["builds"]["51"] == {"yt-dlp": "2026.7.4"}
 
 
+def test_record_build_deps_preserves_the_full_download_pointers(rel, tmp_path,
+                                                                monkeypatch):
+    """A delta nightly re-reads full_url/full_sha256 from the state file to
+    fill its manifest, and record_build_deps rewrites that file every night —
+    so it must keep those pointers intact or auto-repair silently breaks."""
+    monkeypatch.setattr(rel, "REPO_ROOT", str(tmp_path))
+    rel.save_state(40, {"app.exe": "aaa"}, full_url="https://x/full-40.zip",
+                   full_sha256="e" * 64)
+    rel.record_build_deps(51, {"yt-dlp": "2026.7.4"})
+    state = rel.load_state()
+    assert state["full_url"] == "https://x/full-40.zip"
+    assert state["full_sha256"] == "e" * 64
+
+
 def test_record_build_deps_accumulates_across_builds(rel, tmp_path,
                                                      monkeypatch):
     monkeypatch.setattr(rel, "REPO_ROOT", str(tmp_path))
@@ -219,3 +234,92 @@ def test_record_build_deps_no_state_file_is_a_safe_noop(rel, tmp_path,
     monkeypatch.setattr(rel, "REPO_ROOT", str(tmp_path))
     rel.record_build_deps(51, {"yt-dlp": "2026.7.4"})
     assert not os.path.exists(os.path.join(str(tmp_path), rel.STATE_FILE))
+
+
+# ── delta-baseline guard: full-zip naming, auto-repair pointers, retention ────
+
+def test_payload_zip_name_marks_full_with_an_infix(rel):
+    assert rel.payload_zip_name("2.1", 100, True) == \
+        "DJ-CrateBuilder-full-2.1.100.zip"
+    assert rel.payload_zip_name("2.1", 100, False) == \
+        "DJ-CrateBuilder-2.1.100.zip"
+
+
+def test_save_state_records_the_full_download(rel, tmp_path, monkeypatch):
+    monkeypatch.setattr(rel, "REPO_ROOT", str(tmp_path))
+    rel.save_state(90, {"a": "1"}, full_url="https://x/full-90.zip",
+                   full_sha256="d" * 64)
+    data = json.load(open(tmp_path / rel.STATE_FILE, encoding="utf-8"))
+    assert data["full_url"] == "https://x/full-90.zip"
+    assert data["full_sha256"] == "d" * 64
+
+
+def test_save_state_omits_full_fields_when_absent(rel, tmp_path, monkeypatch):
+    monkeypatch.setattr(rel, "REPO_ROOT", str(tmp_path))
+    rel.save_state(90, {"a": "1"})
+    data = json.load(open(tmp_path / rel.STATE_FILE, encoding="utf-8"))
+    assert "full_url" not in data and "full_sha256" not in data
+
+
+def test_full_manifest_fields_on_a_full_points_at_the_new_zip(rel):
+    out = rel.full_manifest_fields(True, "https://x/full-100.zip", "a" * 64,
+                                   None, {})
+    assert out == {"full_url": "https://x/full-100.zip", "full_sha256": "a" * 64}
+
+
+def test_full_manifest_fields_echoes_from_state_on_a_delta(rel):
+    state = {"full_url": "https://x/full-90.zip", "full_sha256": "b" * 64}
+    out = rel.full_manifest_fields(False, "ignored", "ignored", state,
+                                   {"full_url": "stale", "full_sha256": "stale"})
+    assert out == {"full_url": "https://x/full-90.zip", "full_sha256": "b" * 64}
+
+
+def test_full_manifest_fields_carries_forward_from_the_live_manifest(rel):
+    """A state written before this feature has no full_* fields; the last
+    published manifest still carries them."""
+    manifest = {"full_url": "https://x/full-90.zip", "full_sha256": "c" * 64}
+    out = rel.full_manifest_fields(False, "i", "i", {"base_build": 90}, manifest)
+    assert out == {"full_url": "https://x/full-90.zip", "full_sha256": "c" * 64}
+
+
+def test_full_manifest_fields_omitted_when_no_full_is_known(rel):
+    assert rel.full_manifest_fields(False, "i", "i", {"base_build": 90}, {}) == {}
+    assert rel.full_manifest_fields(False, "i", "i", None, None) == {}
+
+
+def _fake_gh(assets, deleted):
+    def run(cmd, **kw):
+        if "view" in cmd:
+            return types.SimpleNamespace(
+                returncode=0, stdout="\n".join(assets) + "\n", stderr="")
+        if "delete-asset" in cmd:
+            deleted.append(cmd[cmd.index("delete-asset") + 2])
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+    return run
+
+
+def test_prune_keeps_the_current_full_on_a_delta(rel, monkeypatch):
+    """A delta publish prunes old deltas but spares the retained full (which
+    every later delta's auto-repair points at) and the FFmpeg channel."""
+    deleted = []
+    assets = ["DJ-CrateBuilder-full-2.1.90.zip", "DJ-CrateBuilder-2.1.95.zip",
+              "DJ-CrateBuilder-2.1.96.zip", "ffmpeg-9.0.1.zip"]
+    monkeypatch.setattr(rel.subprocess, "run", _fake_gh(assets, deleted))
+    rel.prune_old_zip_assets("R/E", "nightly",
+                             keep="DJ-CrateBuilder-2.1.96.zip",
+                             prefix="DJ-CrateBuilder-", exclude_substr="-full-")
+    assert deleted == ["DJ-CrateBuilder-2.1.95.zip"]
+
+
+def test_prune_removes_old_full_and_deltas_on_a_full(rel, monkeypatch):
+    deleted = []
+    assets = ["DJ-CrateBuilder-full-2.1.90.zip", "DJ-CrateBuilder-2.1.95.zip",
+              "DJ-CrateBuilder-full-2.1.100.zip", "ffmpeg-9.0.1.zip"]
+    monkeypatch.setattr(rel.subprocess, "run", _fake_gh(assets, deleted))
+    rel.prune_old_zip_assets("R/E", "nightly",
+                             keep="DJ-CrateBuilder-full-2.1.100.zip",
+                             prefix="DJ-CrateBuilder-", exclude_substr=None)
+    assert set(deleted) == {"DJ-CrateBuilder-full-2.1.90.zip",
+                            "DJ-CrateBuilder-2.1.95.zip"}
+    assert "ffmpeg-9.0.1.zip" not in deleted

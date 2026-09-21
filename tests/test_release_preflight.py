@@ -277,3 +277,45 @@ def test_preflight_is_read_only_and_reports_every_line(rel, monkeypatch, capsys)
     assert "delta vs build 83" in text
     assert facts["runtime_moved"] is False
     assert "Smoke test" in text
+
+
+# ── Baseline-age warning ─────────────────────────────────────────────────────
+def _quiet_preflight(rel, monkeypatch, state, remote):
+    """Stub every currency probe so preflight is offline, leaving only the
+    baseline-age decision under test."""
+    monkeypatch.setattr(rel, "check_python_currency", lambda: {
+        "running": "3.14.5", "series": "3.14", "latest": "3.14.5",
+        "newest_series": "3.14", "status": "current", "detail": ""})
+    monkeypatch.setattr(rel, "check_ffmpeg_currency", lambda src_dir=None: {
+        "exe": "x", "local": "9.0.1", "latest": "9.0.1", "status": "current",
+        "detail": ""})
+    monkeypatch.setattr(rel, "preview_dependency_upgrades", lambda: {})
+    monkeypatch.setattr(rel, "load_state", lambda: state)
+    monkeypatch.setattr(rel, "read_remote_manifest", lambda: remote)
+    monkeypatch.setattr(rel, "platform", types.SimpleNamespace(
+        python_version=lambda: "3.14.5"))
+
+
+def test_preflight_warns_when_the_baseline_is_far_behind(rel, monkeypatch, capsys):
+    _quiet_preflight(rel, monkeypatch,
+                     {"base_build": 60, "python": "3.14.5"}, {"build": 90})
+    facts = rel.preflight()
+    text = capsys.readouterr().out
+    assert facts["baseline_warning"] is True
+    assert "builds old" in text and "--full" in text
+
+
+def test_preflight_is_quiet_when_the_baseline_is_recent(rel, monkeypatch, capsys):
+    _quiet_preflight(rel, monkeypatch,
+                     {"base_build": 88, "python": "3.14.5"}, {"build": 90})
+    facts = rel.preflight()
+    text = capsys.readouterr().out
+    assert facts["baseline_warning"] is False
+    assert "Baseline" not in text
+
+
+def test_preflight_baseline_warning_is_silent_on_a_forced_full(rel, monkeypatch, capsys):
+    _quiet_preflight(rel, monkeypatch,
+                     {"base_build": 60, "python": "3.14.5"}, {"build": 90})
+    facts = rel.preflight(force_full=True)
+    assert facts["baseline_warning"] is False

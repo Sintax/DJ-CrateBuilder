@@ -540,6 +540,86 @@ def test_the_confirm_leads_with_the_notes_and_boxes_the_notice(app_js):
     assert ".cb-mnote--notes { color: var(--cb-text); font-size: 14px;" in css
 
 
+# ── the delta-baseline guard, client-side ────────────────────────────────────
+
+def test_confirm_modal_notes_the_two_step_when_full_available(app_js, tmp_path):
+    """Too far behind to bridge in one hop, but a retained full is on offer:
+    the confirm explains it installs the baseline first, restarts, then catches
+    up on the next check."""
+    r = _flow(app_js, tmp_path, "flowfull.mjs", False, """
+      aboutUpdate.result = { available: true, current_build: 30, latest_build: 65,
+                             notes: '', needs_full: true, full_available: true,
+                             base: 60, installer_url: 'https://x/tag/v2.0' };
+      aboutConfirmUpdate();
+      console.log(JSON.stringify({ body: texts(modal.body) }));
+    """)
+    assert "several builds behind" in r["body"]
+    assert "installs build 60 first" in r["body"]
+    assert "next check" in r["body"]
+
+
+def test_confirm_modal_has_no_two_step_note_for_a_normal_update(app_js, tmp_path):
+    r = _flow(app_js, tmp_path, "flownormal.mjs", False, """
+      aboutUpdate.result = { available: true, current_build: 64, latest_build: 65,
+                             notes: '' };
+      aboutConfirmUpdate();
+      console.log(JSON.stringify({ body: texts(modal.body) }));
+    """)
+    assert "several builds behind" not in r["body"]
+
+
+_INSTALLER_HARNESS = _HARNESS.split("function renderWith(")[0] + """
+let openedUrl = null;
+function openUrl(u) { openedUrl = u; }
+function renderInstaller(result) {
+  aboutUpdate.result = result; wl.running = false; cbApi.transport = 'local';
+  const host = makeEl('div');
+  renderUpdateControls(host);
+  const all = buttons(host);
+  const inst = all.find((b) => b.textContent.indexOf('installer') !== -1);
+  if (inst && inst.listeners.click) inst.listeners.click();
+  return { labels: all.map((b) => b.textContent), opened: openedUrl,
+           updateNow: !!all.find((b) => b.textContent.indexOf('Update Now') !== -1) };
+}
+console.log(JSON.stringify(renderInstaller({ reachable: true, valid: true,
+  available: true, current_build: 30, latest_build: 65, can_self_update: true,
+  needs_full: true, full_available: false,
+  installer_url: 'https://example/releases/tag/v2.0' })));
+"""
+
+
+def test_renders_a_full_installer_button_when_auto_repair_is_unavailable(
+        app_js, tmp_path):
+    """No retained full to bridge the gap: Update Now is replaced by a button
+    that opens the release page for the full installer."""
+    r = _run_node(tmp_path, "installer.mjs",
+                  _INSTALLER_HARNESS % {"slices": _slices(app_js)})
+    assert any("Get the full installer" in l for l in r["labels"])
+    assert r["updateNow"] is False
+    assert r["opened"] == "https://example/releases/tag/v2.0"
+
+
+def test_status_line_covers_needs_full_both_ways(app_js, tmp_path):
+    fn = _slice(app_js, "  function aboutUpdateStatusLine(result)",
+                "  async function aboutCheckUpdates(")
+    src = fn + """
+console.log(JSON.stringify({
+  two: aboutUpdateStatusLine({ reachable: true, valid: true, available: true,
+        needs_full: true, full_available: true, base: 60, latest_build: 65,
+        current_build: 30 }),
+  reinstall: aboutUpdateStatusLine({ reachable: true, valid: true, available: true,
+        needs_full: true, full_available: false, base: 60, latest_build: 65,
+        current_build: 30 }),
+  normal: aboutUpdateStatusLine({ reachable: true, valid: true, available: true,
+        latest_build: 65, current_build: 64 }),
+}));
+"""
+    r = _run_node(tmp_path, "statusline.mjs", src)
+    assert "build 60" in r["two"] and "next check" in r["two"]
+    assert "installer" in r["reinstall"].lower()
+    assert "build 65" in r["normal"]
+
+
 # ── the components table ─────────────────────────────────────────────────────
 
 _COMPONENTS_HARNESS = """
