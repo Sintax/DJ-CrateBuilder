@@ -1,20 +1,22 @@
 {
   "version": "2.1",
-  "build": 94,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.1.94.zip",
-  "sha256": "ab089e4a360cb90cee269b78f5589859333a4a168058f1064a71313041671dd8",
-  "notes": "You can now cancel an update download; closing the app shows an in-app confirmation.",
-  "base": 94,
-  "changes": "You can now cancel an update download; closing the app shows an in-app confirmation.",
+  "build": 95,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-full-2.1.95.zip",
+  "sha256": "aa488154dbe99b63159b46f994876b4d004f6ffc1e56c9701fb5c093c13f573c",
+  "notes": "Update screen redesign plus better protection for very outdated installs.",
+  "base": 95,
+  "changes": "Update screen redesign plus better protection for very outdated installs.",
   "notice": "",
+  "full_url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-full-2.1.95.zip",
+  "full_sha256": "aa488154dbe99b63159b46f994876b4d004f6ffc1e56c9701fb5c093c13f573c",
   "ffmpeg": {
-    "version": "9.0.1-essentials_build-www.gyan.dev+72a489ec",
-    "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/ffmpeg-9.0.1-essentials_build-www.gyan.dev_72a489ec.zip",
-    "sha256": "523fde94b906d1bd9efe7d3b79b4b81c7911625d3d2bcb4debbd2c9a36981ce9"
+    "version": "9.0.2-essentials_build-www.gyan.dev+3256173f",
+    "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/ffmpeg-9.0.2-essentials_build-www.gyan.dev_3256173f.zip",
+    "sha256": "7fbeed7470dac7a1be3c2c6b38b821a3014ca3d91de557b5a636e405f250096a"
   },
   "components": {
     "python": "3.14.7",
-    "ffmpeg": "9.0.1-essentials_build-www.gyan.dev+72a489ec",
+    "ffmpeg": "9.0.2-essentials_build-www.gyan.dev+3256173f",
     "yt-dlp": "2026.8.19",
     "yt-dlp-ejs": "0.8.0",
     "certifi": "2026.7.22",
