@@ -126,15 +126,19 @@ function layout(status, result) {
   return {
     buttonRow: upRow.children.map((c) => c.textContent),
     lines: host.children.map((c) => c.textContent),
-    everyRow: host.children[3].children.map((c) => c.tag + ':' + c.textContent),
+    everyRow: host.children[2].children.map((c) => c.tag + ':' + c.textContent),
   };
 }
 console.log(JSON.stringify({
   never: layout({ options: ['day'], interval: 'day', last_check: 0 }, null),
   checked: layout({ options: ['day'], interval: 'day',
-                    last_check: new Date(2026, 8, 20, 15, 4, 9).getTime() / 1000 },
+                    last_check: new Date(2026, 8, 20, 15, 4, 9).getTime() / 1000,
+                    next_check: new Date(2026, 8, 21, 15, 4, 9).getTime() / 1000 },
                   { reachable: true, valid: true, available: false,
                     current_build: 95, can_self_update: true }),
+  remote: (() => { cbApi.transport = 'remote';
+                   const r = layout({ options: ['day'], interval: 'day', last_check: 0 }, null);
+                   cbApi.transport = 'local'; return r; })(),
   am: formatCheckedAt(new Date(2026, 0, 5, 0, 7, 3).getTime() / 1000),
   noon: formatCheckedAt(new Date(2026, 0, 5, 12, 0, 0).getTime() / 1000),
 }));
@@ -142,17 +146,23 @@ console.log(JSON.stringify({
 
 
 def test_the_update_controls_sit_on_three_lines(app_js, tmp_path):
-    """Buttons first with the running build at their end, then when the
-    last check ran, then the labelled auto-check interval on its own line."""
+    """Buttons first with the running build at their end, then the labelled
+    auto-check interval on its own line, then the status line. "Last checked"
+    is always drawn — never checked, remote session included — and sits
+    directly above "Next check" so the two timestamps read as a pair."""
     r = _run_node(tmp_path, "aboutlayout.mjs",
                   _LAYOUT_HARNESS % {"slices": _slices(app_js)})
 
     assert r["never"]["buttonRow"][-1] == "on build (94)"
-    assert r["never"]["lines"][2] == "Last checked: Never"
     assert r["never"]["everyRow"] == ["span:Auto-check for updates every:", "select:"]
+    assert r["never"]["lines"][4] == "Last checked: Never"
+    assert len(r["never"]["lines"]) == 5            # no next check to pair with
 
     assert r["checked"]["buttonRow"][-1] == "on build (95)"
-    assert r["checked"]["lines"][2] == "Last checked: 09/20/2026 03:04:09 PM"
+    assert r["checked"]["lines"][4] == "Last checked: 09/20/2026 03:04:09 PM"
+    assert r["checked"]["lines"][5] == "Next check: 09/21/2026 03:04:09 PM"
+
+    assert "Last checked: Never" in r["remote"]["lines"]
     assert r["am"] == "01/05/2026 12:07:03 AM"
     assert r["noon"] == "01/05/2026 12:00:00 PM"
 

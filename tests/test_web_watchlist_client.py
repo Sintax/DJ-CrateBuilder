@@ -989,3 +989,62 @@ def test_import_picker_reports_entries_the_host_dropped(app_js):
     assert "const dropped = res.dropped || [];" in app_js
     assert "weren’t imported" in app_js
     assert "note: 'Choose the channels to add to your Watch List.' + droppedNote" in app_js
+
+
+# ── Scan for new keeps the card being scanned in view ────────────────────────
+# The card strip is the only thing that scrolls on the Watch List; a scan
+# walking twenty channels would carry the running card out of sight.
+
+_SCROLL_HARNESS = """
+const calls = [];
+function makeEl(tag) {
+  return { tag, children: [], dataset: {}, className: '', textContent: '',
+           appendChild(c) { this.children.push(c); return c; },
+           replaceChild(n, o) { this.children[this.children.indexOf(o)] = n; },
+           querySelector(sel) {
+             const m = /data-cid="([0-9]+)"/.exec(sel);
+             return this.children.find((c) => c.dataset.cid === m[1]) || null;
+           },
+           scrollIntoView(opts) { calls.push([this.dataset.cid, opts]); } };
+}
+const document = { createElement: makeEl };
+const host = makeEl('div');
+host.innerHTML = '';
+const $ = () => host;
+const wl = { cards: [] };
+function wlCardNode(row) { const n = makeEl('div'); n.dataset.cid = String(row.id); return n; }
+function bindTips() {}
+function renderWatchlistToolbar() {}
+function renderOverviewWatch() {}
+function renderOverviewAttention() {}
+%(slices)s
+function seed(rows) {
+  wl.cards = rows.map((r) => Object.assign({}, r));
+  host.children.length = 0;
+  wl.cards.forEach((r) => host.appendChild(wlCardNode(r)));
+}
+seed([{ id: 1, status: 'idle' }, { id: 2, status: 'idle' }, { id: 3, status: 'idle' }]);
+wlApplyCard({ id: 2, status: 'scanning' });
+const afterHop = calls.length;
+wlApplyCard({ id: 2, status: 'scanning', new_count: 3 });
+const afterRepeat = calls.length;
+wlApplyCard({ id: 2, status: 'found' });
+wlApplyCard({ id: 3, status: 'downloading', progress: { percent: 10 } });
+wlApplyCard({ id: 3, status: 'downloading', progress: { percent: 20 } });
+const afterDownload = calls.length;
+wlApplyCard({ id: 3, status: 'scanning' });
+seed([{ id: 7, status: 'idle' }, { id: 8, status: 'scanning' }]);
+renderWatchlist();
+console.log(JSON.stringify({ calls, afterHop, afterRepeat, afterDownload }));
+"""
+
+
+def test_the_card_being_scanned_is_scrolled_into_view_once_per_hop(app_js, tmp_path):
+    # renderWatchlist, wlKeepInView and wlApplyCard sit together in app.js.
+    slices = _slice(app_js, "  function renderWatchlist()", "  /* An empty pinned log")
+    r = _run_node(tmp_path, "wl-scroll.mjs", _SCROLL_HARNESS % {"slices": slices})
+    assert r["afterHop"] == 1                  # idle -> scanning scrolls
+    assert r["afterRepeat"] == 1               # a repaint while scanning does not
+    assert r["afterDownload"] == 1             # download frames never do
+    assert [c[0] for c in r["calls"]] == ["2", "3", "8"]
+    assert all(c[1] == {"block": "center", "behavior": "smooth"} for c in r["calls"])
