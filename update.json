@@ -1,8 +1,8 @@
 {
   "version": "2.1",
-  "build": 97,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.1.97.zip",
-  "sha256": "9981624cb0456355f2ceb5c968ba5a945e820c87f2884853cf0acc8d758076e8",
+  "build": 98,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.1.98.zip",
+  "sha256": "7f6ac7101d6ae6abd80e1874380ce1507046a090583ff383c6ea2a36772c0628",
   "notes": "New Pink colour theme in Settings.",
   "base": 95,
   "changes": "New Pink colour theme in Settings.",
