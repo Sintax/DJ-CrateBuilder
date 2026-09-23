@@ -49,6 +49,7 @@ Three gaps this design closes:
 | D5 | Add two dependencies: **`cryptography`** (certificate) and **`segno`** (QR code, pure Python). |
 | D6 | **Pairing is always required** — the "Require pairing" switch is removed. |
 | D7 | No self-hosted relay, no Azure, no Cloudflare Tunnel, no Tailscale Funnel (public exposure). |
+| D8 | **Android only.** The phone side targets Chrome on Android. iPhone is not a supported remote (the app is not distributed for Apple devices), and no work is done for iOS browsers. |
 
 ## 1. What the user sees — Settings ▸ Remote Access
 
@@ -82,7 +83,10 @@ Three gaps this design closes:
   - EC P-256 key + self-signed X.509 certificate via `cryptography`.
   - Subject Alternative Names: the PC's home-network IPv4 addresses, its host
     name and `<hostname>.local`.
-  - Validity 397 days (Safari refuses longer-lived server certificates).
+  - Validity 397 days — the lifetime every major browser accepts for a server
+    certificate. Stage 0 checks whether Chrome on Android accepts a longer
+    one for a tapped-through certificate; if it does, the lifetime is
+    raised so the yearly re-warning goes away.
   - Stored next to `cratebuilder_remote.json` (same folder as the database,
     `service.py:906`) as `cratebuilder_remote.crt` / `.key`. The key never
     leaves the machine and is never logged; POSIX mode `0600`.
@@ -179,7 +183,7 @@ review, one subagent at a time, `opus` for implementers and reviewers.
 
 | Stage | What | Proof |
 |---|---|---|
-| 0 — spike | On the maintainer's real phone: does the browser keep a live `wss:` connection to a self-signed host after tapping through once? (iOS Safari is known to be unreliable here.) Confirm the current `tailscale serve` syntax. | Findings written back into this doc. No kept code. |
+| 0 — spike | On the maintainer's Android phone (Chrome): after tapping through the warning once, does the live `wss:` connection hold, and does the exception survive closing Chrome? Does Chrome accept a certificate longer than 397 days? Confirm the current `tailscale serve` syntax. | Findings written back into this doc. No kept code. |
 | 1 — Home mode | mode storage + migration, live mount lifecycle, `remotecert`, address choice, TLS serving, the Settings card and QR | unit tests, server tests, web client tests, both themes |
 | 2 — Internet mode | `tailscale` module (fake CLI in tests), publish/unpublish, checklist, setup guide window | unit tests with a fake `tailscale`, web client tests |
 | 3 — Real-device test, then flip | maintainer tests both modes on their phone; `REMOTE_ACCESS_AVAILABLE = True` in its own commit; `tests/test_remote_parked.py` retired | checklist below |
@@ -200,10 +204,10 @@ the Stage 3 test use a harness that lifts it without changing shipped code
 
 ## 8. Risks and things to verify
 
-1. **iOS + self-signed + WebSocket** (Stage 0). If iOS will not hold `wss:`
-   after the tap-through, Home mode on iPhone either needs a polling fallback
-   for live updates or iPhone users are pointed at Internet mode. Decide
-   after the spike.
+1. **Chrome on Android + self-signed + WebSocket** (Stage 0). Expected to
+   work — Chrome applies the tapped-through exception to `wss:` on the same
+   host — but it is the one thing Home mode cannot live without, so it is
+   proven on the real phone before Stage 1 starts.
 2. **`tailscale serve` CLI syntax** changed across versions (1.52+). Target
    the current syntax and detect the version.
 3. **Windows firewall prompt** for the frozen exe on first `0.0.0.0` listen.
@@ -213,7 +217,7 @@ the Stage 3 test use a harness that lifts it without changing shipped code
 
 ## Out of scope
 
-A self-hosted relay; Tailscale Funnel / any public exposure; a native phone
-app; an installer firewall rule; putting the pairing code in the QR; revoking
+iPhone / iOS browsers (D8); a self-hosted relay; Tailscale Funnel / any
+public exposure; a native phone app; an installer firewall rule; putting the pairing code in the QR; revoking
 one device at a time (today it's "revoke all"); the cross-process
 "two frontends, one database" item (F4) from the web-UI review.
