@@ -76,10 +76,12 @@ def test_the_guide_page_shares_the_apps_theme_and_stylesheets(howto_html):
     assert "localStorage.getItem('cb_theme') === 'dark'" in boot
     assert "setAttribute('data-theme', 'dark')" in boot
     assert howto_html.index(boot) < howto_html.index('href="theme.css"')
-    # And the colour theme, or the guide stays red while the app is green.
-    assert "localStorage.getItem('cb_accent') === 'green'" in boot
-    assert "setAttribute('data-accent', 'green')" in boot
-    for sheet in ("theme.css", "app.css", "theme-dark.css", "theme-green.css"):
+    # And the colour theme, or the guide stays red while the app is green or
+    # pink. (The accent list itself is held to app.js in the theme tests.)
+    assert "localStorage.getItem('cb_accent')" in boot
+    assert "setAttribute('data-accent', accent)" in boot
+    for sheet in ("theme.css", "app.css", "theme-dark.css", "theme-green.css",
+                  "theme-pink.css"):
         assert f'<link rel="stylesheet" href="{sheet}">' in howto_html
     # Full-window: the modal's height cap comes off the walkthrough box.
     assert ".cb-howto { max-height: none;" in howto_html

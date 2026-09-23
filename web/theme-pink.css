@@ -1,0 +1,63 @@
+/* DJ-CrateBuilder web UI — the pink colour theme, as an overlay.
+   The twin of theme-green.css, cut to the same shape for the same reasons:
+   only the accent tokens are re-declared, once per ground, plus the
+   literal reds theme.css and theme-dark.css paint outside the tokens. The
+   status colours stay red (--cb-err, --cb-log-error, the warn button), so a
+   failure still reads as one. index.html sets data-accent="pink" before
+   first paint; without it nothing here applies.
+
+   The pink is #FF43E5, the maintainer's chosen shade, used as-is on both
+   grounds. Like the neon green it is too bright to carry white lettering
+   (≈ 2.9:1), so accent fills are lettered in near-black ink (≈ 6.7:1). */
+
+:root[data-accent="pink"] {
+  --cb-line: #FF43E5;
+  --cb-line-soft: rgba(255, 67, 229, .30);
+  --cb-line-row: rgba(255, 67, 229, .22);
+  --cb-accent: #FF43E5;
+  --cb-accent-hover: #FF7AEC;
+  --cb-accent-wash: rgba(255, 67, 229, .08);
+  --cb-fill-ink: #1C0714;
+}
+
+:root[data-accent="pink"][data-theme="dark"] {
+  --cb-line: #FF43E5;
+  --cb-line-soft: rgba(255, 67, 229, .40);
+  --cb-line-row: rgba(255, 67, 229, .28);
+  --cb-accent: #FF43E5;
+  --cb-accent-hover: #FF7AEC;
+  --cb-accent-wash: rgba(255, 67, 229, .14);
+  --cb-fill-ink: #12040D;
+}
+
+/* White lettering on a neon fill is unreadable; these are every element the
+   two sheets fill with --cb-accent and letter in #fff. */
+:root[data-accent="pink"] .cb-btn--fill,
+:root[data-accent="pink"] .cb-seg > .is-on,
+:root[data-accent="pink"] .cb-tag--fill,
+:root[data-accent="pink"] .cb-nav__count,
+:root[data-accent="pink"] .cb-bell__count { color: var(--cb-fill-ink); }
+
+/* The literals theme.css paints the accent with, re-painted for the light
+   ground… */
+:root[data-accent="pink"] ::selection { background: rgba(255, 67, 229, .24); }
+:root[data-accent="pink"] .cb-btn:active { background: rgba(255, 67, 229, .18); }
+:root[data-accent="pink"] .cb-bar { border-color: rgba(255, 67, 229, .40); }
+:root[data-accent="pink"] .cb-bar__fill--overall { background: rgba(255, 67, 229, .55); }
+:root[data-accent="pink"] .cb-menu > *:hover { background: rgba(255, 67, 229, .12); }
+
+/* …and the ones theme-dark.css paints, for the dark ground. Both attributes
+   on the selector so these outrank the dark sheet's own rules by
+   specificity, not by load order alone. */
+:root[data-accent="pink"][data-theme="dark"] ::selection { background: rgba(255, 67, 229, .42); }
+:root[data-accent="pink"][data-theme="dark"] .cb-btn:active { background: rgba(255, 67, 229, .26); }
+:root[data-accent="pink"][data-theme="dark"] .cb-bar { border-color: rgba(255, 67, 229, .50); }
+:root[data-accent="pink"][data-theme="dark"] .cb-bar__fill--overall { background: rgba(255, 67, 229, .65); }
+:root[data-accent="pink"][data-theme="dark"] .cb-menu > *:hover { background: rgba(255, 67, 229, .18); }
+
+/* The destructive button keeps the design's reds on both grounds: the
+   literal fills theme.css and theme-dark.css use, not the now-pink tokens. */
+:root[data-accent="pink"] .cb-btn--warn { background: #CC0000; border-color: #CC0000; }
+:root[data-accent="pink"] .cb-btn--warn:hover { background: #B00000; }
+:root[data-accent="pink"][data-theme="dark"] .cb-btn--warn { background: #E00000; border-color: #E00000; }
+:root[data-accent="pink"][data-theme="dark"] .cb-btn--warn:hover { background: #F21414; }

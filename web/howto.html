@@ -13,8 +13,9 @@
     }
   } catch (e) { /* light */ }
   try {
-    if (localStorage.getItem('cb_accent') === 'green') {
-      document.documentElement.setAttribute('data-accent', 'green');
+    var accent = localStorage.getItem('cb_accent');
+    if (['green', 'pink'].indexOf(accent) !== -1) {
+      document.documentElement.setAttribute('data-accent', accent);
     }
   } catch (e) { /* red */ }
 </script>
@@ -22,6 +23,7 @@
 <link rel="stylesheet" href="app.css">
 <link rel="stylesheet" href="theme-dark.css">
 <link rel="stylesheet" href="theme-green.css">
+<link rel="stylesheet" href="theme-pink.css">
 <style>
   /* The guide fills its own window instead of sitting in a modal, so the
      card's height cap comes off and the window's scrollbar is the only one. */

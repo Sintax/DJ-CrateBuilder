@@ -647,12 +647,13 @@
   }
 
   /* Colour theme, kept per device like the other two. Red is the design's
-     own colour, so it clears the mark: every sheet was painted for it. Green
-     sets the mark for theme-green.css, which re-declares only the accent
-     tokens — the status reds (errors, failed rows) keep their colour so a
-     failure still looks like one whichever accent the page wears. */
+     own colour, so it clears the mark: every sheet was painted for it. Any
+     other accent sets the mark for its theme-<name>.css, which re-declares
+     only the accent tokens — the status reds (errors, failed rows) keep their
+     colour so a failure still looks like one whichever accent the page wears.
+     index.html's and howto.html's pre-paint lists must name the same set. */
   const ACCENT_KEY = 'cb_accent';
-  const ACCENTS = ['red', 'green'];
+  const ACCENTS = ['red', 'green', 'pink'];
 
   function storedAccent() {
     try {
@@ -6083,7 +6084,7 @@
     accentSel.className = 'cb-sel';
     accentSel.id = 'settings-accent';
     accentSel.setAttribute('aria-label', 'Colour theme');
-    [['red', 'Red'], ['green', 'Green']].forEach(([name, label]) => {
+    [['red', 'Red'], ['green', 'Green'], ['pink', 'Pink']].forEach(([name, label]) => {
       const opt = document.createElement('option');
       opt.value = name;
       opt.textContent = label;
