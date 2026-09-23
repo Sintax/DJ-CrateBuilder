@@ -23,10 +23,11 @@
   } catch (e) { /* normal */ }
   /* The stored colour theme, for the same reason; app.js's applyAccent
      keeps the same key and values. Red is the sheets' own colour, so only
-     green marks the page. */
+     the other accents mark the page. */
   try {
-    if (localStorage.getItem('cb_accent') === 'green') {
-      document.documentElement.setAttribute('data-accent', 'green');
+    var accent = localStorage.getItem('cb_accent');
+    if (['green', 'pink'].indexOf(accent) !== -1) {
+      document.documentElement.setAttribute('data-accent', accent);
     }
   } catch (e) { /* red */ }
 </script>
@@ -35,6 +36,7 @@
 <link rel="stylesheet" href="icons.css">
 <link rel="stylesheet" href="theme-dark.css">
 <link rel="stylesheet" href="theme-green.css">
+<link rel="stylesheet" href="theme-pink.css">
 </head>
 <body>
 
