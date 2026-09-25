@@ -268,6 +268,7 @@ def test_acquire_or_hand_off_returns_the_lock_on_success(monkeypatch):
 def test_acquire_or_hand_off_hands_off_and_exits_when_already_running(monkeypatch):
     asked = []
     monkeypatch.setattr(web_window, "acquire_single_instance", lambda port: None)
+    monkeypatch.setattr(web_window, "grant_foreground", lambda port: False)
     monkeypatch.setattr(web_window, "request_show", asked.append)
     with pytest.raises(SystemExit) as info:
         web_window.acquire_or_hand_off(port=49737)
@@ -298,6 +299,7 @@ def test_djcrate_uri_arg_refuses_a_token_carrying_a_quote():
 def test_a_losing_launch_with_a_uri_forwards_it_instead_of_asking_for_show(monkeypatch):
     forwarded, asked = [], []
     monkeypatch.setattr(web_window, "acquire_single_instance", lambda port: None)
+    monkeypatch.setattr(web_window, "grant_foreground", lambda port: False)
     monkeypatch.setattr(web_window, "forward_add",
                         lambda port, uri: forwarded.append((port, uri)))
     monkeypatch.setattr(web_window, "request_show", asked.append)
@@ -306,6 +308,27 @@ def test_a_losing_launch_with_a_uri_forwards_it_instead_of_asking_for_show(monke
     assert info.value.code == 0
     assert forwarded == [(49737, "djcrate://add?v=1")]
     assert asked == []
+
+
+@pytest.mark.parametrize("uri", [None, "djcrate://add?v=1"])
+def test_a_losing_launch_hands_over_the_foreground_before_it_hands_off(monkeypatch, uri):
+    """Windows refuses SetForegroundWindow from a background process, so the
+    running instance cannot raise itself — the window only flashed on the
+    taskbar. The losing launch was started by the app the user just clicked
+    in (Chrome, Explorer) and may take the foreground, so it passes that right
+    on to the lock holder, and has to do so before the holder is told to act
+    on it."""
+    events = []
+    monkeypatch.setattr(web_window, "acquire_single_instance", lambda port: None)
+    monkeypatch.setattr(web_window, "grant_foreground",
+                        lambda port: events.append(("grant", port)))
+    monkeypatch.setattr(web_window, "forward_add",
+                        lambda port, u: events.append(("add", port)))
+    monkeypatch.setattr(web_window, "request_show",
+                        lambda port: events.append(("show", port)))
+    with pytest.raises(SystemExit):
+        web_window.acquire_or_hand_off(port=49737, uri=uri)
+    assert events == [("grant", 49737), ("add" if uri else "show", 49737)]
 
 
 def test_a_winning_launch_with_a_uri_keeps_the_lock(monkeypatch):

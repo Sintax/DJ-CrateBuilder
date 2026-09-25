@@ -9,6 +9,7 @@ launch can ask it to restore its window instead of just exiting silently.
 """
 import logging
 import socket
+import sys
 import threading
 
 from cratebuilder import debuglog
@@ -52,6 +53,64 @@ def request_show(port, timeout=0.5):
             s.sendall(b"show")
     except OSError:
         pass
+
+
+def listener_pid(port):
+    """PID of the process listening on 127.0.0.1:*port*, or None.
+
+    Windows-only (GetExtendedTcpTable); None anywhere else, when nothing
+    listens there, or when the table cannot be read.
+    """
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    AF_INET, TCP_TABLE_OWNER_PID_LISTENER = 2, 3
+    iphlpapi = ctypes.windll.iphlpapi
+    size = wintypes.DWORD(0)
+    iphlpapi.GetExtendedTcpTable(None, ctypes.byref(size), False, AF_INET,
+                                 TCP_TABLE_OWNER_PID_LISTENER, 0)
+    buf = ctypes.create_string_buffer(size.value)
+    if iphlpapi.GetExtendedTcpTable(buf, ctypes.byref(size), False, AF_INET,
+                                    TCP_TABLE_OWNER_PID_LISTENER, 0) != 0:
+        return None
+    # MIB_TCPTABLE_OWNER_PID: a DWORD count, then rows of six DWORDs —
+    # state, local addr, local port, remote addr, remote port, owning PID.
+    count = wintypes.DWORD.from_buffer(buf).value
+    rows = (wintypes.DWORD * (6 * count)).from_buffer(buf, 4)
+    for i in range(count):
+        _state, _addr, local_port, _raddr, _rport, pid = rows[6 * i:6 * i + 6]
+        if socket.ntohs(local_port & 0xFFFF) == port:
+            return pid
+    return None
+
+
+def _allow_set_foreground(pid):
+    import ctypes
+    return bool(ctypes.windll.user32.AllowSetForegroundWindow(pid))
+
+
+def grant_foreground(port):
+    """Let the instance holding *port* take the foreground. Returns True when
+    Windows accepted the grant.
+
+    Windows refuses SetForegroundWindow from a background process, so the
+    running app cannot raise its own window when a second launch asks — it
+    only flashes on the taskbar. A second launch started by the app the user
+    just clicked in (Chrome answering a djcrate:// link, Explorer opening a
+    shortcut) is allowed the foreground, and AllowSetForegroundWindow passes
+    that right on. Called before the hand-off, so the holder has it by the
+    time it acts. Best-effort: never raises, and a False just means the
+    window flashes instead of rising.
+    """
+    try:
+        pid = listener_pid(port)
+        if pid is None:
+            return False
+        return bool(_allow_set_foreground(pid))
+    except Exception:
+        return False
 
 
 def forward_add(port, uri, timeout=0.5):
