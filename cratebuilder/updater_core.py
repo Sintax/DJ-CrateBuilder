@@ -6,7 +6,7 @@ into this module so the moving parts live in one tested place.
 
 The "nightly build" channel works like this:
   * The app ships a fixed integer ``APP_BUILD`` (e.g. 7) alongside the pinned
-    display version ("2.0").
+    display version ("2.1").
   * GitHub hosts a small ``update.json`` manifest on a dedicated ``nightly``
     branch. It names the newest build number and a download URL + SHA-256.
   * The app fetches the manifest, and if its build is higher, downloads the
@@ -136,6 +136,38 @@ def validate_manifest(manifest):
     if len(sha) != 64 or any(c not in "0123456789abcdefABCDEF" for c in sha):
         return False, "sha256 is not a 64-character hex digest"
     return True, ""
+
+
+def needs_full_reinstall(manifest, current_build):
+    """True when the manifest offers a DELTA whose baseline is newer than the
+    running build, so applying it would leave a partial install. Defensive:
+    any missing/malformed field returns False (no guard) — a full payload
+    (base == build) is always safe, so it also returns False."""
+    if not isinstance(manifest, dict):
+        return False
+    try:
+        build = int(manifest["build"])
+        base = int(manifest["base"])
+        current = int(current_build)
+    except (KeyError, TypeError, ValueError):
+        return False
+    return base < build and current < base
+
+
+def full_payload(manifest):
+    """The retained full build's download, or None. Validates like
+    validate_manifest: non-empty url, 64-hex sha256. build == base."""
+    if not isinstance(manifest, dict):
+        return None
+    url = str(manifest.get("full_url", "")).strip()
+    sha = str(manifest.get("full_sha256", "")).strip()
+    if not url or len(sha) != 64 or any(c not in "0123456789abcdefABCDEF" for c in sha):
+        return None
+    try:
+        base = int(manifest["base"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return {"url": url, "sha256": sha, "build": base}
 
 
 FFMPEG_VERSION_FILE = "ffmpeg.version"
@@ -313,28 +345,62 @@ def verify_sha256(path, expected):
     return sha256_file(path) == str(expected).strip().lower()
 
 
-def download(url, dest_path, progress_cb=None, timeout=30.0, _opener=None):
+class UpdateCancelled(Exception):
+    """The user cancelled the update before anything was handed off.
+
+    Raised by ``download`` when its *cancel* event is set, and by the
+    service's apply worker at its own checkpoints, so one exception type
+    means "stop, purge, nothing changed" all the way up.
+    """
+
+
+def _cancelled(cancel):
+    """True when a cancel event was given and has been set."""
+    return cancel is not None and cancel.is_set()
+
+
+def download(url, dest_path, progress_cb=None, timeout=30.0, _opener=None,
+             cancel=None):
     """Stream ``url`` to ``dest_path``, calling progress_cb(done, total).
 
     total is the Content-Length when known, else None. Writes to a ``.part``
     file first and renames on success so a half-finished download is never
     mistaken for a complete one.
+
+    *cancel* is an optional ``threading.Event``-like object (anything with
+    ``is_set()``). It is checked before the request and between chunks; once
+    set, the stream is abandoned, the ``.part`` file is deleted, and
+    ``UpdateCancelled`` is raised. "Between chunks" means when ``resp.read()``
+    returns, so a stalled socket can delay the cancel by up to ``timeout``.
     """
+    if _cancelled(cancel):
+        raise UpdateCancelled("update cancelled before the download began")
     opener = _opener or urllib.request.urlopen
     os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
     part = dest_path + ".part"
     req = urllib.request.Request(
         url, headers={"User-Agent": "DJ-CrateBuilder-Updater"})
-    with opener(req, timeout=timeout) as resp:
-        total = resp.headers.get("Content-Length")
-        total = int(total) if total and total.isdigit() else None
-        done = 0
-        with open(part, "wb") as f:
-            for block in iter(lambda: resp.read(65536), b""):
-                f.write(block)
-                done += len(block)
-                if progress_cb:
-                    progress_cb(done, total)
+    try:
+        with opener(req, timeout=timeout) as resp:
+            total = resp.headers.get("Content-Length")
+            total = int(total) if total and total.isdigit() else None
+            done = 0
+            with open(part, "wb") as f:
+                for block in iter(lambda: resp.read(65536), b""):
+                    if _cancelled(cancel):
+                        raise UpdateCancelled("update cancelled mid-download")
+                    f.write(block)
+                    done += len(block)
+                    if progress_cb:
+                        progress_cb(done, total)
+    except UpdateCancelled:
+        # The `with` blocks above have already closed the file by the time
+        # this runs, so the delete cannot collide with an open handle.
+        try:
+            os.remove(part)
+        except OSError:
+            pass
+        raise
     os.replace(part, dest_path)
     return dest_path
 
@@ -355,6 +421,102 @@ def _iter_files(root):
             yield ap, os.path.relpath(ap, root)
 
 
+# ── dist-info retirement ──────────────────────────────────────────────────────
+# PEP 427 wheel naming: `<dist>-<version>.dist-info`, `<dist>` already has its
+# `-` folded to `_`, so the first `-` splits name from version.
+_DIST_INFO_DIR = re.compile(r"^([A-Za-z0-9_.]+)-(.+)\.dist-info$")
+
+
+def _dist_key(dirname):
+    """PEP-503 normalised distribution name of a dist-info dir, or None."""
+    m = _DIST_INFO_DIR.match(dirname)
+    if not m:
+        return None
+    return re.sub(r"[-_.]+", "-", m.group(1)).lower()
+
+
+def _incoming_dist_infos(staged_dir):
+    """Distinct (parent_rel, dirname) of every dist-info dir in the staged tree."""
+    seen = set()
+    for _abs, rel in _iter_files(staged_dir):
+        parts = rel.split(os.sep)
+        for i, part in enumerate(parts[:-1]):
+            if _DIST_INFO_DIR.match(part):
+                seen.add((os.path.join(*parts[:i]) if i else "", part))
+    return sorted(seen)
+
+
+def _stale_dist_infos(staged_dir, app_dir):
+    """(parent_rel, dirname) of app_dir dist-info dirs superseded by staged ones."""
+    stale = []
+    for parent_rel, incoming in _incoming_dist_infos(staged_dir):
+        key = _dist_key(incoming)
+        parent_abs = os.path.join(app_dir, parent_rel)
+        try:
+            siblings = os.listdir(parent_abs)
+        except OSError:
+            continue
+        for name in siblings:
+            if name != incoming and _dist_key(name) == key \
+                    and os.path.isdir(os.path.join(parent_abs, name)):
+                stale.append((parent_rel, name))
+    return stale
+
+
+def _version_key(text):
+    """Sort key ordering dotted versions numerically per segment (0.53.0 > 0.9.9)."""
+    return tuple((0, int(p)) if p.isdecimal() else (1, p)
+                 for p in re.split(r"[.\-+]", text))
+
+
+_RETIRED_SUFFIX = ".retired"
+
+
+def retire_duplicate_dist_infos(app_dir):
+    """Keep only the newest dist-info per package in app_dir and app_dir/_internal.
+
+    Older updaters could overlay a bumped package without retiring its old
+    metadata, and a delta never re-ships an unchanged dist-info, so the app
+    sweeps once per launch. Each loser is renamed out of the dist-info
+    namespace first, then deleted: a locked file can make rmtree stop half
+    way, and a half-emptied dist-info folder crashes importlib.metadata where
+    the untouched one merely misreported. Never raises — this runs before
+    the window opens. Returns the removed paths.
+    """
+    removed = []
+    for parent in (os.path.abspath(app_dir),
+                   os.path.join(os.path.abspath(app_dir), "_internal")):
+        try:
+            names = os.listdir(parent)
+        except OSError:
+            continue
+        groups = {}
+        for name in names:
+            path = os.path.join(parent, name)
+            if not os.path.isdir(path):
+                continue
+            if name.endswith(".dist-info" + _RETIRED_SUFFIX):
+                shutil.rmtree(path, ignore_errors=True)      # an earlier sweep's leftover
+                continue
+            m = _DIST_INFO_DIR.match(name)
+            if m:
+                groups.setdefault(_dist_key(name), []).append((m.group(2), name))
+        for entries in groups.values():
+            if len(entries) < 2:
+                continue
+            entries.sort(key=lambda e: (_version_key(e[0]), e[1]))
+            for _ver, name in entries[:-1]:
+                path = os.path.join(parent, name)
+                retired = path + _RETIRED_SUFFIX
+                try:
+                    os.replace(path, retired)
+                except OSError:
+                    continue
+                shutil.rmtree(retired, ignore_errors=True)
+                removed.append(path)
+    return sorted(removed)
+
+
 def apply_update(staged_dir, app_dir, backup_dir, _copyfn=shutil.copy2):
     """Replace ``app_dir`` files with ``staged_dir`` files, with rollback.
 
@@ -369,18 +531,30 @@ def apply_update(staged_dir, app_dir, backup_dir, _copyfn=shutil.copy2):
       2. Copy the staged file into place.
 
     Files present in app_dir but absent from the staged tree are left alone
-    (an update is additive/replacement, not a destructive sync).
+    (an update is additive/replacement, not a destructive sync), with one
+    exception: an older ``<name>-<ver>.dist-info`` folder of a package whose
+    newer ``.dist-info`` is arriving is moved to ``backup_dir`` first. Two
+    dist-info folders side by side make ``importlib.metadata`` report the
+    older version, so a bumped package would look un-bumped forever.
 
     On any error mid-swap, every change made so far is rolled back: copied
-    files removed and backed-up originals restored. Returns True on success,
-    raises the original exception after rolling back on failure.
+    files removed, backed-up originals restored and retired dist-info folders
+    put back. Returns True on success, raises the original exception after
+    rolling back on failure.
 
     ``_copyfn`` is injectable for tests (to simulate a mid-swap failure).
     """
     os.makedirs(backup_dir, exist_ok=True)
     moved = []    # (backup_abs, original_abs) pairs we relocated
     copied = []   # target_abs files we wrote (that had no prior original)
+    retired = []  # (backup_abs, original_abs) stale dist-info dirs we moved
     try:
+        for parent_rel, name in _stale_dist_infos(staged_dir, app_dir):
+            original = os.path.join(app_dir, parent_rel, name)
+            backup = os.path.join(backup_dir, parent_rel, name)
+            os.makedirs(os.path.dirname(backup) or ".", exist_ok=True)
+            shutil.move(original, backup)
+            retired.append((backup, original))
         for staged_abs, rel in _iter_files(staged_dir):
             target = os.path.join(app_dir, rel)
             os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
@@ -394,7 +568,8 @@ def apply_update(staged_dir, app_dir, backup_dir, _copyfn=shutil.copy2):
             _copyfn(staged_abs, target)
         return True
     except Exception:
-        # Roll back: undo fresh copies, then restore moved-aside originals.
+        # Roll back: undo fresh copies, restore moved-aside originals, then
+        # put retired dist-info folders back.
         for target in copied:
             try:
                 if os.path.exists(target):
@@ -405,6 +580,11 @@ def apply_update(staged_dir, app_dir, backup_dir, _copyfn=shutil.copy2):
             try:
                 if os.path.exists(original):
                     os.remove(original)
+                shutil.move(backup, original)
+            except OSError:
+                pass
+        for backup, original in retired:
+            try:
                 shutil.move(backup, original)
             except OSError:
                 pass

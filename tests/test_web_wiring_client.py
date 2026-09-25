@@ -8,6 +8,7 @@ sliced out of app.js verbatim like the other client tests.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -93,7 +94,8 @@ function remoteAccessAvailable() { return true; }
 function setDisabled(el, disabled, opts) { el.disabled = !!disabled; el.opts = opts || {}; }
 function bindTips() {}
 function writeBlocked() { return ''; }
-const howto = { id: 'cookie-howto', textContent: '' };
+const howto = { id: 'cookie-howto', textContent: '',
+                setAttribute(k, v) { this.attrs = this.attrs || {}; this.attrs[k] = v; } };
 const grid = { querySelector: () => null };
 function $(sel) {
   if (sel === '#settings-grid') return grid;
@@ -103,7 +105,8 @@ function $(sel) {
 function $$() { return []; }
 %(fn)s
 applySettingsDependencies();
-const on = { text: howto.textContent, off: howto.disabled, tt: howto.opts.ttKey };
+const on = { text: howto.textContent, off: howto.disabled, tt: howto.opts.ttKey,
+             icon: howto.attrs['data-ic'] };
 state.settings.cookies_browser = 'Brave';
 applySettingsDependencies();
 const brave = howto.textContent;
@@ -130,10 +133,11 @@ def test_the_howto_button_names_the_browser_and_greys_with_cookies_off(app_js, t
                  "  /* One setting, drawn twice"),
     })
 
-    assert r["on"] == {"text": "📖 How-To: Setting Up a Dedicated Firefox Profile",
-                       "off": False, "tt": "settings.firefox_profile_howto"}
-    assert r["brave"] == "📖 How-To: Setting Up a Dedicated Brave Profile"
-    assert r["chrome"] == "📖 How-To: Using Chrome Cookies via a Cookie File"
+    assert r["on"] == {"text": "How-To: Setting Up a Dedicated Firefox Profile",
+                       "off": False, "tt": "settings.firefox_profile_howto",
+                       "icon": "book"}
+    assert r["brave"] == "How-To: Setting Up a Dedicated Brave Profile"
+    assert r["chrome"] == "How-To: Using Chrome Cookies via a Cookie File"
     assert r["off"] == {"off": True, "reason": "Turn on Use Browser Cookies first."}
 
 
@@ -624,3 +628,223 @@ def test_the_sidebar_names_the_app_in_full_with_the_mount_tag_beneath(index_html
     assert row.count('</div>') == 2          # the name's row closes before the tag
     with open(os.path.join(ROOT, "web", "app.css"), encoding="utf-8") as fh:
         assert ".cb-brandrow { display: flex; flex-direction: column;" in fh.read()
+
+
+# ── buttons and headings draw Core Line glyphs, not emoji ────────────────────
+
+# Every emoji the swap retired from a button, heading, dialog title or menu
+# label. The queue-log marks (✓ ⊘ ✗ ○ ⬇ in DL_MARK / WL_QROW_MARK), the ⚠ in
+# prose, and the → on links are deliberately not here.
+SWAPPED_EMOJI = "⏸⬇⏭⚡🔍🛠🧹🔄🏷📂🗂🖼👁⚙✏📋📤📥🐞↗🌐📖❔⏳🔐✕"
+
+
+def test_index_links_the_icon_sheet_and_no_button_starts_with_an_emoji(index_html):
+    """The glyph is a `data-ic` attribute painted by icons.css, so the label
+    stays a plain text node; an emoji left in the text would draw twice."""
+    links = re.findall(r'<link rel="stylesheet" href="([^"]+)">', index_html)
+    assert links.index("icons.css") == links.index("app.css") + 1
+    assert links.index("icons.css") < links.index("theme-dark.css")
+
+    offenders = []
+    for m in re.finditer(r"<(button|h4)[^>]*>([^<]*)", index_html):
+        text = m.group(2).strip()
+        if text and text[0] in SWAPPED_EMOJI:
+            offenders.append(m.group(0))
+    assert offenders == []
+
+
+# ── the close confirmation, drawn in-page ────────────────────────────────────
+# The desktop window cancels the OS close and raises app.close_requested; the
+# page draws the monolith's question in its own theme — as its own layer, not
+# an openModal dialog, so whatever is open underneath (an update's locked
+# progress dialog, an Edit with typed text) is left exactly as it was. The
+# real showCloseConfirm runs here against a stub DOM.
+
+_CLOSE_HARNESS = """
+const calls = [];
+async function call(method) { calls.push(method); return {}; }
+function mkEl(tag) {
+  const e = { tag, children: [], style: {}, attrs: {}, listeners: {}, parent: null,
+              className: '', textContent: '', disabled: false, focused: 0 };
+  e.appendChild = (c) => { e.children.push(c); c.parent = e; return c; };
+  e.append = (...cs) => { cs.forEach((c) => e.appendChild(c)); };
+  e.setAttribute = (k, v) => { e.attrs[k] = v; };
+  e.addEventListener = (name, fn) => { e.listeners[name] = fn; };
+  e.remove = () => { if (e.parent) e.parent.children = e.parent.children.filter((c) => c !== e); };
+  e.focus = () => { e.focused += 1; document.activeElement = e; };
+  return e;
+}
+const winListeners = [];
+const window = {
+  addEventListener(name, fn, capture) { winListeners.push({ name, fn, capture }); },
+  removeEventListener(name, fn) {
+    const i = winListeners.findIndex((l) => l.fn === fn);
+    if (i !== -1) winListeners.splice(i, 1);
+  },
+};
+const document = { body: mkEl('body'), activeElement: null, createElement: mkEl };
+/* What openModal would have left open underneath: its own capture-phase
+   document listener, which must never hear the overlay's Escape. */
+let underneathHeard = [];
+const openModalDialog = { open: true };
+function modalNote(text) { const p = mkEl('p'); p.className = 'cb-mnote'; p.textContent = text; return p; }
+function modalButton(label, cls, onClick) {
+  const b = mkEl('button'); b.className = 'cb-btn cb-btn--sm ' + (cls || '');
+  b.textContent = label; b.listeners.click = onClick; return b;
+}
+function key(k, extra) {
+  const e = Object.assign({ key: k, stopped: 0, prevented: 0,
+    stopPropagation() { this.stopped += 1; }, preventDefault() { this.prevented += 1; } }, extra || {});
+  for (const l of winListeners.slice()) if (l.name === 'keydown') l.fn(e);
+  if (!e.stopped) underneathHeard.push(k);
+  return e;
+}
+function overlay() { return document.body.children.find((c) => c.className.indexOf('cb-dim--close') !== -1) || null; }
+function btn(el, text) {
+  if (el.tag === 'button' && el.textContent === text) return el;
+  for (const c of el.children) { const h = btn(c, text); if (h) return h; }
+  return null;
+}
+function texts(el) {
+  let out = el.textContent ? [el.textContent] : [];
+  for (const c of el.children) out = out.concat(texts(c));
+  return out;
+}
+%(fn)s
+async function main() {
+%(script)s
+}
+main();
+"""
+
+
+def _close_confirm(app_js, tmp_path, name, script):
+    fn = _slice(app_js, "  let closeAsk = null;", "  /* A host that is down")
+    return _run_node(tmp_path, name, _CLOSE_HARNESS % {"fn": fn, "script": script})
+
+
+def test_the_close_dialog_is_subscribed_and_acknowledged(app_js):
+    fn = _slice(app_js, "  function subscribeSessionEvents()",
+                "  let closeAsk = null;")
+    handler = _slice(fn, "cbApi.on('app.close_requested', () => {", "    });")
+    assert "showCloseConfirm();" in handler
+    assert "call('app.close_seen').catch(() => {});" in handler
+    # The bus reaches every paired browser too; without this a phone would
+    # draw the host's close question and toast a LOCAL_ONLY refusal.
+    assert handler.index("if (cbApi.transport !== 'local') return;") \
+        < handler.index("showCloseConfirm();")
+
+
+def test_the_close_question_is_its_own_layer_over_whatever_is_open(
+        app_js, tmp_path):
+    r = _close_confirm(app_js, tmp_path, "close_layer.mjs", """
+  const typing = mkEl('input'); typing.focus();          // an Edit underneath
+  document.body.appendChild(mkEl('div')).className = 'cb-dim';   // ... in a dialog
+  showCloseConfirm();
+  const dim = overlay();
+  const card = dim.children[0];
+  const foot = card.children[2];
+  const buttons = foot.children;
+  const out = {
+    layers: document.body.children.map((c) => c.className),
+    dimClass: dim.className, cardClass: card.className,
+    role: card.attrs.role, label: card.attrs['aria-label'], width: card.style.maxWidth,
+    head: card.children[0].className, title: card.children[0].children[0].textContent,
+    bodyClass: card.children[1].className, texts: texts(card.children[1]),
+    footClass: foot.className,
+    labels: buttons.map((b) => b.textContent), classes: buttons.map((b) => b.className),
+    focused: document.activeElement.textContent,
+    winKeydowns: winListeners.filter((l) => l.name === 'keydown' && l.capture).length,
+  };
+  console.log(JSON.stringify(out));
+""")
+    assert r["layers"] == ["cb-dim", "cb-dim cb-dim--close"]   # over, not instead
+    assert r["cardClass"] == "cb-modal" and r["width"] == "420px"
+    assert r["role"] == "dialog" and r["label"] == "Close DJ-CrateBuilder"
+    assert r["head"] == "cb-mhead" and r["title"] == "Close DJ-CrateBuilder"
+    assert r["bodyClass"] == "cb-mbody"
+    assert r["texts"] == ["Are you sure you want to close DJ-CrateBuilder?",
+                          "Auto-downloads won't run while it's closed."]
+    assert r["footClass"] == "cb-mfoot"
+    assert r["labels"] == ["Stay open", "Close DJ-CrateBuilder"]
+    assert "cb-btn--quiet" in r["classes"][0]
+    assert "cb-btn--warn" in r["classes"][1]
+    assert r["focused"] == "Stay open"        # a stray Enter keeps it running
+    assert r["winKeydowns"] == 1              # window, capture: ahead of openModal's
+
+
+def test_every_casual_exit_stays_open_and_gives_focus_back(app_js, tmp_path):
+    r = _close_confirm(app_js, tmp_path, "close_stay.mjs", """
+  const typing = mkEl('input'); typing.focus();
+  const out = {};
+  showCloseConfirm();
+  btn(overlay(), 'Stay open').listeners.click();
+  out.afterStay = { open: !!overlay(), focus: document.activeElement === typing,
+                    listeners: winListeners.length };
+  showCloseConfirm();
+  const esc = key('Escape');
+  out.afterEscape = { open: !!overlay(), stopped: esc.stopped,
+                      underneath: underneathHeard.slice(), focus: document.activeElement === typing };
+  showCloseConfirm();
+  const dim = overlay();
+  dim.listeners.mousedown({ target: dim.children[0] });     // on the card: nothing
+  out.cardClick = !!overlay();
+  dim.listeners.mousedown({ target: dim });                  // on the dim: stay
+  out.afterDim = { open: !!overlay(), focus: document.activeElement === typing };
+  out.calls = calls;
+  console.log(JSON.stringify(out));
+""")
+    assert r["afterStay"] == {"open": False, "focus": True, "listeners": 0}
+    assert r["afterEscape"] == {"open": False, "stopped": 1, "underneath": [],
+                                "focus": True}
+    assert r["cardClick"] is True
+    assert r["afterDim"] == {"open": False, "focus": True}
+    assert r["calls"] == []                   # the host is never asked to stay
+
+
+def test_tab_stays_inside_the_question_and_the_dialog_underneath_never_hears_it(
+        app_js, tmp_path):
+    r = _close_confirm(app_js, tmp_path, "close_tab.mjs", """
+  showCloseConfirm();
+  const stay = btn(overlay(), 'Stay open'), quit = btn(overlay(), 'Close DJ-CrateBuilder');
+  const t1 = key('Tab'); const a1 = document.activeElement === quit;
+  const t2 = key('Tab', { shiftKey: true }); const a2 = document.activeElement === stay;
+  const other = key('a');
+  console.log(JSON.stringify({ a1, a2, prevented: t1.prevented + t2.prevented,
+    stopped: t1.stopped + t2.stopped, otherStopped: other.stopped,
+    underneath: underneathHeard }));
+""")
+    assert r["a1"] is True and r["a2"] is True
+    assert r["prevented"] == 2 and r["stopped"] == 2
+    assert r["otherStopped"] == 0             # ordinary keys pass through
+    assert r["underneath"] == ["a"]
+
+
+def test_the_warn_button_quits_through_the_host(app_js, tmp_path):
+    r = _close_confirm(app_js, tmp_path, "close_quit.mjs", """
+  showCloseConfirm();
+  const quit = btn(overlay(), 'Close DJ-CrateBuilder');
+  quit.listeners.click();
+  await Promise.resolve();
+  console.log(JSON.stringify({ calls, disabled: quit.disabled, open: !!overlay() }));
+""")
+    assert r["calls"] == ["app.quit"]
+    assert r["disabled"] is True
+    assert r["open"] is True                  # the window goes; nothing to tidy
+
+
+def test_a_second_request_refocuses_the_open_question(app_js, tmp_path):
+    r = _close_confirm(app_js, tmp_path, "close_twice.mjs", """
+  showCloseConfirm();
+  const stay = btn(overlay(), 'Stay open');
+  const quit = btn(overlay(), 'Close DJ-CrateBuilder');
+  quit.focus();
+  showCloseConfirm();
+  console.log(JSON.stringify({
+    overlays: document.body.children.filter((c) => c.className.indexOf('cb-dim--close') !== -1).length,
+    listeners: winListeners.length, stayFocused: stay.focused,
+    active: document.activeElement === stay }));
+""")
+    assert r["overlays"] == 1
+    assert r["listeners"] == 1
+    assert r["stayFocused"] == 2 and r["active"] is True

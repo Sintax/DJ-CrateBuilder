@@ -50,7 +50,7 @@ jobs:
           TAG="linux-v2.0"
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --title "DJ-CrateBuilder v2.0 — Linux package (.deb)" \
+              --title "DJ-CrateBuilder v2.1 — Linux package (.deb)" \
               --notes "Debian / Ubuntu / Linux Mint package. Download the .deb below and double-click it (or run: sudo apt install ./dj-cratebuilder_*_all.deb). System dependencies are pulled in automatically; Python packages are installed into a private venv during install."
           fi
           # Keep exactly one .deb on the release: drop any previous asset first.
@@ -70,7 +70,7 @@ jobs:
           URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${DEB_NAME}"
           cat > update-linux.json << JSONEOF
           {
-            "version": "2.0",
+            "version": "2.1",
             "build": ${BUILD},
             "url": "${URL}",
             "sha256": "${SHA}",
@@ -82,4 +82,4 @@ jobs:
           # Keep the release title in step with the shipped build, matching the
           # Windows release title format.
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --title "DJ-CrateBuilder v2.0 (Build ${BUILD}) — Linux package (.deb)"
+            --title "DJ-CrateBuilder v2.1 (Build ${BUILD}) — Linux package (.deb)"

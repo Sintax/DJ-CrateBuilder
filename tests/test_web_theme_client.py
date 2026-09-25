@@ -98,7 +98,29 @@ out.card = {
   rows: card.children.length,
   labels: card.children.map((row) => row.children[0].textContent),
 };
-const sizeSel = card.children[1].children[1];
+const accentSel = card.children[1].children[1];
+function accentSnapshot() {
+  let stored;
+  try { stored = localStorage.getItem('cb_accent'); } catch (_) { stored = 'refused'; }
+  return { attr: document.documentElement.attrs['data-accent'] || null, stored };
+}
+out.accent = {
+  tag: accentSel.tag, id: accentSel.id, readOk: accentSel.dataset.readOk,
+  options: accentSel.children.map((o) => [o.value, o.textContent]),
+  value: accentSel.value, initial: storedAccent(),
+};
+accentSel.value = 'green';
+accentSel.listeners.change();
+out.accentGreen = accentSnapshot();
+accentSel.value = 'pink';
+accentSel.listeners.change();
+out.accentPink = accentSnapshot();
+applyAccent('bogus');
+out.accentBogus = accentSnapshot();
+accentSel.value = 'red';
+accentSel.listeners.change();
+out.accentRed = accentSnapshot();
+const sizeSel = card.children[2].children[1];
 function sizeSnapshot() {
   let stored;
   try { stored = localStorage.getItem('cb_text_size'); } catch (_) { stored = 'refused'; }
@@ -134,6 +156,9 @@ out.refusedApply = snapshot();
 out.refusedSize = storedTextSize();
 applyTextSize('large');
 out.refusedSizeApply = sizeSnapshot();
+out.refusedAccent = storedAccent();
+applyAccent('green');
+out.refusedAccentApply = accentSnapshot();
 console.log(JSON.stringify(out));
 """
 
@@ -178,10 +203,155 @@ def test_the_card_draws_two_radio_options_reading_the_stored_theme(result):
         ["light", "Light", "radio", "false", 0, "1", False],
         ["dark", "Dark", "radio", "true", 0, "1", True],
     ]
-    # Two labelled rows and nothing else: the "kept on this device" hint
+    # Three labelled rows and nothing else: the "kept on this device" hint
     # that used to follow the theme switch is gone.
-    assert card["rows"] == 2
-    assert card["labels"] == ["Theme", "Text size"]
+    assert card["rows"] == 3
+    assert card["labels"] == ["Theme", "Colour theme", "Text size"]
+
+
+# ── colour theme ─────────────────────────────────────────────────────────────
+
+def test_the_colour_theme_control_is_a_select_of_every_accent_reading_the_store(result):
+    """A dropdown between the theme switch and text size: Red first because
+    it is the default, live in a read-only remote session like the others."""
+    accent = result["accent"]
+    assert (accent["tag"], accent["id"], accent["readOk"]) == ("select", "settings-accent", "1")
+    assert accent["options"] == [["red", "Red"], ["green", "Green"], ["pink", "Pink"]]
+    assert accent["initial"] == "red"
+    assert accent["value"] == "red"
+
+
+def test_choosing_an_accent_marks_the_page_and_remembers_it(result):
+    """Red is the design's own colour, so it clears the mark rather than
+    setting one; every other accent sets it for its own sheet to answer. An
+    unknown value falls back to red."""
+    assert result["accentGreen"] == {"attr": "green", "stored": "green"}
+    assert result["accentPink"] == {"attr": "pink", "stored": "pink"}
+    assert result["accentBogus"] == {"attr": None, "stored": "red"}
+    assert result["accentRed"] == {"attr": None, "stored": "red"}
+
+
+def test_a_store_that_refuses_still_colours_the_page(result):
+    assert result["refusedAccent"] == "red"
+    assert result["refusedAccentApply"] == {"attr": "green", "stored": "refused"}
+
+
+def _app_accents():
+    """ACCENTS from app.js, red (the sheets' own colour, no overlay) dropped."""
+    raw = re.search(r"const ACCENTS = \[([^\]]*)\]", _read("app.js")).group(1)
+    return [a for a in re.findall(r"'([^']+)'", raw) if a != "red"]
+
+
+# Every overlay accent, so the sheet tests below run once per theme sheet.
+_OVERLAYS = ("green", "pink")
+
+
+def test_the_overlay_list_matches_app_js():
+    """A new accent in app.js with no sheet (or a sheet with no accent) fails
+    here rather than silently painting the page red."""
+    assert _app_accents() == list(_OVERLAYS)
+
+
+@pytest.mark.parametrize("page", ["index.html", "howto.html"])
+def test_each_page_marks_every_accent_before_any_stylesheet_loads(page):
+    """The pre-paint list must name exactly app.js's accents, or a stored
+    choice the app understands flashes red on every launch; and each sheet
+    must load after the dark one so its overrides win over both grounds."""
+    html = _read(page)
+    key = re.search(r"const ACCENT_KEY = '([^']+)'", _read("app.js")).group(1)
+    assert key == "cb_accent"
+    assert html.index(f"localStorage.getItem('{key}')") < html.index('href="theme.css"')
+    listed = re.search(r"if \(\[([^\]]*)\]\.indexOf\(accent\) !== -1\)", html).group(1)
+    assert re.findall(r"'([^']+)'", listed) == _app_accents()
+    assert "setAttribute('data-accent', accent)" in html
+    for name in _app_accents():
+        assert html.index('href="theme-dark.css"') < html.index(f'href="theme-{name}.css"')
+
+
+# The accent tokens: the six the design paints its red with, plus the ink a
+# neon fill needs in place of white. Each overlay must re-declare exactly
+# these, for light and again for dark, and no others — the status colours
+# (--cb-err and its log twin) stay red so an error still reads as one.
+_ACCENT_TOKENS = {"--cb-line", "--cb-line-soft", "--cb-line-row", "--cb-accent",
+                  "--cb-accent-hover", "--cb-accent-wash", "--cb-fill-ink"}
+
+
+@pytest.mark.parametrize("name", _OVERLAYS)
+def test_the_sheet_recolours_the_accent_tokens_for_both_grounds(name):
+    css = _read(f"theme-{name}.css")
+    light = _tokens(css, f':root[data-accent="{name}"] {{')
+    dark = _tokens(css, f':root[data-accent="{name}"][data-theme="dark"] {{')
+    assert light == _ACCENT_TOKENS, sorted(light ^ _ACCENT_TOKENS)
+    assert dark == _ACCENT_TOKENS, sorted(dark ^ _ACCENT_TOKENS)
+    for token in ("--cb-err", "--cb-log-error", "--cb-warn"):
+        assert token not in _strip_comments(css)
+
+
+@pytest.mark.parametrize("name", _OVERLAYS)
+def test_the_sheet_never_reaches_a_page_that_did_not_ask(name):
+    css = _strip_comments(_read(f"theme-{name}.css"))
+    for group in re.findall(r"(?:^|\})\s*([^{}]+)\{", css):
+        for selector in group.split(","):
+            assert selector.strip().startswith(f':root[data-accent="{name}"]'), \
+                selector.strip()
+
+
+@pytest.mark.parametrize("name", _OVERLAYS)
+def test_the_sheet_covers_every_red_the_design_sheet_hard_codes(name):
+    """theme.css paints five things with literal reds rather than tokens
+    (selection, the pressed button, the progress bar and its overall fill,
+    the menu hover); the dark sheet re-paints four of them. An overlay has to
+    re-paint every one for both grounds or a red edge shows through."""
+    css = _strip_comments(_read(f"theme-{name}.css"))
+    for selector in ("::selection", ".cb-btn:active", ".cb-bar {",
+                     ".cb-bar__fill--overall", ".cb-menu > *:hover"):
+        assert css.count(selector) >= 2, selector
+
+
+@pytest.mark.parametrize("name", _OVERLAYS)
+def test_the_sheet_re_letters_every_white_on_accent_fill(name):
+    """A neon fill cannot carry white text. These are every element theme.css
+    and app.css fill with --cb-accent and letter in #fff; each must be
+    re-lettered in the ink token or its label vanishes into the fill."""
+    css = _strip_comments(_read(f"theme-{name}.css"))
+    ink = css[css.index("{ color: var(--cb-fill-ink); }") - 400:
+              css.index("{ color: var(--cb-fill-ink); }")]
+    for cls in (".cb-btn--fill", ".cb-seg > .is-on", ".cb-tag--fill",
+                ".cb-nav__count", ".cb-bell__count"):
+        assert cls in ink, cls
+
+
+def _luminance(hex_colour):
+    """WCAG relative luminance of a #RRGGBB colour."""
+    def channel(c):
+        c /= 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = (int(hex_colour[i:i + 2], 16) for i in (1, 3, 5))
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+
+
+def _contrast(a, b):
+    la, lb = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+@pytest.mark.parametrize("name", _OVERLAYS)
+@pytest.mark.parametrize("ground,block", [
+    ("light", ':root[data-accent="{n}"] {{'),
+    ("dark", ':root[data-accent="{n}"][data-theme="dark"] {{'),
+])
+def test_the_fill_ink_is_readable_on_the_neon_fill(name, ground, block):
+    """The whole reason the ink token exists: button and badge labels on the
+    accent fill must clear WCAG AA (4.5:1), and be at least as readable as
+    plain white — a neon fill needs dark ink, a deep one (Barbie pink) can
+    keep white, but no overlay may pick an ink worse than the default."""
+    css = _read(f"theme-{name}.css")
+    start = css.index(block.format(n=name))
+    body = css[start:css.index("}", start)]
+    fill = re.search(r"--cb-accent:\s*(#[0-9A-Fa-f]{6})", body).group(1)
+    ink = re.search(r"--cb-fill-ink:\s*(#[0-9A-Fa-f]{6})", body).group(1)
+    assert _contrast(fill, ink) >= 4.5, (ground, fill, ink)
+    assert _contrast(fill, ink) >= _contrast(fill, "#FFFFFF"), (ground, fill)
 
 
 # ── text size ────────────────────────────────────────────────────────────────
@@ -258,7 +428,7 @@ def test_everything_placed_from_a_measurement_divides_by_the_page_zoom():
     for start, end in [
         ("  function showTip(host, text) {", "  function hideTip()"),
         ("  function toggleNotifications() {", "  function renderNotifications()"),
-        ("  function scrollQueueLogToActive(", "  function renderQueueLog()"),
+        ("  function scrollBoxToActive(", "  function renderQueueLog()"),
         ("      resize.addEventListener('mousedown'", "        function onUp()"),
         ("  function dbShowMenu(x, y, items) {", "  async function dbCopyText("),
     ]:

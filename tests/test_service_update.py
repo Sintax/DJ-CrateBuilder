@@ -62,7 +62,8 @@ def service(tmp_path, monkeypatch):
 
 
 def _fake_download(_unused=None, contents=b"zip-bytes"):
-    def download(url, dest, progress_cb=None, timeout=30.0, _opener=None):
+    def download(url, dest, progress_cb=None, timeout=30.0, _opener=None,
+                 cancel=None):
         os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
         with open(dest, "wb") as fh:
             fh.write(contents)
@@ -112,6 +113,8 @@ def test_check_reports_unreachable(service, monkeypatch):
         "current_build": result["current_build"], "latest_build": None,
         "notes": None, "notice": None, "components": None,
         "can_self_update": result["can_self_update"],
+        "base": None, "needs_full": False, "full_available": False,
+        "installer_url": result["installer_url"],
         "checked_at": result["checked_at"],
     }
 
@@ -123,6 +126,75 @@ def test_check_reports_invalid_manifest(service, monkeypatch):
     assert result["reachable"] is True
     assert result["valid"] is False
     assert result["available"] is False
+
+
+# ── update.check: the delta-baseline guard fields ────────────────────────────
+
+GUARD_MANIFEST = {
+    "build": 99, "url": "https://example.invalid/build-99.zip",
+    "sha256": "a" * 64, "base": 90,
+    "full_url": "https://example.invalid/full-90.zip", "full_sha256": "b" * 64,
+}
+
+
+def test_check_reports_base_and_no_guard_when_at_or_past_the_baseline(
+        service, monkeypatch):
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest",
+                        lambda url: GUARD_MANIFEST)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 95})
+    result = service.update_check()
+    assert result["base"] == 90
+    assert result["needs_full"] is False
+    assert result["full_available"] is False
+    assert result["installer_url"].endswith("/releases/tag/v2.0")
+
+
+def test_check_flags_needs_full_and_full_available_on_a_stale_frozen_install(
+        service, monkeypatch):
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest",
+                        lambda url: GUARD_MANIFEST)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 80})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
+    result = service.update_check()
+    assert result["base"] == 90
+    assert result["needs_full"] is True
+    assert result["full_available"] is True
+
+
+def test_check_needs_full_without_a_full_payload_cannot_auto_repair(
+        service, monkeypatch):
+    manifest = {k: v for k, v in GUARD_MANIFEST.items()
+                if k not in ("full_url", "full_sha256")}
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: manifest)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 80})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
+    result = service.update_check()
+    assert result["needs_full"] is True
+    assert result["full_available"] is False
+
+
+def test_check_full_available_false_on_a_source_install(service, monkeypatch):
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest",
+                        lambda url: GUARD_MANIFEST)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 80})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: False)
+    result = service.update_check()
+    assert result["needs_full"] is True
+    assert result["full_available"] is False
+
+
+def test_check_installer_url_is_platform_specific(service, monkeypatch):
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: None)
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: True)
+    assert service.update_check()["installer_url"].endswith(
+        "/releases/tag/linux-v2.0")
 
 
 def test_check_persists_last_update_check(service, monkeypatch):
@@ -446,6 +518,114 @@ def test_apply_logs_not_listed_for_a_manifest_without_the_block(service, monkeyp
     assert lines[0].endswith("| Components: not listed")
 
 
+# ── update.apply: the delta-baseline auto-repair ─────────────────────────────
+
+
+def test_apply_downloads_the_full_payload_when_too_far_behind(
+        service, monkeypatch, tmp_path):
+    """An install older than the delta's baseline installs the retained full
+    build first: the full URL/SHA are used, the staged zip and restart event
+    carry the baseline build, and the log is a plain catching-up line."""
+    manifest = dict(GUARD_MANIFEST)
+    service._log_path = str(tmp_path / "activity.log")
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: manifest)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 80})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
+
+    seen = {}
+
+    def fake_download(url, dest, progress_cb=None, timeout=30.0,
+                      _opener=None, cancel=None):
+        seen["url"] = url
+        seen["dest"] = dest
+        os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+        with open(dest, "wb") as fh:
+            fh.write(b"zip")
+        return dest
+    monkeypatch.setattr(service_mod.ucore, "download", fake_download)
+
+    def fake_verify(path, sha):
+        seen["sha"] = sha
+        return True
+    monkeypatch.setattr(service_mod.ucore, "verify_sha256", fake_verify)
+    monkeypatch.setattr(service_mod.ucore, "extract_zip",
+                        lambda z, d: os.makedirs(d, exist_ok=True) or d)
+    monkeypatch.setattr(service_mod.subprocess, "Popen", lambda *a, **k: None)
+    service.on_update_restart = None
+
+    waiter = _Waiter(service)
+    result = service.update_apply()
+    waiter.wait()
+
+    assert seen["url"] == manifest["full_url"]
+    assert seen["sha"] == manifest["full_sha256"]
+    assert os.path.basename(seen["dest"]) == "build-90.zip"
+    assert waiter.of_type("update.restarting") == [{"build": 90}]
+    # The reported build stays the latest — that's what the user was offered.
+    assert result["build"] == 99
+
+    lines = [ln for ln in _activity_lines(service) if "UPDATED" in ln]
+    assert len(lines) == 1
+    assert "Catching up to build 90" in lines[0]
+    assert "more on the next check" in lines[0]
+    assert "Components:" not in lines[0]
+
+
+def test_apply_raises_with_the_installer_link_when_no_full_payload(
+        service, monkeypatch):
+    manifest = {k: v for k, v in GUARD_MANIFEST.items()
+                if k not in ("full_url", "full_sha256")}
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: manifest)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 80})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
+    with pytest.raises(CBError, match="releases/tag/v2.0"):
+        service.update_apply()
+
+
+def test_apply_uses_the_delta_when_the_install_is_new_enough(
+        service, monkeypatch, tmp_path):
+    """current >= base: the ordinary delta payload is downloaded, not the full,
+    and the log records the normal component diff."""
+    manifest = dict(GUARD_MANIFEST)
+    service._log_path = str(tmp_path / "activity.log")
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: manifest)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 95})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
+
+    seen = {}
+
+    def fake_download(url, dest, progress_cb=None, timeout=30.0,
+                      _opener=None, cancel=None):
+        seen["url"] = url
+        seen["dest"] = dest
+        os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+        with open(dest, "wb") as fh:
+            fh.write(b"zip")
+        return dest
+    monkeypatch.setattr(service_mod.ucore, "download", fake_download)
+    monkeypatch.setattr(service_mod.ucore, "verify_sha256", lambda path, sha: True)
+    monkeypatch.setattr(service_mod.ucore, "extract_zip",
+                        lambda z, d: os.makedirs(d, exist_ok=True) or d)
+    monkeypatch.setattr(service_mod.subprocess, "Popen", lambda *a, **k: None)
+    service.on_update_restart = None
+
+    waiter = _Waiter(service)
+    service.update_apply()
+    waiter.wait()
+
+    assert seen["url"] == manifest["url"]
+    assert os.path.basename(seen["dest"]) == "build-99.zip"
+    assert waiter.of_type("update.restarting") == [{"build": 99}]
+    lines = [ln for ln in _activity_lines(service) if "UPDATED" in ln]
+    assert lines and "Build: 95 -> 99" in lines[0]
+
+
 def test_failed_apply_writes_no_updated_line(service, monkeypatch, tmp_path):
     """The line records an update that is really going to happen: a
     download that fails verification never reaches the handoff."""
@@ -536,6 +716,259 @@ def test_apply_checksum_mismatch_purges_workspace(service, monkeypatch):
     assert not os.path.exists(ws_holder["path"])
 
 
+# ── update.cancel ────────────────────────────────────────────────────────────
+# The dialog's Cancel button. Honoured through download / verify / stage; a
+# cancel is the user's own choice, so it must never surface as the error
+# notification and ok=False that a worker which raises would produce.
+
+def test_cancel_with_no_job_is_a_quiet_no(service):
+    assert service.call("update.cancel") == {"cancelled": False}
+    assert not service._update_cancel.is_set()
+
+
+def test_cancel_during_download_purges_and_says_so(service, monkeypatch):
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: MANIFEST)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 1})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
+
+    # A download that blocks until the test has cancelled, then behaves like
+    # the real one: notices the event between chunks and raises.
+    release = threading.Event()
+    seen = {}
+
+    def slow_download(url, dest, progress_cb=None, timeout=30.0,
+                      _opener=None, cancel=None):
+        seen["cancel"] = cancel
+        assert release.wait(5), "the test never cancelled"
+        if cancel is not None and cancel.is_set():
+            raise service_mod.ucore.UpdateCancelled("cancelled")
+        raise AssertionError("download ran on without a cancel")
+    monkeypatch.setattr(service_mod.ucore, "download", slow_download)
+    monkeypatch.setattr(service_mod.ucore, "verify_sha256",
+                        lambda path, sha: pytest.fail("verify ran after a cancel"))
+
+    ws_holder = {}
+    real_default_ws = service_mod.ucore.default_workspace
+    def tracking_ws():
+        path = real_default_ws()
+        ws_holder["path"] = path
+        return path
+    monkeypatch.setattr(service_mod.ucore, "default_workspace", tracking_ws)
+
+    waiter = _Waiter(service)
+    service.update_apply()
+    assert service.call("update.cancel") == {"cancelled": True}
+    release.set()
+    waiter.wait()
+
+    assert seen["cancel"] is service._update_cancel
+    finished = waiter.of_type("job.finished")
+    assert finished[-1]["ok"] is True
+    assert finished[-1]["error"] is None
+    notes = waiter.of_type("notification")
+    assert [n["level"] for n in notes] == ["info"]
+    assert notes[0]["title"] == "Update"
+    assert notes[0]["body"] == "Update cancelled — still on build 1."
+    assert waiter.of_type("update.cancelled") == [{"build": 1}]
+    assert waiter.of_type("update.restarting") == []
+    assert not os.path.exists(ws_holder["path"])
+    assert not service._job_running(UPDATE_JOB)
+
+
+def test_cancel_after_stage_still_stops_before_the_handoff(service, monkeypatch):
+    """The event is checked after verify and after extract too — a cancel
+    that lands while the zip is being unpacked must not reach Popen."""
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: MANIFEST)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 1})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
+    monkeypatch.setattr(service_mod.ucore, "download", _fake_download(None))
+    monkeypatch.setattr(service_mod.ucore, "verify_sha256", lambda path, sha: True)
+
+    def cancelling_extract(zip_path, dest_dir):
+        os.makedirs(dest_dir, exist_ok=True)
+        service.call("update.cancel")
+        return dest_dir
+    monkeypatch.setattr(service_mod.ucore, "extract_zip", cancelling_extract)
+    monkeypatch.setattr(service_mod.subprocess, "Popen",
+                        lambda *a, **k: pytest.fail("Popen ran after a cancel"))
+    restarted = []
+    service.on_update_restart = lambda: restarted.append(True)
+
+    waiter = _Waiter(service)
+    service.update_apply()
+    waiter.wait()
+
+    assert waiter.of_type("update.restarting") == []
+    assert waiter.of_type("update.cancelled") == [{"build": 1}]
+    assert waiter.of_type("job.finished")[-1]["ok"] is True
+    assert restarted == []
+
+
+def test_cancel_before_the_job_exists_then_again_once_it_does(service, monkeypatch):
+    """The page's Cancel is live while update.apply is still fetching the
+    manifest — before _start_job has claimed the slot. That first cancel
+    finds no job (and must not arm the event: the guard's clear would wipe
+    it anyway); the page asks again once update.apply has returned, and
+    that one lands."""
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 1})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
+    manifest_gate = threading.Event()
+    fetching = threading.Event()
+
+    def slow_fetch(url):
+        fetching.set()
+        assert manifest_gate.wait(5)
+        return MANIFEST
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", slow_fetch)
+    download_gate = threading.Event()
+
+    def slow_download(url, dest, progress_cb=None, timeout=30.0,
+                      _opener=None, cancel=None):
+        assert download_gate.wait(5)
+        if cancel is not None and cancel.is_set():
+            raise service_mod.ucore.UpdateCancelled("cancelled")
+        raise AssertionError("download ran on without a cancel")
+    monkeypatch.setattr(service_mod.ucore, "download", slow_download)
+
+    waiter = _Waiter(service)
+    applier = threading.Thread(target=service.update_apply, daemon=True)
+    applier.start()
+    assert fetching.wait(5)
+    assert service.call("update.cancel") == {"cancelled": False}   # no job yet
+    manifest_gate.set()
+    applier.join(5)
+    assert service._job_running(UPDATE_JOB)
+    assert service.call("update.cancel") == {"cancelled": True}    # the retry
+    download_gate.set()
+    waiter.wait()
+
+    assert waiter.of_type("update.cancelled") == [{"build": 1}]
+    assert waiter.of_type("job.finished")[-1]["ok"] is True
+
+
+def test_a_second_apply_cannot_clear_a_live_jobs_cancel(service, monkeypatch):
+    """The clear lives in _start_job's guard, which never runs while the
+    slot is held: a refused second apply leaves the first one's cancel."""
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: MANIFEST)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 1})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
+    gate = threading.Event()
+
+    def slow_download(url, dest, progress_cb=None, timeout=30.0,
+                      _opener=None, cancel=None):
+        assert gate.wait(5)
+        raise service_mod.ucore.UpdateCancelled("cancelled")
+    monkeypatch.setattr(service_mod.ucore, "download", slow_download)
+
+    waiter = _Waiter(service)
+    service.update_apply()
+    service.call("update.cancel")
+    with pytest.raises(CBError):
+        service.update_apply()
+    assert service._update_cancel.is_set()
+    gate.set()
+    waiter.wait()
+
+
+def test_a_stale_cancel_does_not_carry_into_the_next_apply(service, monkeypatch):
+    """The event is cleared by _start_job's guard for the update job, so a
+    cancel from an earlier run cannot abort the next one before it starts."""
+    monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: MANIFEST)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 1})
+    monkeypatch.setattr(service_mod.ucore, "is_linux", lambda: False)
+    monkeypatch.setattr(service_mod.ucore, "can_self_update", lambda: True)
+    monkeypatch.setattr(service_mod.ucore, "download", _fake_download(None))
+    monkeypatch.setattr(service_mod.ucore, "verify_sha256", lambda path, sha: True)
+    monkeypatch.setattr(service_mod.ucore, "extract_zip",
+                        lambda z, d: os.makedirs(d, exist_ok=True) or d)
+    monkeypatch.setattr(service_mod.subprocess, "Popen", lambda *a, **k: None)
+    service._update_cancel.set()
+
+    waiter = _Waiter(service)
+    service.update_apply()
+    waiter.wait()
+
+    assert waiter.of_type("update.cancelled") == []
+    assert waiter.of_type("update.restarting") == [{"build": 99}]
+
+
+def test_remote_transport_refuses_update_cancel(tmp_path):
+    remote = CrateBuilderService(transport=REMOTE,
+                                 settings=Settings(path=str(tmp_path / "c.json")),
+                                 db_path=str(tmp_path / "db.sqlite"))
+    try:
+        with pytest.raises(CBError):
+            remote.call("update.cancel")
+    finally:
+        remote.close()
+
+
+# ── app.quit ─────────────────────────────────────────────────────────────────
+# The page's close dialog answered "close". Host-only by name: a paired
+# browser must never be able to shut the desktop app down.
+
+def test_app_quit_calls_the_hook_on_local(service):
+    quits = []
+    service.on_quit = lambda: quits.append(True)
+    assert service.call("app.quit", transport=LOCAL) == {"ok": True}
+    assert quits == [True]
+
+
+def test_app_quit_without_a_hook_does_nothing(service):
+    assert service.call("app.quit") == {"ok": False}
+
+
+def test_app_quit_is_refused_over_remote(tmp_path):
+    remote = CrateBuilderService(transport=REMOTE,
+                                 settings=Settings(path=str(tmp_path / "c.json")),
+                                 db_path=str(tmp_path / "db.sqlite"))
+    quits = []
+    remote.on_quit = lambda: quits.append(True)
+    seen = []
+    remote.on_close_seen = lambda: seen.append(True)
+    try:
+        for method in ("app.quit", "app.close_seen"):
+            with pytest.raises(CBError):
+                remote.call(method)
+            with pytest.raises(CBError):
+                remote.call(method, transport=REMOTE)
+    finally:
+        remote.close()
+    assert quits == [] and seen == []
+
+
+def test_app_close_seen_is_the_pages_receipt(service):
+    assert service.call("app.close_seen") == {"ok": True}    # no hook: fine
+    seen = []
+    service.on_close_seen = lambda: seen.append(True)
+    assert service.call("app.close_seen", transport=LOCAL) == {"ok": True}
+    assert seen == [True]
+
+
+def test_page_ready_flips_on_the_first_local_snapshot(service, tmp_path):
+    assert service.page_ready is False
+    service.call("state.snapshot", transport=LOCAL)
+    assert service.page_ready is True
+
+    remote = CrateBuilderService(transport=REMOTE,
+                                 settings=Settings(path=str(tmp_path / "c.json")),
+                                 db_path=str(tmp_path / "db.sqlite"))
+    try:
+        remote.call("state.snapshot", transport=REMOTE)
+        assert remote.page_ready is False
+    finally:
+        remote.close()
+
+
 # ── update.status / update.set_interval ──────────────────────────────────────
 
 def test_set_interval_validates(service):
@@ -617,7 +1050,13 @@ def test_timer_fire_emits_available_only_when_newer(service, monkeypatch):
         "build": 99, "current_build": 1, "notes": "test build", "notice": None,
         "can_self_update": available[0]["can_self_update"],
         "checked_at": available[0]["checked_at"],
+        # MANIFEST carries no `base`, so the guard is inert but the fields
+        # still ride along for the client (installer_url is platform-derived).
+        "base": None, "needs_full": False, "full_available": False,
+        "installer_url": available[0]["installer_url"],
     }]
+    assert available[0]["installer_url"].endswith("/releases/tag/v2.0") or \
+        available[0]["installer_url"].endswith("/releases/tag/linux-v2.0")
     # Re-armed for the next interval.
     assert service._update_timer is not None
 

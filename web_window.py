@@ -31,7 +31,8 @@ import webview
 from cratebuilder import updater_core as ucore
 from cratebuilder import util
 from cratebuilder.service import (BROWSER_INBOX, JOB_FINISHED, LOCAL, CBError,
-                                  CrateBuilderService, app_icon_path)
+                                  CrateBuilderService, app_icon_path,
+                                  version_info)
 from cratebuilder.singleton import (SINGLE_INSTANCE_PORT, acquire_single_instance,
                                     forward_add, listen_for_requests, request_show)
 
@@ -64,6 +65,9 @@ PLACEMENT_SETTLE_DELAY = 0.25
 CLOSE_CONFIRM_TITLE = "Close DJ-CrateBuilder"
 CLOSE_CONFIRM_BODY = ("Are you sure you want to close DJ-CrateBuilder?\n\n"
                       "Auto-downloads won't run while it's closed.")
+# How long the window waits for the page to acknowledge app.close_requested
+# (app.close_seen) before deciding the page is hung and asking natively.
+CLOSE_ACK_TIMEOUT = 2.5
 
 # Windows caps a tray tooltip at 127 characters; keep it well under.
 TRAY_TOOLTIP_LIMIT = 127
@@ -772,14 +776,33 @@ class WindowClose:
     dialog nobody may be at the machine to answer would wedge the update.
     pywebview's destroy() offers no bypass of its own — it just calls the
     form's Close(), which raises `closing` like any other close.
+
+    The question itself is put to the PAGE when one is there to answer: the
+    close is cancelled, `app.close_requested` goes out over the push bridge,
+    and the page draws the dialog in the app's own theme. Its "close" answer
+    comes back as the `app.quit` action, which the window wires to
+    `force_close` — so the same door the update restart uses.
+
+    Two things keep that from wedging the app. The emit never runs on the
+    `closing` thread: that is the WinForms UI thread, and the bridge's
+    evaluate_js blocks on a reply that can only be produced by that same
+    thread — so a helper thread carries the question instead. And the page
+    must acknowledge it (`app.close_seen`, wired to `close_seen`) within
+    CLOSE_ACK_TIMEOUT: a page that never booted (service.page_ready) is not
+    asked at all, and one that is hung or gone is given the native dialog by
+    the helper thread, because a question nobody can hear would leave an app
+    that cannot be quit.
     """
 
-    def __init__(self, window, *parts, ask=None):
+    def __init__(self, window, *parts, ask=None, service=None):
         self._window = window
+        self._service = service
         self._parts = list(parts)
         self._ask = ask or self._confirm
         self._allowed = False
         self._done = False
+        self._seen = threading.Event()
+        self._asker = None
 
     def add(self, part):
         """Append a teardown step wired later than construction — the push
@@ -801,15 +824,62 @@ class WindowClose:
             return False
         self._teardown()
 
+    def close_seen(self):
+        """The page's receipt (service.on_close_seen): its dialog is up, so
+        the helper thread has nothing more to do."""
+        self._seen.set()
+
     def _confirm(self):
-        """Put the monolith's question to the user, over the window's own
-        native dialog. A dialog that cannot be shown answers YES: the failure
-        mode of guessing "no" is an app that can never be closed."""
+        """Put the monolith's question to the user: to the page when it is
+        booted (the answer arrives later, as app.quit), else over the
+        window's own native dialog, here and now."""
+        if self._ask_page():
+            return False
+        return self._confirm_native()
+
+    def _confirm_native(self):
+        """The window's own dialog. One that cannot be shown answers YES:
+        the failure mode of guessing "no" is an app that can never be
+        closed."""
         try:
             return bool(self._window.create_confirmation_dialog(
                 CLOSE_CONFIRM_TITLE, CLOSE_CONFIRM_BODY))
         except Exception:
             return True
+
+    def _ask_page(self):
+        """True once the question has been handed off to a helper thread —
+        which is immediately, so `closing` returns before the bridge needs
+        this thread back. False when there is no page to ask: no service
+        wired, or one whose page never booted. A question already in flight
+        is not asked twice; the page refocuses its own dialog."""
+        service = self._service
+        if service is None or not getattr(service, "page_ready", False):
+            return False
+        if self._asker is not None and self._asker.is_alive():
+            return True
+        self._seen.clear()
+        self._asker = threading.Thread(
+            target=self._ask_page_and_wait, args=(service,), daemon=True)
+        self._asker.start()
+        return True
+
+    def _ask_page_and_wait(self, service):
+        """Off the UI thread: emit, then wait for the page's receipt. No
+        receipt inside CLOSE_ACK_TIMEOUT means a page that is hung or gone
+        (the bus and the bridge swallow every failure, so nothing else can
+        tell), and the native dialog asks instead, with YES going through
+        force_close. The emit gets a thread of its own because the bridge's
+        evaluate_js blocks until the page runs the script — a wedged
+        renderer would hold this waiter forever and, with it, every later
+        close. The MessageBox runs on this thread and is not owned by the
+        app window, so it may open beside rather than over it."""
+        threading.Thread(target=service.emit,
+                         args=("app.close_requested", {}), daemon=True).start()
+        if self._seen.wait(CLOSE_ACK_TIMEOUT):
+            return
+        if self._confirm_native():
+            self.force_close()
 
     def _teardown(self):
         """Run each step once, in order, none allowed to stop the others —
@@ -1172,9 +1242,16 @@ def prepare_runtime_workspace():
     path deliberately leaves it for the updater; see docs/specs/
     2026-08-29-webui-local-updater-design.md), then normalises the working
     directory — a Run-key startup launch begins in C:\\Windows\\System32,
-    which poisons CPython's last-resort temp-dir fallback.
+    which poisons CPython's last-resort temp-dir fallback. The packaged build
+    also retires duplicate dist-info folders an older updater left behind,
+    so the Update page reports the package version actually installed.
     """
     ucore.purge_dir(ucore.default_workspace())
+    if ucore.is_frozen():
+        try:
+            ucore.retire_duplicate_dist_infos(ucore.install_dir())
+        except Exception:                                # never block the window
+            pass
     try:
         os.chdir(util.runtime_data_dir())
     except OSError:
@@ -1226,8 +1303,12 @@ def main():
     frame = {"width": WINDOW_SIZE[0], "height": WINDOW_SIZE[1],
              "min_size": MIN_SIZE, "hidden": start_minimized}
     frame.update(window_placement_kwargs(service))
+    # The frame title carries the version; WINDOW_TITLE stays the bare app
+    # name for the tray, whose summary and notifications are not version stamps.
+    _ver = version_info().get("version")
+    window_title = f"{WINDOW_TITLE} v{_ver}" if _ver else WINDOW_TITLE
     window = webview.create_window(
-        WINDOW_TITLE,
+        window_title,
         index + screen,
         js_api=JsApi(service),
         **frame,
@@ -1242,8 +1323,14 @@ def main():
     # write to make; the guide window goes first so the loop has no second
     # window left to wait on.
     closer = WindowClose(window, howto.stop, placement.stop, service.close,
-                         tray.stop)
+                         tray.stop, service=service)
     window.events.closing += closer.on_closing
+    # The page's close dialog answered "close": the same no-questions door
+    # the update restart uses below, because the question has already been
+    # asked — in the page, in the app's own theme. close_seen is the page's
+    # receipt that the question arrived at all (see WindowClose).
+    service.on_quit = closer.force_close
+    service.on_close_seen = closer.close_seen
     # The update.apply worker calls this from its own (non-UI) thread once the
     # updater process has been handed off. It must not be met by the close
     # confirmation — updater.exe is already waiting (up to 30s) on this PID —

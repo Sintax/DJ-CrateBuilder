@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# DJ-CrateBuilder v2.0 — Linux Uninstaller
+# DJ-CrateBuilder v2.1 — Linux Uninstaller
 # ============================================================================
 
 INSTALL_DIR="$HOME/.local/share/DJ-CrateBuilder"

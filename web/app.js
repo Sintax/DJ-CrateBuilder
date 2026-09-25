@@ -646,6 +646,32 @@
     return size;
   }
 
+  /* Colour theme, kept per device like the other two. Red is the design's
+     own colour, so it clears the mark: every sheet was painted for it. Any
+     other accent sets the mark for its theme-<name>.css, which re-declares
+     only the accent tokens — the status reds (errors, failed rows) keep their
+     colour so a failure still looks like one whichever accent the page wears.
+     index.html's and howto.html's pre-paint lists must name the same set. */
+  const ACCENT_KEY = 'cb_accent';
+  const ACCENTS = ['red', 'green', 'pink'];
+
+  function storedAccent() {
+    try {
+      const raw = localStorage.getItem(ACCENT_KEY);
+      return ACCENTS.includes(raw) ? raw : 'red';
+    } catch (_) { return 'red'; }
+  }
+
+  function applyAccent(name) {
+    const accent = ACCENTS.includes(name) ? name : 'red';
+    if (accent === 'red') document.documentElement.removeAttribute('data-accent');
+    else document.documentElement.setAttribute('data-accent', accent);
+    try {
+      localStorage.setItem(ACCENT_KEY, accent);
+    } catch (_) { /* storage refused — the choice lasts this page load */ }
+    return accent;
+  }
+
   /* Under that zoom a rectangle, a pointer position and innerWidth answer in
      viewport pixels, while style.left and scrollTop are written in the page's
      own, larger pixels. Engines with the standard zoom expose the factor;
@@ -869,6 +895,22 @@
       meta.appendChild(link);
     }
     body.append(text, meta);
+    if (!n.read) {
+      const foot = document.createElement('div');
+      foot.className = 'cb-row';
+      foot.style.marginTop = '4px';
+      const read = document.createElement('button');
+      read.className = 'cb-notif__link';
+      read.textContent = 'Mark as read';
+      read.addEventListener('click', () => {
+        n.read = true;
+        saveNotes();
+        renderBell();
+        renderNotifications();
+      });
+      foot.appendChild(read);
+      body.appendChild(foot);
+    }
     row.append(dot, body);
     return row;
   }
@@ -907,13 +949,13 @@
     return el;
   }
 
-  /* Recent activity is the notification feed, three deep — the same entries
+  /* Recent activity is the notification feed, five deep — the same entries
      the bell holds, which is what the design shows in both places. */
   function renderOverviewRecent() {
     const box = $('#ov-recent');
     if (!box) return;
     box.innerHTML = '';
-    const recent = notes.items.slice(0, 3);
+    const recent = notes.items.slice(0, 5);
     if (!recent.length) {
       box.appendChild(ovEmpty('Nothing yet — finished scans, batches and ' +
                               'errors land here.'));
@@ -1084,7 +1126,7 @@
     $('#ov-new').textContent = num(pending);
     $('#ov-new-sub').textContent =
       `new tracks across ${num(channels)} channel${channels === 1 ? '' : 's'}`;
-    $('#ov-dl-all').textContent = `⬇ Download All New (${num(pending)})`;
+    $('#ov-dl-all').textContent = `Download All New (${num(pending)})`;
     gateWrite($('#ov-dl-all'),
       wl.running ? WL_BUSY_REASON : (pending ? '' : WL_NOTHING_PENDING),
       'wl.download_all_new');
@@ -1197,7 +1239,8 @@
 
   function updatePauseLabel() {
     const b = $('#dl-pause');
-    b.textContent = dl.paused ? '▶ Resume' : '⏸ Pause';
+    b.textContent = dl.paused ? 'Resume' : 'Pause';
+    b.setAttribute('data-ic', dl.paused ? 'play' : 'pause');
   }
 
   /* A Watch List run has no pause — the reason the Overview's card gives, said
@@ -1360,8 +1403,9 @@
     gateWrite($('#ov-pause'),
       !job ? OV_IDLE_REASON : (job.pausable ? '' : job.pauseReason),
       'main.pause_batch');
-    $('#ov-pause').textContent = dl.paused && job && job.pausable
-      ? '▶ Resume' : '⏸ Pause';
+    const ovPaused = dl.paused && job && job.pausable;
+    $('#ov-pause').textContent = ovPaused ? 'Resume' : 'Pause';
+    $('#ov-pause').setAttribute('data-ic', ovPaused ? 'play' : 'pause');
     gateWrite($('#ov-cancel'), job ? '' : OV_IDLE_REASON,
       job && job.key === 'maintenance' ? 'settings.maintenance_cancel'
                                        : 'main.cancel_batch');
@@ -1372,7 +1416,8 @@
   function skipBtn(row, warn) {
     const b = document.createElement('button');
     b.className = 'cb-btn cb-btn--sm cb-icon ' + (warn ? 'cb-btn--warn' : 'cb-btn--quiet');
-    b.textContent = warn ? '⏭ Skip' : '⏭';
+    b.textContent = warn ? 'Skip' : '';
+    b.setAttribute('data-ic', 'skip');
     /* Three different things to say, and the registry has all three: a row
        already marked, a row waiting its turn in a running batch (`warn` is
        false only there and at rest), and the row being downloaded right now,
@@ -1402,7 +1447,8 @@
       wlGate(b, 'Skipped — moving to the next channel.', 'wl.card_cancel');
       return b;
     }
-    b.textContent = '⏭ Skip';
+    b.textContent = 'Skip';
+    b.setAttribute('data-ic', 'skip');
     wlGate(b, writeBlocked(), 'wl.card_cancel');
     b.addEventListener('click', async () => {
       wl.skipping[row.id] = true;
@@ -1479,6 +1525,7 @@
       host.appendChild(el);
     });
     bindTips(host);
+    scrollBoxToActive(host, '.cb-qrow.is-active');
     renderQueueLog();
   }
 
@@ -1555,13 +1602,14 @@
 
       if (!running) {
         el.appendChild(skipBtn(row, false));
-        [['▲', 'main.row_up', () => call('batch.move', { id: row.id, delta: -1 })],
-         ['▼', 'main.row_down', () => call('batch.move', { id: row.id, delta: 1 })],
-         ['✕', 'main.row_remove', () => call('batch.remove', { id: row.id })],
-        ].forEach(([label, ttKey, action]) => {
+        [['▲', 'main.row_up', () => call('batch.move', { id: row.id, delta: -1 }), null],
+         ['▼', 'main.row_down', () => call('batch.move', { id: row.id, delta: 1 }), null],
+         ['', 'main.row_remove', () => call('batch.remove', { id: row.id }), 'close'],
+        ].forEach(([label, ttKey, action, icon]) => {
           const b = document.createElement('button');
           b.className = 'cb-btn cb-btn--quiet cb-btn--sm cb-icon';
           b.textContent = label;
+          if (icon) b.setAttribute('data-ic', icon);
           b.setAttribute('data-tt', ttKey);
           b.addEventListener('click', async () => {
             await action();
@@ -1578,6 +1626,7 @@
       host.appendChild(el);
     });
     bindTips(host);
+    scrollBoxToActive(host, '.cb-qrow.is-active');
     renderQueueLog();
   }
 
@@ -1605,18 +1654,19 @@
     return line;
   }
 
-  /* The log is boxed at its idle height (app.css) so the card cannot grow with
-     the queue — which means the running line can sit below the fold, and the
-     box has to follow it. Scrolled by hand rather than with scrollIntoView,
-     which would scroll the screen behind it too, and measured off the two
-     rectangles rather than offsetTop, which answers relative to whichever
-     ancestor happens to be positioned. */
-  function scrollQueueLogToActive(log) {
-    const active = log.querySelector('.cb-log__now');
+  /* The queue log and the batch rows are both boxed at their idle height
+     (app.css) so neither card can grow with the queue — which means the
+     running line can sit below the fold, and the box has to follow it.
+     Scrolled by hand rather than with scrollIntoView, which would scroll the
+     screen behind it too, and measured off the two rectangles rather than
+     offsetTop, which answers relative to whichever ancestor happens to be
+     positioned. */
+  function scrollBoxToActive(box, selector) {
+    const active = box.querySelector(selector);
     if (!active) return;
-    const box = log.getBoundingClientRect();
+    const outer = box.getBoundingClientRect();
     const line = active.getBoundingClientRect();
-    log.scrollTop += ((line.top - box.top) - (box.height - line.height) / 2) / pageZoom();
+    box.scrollTop += ((line.top - outer.top) - (outer.height - line.height) / 2) / pageZoom();
   }
 
   /* The kept run's title line: which run, when it ended, and what it came to.
@@ -1682,7 +1732,7 @@
       if (!channels.length) log.textContent = 'Starting the Watch List run…';
       meta.textContent = `${channels.length} channel` +
         `${channels.length === 1 ? '' : 's'} · ${settled} processed`;
-      scrollQueueLogToActive(log);
+      scrollBoxToActive(log, '.cb-log__now');
       return;
     }
 
@@ -1711,7 +1761,7 @@
         DL_MARK));
     });
     meta.textContent = `${rows.length} track${rows.length === 1 ? '' : 's'} · ${processed} processed`;
-    scrollQueueLogToActive(log);
+    scrollBoxToActive(log, '.cb-log__now');
   }
 
   /* Every write control funnels through here so a read-only session (or one
@@ -1796,10 +1846,14 @@
   }
 
   /* opts: {title, tag:{text,cls}, width, body(bodyEl, api), foot(footEl, api),
-            onClose}. `api` is {close, error(msg), busy(flag), body, foot}. */
+            onClose, locked}. `api` is {close, error(msg), busy(flag), body, foot}.
+     `locked` drops the three casual exits (X, Escape, the dim) for a dialog
+     whose only honest ways out are its own buttons — the update download,
+     where "closed" would otherwise look like "stopped". */
   function openModal(opts) {
     closeModal();
     const restore = document.activeElement;
+    const locked = !!opts.locked;
 
     const dim = document.createElement('div');
     dim.className = 'cb-dim';
@@ -1814,16 +1868,18 @@
     const title = document.createElement('span');
     title.className = 'cb-mtitle';
     title.textContent = opts.title || '';
+    if (opts.icon) title.setAttribute('data-ic', opts.icon);
     modal.setAttribute('aria-label', opts.title || 'Dialog');
     head.appendChild(title);
     if (opts.tag) head.appendChild(tagNode(opts.tag.text, opts.tag.cls));
     const closeBtn = document.createElement('button');
     closeBtn.className = 'cb-btn cb-btn--quiet cb-btn--sm';
     closeBtn.style.cssText = 'margin-left:auto;padding:3px 8px';
-    closeBtn.textContent = '✕';
+    closeBtn.textContent = '';
+    closeBtn.setAttribute('data-ic', 'close');
     if (opts.closeTtKey) closeBtn.setAttribute('data-tt', opts.closeTtKey);
     closeBtn.addEventListener('click', closeModal);
-    head.appendChild(closeBtn);
+    if (!locked) head.appendChild(closeBtn);
 
     const body = document.createElement('div');
     body.className = 'cb-mbody';
@@ -1850,7 +1906,7 @@
     };
 
     function onKey(e) {
-      if (e.key === 'Escape') { e.stopPropagation(); closeModal(); return; }
+      if (e.key === 'Escape') { e.stopPropagation(); if (!locked) closeModal(); return; }
       if (e.key !== 'Tab') return;
       const items = modalFocusables(modal);
       if (!items.length) return;
@@ -1860,7 +1916,7 @@
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
       else if (!modal.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
     }
-    dim.addEventListener('mousedown', (e) => { if (e.target === dim) closeModal(); });
+    dim.addEventListener('mousedown', (e) => { if (e.target === dim && !locked) closeModal(); });
     document.addEventListener('keydown', onKey, true);
 
     openDialog = { dim, onKey, restore, onClose: opts.onClose };
@@ -1874,10 +1930,11 @@
     return api;
   }
 
-  function modalButton(label, cls, onClick, ttKey) {
+  function modalButton(label, cls, onClick, ttKey, icon) {
     const b = document.createElement('button');
     b.className = ('cb-btn cb-btn--sm ' + (cls || '')).trim();
     b.textContent = label;
+    if (icon) b.setAttribute('data-ic', icon);
     if (ttKey) b.setAttribute('data-tt', ttKey);
     b.addEventListener('click', onClick);
     return b;
@@ -1964,7 +2021,7 @@
   /* Both Download-All-New buttons — the Watch List's own and the Overview's —
      close for the same reason, so they say it in the same words. */
   const WL_NOTHING_PENDING = 'No new tracks pending across any channels. Run ' +
-    '🔍 Scan for new first.';
+    'Scan for new first.';
   /* Cancellation is immediate: a channel listing runs in a child process the
      cancel kills mid-flight, and a download aborts at its next chunk. */
   const WL_CANCEL_ALL_NOTE = 'Stopping the Watch List run now.';
@@ -2017,8 +2074,8 @@
   }
   function wlBusyReason(row) {
     return row.status === 'downloading'
-      ? 'This channel is downloading — press ✕ Cancel on the card to stop it first.'
-      : 'This channel is being scanned — press ✕ Cancel on the card to stop it first.';
+      ? 'This channel is downloading — press Cancel on the card to stop it first.'
+      : 'This channel is being scanned — press Cancel on the card to stop it first.';
   }
   function fmtDate(ts) {
     const secs = Number(ts);
@@ -2056,10 +2113,11 @@
     setDisabled(el, !!reason, { reason: tipPlus(ttKey, reason || ''), ttKey });
   }
 
-  function wlActionButton(label, ttKey, cls, onClick, disabledReason) {
+  function wlActionButton(label, ttKey, cls, onClick, disabledReason, icon) {
     const b = document.createElement('button');
     b.className = ('cb-btn cb-btn--sm ' + (cls || '')).trim();
     b.textContent = label;
+    if (icon) b.setAttribute('data-ic', icon);
     wlGate(b, disabledReason, ttKey);
     if (!disabledReason) b.addEventListener('click', onClick);
     return b;
@@ -2153,34 +2211,34 @@
     actions.className = 'cb-wlcard__actions';
     const why = writeBlocked() || (busy ? wlBusyReason(row) : '');
     actions.append(
-      wlActionButton('🔍 Scan', 'wl.card_scan', 'cb-btn--quiet',
+      wlActionButton('Scan', 'wl.card_scan', 'cb-btn--quiet',
         () => wlRun('watchlist.scan', { channel_id: row.id }),
         why || (dl.running ? TOOLTIPS['main.scan_batch_conflict'] : '') ||
-          (wl.running ? WL_BUSY_REASON : '')),
-      wlActionButton('⚡ Force Download', 'wl.card_force', 'cb-btn--quiet',
+          (wl.running ? WL_BUSY_REASON : ''), 'search'),
+      wlActionButton('Force Download', 'wl.card_force', 'cb-btn--quiet',
         () => wlRun('watchlist.force_download', { channel_id: row.id }),
-        why || (wl.running ? WL_BUSY_REASON : '')),
-      wlActionButton(`⬇ Download New (${num(row.new_count)})`, 'wl.card_download_new', '',
+        why || (wl.running ? WL_BUSY_REASON : ''), 'bolt'),
+      wlActionButton(`Download New (${num(row.new_count)})`, 'wl.card_download_new', '',
         () => wlRun('watchlist.download_new', { channel_id: row.id }),
         why || (row.new_count ? '' :
-          'Nothing pending for this channel — run 🔍 Scan first.')));
+          'Nothing pending for this channel — run Scan first.'), 'download'));
     if (row.unresolved) {
-      actions.appendChild(wlActionButton('🛠 Fix Link', 'wl.card_fix_link', 'cb-btn--fix',
-        () => openFixLink(row), why));
+      actions.appendChild(wlActionButton('Fix Link', 'wl.card_fix_link', 'cb-btn--fix',
+        () => openFixLink(row), why, 'wrench'));
     }
     actions.append(
-      wlActionButton('✏ Edit', 'wl.card_edit', 'cb-btn--quiet',
-        () => openEditChannel(row), why),
+      wlActionButton('Edit', 'wl.card_edit', 'cb-btn--quiet',
+        () => openEditChannel(row), why, 'edit'),
       busy
-        ? wlActionButton('✕ Cancel', 'wl.card_cancel', 'cb-btn--warn',
+        ? wlActionButton('Cancel', 'wl.card_cancel', 'cb-btn--warn',
             async () => {
               try {
                 await call('watchlist.cancel', { channel_id: row.id });
                 toast(WL_CANCEL_ONE_NOTE);
               } catch (_) { /* call() already toasted the reason */ }
-            }, writeBlocked())
-        : wlActionButton('✕ Remove', 'wl.card_remove', 'cb-btn--quiet',
-            () => openRemoveChannel(row), writeBlocked()));
+            }, writeBlocked(), 'close')
+        : wlActionButton('Remove', 'wl.card_remove', 'cb-btn--quiet',
+            () => openRemoveChannel(row), writeBlocked(), 'close'));
     card.appendChild(actions);
     return card;
   }
@@ -2246,7 +2304,7 @@
       blocked || (wl.running ? '' : 'No Watch List scan or download is running.'),
       'wl.cancel_all');
     $('#wl-cancel').className = 'cb-btn ' + (wl.running ? 'cb-btn--warn' : 'cb-btn--quiet');
-    $('#wl-dl-all').textContent = `⬇ Download All New (${num(pending)})`;
+    $('#wl-dl-all').textContent = `Download All New (${num(pending)})`;
     /* The host builds this string with the monolith's own next_run_label, so
        the wording lives in one place rather than being re-derived here. */
     const next = $('#wl-next-dl');
@@ -2277,6 +2335,19 @@
     }
     wl.cards.forEach((row) => host.appendChild(wlCardNode(row)));
     bindTips(host);
+    const scanning = wl.cards.find((row) => row.status === 'scanning');
+    if (scanning) wlKeepInView(host.querySelector(`[data-cid="${scanning.id}"]`));
+  }
+
+  /* Scan for new walks the list top to bottom, one channel at a time; with
+     more channels than fit in the strip the card being scanned would slide
+     out of sight. The strip follows it — only on the hop to a new channel,
+     never on the download frames that repaint a card several times a
+     second, or the user could not scroll away from a long download. */
+  function wlKeepInView(node) {
+    if (node && typeof node.scrollIntoView === 'function') {
+      node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
   }
 
   /* A watchlist.card event replaces exactly one card. Rebuilding the whole
@@ -2286,6 +2357,7 @@
     if (!card || card.id == null) return;
     const idx = wl.cards.findIndex((c) => c.id === card.id);
     if (idx === -1) { wl.cards.push(card); renderWatchlist(); return; }
+    const wasScanning = wl.cards[idx].status === 'scanning';
     wl.cards[idx] = card;
     const host = $('#wl-cards');
     const old = host.querySelector(`[data-cid="${card.id}"]`);
@@ -2293,6 +2365,7 @@
     const node = wlCardNode(card);
     host.replaceChild(node, old);
     bindTips(node);
+    if (card.status === 'scanning' && !wasScanning) wlKeepInView(node);
     renderWatchlistToolbar();
     renderOverviewWatch();
     renderOverviewAttention();
@@ -2658,7 +2731,7 @@
     const local = !!(state && state.host && state.host.transport === 'local');
     const count = browserInboxCount();
     btn.hidden = !count || !local;
-    btn.textContent = `🌐 Browser Inbox (${num(count)})`;
+    btn.textContent = `Browser Inbox (${num(count)})`;
   }
 
   function openBrowserInbox() {
@@ -2710,7 +2783,8 @@
       });
     };
     openModal({
-      title: '🌐 Browser Inbox',
+      title: 'Browser Inbox',
+      icon: 'globe',
       width: 640,
       body(body) {
         body.appendChild(modalNote(
@@ -2807,7 +2881,8 @@
         tools.style.cssText = 'gap:8px;flex-wrap:wrap';
         folderBtn = document.createElement('button');
         folderBtn.className = 'cb-btn cb-btn--quiet cb-btn--sm';
-        folderBtn.textContent = local ? '📂 Open Folder' : '📋 Copy folder path';
+        folderBtn.textContent = local ? 'Open Folder' : 'Copy folder path';
+        folderBtn.setAttribute('data-ic', local ? 'folder' : 'clipboard');
         setDisabled(folderBtn, true, {
           reason: (TOOLTIPS['wl.card_open_folder'] ? TOOLTIPS['wl.card_open_folder'] + '\n\n' : '') +
             'Looking the folder up on the host…',
@@ -2815,23 +2890,24 @@
 
         const openLink = document.createElement('button');
         openLink.className = 'cb-btn cb-btn--quiet cb-btn--sm';
-        openLink.textContent = '🌐 Open Link';
+        openLink.textContent = 'Open Link';
+        openLink.setAttribute('data-ic', 'globe');
         const safe = dbSafeLink(currentUrl);
         if (safe) {
           openLink.addEventListener('click', () => window.open(safe, '_blank', 'noopener'));
         } else {
           setDisabled(openLink, true, {
             reason: currentUrl ? 'Only http and https links can be opened.'
-                               : 'This channel has no link yet — use 🛠 Smart-Edit Link.',
+                               : 'This channel has no link yet — use Smart-Edit Link.',
           });
         }
 
-        const smart = modalButton('🛠 Smart-Edit Link', 'cb-btn--quiet', () => {
+        const smart = modalButton('Smart-Edit Link', 'cb-btn--quiet', () => {
           /* Closes this dialog before Fix Link opens — the design's rule that
              two modal grabs never fight over focus. */
           closeModal();
           openFixLink(row);
-        }, 'wl.card_smart_edit');
+        }, 'wl.card_smart_edit', 'wrench');
         tools.append(folderBtn, openLink, smart);
         body.appendChild(tools);
 
@@ -3021,8 +3097,9 @@
     let advance = false;
 
     const api = openModal({
-      title: `🛠 Fix Link — ${row.name}` +
+      title: `Fix Link — ${row.name}` +
              (opts.queue ? ` (${opts.queue.index} of ${opts.queue.total})` : ''),
+      icon: 'wrench',
       width: 608,
       tag: { text: 'Unresolved', cls: 'cb-tag--attn' },
       /* Deferred a tick: this fires from inside closeModal, and the next
@@ -4622,7 +4699,8 @@
     const ids = dbCheckedChannels();
     if (!ids.length) { toast('Tick at least one channel first.', true); return; }
     openModal({
-      title: '🧹 Folders Cleanup ‹Smart›',
+      title: 'Folders Cleanup ‹Smart›',
+      icon: 'broom',
       width: 520,
       body(body) {
         body.appendChild(modalNote(TOOLTIPS['db.folders_cleanup'] || ''));
@@ -4661,7 +4739,8 @@
   function cleanupOpenDialog() {
     const refs = {};
     openModal({
-      title: '🧹 Folders Cleanup ‹Smart›',
+      title: 'Folders Cleanup ‹Smart›',
+      icon: 'broom',
       tag: { text: 'Running', cls: 'cb-tag--fill' },
       width: 760,
       onClose() { cl.view = null; },
@@ -5163,8 +5242,9 @@
     if (howto) {
       const browser = val('cookies_browser') || 'Firefox';
       howto.textContent = UNREADABLE_BROWSERS[browser]
-        ? `📖 How-To: Using ${browser} Cookies via a Cookie File`
-        : `📖 How-To: Setting Up a Dedicated ${browser} Profile`;
+        ? `How-To: Using ${browser} Cookies via a Cookie File`
+        : `How-To: Setting Up a Dedicated ${browser} Profile`;
+      howto.setAttribute('data-ic', 'book');
       setDisabled(howto, !cookiesOn, cookiesOn
         ? { ttKey: 'settings.firefox_profile_howto' } : { reason: cookiesReason });
     }
@@ -5298,8 +5378,9 @@
      whether the run can skip an item. */
   const MAINT_TASKS = {
     'db.rebuild': {
-      label: '🔄 Rebuild Database from Files',
-      title: '🔄 Rebuild Database',
+      label: 'Rebuild Database from Files',
+      title: 'Rebuild Database',
+      icon: 'refresh',
       tt: 'settings.rebuild_db',
       run: 'Rebuild Database',
       unit: 'channel folder',
@@ -5314,8 +5395,9 @@
       ],
     },
     'db.dedupe': {
-      label: '🧹 Remove Duplicates',
-      title: '🧹 Remove Duplicates',
+      label: 'Remove Duplicates',
+      title: 'Remove Duplicates',
+      icon: 'broom',
       tt: 'settings.dedupe_db',
       run: 'Remove Duplicates',
       unit: 'step',
@@ -5331,8 +5413,9 @@
       ],
     },
     'db.repair_tags': {
-      label: '🏷 Repair Track Tags',
-      title: '🏷 Repair Track Tags',
+      label: 'Repair Track Tags',
+      title: 'Repair Track Tags',
+      icon: 'tag',
       tt: 'settings.repair_tags',
       run: 'Repair Tags',
       unit: 'track',
@@ -5350,8 +5433,9 @@
       ],
     },
     'db.fetch_artwork': {
-      label: '🖼 Fetch Missing Artwork',
-      title: '🖼 Fetch Missing Artwork',
+      label: 'Fetch Missing Artwork',
+      title: 'Fetch Missing Artwork',
+      icon: 'image',
       tt: 'settings.fetch_artwork',
       run: 'Fetch Artwork',
       unit: 'track',
@@ -5391,6 +5475,7 @@
     } catch (_) { return; }   // call() already toasted the reason
     openModal({
       title: spec.title,
+      icon: spec.icon,
       width: 520,
       body(body) {
         spec.confirm(preview).forEach((line) => body.appendChild(modalNote(line)));
@@ -5435,6 +5520,7 @@
     const refs = {};
     openModal({
       title: spec.title,
+      icon: spec.icon,
       tag: { text: 'Running', cls: 'cb-tag--fill' },
       width: 520,
       onClose() { mt.view = null; },
@@ -5660,13 +5746,15 @@
 
       const activityBtn = document.createElement('button');
       activityBtn.className = 'cb-btn cb-btn--quiet cb-btn--sm';
-      activityBtn.textContent = '📋 Activity Log';
+      activityBtn.textContent = 'Activity Log';
+      activityBtn.setAttribute('data-ic', 'clipboard');
       activityBtn.setAttribute('data-tt', 'settings.activity_log');
       activityBtn.addEventListener('click', () => show('activity-log'));
 
       const debugBtn = document.createElement('button');
       debugBtn.className = 'cb-btn cb-btn--quiet cb-btn--sm';
-      debugBtn.textContent = '🔍 Debug Log';
+      debugBtn.textContent = 'Debug Log';
+      debugBtn.setAttribute('data-ic', 'search');
       debugBtn.setAttribute('data-tt', 'settings.debug_log');
       debugBtn.addEventListener('click', () => show('debug-log'));
 
@@ -5689,7 +5777,8 @@
       row.style.cssText = 'gap:8px;flex-wrap:wrap';
       const openDb = document.createElement('button');
       openDb.className = 'cb-btn cb-btn--sm';
-      openDb.textContent = '🗂 Open Database';
+      openDb.textContent = 'Open Database';
+      openDb.setAttribute('data-ic', 'database');
       openDb.addEventListener('click', () => show('database'));
       row.appendChild(readOnlyOk(openDb));
       Object.keys(MAINT_TASKS).forEach((task) => {
@@ -5697,6 +5786,7 @@
         const b = document.createElement('button');
         b.className = 'cb-btn cb-btn--warn cb-btn--sm';
         b.textContent = spec.label;
+        b.setAttribute('data-ic', spec.icon);
         b.addEventListener('click', () => maintConfirm(task));
         setDisabled(b, mt.running,
           { reason: MAINT_BUSY_REASON, ttKey: spec.tt });
@@ -5708,7 +5798,8 @@
       if (mt.running) {
         const back = document.createElement('button');
         back.className = 'cb-btn cb-btn--sm';
-        back.textContent = '⏳ Show progress';
+        back.textContent = 'Show progress';
+        back.setAttribute('data-ic', 'clock');
         back.addEventListener('click', () => {
           if (mt.task === CLEANUP_TASK) { if (!cl.view) cleanupOpenDialog(); return; }
           if (!mt.view && MAINT_TASKS[mt.task]) maintOpenProgress(mt.task);
@@ -5941,7 +6032,8 @@
       page = await call('cookies.howto', { browser });
     } catch (_) { return; }          // call() already toasted the reason
     openModal({
-      title: `📖 ${page.title}`,
+      title: page.title,
+      icon: 'book',
       width: 720,
       body(body) {
         const box = document.createElement('div');
@@ -6064,7 +6156,8 @@
     }
     const refs = {};
     openModal({
-      title: '🔐 Looks like a sign-in problem',
+      title: 'Looks like a sign-in problem',
+      icon: 'lock',
       width: 520,
       body(body) {
         const a = document.createElement('p'); a.textContent = lead;
@@ -6108,6 +6201,11 @@
     'Remote Access': 'remote.access_section',
   };
 
+  /* The column balancer would otherwise decide the split by height, so a long
+     save path or a larger text size could push Download Behavior across to the
+     right; pinning the right column's first card keeps it bottom-left. */
+  const RIGHT_COLUMN_FIRST = 'Browser Cookies';
+
   /* The Appearance section: the one Settings control that writes to this
      device rather than to the host (see applyTheme). renderSettings seeds
      the section ahead of the contract's, with no keys, and this fills its
@@ -6149,6 +6247,28 @@
     paint(storedTheme());
     row.append(lab, seg);
     card.appendChild(row);
+
+    const accentRow = document.createElement('div');
+    accentRow.className = 'cb-set-row';
+    const accentLab = document.createElement('span');
+    accentLab.className = 'cb-lab';
+    accentLab.textContent = 'Colour theme';
+    const accentSel = document.createElement('select');
+    accentSel.className = 'cb-sel';
+    accentSel.id = 'settings-accent';
+    accentSel.setAttribute('aria-label', 'Colour theme');
+    [['red', 'Red'], ['green', 'Green'], ['pink', 'Pink']].forEach(([name, label]) => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = label;
+      accentSel.appendChild(opt);
+    });
+    accentSel.value = storedAccent();
+    accentSel.addEventListener('change', () => {
+      accentSel.value = applyAccent(accentSel.value);
+    });
+    accentRow.append(accentLab, readOnlyOk(accentSel));
+    card.appendChild(accentRow);
 
     const sizeRow = document.createElement('div');
     sizeRow.className = 'cb-set-row';
@@ -6248,6 +6368,7 @@
         rows += 1;
       }
       if (rows > 6 || sec.name === 'Remote Access') card.classList.add('cb-span-2');
+      if (sec.name === RIGHT_COLUMN_FIRST) card.classList.add('cb-set-card--col2');
 
       if (SECTION_EXTRAS[sec.name]) SECTION_EXTRAS[sec.name](card);
       if (sec.name === 'Remote Access') {
@@ -6319,10 +6440,11 @@
     await dbCopyText(url, 'link — open it in this browser');
   }
 
-  function aboutLinkButton(label, url, ttKey) {
+  function aboutLinkButton(label, url, ttKey, icon, iconAt) {
     const b = document.createElement('button');
     b.className = 'cb-btn cb-btn--quiet cb-btn--sm';
     b.textContent = label;
+    if (icon) b.setAttribute(iconAt === 'end' ? 'data-ic-end' : 'data-ic', icon);
     if (ttKey) b.setAttribute('data-tt', ttKey);
     b.addEventListener('click', () => openUrl(url));
     return b;
@@ -6387,7 +6509,8 @@
       setDisabled(refs.go, !!reason, { reason });
     };
     const api = openModal({
-      title: '🐞 Report a Bug',
+      title: 'Report a Bug',
+      icon: 'bug',
       width: 720,
       body(body) {
         refs.title = document.createElement('input');
@@ -6466,22 +6589,11 @@
     avatar.width = 44;
     avatar.height = 44;
     avatar.style.cssText = 'border-radius:6px;display:block;flex:none';
-    const who = document.createElement('div');
-    who.style.cssText = 'display:flex;flex-direction:column;gap:3px;padding-top:3px';
     const person = document.createElement('span');
     person.className = 'cb-about-val';
+    person.style.cssText = 'padding-top:3px';
     person.textContent = info.created_by || '';
-    const mail = document.createElement('a');
-    mail.href = '#about';
-    mail.style.cssText = 'font-size:12.5px;text-decoration:underline';
-    mail.textContent = info.contact_email || '';
-    mail.setAttribute('data-tt', 'about.mail');
-    mail.addEventListener('click', (e) => {
-      e.preventDefault();
-      openUrl(`mailto:${info.contact_email || ''}`);
-    });
-    who.append(person, mail);
-    author.append(avatar, who);
+    author.append(avatar, person);
     host.appendChild(aboutRow('Created by', author));
 
     const built = document.createElement('span');
@@ -6499,15 +6611,16 @@
     const report = document.createElement('button');
     report.id = 'about-report';
     report.className = 'cb-btn';
-    report.textContent = '🐞 Report a Bug';
+    report.textContent = 'Report a Bug';
+    report.setAttribute('data-ic', 'bug');
     const local = state && state.host && state.host.transport === 'local';
     setDisabled(report, !local, {
       reason: tipPlus('about.report', ABOUT_REPORT_LOCAL_ONLY), ttKey: 'about.report' });
     if (local) report.addEventListener('click', openReportDialog);
     links.append(
-      aboutLinkButton('View on GitHub ↗', info.github_url, 'about.github'),
-      aboutLinkButton('↗ Submit Issues / Suggestions', info.issues_url,
-                      'about.issues'));
+      aboutLinkButton('View on GitHub', info.github_url, 'about.github', 'ext-link', 'end'),
+      aboutLinkButton('Submit Issues / Suggestions', info.issues_url,
+                      'about.issues', 'ext-link'));
     if (info.github_url) {
       const licence = aboutLinkButton('Licence',
         `${info.github_url.replace(/\/+$/, '')}/blob/main/LICENSE`);
@@ -6535,7 +6648,7 @@
     const faqHead = document.createElement('div');
     faqHead.className = 'cb-row';
     const faqKick = document.createElement('span');
-    faqKick.className = 'cb-kick';
+    faqKick.className = 'cb-sect';
     faqKick.textContent = 'Frequently Asked Questions';
     const faqBtns = document.createElement('div');
     faqBtns.className = 'cb-row';
@@ -6583,6 +6696,18 @@
     }
     if (!result.available) {
       return `You're on the latest build (${result.current_build}).`;
+    }
+    /* Too far behind the delta baseline to bridge in one hop: either the app
+       fetches the retained full build first (auto-repair), or, when no full is
+       on offer, the user reinstalls from the installer. */
+    if (result.needs_full) {
+      if (result.full_available) {
+        return `You're several builds behind. Updating installs build `
+          + `${result.base} first and restarts, then offers the rest on the `
+          + `next check.`;
+      }
+      return `You're too far behind to update in place — download and run the `
+        + `full installer to catch up (build ${result.latest_build}).`;
     }
     return `Update available: build ${result.latest_build} — you're on `
       + `${result.current_build}.`;
@@ -6754,6 +6879,17 @@
           + `${result.current_build}.`);
         lead.classList.add('cb-mnote--lead');
         body.appendChild(lead);
+        /* Auto-repair heads-up: this install is older than the delta baseline,
+           so the update installs the retained full build first and picks up the
+           rest on the next check. Only shown when that hop can actually run. */
+        if (result.needs_full && result.full_available) {
+          const jump = document.createElement('div');
+          jump.className = 'cb-warnbox';
+          jump.textContent = `You're several builds behind. This installs build `
+            + `${result.base} first and restarts, then offers the rest on the `
+            + `next check.`;
+          body.appendChild(jump);
+        }
         /* What is in the build comes first and reads larger than a hint —
            it is the one thing here the user is deciding on — set off in
            bold quotation marks. Then the scan notice, boxed. */
@@ -6807,17 +6943,28 @@
       aboutUpdate.view = null;
       aboutConfirmUpdate(err && err.userFacing ? err.message
         : 'The host could not start the update.');
+      return;
     }
+    /* Cancel pressed while update.apply was still fetching the manifest
+       found no job to cancel (the host cannot set the flag for a job that
+       does not exist yet). Now that the job exists, ask again. */
+    const refs = aboutUpdate.view;
+    if (refs && refs.cancelRequested) call('update.cancel').catch(() => {});
   }
 
   /* Step two: the progress modal, painted from update.progress until
      update.restarting says the window is about to close on its own, or
-     settled as failed by job.finished (subscribeUpdateEvents, below). */
+     settled as failed by job.finished (subscribeUpdateEvents, below).
+     Locked, because the only two ways out are real ones: Cancel, which
+     stops the host's worker, and the app restarting. An X that merely hid
+     the dialog would leave a download running behind a screen that says
+     nothing is. */
   function aboutBeginApply() {
     const refs = {};
     openModal({
       title: 'Updating DJ-CrateBuilder',
       width: 460,
+      locked: true,
       onClose() { if (aboutUpdate.view === refs) aboutUpdate.view = null; },
       body(body) {
         // Left at this until the first real update.progress payload —
@@ -6832,14 +6979,31 @@
         bar.appendChild(refs.fill);
         body.append(refs.status, bar);
       },
-      foot(foot) {
+      foot(foot, api) {
+        refs.api = api;
         refs.note = modalNote(
-          'Closing this window does not stop the update — the app will '
-          + 'restart on its own to finish it.');
-        foot.appendChild(refs.note);
+          'Cancel stops the download and leaves the app on its current build.');
+        refs.cancel = modalButton('Cancel', 'cb-btn--warn', () => {
+          refs.cancelRequested = true;
+          refs.cancel.disabled = true;
+          refs.cancel.textContent = 'Cancelling…';
+          call('update.cancel').catch(() => {});
+        });
+        refs.cancel.style.marginLeft = 'auto';
+        foot.append(refs.note, refs.cancel);
       },
     });
     aboutUpdate.view = refs;
+  }
+
+  /* update.cancelled: the host purged its workspace and is staying on the
+     current build. The dialog just goes; the Update screen's controls come
+     back on the ok=true job.finished that follows (that handler already
+     re-fetches update.status, and doing it here would read "running"). */
+  function aboutCancelledApply() {
+    const refs = aboutUpdate.view;
+    if (!refs) return;
+    closeModal();
   }
 
   function aboutPaintApplyProgress(p) {
@@ -6865,6 +7029,13 @@
     refs.status.textContent = build
       ? `Restarting to finish the update to build ${build}…`
       : 'Restarting to finish the update…';
+    /* Past the point of no return: the updater process owns the payload —
+       and a Cancel that lost the race must not be left reading
+       "Cancelling…" over a restart that is going ahead. */
+    if (refs.cancel) {
+      refs.cancel.disabled = true;
+      refs.cancel.textContent = 'Cancel';
+    }
   }
 
   /* job.finished for the update job category: the only reliable "it's over"
@@ -6886,6 +7057,15 @@
       if (refs.note) {
         refs.note.textContent = 'You can close this window and try again.';
       }
+      /* The dialog is locked, so a failed run needs a way out of its own:
+         Cancel (there is nothing left to cancel) becomes Close. */
+      if (refs.cancel && refs.api) {
+        const close = modalButton('Close', 'cb-btn--quiet', refs.api.close);
+        close.style.marginLeft = 'auto';
+        refs.cancel.replaceWith(close);
+        refs.cancel = null;
+        close.focus();
+      }
     }
   }
 
@@ -6899,6 +7079,21 @@
     try { aboutUpdate.status = await call('update.status'); }
     catch (_) { /* call() already toasted the reason */ }
     renderUpdate();
+  }
+
+  /* "Last checked" wants one fixed shape (MM/DD/YYYY hh:mm:ss AM/PM), not
+     whatever the device locale would pick, so it is spelled out here rather
+     than left to toLocaleString. A zero/missing stamp means no check yet. */
+  function formatCheckedAt(ts) {
+    if (!ts) return 'Never';
+    const d = new Date(ts * 1000);
+    if (isNaN(d.getTime())) return 'Never';
+    const two = (n) => String(n).padStart(2, '0');
+    const h24 = d.getHours();
+    const h12 = h24 % 12 || 12;
+    return `${two(d.getMonth() + 1)}/${two(d.getDate())}/${d.getFullYear()} `
+      + `${two(h12)}:${two(d.getMinutes())}:${two(d.getSeconds())} `
+      + (h24 < 12 ? 'AM' : 'PM');
   }
 
   /* The controls only — split from renderUpdate() so the tests can drive
@@ -6948,7 +7143,19 @@
       // update.status happened to fail while update.check succeeded.
       const available = !!(result && result.available);
       const canSelf = !!(result && result.can_self_update);
-      if (available && canSelf && !running) {
+      // Too far behind the delta baseline to bridge in-app, and no retained
+      // full to auto-repair from: send the user to the full installer instead
+      // of the (unsafe) delta.
+      const fullBlocked = !!(result && result.needs_full)
+        && !(result && result.full_available);
+      if (available && canSelf && !running && fullBlocked) {
+        updateBtn.textContent = '⤓ Get the full installer';
+        setDisabled(updateBtn, false, { ttText:
+          "You're too far behind to update in place. Opens the release page "
+          + 'so you can download and run the full installer.' });
+        updateBtn.addEventListener('click',
+          () => openUrl(result.installer_url));
+      } else if (available && canSelf && !running) {
         setDisabled(updateBtn, false, { ttKey: 'about.update_now' });
         updateBtn.addEventListener('click', () => aboutConfirmUpdate());
       } else {
@@ -6965,7 +7172,24 @@
       }
     }
     upRow.append(checkBtn, updateBtn);
+    const buildNo = (result && result.current_build != null)
+      ? result.current_build
+      : (about.info && about.info.build != null ? about.info.build : null);
+    if (buildNo != null) {
+      const onBuild = document.createElement('span');
+      onBuild.className = 'cb-mut';
+      onBuild.style.fontSize = '12px';
+      onBuild.textContent = `on build (${buildNo})`;
+      upRow.appendChild(onBuild);
+    }
 
+    const everyRow = document.createElement('div');
+    everyRow.className = 'cb-row';
+    everyRow.style.cssText = 'gap:9px;flex-wrap:wrap;align-items:center';
+    const everyLab = document.createElement('span');
+    everyLab.className = 'cb-mut';
+    everyLab.style.fontSize = '12px';
+    everyLab.textContent = 'Auto-check for updates every:';
     const every = document.createElement('select');
     every.className = 'cb-sel';
     every.style.width = '150px';
@@ -6994,30 +7218,38 @@
         renderUpdate();
       });
     }
-    upRow.appendChild(every);
-    host.append(upHead, upRow);
+    everyRow.append(everyLab, every);
 
+    const lastLine = document.createElement('div');
+    lastLine.className = 'cb-mut';
+    lastLine.style.cssText = 'font-size:12px';
+    lastLine.textContent = `Last checked: ${formatCheckedAt(status && status.last_check)}`;
+    host.append(upHead, upRow, everyRow);
+
+    /* "Last checked" is always drawn — remote sessions and a page that has
+       never checked included — and sits directly above "Next check" so the
+       two timestamps read as a pair. */
     if (isLocal) {
       const statusLine = document.createElement('div');
       statusLine.className = 'cb-mut';
       statusLine.style.cssText = 'font-size:12px;margin-top:2px';
       statusLine.textContent = aboutUpdate.checking
         ? 'Checking for updates…' : aboutUpdateStatusLine(result);
-      host.appendChild(statusLine);
+      host.append(statusLine, lastLine);
 
       const next = status && status.next_check;
       if (next) {
         const nextLine = document.createElement('div');
         nextLine.className = 'cb-mut';
         nextLine.style.cssText = 'font-size:11.5px';
-        nextLine.textContent = `Next check: ${new Date(next * 1000).toLocaleString()}`;
+        nextLine.textContent = `Next check: ${formatCheckedAt(next)}`;
         host.appendChild(nextLine);
       }
     } else {
       const warn = document.createElement('div');
       warn.className = 'cb-warnbox';
       warn.textContent = ABOUT_UPDATER_NOTE;
-      host.appendChild(warn);
+      host.append(lastLine, warn);
     }
   }
 
@@ -8013,6 +8245,7 @@
   function subscribeUpdateEvents() {
     cbApi.on('update.progress', (p) => aboutPaintApplyProgress(p));
     cbApi.on('update.restarting', (p) => aboutShowRestarting(p && p.build));
+    cbApi.on('update.cancelled', () => aboutCancelledApply());
     /* The silent auto-check timer found something — reflect it on the Update
        screen if it's open, exactly as a manual Check for updates would, so
        Update Now lights up without the user having to ask again. */
@@ -8023,6 +8256,8 @@
         current_build: p.current_build, latest_build: p.build,
         notes: p.notes, notice: p.notice, can_self_update: p.can_self_update,
         checked_at: p.checked_at,
+        base: p.base, needs_full: p.needs_full,
+        full_available: p.full_available, installer_url: p.installer_url,
       };
       state.update = aboutUpdate.result;
       renderUpdate();
@@ -8095,6 +8330,92 @@
       setHostOffline(false);
       showPairing(info || {});
     });
+    /* The desktop window's X (or the tray's Close) cancelled the OS close
+       and asked here instead, so the question is drawn in the app's own
+       theme. app.close_seen is the receipt: the window waits a moment for
+       it and, hearing nothing (a page that is hung or gone), falls back to
+       its native dialog rather than leaving an app that cannot be quit. */
+    cbApi.on('app.close_requested', () => {
+      // The bus is shared with every paired browser; only the host's own
+      // window has an X, and only it may answer.
+      if (cbApi.transport !== 'local') return;
+      showCloseConfirm();
+      call('app.close_seen').catch(() => {});
+    });
+  }
+
+  /* ── the window's close question ──────────────────────────────────────────
+     Not an openModal dialog, on purpose: openModal closes whatever is open,
+     and the X can land over an update in progress (whose locked dialog is
+     the only place its Cancel lives) or an Edit with text typed into it.
+     So this is its own layer above the dialog stack (.cb-dim--close), with
+     its own Escape and Tab handling — on window, capture phase, so the
+     dialog underneath never hears them. Every casual exit — Escape, the dim,
+     Stay open — leaves everything exactly as it was; only the warn button
+     goes back to the host, as app.quit, which closes without asking twice.
+     Focus lands on Stay open so a stray Enter keeps the app running. */
+
+  let closeAsk = null;
+
+  function showCloseConfirm() {
+    if (closeAsk) { closeAsk.stay.focus(); return; }
+    const restore = document.activeElement;
+
+    const dim = document.createElement('div');
+    dim.className = 'cb-dim cb-dim--close';
+    const modal = document.createElement('div');
+    modal.className = 'cb-modal';
+    modal.style.maxWidth = '420px';
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-label', 'Close DJ-CrateBuilder');
+
+    const head = document.createElement('div');
+    head.className = 'cb-mhead';
+    const title = document.createElement('span');
+    title.className = 'cb-mtitle';
+    title.textContent = 'Close DJ-CrateBuilder';
+    head.appendChild(title);
+
+    const body = document.createElement('div');
+    body.className = 'cb-mbody';
+    const q = document.createElement('div');
+    q.textContent = 'Are you sure you want to close DJ-CrateBuilder?';
+    body.append(q, modalNote("Auto-downloads won't run while it's closed."));
+
+    const foot = document.createElement('div');
+    foot.className = 'cb-mfoot';
+    const stay = modalButton('Stay open', 'cb-btn--quiet', () => dismiss());
+    const quit = modalButton('Close DJ-CrateBuilder', 'cb-btn--warn', () => {
+      quit.disabled = true;
+      call('app.quit').catch(() => {});
+    });
+    foot.append(stay, quit);
+
+    function dismiss() {
+      if (!closeAsk) return;
+      closeAsk = null;
+      window.removeEventListener('keydown', onKey, true);
+      dim.remove();
+      if (restore && restore.focus) {
+        try { restore.focus(); } catch (_) { /* element left the DOM */ }
+      }
+    }
+    function onKey(e) {
+      if (e.key === 'Escape') { e.stopPropagation(); dismiss(); return; }
+      if (e.key !== 'Tab') return;
+      e.stopPropagation();
+      e.preventDefault();
+      (document.activeElement === stay ? quit : stay).focus();
+    }
+    dim.addEventListener('mousedown', (e) => { if (e.target === dim) dismiss(); });
+    window.addEventListener('keydown', onKey, true);
+
+    modal.append(head, body, foot);
+    dim.appendChild(modal);
+    document.body.appendChild(dim);
+    closeAsk = { dim, stay, dismiss };
+    stay.focus();
   }
 
   /* A host that is down at first paint must not leave a blank page either —
