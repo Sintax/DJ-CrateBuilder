@@ -247,7 +247,7 @@ def test_the_inbox_button_hides_at_zero_on_remote_and_counts_otherwise(app_js,
                          "  function openBrowserInbox()"),
     })
     assert r["empty"]["hidden"] is True
-    assert r["three"] == {"hidden": False, "text": "🌐 Browser Inbox (3)"}
+    assert r["three"] == {"hidden": False, "text": "Browser Inbox (3)"}
     # The inbox is the host desktop's; `browser.` is refused on the remote
     # transport, so a paired device is never offered the button.
     assert r["remote"]["hidden"] is True

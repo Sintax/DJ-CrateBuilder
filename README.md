@@ -1,4 +1,4 @@
-# <img src="docs/screenshots/DJ-CrateBuilder_LOGO_2.png" width="85"> DJ-CrateBuilder v2.0
+# <img src="docs/screenshots/DJ-CrateBuilder_LOGO_2.png" width="85"> DJ-CrateBuilder v2.1
 
 A desktop application for batch-downloading audio from YouTube and SoundCloud as MP3 files, organized by platform, genre, and channel — like a digital record crate for DJs and music collectors.
 
@@ -211,7 +211,7 @@ background on a configurable interval, and the Overview's Update card shows
 the verdict. A **Components** table on the same screen lists what your install
 is running — Python, FFmpeg, yt-dlp and the rest — against the live build, so
 you can see exactly what an update would change. The display version stays
-pinned at `2.0` — only the build number advances between nightly updates.
+pinned at `2.1` — only the build number advances between nightly updates.
 Update files come straight from the official
 [GitHub repository](https://github.com/Sintax/DJ-CrateBuilder) and are SHA-256
 verified before anything is installed. If a Watch List scan or download is

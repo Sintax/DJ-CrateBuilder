@@ -182,7 +182,7 @@ def test_ui_strings_expose_the_shared_registry(service):
 
 def test_version_info_parses_the_monolith():
     info = version_info()
-    assert info["version"] == "2.0"
+    assert info["version"] == "2.1"
     assert isinstance(info["build"], int)
 
 

@@ -294,7 +294,7 @@ def test_download_all_new_carries_the_live_count_and_closes_at_zero(app_js, tmp_
     # Check Links has nothing to check once every entry resolves.
     assert r["idle"]["wl-links"]["off"] is False
     assert r["nothingPending"]["wl-links"]["off"] is True
-    assert r["label"] == "⬇ Download All New (0)"
+    assert r["label"] == "Download All New (0)"
 
 
 def test_the_next_scheduled_run_is_shown_beside_the_toolbar(app_js, tmp_path):
@@ -586,6 +586,7 @@ function bindTips() {}
 function call() { return Promise.resolve(); }
 function renderBatch() {}
 function renderQueueLog() {}
+function scrollBoxToActive() {}
 function toast() {}
 %(panel)s
 
@@ -600,7 +601,9 @@ function render(rows) {
                name: r.children[2].textContent,
                tag: r.children[3].textContent,
                buttons: r.children.slice(4).map(function (b) {
-                 return b.textContent; }) };
+                 return b.textContent; }),
+               icons: r.children.slice(4).map(function (b) {
+                 return b.attrs['data-ic']; }) };
     }),
   };
 }
@@ -632,7 +635,8 @@ def test_the_borrowed_panel_lists_the_runs_channels_like_the_tkinter_one(
     assert [x["mark"] for x in multi["rows"]] == ["✓", "⬇", "○"]
     assert [x["tag"] for x in multi["rows"]] == ["Done", "Downloading",
                                                  "Pending"]
-    assert [x["buttons"] for x in multi["rows"]] == [[], ["⏭ Skip"], []]
+    assert [x["buttons"] for x in multi["rows"]] == [[], ["Skip"], []]
+    assert [x["icons"] for x in multi["rows"]] == [[], ["skip"], []]
 
     single = r["single"]
     assert single["header"] == "⬇  Watch List — downloading 1 of 1 channel"
@@ -698,7 +702,7 @@ def test_smart_edit_closes_the_edit_dialog_before_opening_fix_link(app_js):
     """3m's modal-grab rule: two dialogs must never be open at once. Ordering,
     so there is nothing to execute — the assertion is that the close call
     precedes the open call inside the one handler."""
-    handler = _slice(app_js, "const smart = modalButton('🛠 Smart-Edit Link'",
+    handler = _slice(app_js, "const smart = modalButton('Smart-Edit Link'",
                      "tools.append(")
     assert handler.index("closeModal()") < handler.index("openFixLink(row)")
 
@@ -801,9 +805,11 @@ def test_the_meta_line_is_bold(app_js):
     assert ".cb-wlcard__meta { font-size: 11px; font-weight: 700; }" in css
 
 
-def test_the_share_buttons_are_the_extra_small_size(index_html):
-    assert ('class="cb-btn cb-btn--quiet cb-btn--xs" id="wl-export"' in index_html)
-    assert ('class="cb-btn cb-btn--quiet cb-btn--xs" id="wl-import"' in index_html)
+def test_the_share_buttons_are_the_extra_small_size_in_the_app_red(index_html):
+    """Plain .cb-btn is the red-bordered, red-text button; --quiet was the
+    grey one."""
+    assert ('class="cb-btn cb-btn--xs" id="wl-export"' in index_html)
+    assert ('class="cb-btn cb-btn--xs" id="wl-import"' in index_html)
     with open(os.path.join(ROOT, "web", "app.css"), encoding="utf-8") as fh:
         assert ".cb-btn--xs {" in fh.read()
 
@@ -983,3 +989,63 @@ def test_import_picker_reports_entries_the_host_dropped(app_js):
     assert "const dropped = res.dropped || [];" in app_js
     assert "weren’t imported" in app_js
     assert "note: 'Choose the channels to add to your Watch List.' + droppedNote" in app_js
+
+
+# ── Scan for new keeps the card being scanned in view ────────────────────────
+# The card strip is the only thing that scrolls on the Watch List; a scan
+# walking twenty channels would carry the running card out of sight.
+
+_SCROLL_HARNESS = """
+const calls = [];
+function makeEl(tag) {
+  return { tag, children: [], dataset: {}, className: '', textContent: '',
+           appendChild(c) { this.children.push(c); return c; },
+           replaceChild(n, o) { this.children[this.children.indexOf(o)] = n; },
+           querySelector(sel) {
+             const m = /data-cid="([0-9]+)"/.exec(sel);
+             return this.children.find((c) => c.dataset.cid === m[1]) || null;
+           },
+           scrollIntoView(opts) { calls.push([this.dataset.cid, opts]); } };
+}
+const document = { createElement: makeEl };
+const host = makeEl('div');
+host.innerHTML = '';
+const $ = () => host;
+const wl = { cards: [] };
+function wlCardNode(row) { const n = makeEl('div'); n.dataset.cid = String(row.id); return n; }
+function bindTips() {}
+function renderWatchlistToolbar() {}
+function renderOverviewWatch() {}
+function renderOverviewAttention() {}
+function renderBrowserInbox() {}
+%(slices)s
+function seed(rows) {
+  wl.cards = rows.map((r) => Object.assign({}, r));
+  host.children.length = 0;
+  wl.cards.forEach((r) => host.appendChild(wlCardNode(r)));
+}
+seed([{ id: 1, status: 'idle' }, { id: 2, status: 'idle' }, { id: 3, status: 'idle' }]);
+wlApplyCard({ id: 2, status: 'scanning' });
+const afterHop = calls.length;
+wlApplyCard({ id: 2, status: 'scanning', new_count: 3 });
+const afterRepeat = calls.length;
+wlApplyCard({ id: 2, status: 'found' });
+wlApplyCard({ id: 3, status: 'downloading', progress: { percent: 10 } });
+wlApplyCard({ id: 3, status: 'downloading', progress: { percent: 20 } });
+const afterDownload = calls.length;
+wlApplyCard({ id: 3, status: 'scanning' });
+seed([{ id: 7, status: 'idle' }, { id: 8, status: 'scanning' }]);
+renderWatchlist();
+console.log(JSON.stringify({ calls, afterHop, afterRepeat, afterDownload }));
+"""
+
+
+def test_the_card_being_scanned_is_scrolled_into_view_once_per_hop(app_js, tmp_path):
+    # renderWatchlist, wlKeepInView and wlApplyCard sit together in app.js.
+    slices = _slice(app_js, "  function renderWatchlist()", "  /* An empty pinned log")
+    r = _run_node(tmp_path, "wl-scroll.mjs", _SCROLL_HARNESS % {"slices": slices})
+    assert r["afterHop"] == 1                  # idle -> scanning scrolls
+    assert r["afterRepeat"] == 1               # a repaint while scanning does not
+    assert r["afterDownload"] == 1             # download frames never do
+    assert [c[0] for c in r["calls"]] == ["2", "3", "8"]
+    assert all(c[1] == {"block": "center", "behavior": "smooth"} for c in r["calls"])

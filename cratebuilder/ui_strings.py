@@ -17,7 +17,6 @@ TOOLTIPS = {
     'about.faq_expand': 'Expand all answers',
     'about.github': 'Opens the DJ-CrateBuilder GitHub page in your browser. Check here for the latest releases and update notes.',
     'about.issues': "Opens the GitHub 'Create new issue' form in your browser, where you can report a bug or suggest a feature.",
-    'about.mail': 'Write to the author in your mail client',
     'about.report': 'Send a bug report: your description plus the last part of activity.log and debug.log with your user name, folders and cookies blanked out. You see everything before it goes.',
     'about.update_interval': 'How often DJ-CrateBuilder quietly checks GitHub for a newer nightly build in the background.',
     'about.update_interval_readonly': 'How often DJ-CrateBuilder quietly checks GitHub for a newer nightly build in the background. Set on the host; read-only from here.',

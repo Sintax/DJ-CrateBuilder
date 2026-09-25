@@ -44,7 +44,7 @@ every remote session — a browser somewhere else must not be able to replace th
 binary it is talking to. Gate this on the transport, not on a config flag: the local
 pywebview mount may call `update.*`; the FastAPI/WebSocket transport must reject those
 calls server-side even if a client asks. `3n` shows the About content read-only — the author credit block from
-`ABOUT_FIELDS` (avatar, name, mailto, "Built with"), the GitHub and Submit Issues
+`ABOUT_FIELDS` (avatar, name, "Built with"), the GitHub and Submit Issues
 buttons, the bug/suggestion note, and the FAQ accordion — plus the build number so you
 can tell whether the host is current. `assets/about_avatar.png` is the repo's own
 `about_avatar.png`, copied in; it is 44×44, the size the tkinter label uses.

@@ -131,7 +131,12 @@ JOB_TITLES = {
 # "browser." is here because the extension runs on the host: its sends are the
 # host desktop's inbox, and a paired phone must not be able to consume (or
 # discard) what the person at the desk is about to act on.
-LOCAL_ONLY = ("update.", "fs.", "cookies.howto_window", "browser.")
+LOCAL_ONLY = ("update.", "fs.", "cookies.howto_window", "app.quit",
+              "app.close_seen", "browser.")
+
+# The Watch List's next-run line, without the monolith's emoji: the web UI
+# draws a Core Line clock in front of it instead.
+NEXT_RUN_PREFIX = "Next auto-download:  "
 
 # logs.download only ever hands back a path (see CrateBuilderService.logs_download)
 # — never touches the host filesystem itself — so it's safe on the remote
@@ -344,7 +349,6 @@ ABOUT_NOTE = ("*(For any bugs encountered, submit them easily using the "
 # Which monolith module constant fills which About field.
 ABOUT_CONSTANTS = {
     "created_by": "ABOUT_CREATED_BY",
-    "contact_email": "ABOUT_CONTACT_EMAIL",
     "description": "ABOUT_DESCRIPTION",
     "github_url": "GITHUB_URL",
     "issues_url": "GITHUB_ISSUES_URL",
@@ -353,10 +357,10 @@ ABOUT_CONSTANTS = {
 ABOUT_FAQ_OWNER = "_build_about_tab"
 ABOUT_FAQ_NAME = "faq"
 
-# What fs.open_url will hand to the host's browser. mailto is the author's
-# contact link; nothing else is a scheme a page of ours has any reason to open,
-# and file:/ javascript: on os.startfile is how a link becomes an execution.
-OPENABLE_URL_SCHEMES = ("http", "https", "mailto")
+# What fs.open_url will hand to the host's browser. Nothing else is a scheme a
+# page of ours has any reason to open, and file:/ javascript: on os.startfile
+# is how a link becomes an execution.
+OPENABLE_URL_SCHEMES = ("http", "https")
 
 # about_info parses a 13k-line file, so the result is kept until the file
 # changes underneath it. Keyed by path -> (stat signature, payload).
@@ -937,6 +941,13 @@ class CrateBuilderService:
         # a service nothing has wired it into (every test, the remote-only
         # entry points) — the worker treats that as "nothing to call".
         self.on_update_restart = None
+        # Set by update_cancel(); the apply worker checks it between phases
+        # and hands it to ucore.download. Cleared by _start_job's guard for
+        # the update job — under the job lock, right before the slot is
+        # claimed — so the clear can neither wipe a live job's cancel (the
+        # guard never runs while one holds the slot) nor race a cancel that
+        # lands the instant the slot is taken.
+        self._update_cancel = threading.Event()
         # The desktop window's opener for the cookie setup guide's own
         # window (see cookies_howto_window). None everywhere else.
         self.on_open_howto = None
@@ -950,6 +961,20 @@ class CrateBuilderService:
         # that is the one safe hand-over point.
         self._browser_pending = []
         self._local_page_ready = False
+        # The desktop window's "close without asking", invoked by app.quit
+        # once the page's own close dialog has been answered. None on a
+        # service nothing has wired it into.
+        self.on_quit = None
+        # The page's receipt for app.close_requested (see app_close_seen).
+        self.on_close_seen = None
+        # Whether the local page has booted far enough to be asked a
+        # question: flipped by the first state.snapshot served over the LOCAL
+        # transport, which the page only requests after its event handlers
+        # are subscribed (web/app.js boot()). WindowClose reads this to decide
+        # between the in-page close dialog and the native one — a page that
+        # never booted cannot answer, and a close it never hears would leave
+        # an app that cannot be quit.
+        self.page_ready = False
         self._installed_components_cache = None
         self._update_timer = None
         self._next_update_check_ts = None
@@ -1391,9 +1416,12 @@ class CrateBuilderService:
                 p.get("device_id") or p.get("token_hash")),
             "update.check": lambda p: self.update_check(),
             "update.apply": lambda p: self.update_apply(),
+            "update.cancel": lambda p: self.update_cancel(),
             "update.status": lambda p: self.update_status(),
             "update.set_interval":
                 lambda p: self.update_set_interval(p.get("value")),
+            "app.quit": lambda p: self.app_quit(),
+            "app.close_seen": lambda p: self.app_close_seen(),
         }
 
     def _unavailable(self, what):
@@ -1403,6 +1431,8 @@ class CrateBuilderService:
 
     def snapshot(self):
         """Everything the shell needs on connect; all else arrives as deltas."""
+        if self.transport == LOCAL:
+            self.page_ready = True
         library = self.library_stats()
         return {
             "app": {"name": "DJ-CrateBuilder", **version_info()},
@@ -1501,6 +1531,30 @@ class CrateBuilderService:
             raise CBError("The guide cannot open in its own window here.")
         opener(page["browser"], page["title"])
         return {"opened": True, "browser": page["browser"]}
+
+    def app_quit(self):
+        """The page's own close dialog answered "close": let the desktop
+        window go without asking again (web_window.py hands in its
+        force_close). Named in LOCAL_ONLY outright — a paired browser must
+        never be able to shut the host's app down. A service with no hook
+        wired (the headless mounts, every test) has nothing to close and
+        says so quietly rather than failing the page's click."""
+        hook = self.on_quit
+        if hook is None:
+            return {"ok": False}
+        hook()
+        return {"ok": True}
+
+    def app_close_seen(self):
+        """The page's receipt that app.close_requested reached a handler and
+        the close question is on screen. The desktop window waits briefly
+        for this after asking; without it the page is taken to be hung or
+        gone, and the native dialog asks instead. Host-only like app.quit —
+        a remote browser cannot vouch for the host's own page."""
+        hook = self.on_close_seen
+        if hook is not None:
+            hook()
+        return {"ok": True}
 
     # ── library / database ────────────────────────────────────────────────────
 
@@ -3302,8 +3356,8 @@ class CrateBuilderService:
         return {"opened": True}
 
     def open_url(self, url):
-        """Open *url* in the host's own browser — the About screen's GitHub,
-        Submit Issues and mailto links, exactly as `_build_about_tab` does.
+        """Open *url* in the host's own browser — the About screen's GitHub
+        and Submit Issues links, exactly as `_build_about_tab` does.
 
         Remote never reaches this (the LOCAL_ONLY "fs." prefix refuses it
         before dispatch, and this repeats the check the way fs_reveal does);
@@ -3319,7 +3373,7 @@ class CrateBuilderService:
         url = url.strip() if isinstance(url, str) else ""
         scheme = url.split(":", 1)[0].lower() if ":" in url else ""
         if scheme not in OPENABLE_URL_SCHEMES:
-            raise CBError("Only web and mail links can be opened from here.")
+            raise CBError("Only web links can be opened from here.")
         try:
             webbrowser.open(url)
         except Exception as exc:
@@ -3349,6 +3403,13 @@ class CrateBuilderService:
         key = "UPDATE_MANIFEST_URL_LINUX" if ucore.is_linux() else "UPDATE_MANIFEST_URL"
         return urls.get(key)
 
+    def _installer_url(self):
+        """The platform's release page, for the auto-repair fallback link when
+        the in-app updater can't bridge the gap. Mirrors the URLs the Linux
+        refusal in update_apply already hard-codes."""
+        tag = "linux-v2.0" if ucore.is_linux() else "v2.0"
+        return f"https://github.com/Sintax/DJ-CrateBuilder/releases/tag/{tag}"
+
     def update_check(self):
         """Fetch the manifest and report what it says — never raises for an
         unreachable host or an invalid manifest; that is itself the result
@@ -3377,6 +3438,10 @@ class CrateBuilderService:
             "notice": None,
             "components": None,
             "can_self_update": ucore.can_self_update(),
+            "base": None,
+            "needs_full": False,
+            "full_available": False,
+            "installer_url": self._installer_url(),
             "checked_at": time.time(),
         }
         self._last_update_result = result
@@ -3396,6 +3461,18 @@ class CrateBuilderService:
         result["latest_build"] = int(manifest["build"])
         result["components"] = components.offered_versions(manifest)
         result["available"] = ucore.is_update_available(manifest, current)
+        # The delta-baseline guard: a delta payload landing on an install older
+        # than its baseline would install partially. When that's the case and a
+        # retained full is on offer, the app can auto-repair; otherwise the UI
+        # points the user at the full installer.
+        try:
+            result["base"] = int(manifest["base"])
+        except (KeyError, TypeError, ValueError):
+            result["base"] = None
+        result["needs_full"] = ucore.needs_full_reinstall(manifest, current)
+        result["full_available"] = bool(
+            result["needs_full"] and ucore.full_payload(manifest)
+            and not ucore.is_linux() and ucore.can_self_update())
         if result["available"]:
             # "changes" / "notice" are the manifest's styled-UI split of the
             # legacy "notes" blob (release.py writes all three); a manifest
@@ -3457,11 +3534,32 @@ class CrateBuilderService:
                 "the in-app updater.")
         self._require_idle_for_update()
 
-        dl_url = manifest["url"]
-        sha256 = manifest["sha256"]
+        # Delta-baseline guard: an install older than the delta's baseline would
+        # install partially. Bridge the gap by installing the retained full
+        # build first (auto-repair); the next check picks up the rest. The Linux
+        # and can_self_update refusals above guarantee this only runs on a
+        # Windows frozen, self-updatable install.
+        install_build = build
+        full_repair = ucore.needs_full_reinstall(manifest, current)
+        if full_repair:
+            fp = ucore.full_payload(manifest)
+            if not fp:
+                raise CBError(
+                    "You're several builds behind, and the in-app updater can't "
+                    "safely bridge this gap. Download and run the latest "
+                    "installer instead:\n\n" + self._installer_url())
+            dl_url, sha256, install_build = fp["url"], fp["sha256"], fp["build"]
+        else:
+            dl_url, sha256 = manifest["url"], manifest["sha256"]
         notes = str(manifest.get("notes", "")).strip() or None
         component_rows = components.compare(
             self._installed_components(), components.offered_versions(manifest))
+
+        cancel = self._update_cancel
+
+        def guard():
+            self._require_idle_for_update()
+            cancel.clear()
 
         def worker():
             ws = ucore.default_workspace()
@@ -3476,7 +3574,7 @@ class CrateBuilderService:
             # though the update itself succeeded. Nothing after the handoff
             # boundary runs inside this try.
             try:
-                zip_path = os.path.join(ws, f"build-{build}.zip")
+                zip_path = os.path.join(ws, f"build-{install_build}.zip")
 
                 def progress(done, total):
                     self.emit("update.progress", {
@@ -3486,24 +3584,32 @@ class CrateBuilderService:
                         "total_mb": (total // 1048576) if total else None,
                     })
 
-                ucore.download(dl_url, zip_path, progress_cb=progress)
+                ucore.download(dl_url, zip_path, progress_cb=progress,
+                               cancel=cancel)
 
                 self.emit("update.progress", {"phase": "verify"})
                 if not ucore.verify_sha256(zip_path, sha256):
                     raise CBError(
                         "checksum mismatch — the download may be corrupt")
+                if cancel.is_set():
+                    raise ucore.UpdateCancelled("cancelled after verify")
 
                 self.emit("update.progress", {"phase": "stage"})
                 staged = os.path.join(ws, "staged")
                 ucore.purge_dir(staged)
                 ucore.extract_zip(zip_path, staged)
+                # The last checkpoint. Past update.restarting the updater
+                # process owns the staged payload and a cancel is a no-op:
+                # nothing below ever looks at the event again.
+                if cancel.is_set():
+                    raise ucore.UpdateCancelled("cancelled after stage")
 
                 # update.progress is coalesced (cratebuilder/events.py); flush
                 # its last pending frame so it can never arrive after the
                 # events that supersede it — the same reason MaintenanceOps
                 # flushes before its own terminal notification.
                 self._emit.flush()
-                self.emit("update.restarting", {"build": build})
+                self.emit("update.restarting", {"build": install_build})
                 app_dir = ucore.install_dir()
                 cmd = ucore.launch_updater_command(
                     os.getpid(), staged, app_dir, sys.executable,
@@ -3513,6 +3619,26 @@ class CrateBuilderService:
                     flags = 0x00000008 | 0x00000200  # DETACHED | NEW_PROCESS_GROUP
                 subprocess.Popen(cmd, close_fds=True, creationflags=flags,
                                  cwd=app_dir)
+            except ucore.UpdateCancelled:
+                # A cancel is the user's own decision, not a failure: it must
+                # not become the error notification / job.finished ok=False
+                # that _start_job stamps on a worker that raises. So it is
+                # absorbed here — same flush-then-purge as the error path —
+                # and announced by a dedicated update.cancelled event rather
+                # than a flag threaded through _start_job's generic
+                # job.finished; the page closes its dialog on that event and
+                # resyncs on the ok=True job.finished that follows it.
+                self._emit.flush()
+                ucore.purge_dir(ws)
+                self.emit("notification", {
+                    "level": "info",
+                    "title": "Update",
+                    "body": f"Update cancelled — still on build {current}.",
+                    "at": datetime.now().isoformat(timespec="seconds"),
+                    "job": UPDATE_JOB,
+                })
+                self.emit("update.cancelled", {"build": current})
+                return
             except Exception:
                 # Flush first so the last progress frame lands before the
                 # error notification/job.finished that supersede it, then
@@ -3528,8 +3654,14 @@ class CrateBuilderService:
             # if the restart callback below misbehaves — the app is about to
             # exit either way, and there is no user-facing failure to report.
             # Logged here, not earlier, so activity.log only ever records an
-            # update that is actually going to be applied.
-            self.log_line(activitylog.updated(current, build, component_rows))
+            # update that is actually going to be applied. A full-repair installs
+            # the baseline build, not the latest, so its component diff (which is
+            # the latest build's) doesn't apply — log a plain catching-up line.
+            if full_repair:
+                self.log_line(activitylog.catching_up(install_build))
+            else:
+                self.log_line(
+                    activitylog.updated(current, install_build, component_rows))
             if self.on_update_restart is not None:
                 try:
                     self.on_update_restart()
@@ -3537,8 +3669,19 @@ class CrateBuilderService:
                     pass
 
         job_id = self._start_job(UPDATE_JOB, worker, title="Update",
-                                 guard=self._require_idle_for_update)
+                                 guard=guard)
         return {"job_id": job_id, "build": build, "notes": notes}
+
+    def update_cancel(self):
+        """Ask the running apply to stop. Honoured through download, verify
+        and stage; once update.restarting has gone out the updater process
+        owns the payload and the request is silently too late. No job at all
+        is not an error either — the dialog's Cancel can race the worker's
+        own end, and a refusal would only turn a no-op into a toast."""
+        if not self._job_running(UPDATE_JOB):
+            return {"cancelled": False}
+        self._update_cancel.set()
+        return {"cancelled": True}
 
     def update_status(self):
         """Everything the web UI's Update screen renders besides the
@@ -3830,9 +3973,10 @@ class CrateBuilderService:
 
     def next_auto_download(self):
         """The next scheduled run as {ts, text} — the snapshot's copy of what
-        `automation.next_run` pushes."""
+        `automation.next_run` pushes. The web UI draws its own clock glyph
+        before the text, so the monolith's emoji prefix is left off."""
         ts = self._auto_dl_next_ts
-        return {"ts": ts, "text": util.next_run_label(ts)}
+        return {"ts": ts, "text": util.next_run_label(ts, prefix=NEXT_RUN_PREFIX)}
 
     def _auto_download_loop(self):
         """Wait out the interval, run once, repeat. Never raises.
@@ -4042,6 +4186,13 @@ class CrateBuilderService:
                 "notice": result["notice"],
                 "can_self_update": result["can_self_update"],
                 "checked_at": result["checked_at"],
+                # The delta-baseline guard verdict rides along so a user who
+                # only saw the silent check (never a manual one) still gets
+                # the too-far-behind UI instead of a bare Update Now.
+                "base": result["base"],
+                "needs_full": result["needs_full"],
+                "full_available": result["full_available"],
+                "installer_url": result["installer_url"],
             })
             self.emit("notification", {
                 "level": "info",

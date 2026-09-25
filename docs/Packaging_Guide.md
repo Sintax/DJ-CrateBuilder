@@ -1,4 +1,4 @@
-# DJ-CrateBuilder v2.0 — Packaging Guide
+# DJ-CrateBuilder v2.1 — Packaging Guide
 
 Supported install flows:
 
@@ -106,13 +106,13 @@ Run one short YouTube download to confirm yt-dlp + FFmpeg work.
 4. Confirm the `[Files]` Source path points to your `dist\DJ-CrateBuilder\` folder
 5. Ctrl+F9 to compile
 
-Output: `releases\Build_Output\DJ-CrateBuilder_v2.0_Setup_Windows.exe`
+Output: `releases\Build_Output\DJ-CrateBuilder_v2.1_Setup_Windows.exe`
 
 `OutputDir` in the `.iss` is relative to the script's own folder (`docs\`), so
 `..\releases\Build_Output` lands at the repo root.
 
 The installer attached to the GitHub release carries the build number as well —
-`DJ-CrateBuilder_v2.0.<N>_Setup_Windows.exe`, where `<N>` is `APP_BUILD`. That
+`DJ-CrateBuilder_v2.1.<N>_Setup_Windows.exe`, where `<N>` is `APP_BUILD`. That
 suffix is added when the release is cut, not by the `.iss` script, so a build
 from source uses the plain name above.
 
@@ -120,8 +120,8 @@ from source uses the plain name above.
 
 # NIGHTLY BUILD CHANNEL (in-app updates)
 
-The app ships a pinned display version (`2.0`) plus an incrementing
-`APP_BUILD` integer, shown together in the About screen as `v2.0.<build>`. Small
+The app ships a pinned display version (`2.1`) plus an incrementing
+`APP_BUILD` integer, shown together in the About screen as `v2.1.<build>`. Small
 fixes go out as **nightly builds** that bump only the build number — no new
 installer, no version jump, and **`main` / the tagged v2.0 release are never
 touched.**
@@ -239,7 +239,7 @@ can see the system-installed PyGObject (pip cannot sanely build it).
 
 Package version mirrors the app's own version: `build-deb.sh` greps `APP_BUILD`
 out of the source, so the `.deb` filename, the About screen, and
-`update-linux.json` all report the same `2.0.<build>`.
+`update-linux.json` all report the same `2.1.<build>`.
 
 ## Publishing a release (the normal path)
 
@@ -262,7 +262,7 @@ Or: GitHub → Actions → **build-deb** → *Run workflow*.
    run), replacing any previous `.deb` asset so exactly one is ever attached
 4. Generates `update-linux.json` (build number, download URL, SHA-256,
    filename) and uploads it to the same release with `--clobber`
-5. Retitles the release to `DJ-CrateBuilder v2.0 (Build N) — Linux package (.deb)`
+5. Retitles the release to `DJ-CrateBuilder v2.1 (Build N) — Linux package (.deb)`
 
 This channel is **completely separate from the Windows nightly channel** — it
 never touches `scripts/release.py`, the `nightly` branch, or `update.json`.
@@ -278,7 +278,7 @@ Requires a Linux machine or WSL with `dpkg-deb` and `python3-pil`:
 
 ```bash
 sudo apt-get install -y python3-pil
-bash packaging/deb/build-deb.sh          # → dist/deb/dj-cratebuilder_2.0.N_all.deb
+bash packaging/deb/build-deb.sh          # → dist/deb/dj-cratebuilder_2.1.N_all.deb
 bash packaging/deb/build-deb.sh 99       # override the build number
 ```
 
@@ -294,7 +294,7 @@ Download the `.deb` from the
 and double-click it, or:
 
 ```bash
-sudo apt install ./dj-cratebuilder_2.0.*_all.deb
+sudo apt install ./dj-cratebuilder_2.1.*_all.deb
 ```
 
 `apt` pulls in `ffmpeg` and the GTK/WebKit stack automatically; `postinst` then
@@ -362,7 +362,7 @@ The **debug log** is new — it captures yt-dlp options, cookie config, and full
 
 # RELEASE CHECKLIST
 
-- [ ] `APP_VERSION = "2.0"` in `DJ-CrateBuilder_v2.0.py`
+- [ ] `APP_VERSION = "2.1"` in `DJ-CrateBuilder_v2.0.py`
 - [ ] `pytest -q` passes (`requirements-dev.txt` installed)
 - [ ] (Nightly) `python scripts/release.py` run — it auto-bumps `APP_BUILD`, builds,
       publishes the delta, and pushes `update.json`. About-tab "Check for
