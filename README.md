@@ -17,6 +17,7 @@ Version 2.0 is a ground-up interface rework: the app is now a modern web UI runn
 - <sub>[Installation](#installation)</sub>
 - <sub>[Updates](#updates)</sub>
 - <sub>[Usage](#usage)</sub>
+- <sub>[Browser Extension](#browser-extension)</sub>
 - <sub>[Remote Access](#remote-access)</sub>
 - <sub>[Browser Cookie Authentication](#browser-cookie-authentication)</sub>
 - <sub>[Settings](#settings)</sub>
@@ -101,6 +102,7 @@ Version 2.0 is a ground-up interface rework: the app is now a modern web UI runn
 - **Database Viewer & Maintenance** — Browse the full downloads library grouped by platform / genre / channel, and run maintenance tools like **Remove Duplicates**, **Rebuild Database from Files** and **Folders Cleanup** *(viewer new in v2.0)*
 - **Downloads & Debug Logs** — Timestamped record of every download, skip, and error (`activity.log`) plus a separate diagnostic log (`debug.log`) with yt-dlp/cookie details — both with built-in viewers *(in-app viewers new in v2.0)*
 - **Bug reports with scrubbed logs** — **Report a Bug** on the About screen previews an anonymised copy of both logs (home and library folders, user name, e-mails, IPs, cookie paths and tokens replaced with placeholders), saves them as a zip and opens a pre-filled GitHub issue for you to attach it to
+- **Browser Extension** — Send a YouTube or SoundCloud channel or track to the app straight from Firefox, Chrome, Edge, Brave or Opera with a right-click or one button *(new in 2.1 — see [Browser Extension](#browser-extension))*
 - **Remote Access** — Pair another device with a one-time code and control the app from a browser on your network *(built in v2.0 but still in development and switched off in current builds — see [Remote Access](#remote-access))*
 - **In-App Updates** — SHA-256-verified nightly builds installed from the Update screen, which also lists the components your install is running against the live build
 - **Light & Dark Theme, Text Size** — Both chosen under Settings ▸ Appearance and remembered per device; Large and Extra-Large scale the whole app up by 8% or 15% for easier reading
@@ -256,6 +258,26 @@ certificate-free freeware.
 └── SoundCloud/
     └── ...
 ```
+
+---
+
+<a name="browser-extension"></a>
+
+## Browser Extension&nbsp;&nbsp;<sub>[↑ Contents](#contents)</sub>
+
+The DJ-CrateBuilder browser extension adds a **Send to DJ-CrateBuilder**
+option to YouTube and SoundCloud pages. Send a channel and the app opens
+**Add Channel** with the link filled in. Send a track and it lands in the
+Downloads link box, ready for a genre.
+
+It lives in its own repository:
+**[DJ-CrateBuilder-Browser_Extensions](https://github.com/Sintax/DJ-CrateBuilder-Browser_Extensions)**.
+
+1. In the app, open **Settings → Browser integration** and switch it on.
+2. Install the extension by following the
+   [install guide](https://github.com/Sintax/DJ-CrateBuilder-Browser_Extensions/blob/main/docs/INSTALL.md).
+   Firefox installs in one click and updates itself. Chrome, Edge, Brave and
+   Opera take a two-minute install by hand.
 
 ---
 
