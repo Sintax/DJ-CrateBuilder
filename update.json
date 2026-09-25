@@ -1,11 +1,11 @@
 {
   "version": "2.1",
-  "build": 98,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.1.98.zip",
-  "sha256": "7f6ac7101d6ae6abd80e1874380ce1507046a090583ff383c6ea2a36772c0628",
-  "notes": "New Pink colour theme in Settings.",
+  "build": 99,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.1.99.zip",
+  "sha256": "70890606de673e1ddc0e0cace3eb60a7cd501ed59b285defd2a573af40ba091b",
+  "notes": "Browser extension sends now arrive in a new Browser Inbox, with quiet-mode and immediate-open options.",
   "base": 95,
-  "changes": "New Pink colour theme in Settings.",
+  "changes": "Browser extension sends now arrive in a new Browser Inbox, with quiet-mode and immediate-open options.",
   "notice": "",
   "full_url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-full-2.1.95.zip",
   "full_sha256": "aa488154dbe99b63159b46f994876b4d004f6ffc1e56c9701fb5c093c13f573c",
@@ -27,6 +27,6 @@
     "pywebview": "6.2.1",
     "bottle": "0.13.4",
     "fastapi": "0.141.1",
-    "uvicorn": "0.53.0"
+    "uvicorn": "0.54.0"
   }
 }
