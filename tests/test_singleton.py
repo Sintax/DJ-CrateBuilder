@@ -1,7 +1,11 @@
 """Tests for the single-instance loopback lock."""
+import os
 import socket
+import sys
 import threading
 import time
+
+import pytest
 
 from cratebuilder import singleton
 from cratebuilder.singleton import (
@@ -203,3 +207,51 @@ def test_a_connection_that_cannot_be_timed_out_is_just_an_empty_line():
             raise AssertionError("recv on a socket that cannot be timed out")
 
     assert singleton._read_line(Dead()) == ""
+
+
+# ── Handing the foreground to the running instance ──────────────────────────
+
+windows_only = pytest.mark.skipif(sys.platform != "win32",
+                                  reason="the owner lookup is Windows-only")
+
+
+@windows_only
+def test_listener_pid_finds_the_process_holding_the_lock():
+    """A second launch needs the running instance's PID to hand it the
+    foreground, and the lock port is the one thing both processes share."""
+    port = _free_port()
+    holder = acquire_single_instance(port)
+    try:
+        assert singleton.listener_pid(port) == os.getpid()
+    finally:
+        holder.close()
+
+
+def test_listener_pid_is_none_when_nothing_holds_the_port():
+    assert singleton.listener_pid(_free_port()) is None
+
+
+def test_grant_foreground_hands_it_to_the_lock_holder(monkeypatch):
+    granted = []
+    monkeypatch.setattr(singleton, "listener_pid", lambda port: 4242)
+    monkeypatch.setattr(singleton, "_allow_set_foreground",
+                        lambda pid: granted.append(pid) or True)
+    assert singleton.grant_foreground(49737) is True
+    assert granted == [4242]
+
+
+def test_grant_foreground_does_nothing_without_a_holder(monkeypatch):
+    granted = []
+    monkeypatch.setattr(singleton, "listener_pid", lambda port: None)
+    monkeypatch.setattr(singleton, "_allow_set_foreground", granted.append)
+    assert singleton.grant_foreground(49737) is False
+    assert granted == []
+
+
+def test_grant_foreground_never_raises(monkeypatch):
+    """Best-effort like request_show: a lookup that blows up must not stop
+    the second launch handing its link over and exiting."""
+    def boom(_port):
+        raise OSError("table unavailable")
+    monkeypatch.setattr(singleton, "listener_pid", boom)
+    assert singleton.grant_foreground(49737) is False

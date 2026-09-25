@@ -34,7 +34,8 @@ from cratebuilder.service import (BROWSER_INBOX, JOB_FINISHED, LOCAL, CBError,
                                   CrateBuilderService, app_icon_path,
                                   version_info)
 from cratebuilder.singleton import (SINGLE_INSTANCE_PORT, acquire_single_instance,
-                                    forward_add, listen_for_requests, request_show)
+                                    forward_add, grant_foreground,
+                                    listen_for_requests, request_show)
 
 REMOTE_PORT = 8770
 
@@ -722,6 +723,10 @@ def acquire_or_hand_off(port=SINGLE_INSTANCE_PORT, uri=None):
     """
     lock = acquire_single_instance(port)
     if lock is None:
+        # Before the hand-off: the holder raises its window as soon as it
+        # reads the request, and Windows only lets it if this launch — the
+        # one the user's click started — has passed the foreground on.
+        grant_foreground(port)
         if uri:
             forward_add(port, uri)
         else:
