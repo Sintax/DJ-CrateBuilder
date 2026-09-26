@@ -252,3 +252,110 @@ def test_the_inbox_button_hides_at_zero_on_remote_and_counts_otherwise(app_js,
     # transport, so a paired device is never offered the button.
     assert r["remote"]["hidden"] is True
     assert r["noState"]["hidden"] is True
+
+
+# ── right-click choices: Add to batch / Download now ────────────────────────
+
+def test_a_track_with_a_choice_asks_for_a_genre_instead_of_prefilling(app_js):
+    body = _slice(app_js, "  function handleBrowserSend(send)",
+                  "  function drainBrowserPending()")
+    assert "send.then === 'batch' || send.then === 'download'" in body
+    assert body.index("openBrowserAction(send);") < body.index("if (send.kind === 'channel')")
+
+
+def test_the_genre_dialog_labels_its_button_with_the_choice(app_js):
+    body = _slice(app_js, "  function openBrowserAction(send)",
+                  "  async function confirmBrowserAction(send, genre)")
+    assert "title: 'Which genre?'" in body
+    assert "'Download now' : 'Add to batch'" in body
+    assert "modalButton('Cancel', 'cb-btn--quiet', closeModal)" in body
+    assert "genreRow(sel, () => platform)" in body
+
+
+def test_start_shares_the_state_reset_with_the_right_click_path(app_js):
+    start = _slice(app_js, "$('#dl-start').addEventListener('click'",
+                   "$('#dl-cancel').addEventListener('click'")
+    assert "markDownloadsStarted();" in start
+
+
+_ACTION_HARNESS = """
+const NO_GENRE_VALUE = '(none)';
+const calls = [];
+const toasts = [];
+let gateAnswer = true;
+const reopened = [];
+const dl = { running: %(running)s, paused: true, rows: { a: 1 }, current: 'x', overall: 1 };
+const state = { batch: [] };
+let startFails = %(start_fails)s;
+async function call(method, params) {
+  calls.push([method, params || null]);
+  return method === 'batch.list' ? [{ id: 1 }] : {};
+}
+const cbApi = { call: async (method) => {
+  calls.push([method, null]);
+  if (startFails) { const e = new Error('A Watch List run is in progress.'); e.userFacing = true; throw e; }
+  return {};
+} };
+function closeModal() {}
+async function openNoGenreGate() { return gateAnswer; }
+function openBrowserAction(send) { reopened.push(send.url); }
+function platformFromUrl(u) { return /soundcloud/.test(u) ? 'SoundCloud' : 'YouTube'; }
+function renderBatch() {}
+let rendered = 0;
+function renderDownloads() { rendered += 1; }
+function toast(m, warn) { toasts.push([m, !!warn]); }
+%(mark)s
+%(confirm)s
+(async () => {
+  await confirmBrowserAction({ kind: 'track', url: 'https://soundcloud.com/a/b', then: '%(then)s' }, '%(genre)s');
+  console.log(JSON.stringify({ calls, toasts, reopened, dl, rendered }));
+})();
+"""
+
+
+def _action_src(app_js, harness=_ACTION_HARNESS, *, then, genre="House",
+                running="false", start_fails="false"):
+    return harness % {
+        "then": then, "genre": genre, "running": running, "start_fails": start_fails,
+        "mark": _slice(app_js, "  function markDownloadsStarted()", "\n  }\n") + "\n  }\n",
+        "confirm": _slice(app_js, "  async function confirmBrowserAction(send, genre)",
+                          "  /* ── browser extension sends"),
+    }
+
+
+def test_add_to_batch_queues_with_the_chosen_genre_and_starts_nothing(app_js, tmp_path):
+    r = _run_node(tmp_path, "action_batch.mjs", _action_src(app_js, then="batch"))
+    assert r["calls"][0] == ["batch.add", {"url": "https://soundcloud.com/a/b",
+                                           "genre": "House", "platform": "SoundCloud"}]
+    assert ["download.start", None] not in r["calls"]
+    assert r["toasts"] == [["Added to batch", False]]
+
+
+def test_download_now_queues_then_starts(app_js, tmp_path):
+    r = _run_node(tmp_path, "action_dl.mjs", _action_src(app_js, then="download"))
+    methods = [c[0] for c in r["calls"]]
+    assert methods.index("batch.add") < methods.index("download.start")
+    assert r["dl"]["running"] is True and r["dl"]["paused"] is False
+    assert r["dl"]["rows"] == {} and r["rendered"] == 1
+
+
+def test_download_now_during_a_running_batch_joins_it(app_js, tmp_path):
+    r = _run_node(tmp_path, "action_join.mjs",
+                  _action_src(app_js, then="download", running="true"))
+    assert "download.start" not in [c[0] for c in r["calls"]]
+    assert r["toasts"] == [["Added — it will download when its turn comes.", False]]
+
+
+def test_download_now_blocked_by_a_watch_list_run_stays_queued(app_js, tmp_path):
+    r = _run_node(tmp_path, "action_blocked.mjs",
+                  _action_src(app_js, then="download", start_fails="true"))
+    assert r["calls"][0][0] == "batch.add"
+    assert r["toasts"] == [["Added to batch. A Watch List run is in progress.", True]]
+
+
+def test_backing_out_of_the_no_genre_gate_reopens_the_genre_dialog(app_js, tmp_path):
+    harness = _ACTION_HARNESS.replace("let gateAnswer = true;", "let gateAnswer = false;")
+    r = _run_node(tmp_path, "action_gate.mjs",
+                  _action_src(app_js, harness, then="batch", genre="(none)"))
+    assert r["calls"] == []
+    assert r["reopened"] == ["https://soundcloud.com/a/b"]
