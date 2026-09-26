@@ -67,3 +67,27 @@ def test_non_add_verbs_and_junk_are_silently_ignored():
 def test_never_raises_on_garbage():
     parse_djcrate_uri("djcrate://add?%%%bad=encoding%")
     parse_djcrate_uri("djcrate://" + "x" * 100_000)
+
+
+_TRACK = "djcrate://add?v=1&kind=track&url=https%3A%2F%2Fsoundcloud.com%2Fa%2Fb"
+
+
+def test_then_is_absent_on_a_plain_send():
+    assert parse_djcrate_uri(_TRACK).then is None
+
+
+def test_then_carries_the_right_click_choice():
+    assert parse_djcrate_uri(_TRACK + "&then=batch").then == "batch"
+    assert parse_djcrate_uri(_TRACK + "&then=download") == BrowserSend(
+        kind="track", url="https://soundcloud.com/a/b", then="download")
+
+
+def test_an_unknown_then_is_a_plain_send_not_an_error():
+    r = parse_djcrate_uri(_TRACK + "&then=play")
+    assert isinstance(r, BrowserSend) and r.then is None
+
+
+def test_then_is_ignored_on_a_channel():
+    r = parse_djcrate_uri(
+        "djcrate://add?v=1&kind=channel&url=https%3A%2F%2Fsoundcloud.com%2Fa&then=download")
+    assert r == BrowserSend(kind="channel", url="https://soundcloud.com/a")
