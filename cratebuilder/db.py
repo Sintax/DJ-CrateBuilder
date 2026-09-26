@@ -81,7 +81,7 @@ def _row_richness(row):
 
 
 class DownloadsDatabase:
-    SCHEMA_VERSION = 8
+    SCHEMA_VERSION = 9
 
     # True when the v6 migration could not drop watchlist.scan_cutoff_date and
     # the legacy NOT NULL column is still there. Nothing reads it, but an
@@ -262,7 +262,8 @@ class DownloadsDatabase:
                         id          INTEGER PRIMARY KEY AUTOINCREMENT,
                         url         TEXT NOT NULL UNIQUE,
                         kind        TEXT NOT NULL,
-                        received_at INTEGER NOT NULL
+                        received_at INTEGER NOT NULL,
+                        then_action TEXT
                     );
                 """)
                 # ── Migrations for pre-existing databases ──────────────────
@@ -339,6 +340,18 @@ class DownloadsDatabase:
                 # The CREATE TABLE IF NOT EXISTS above IS the migration: an
                 # existing database gains the table on its next open, and
                 # url is UNIQUE so a repeated send coalesces at the row.
+
+                # schema v9: browser_inbox.then_action — a quiet-mode send's
+                # right-click choice ('batch' | 'download'), so Process can
+                # ask for the genre and act on it. Fresh databases get it from
+                # the CREATE above; v8 ones gain it here.
+                try:
+                    conn.execute(
+                        "ALTER TABLE browser_inbox ADD COLUMN then_action TEXT")
+                    self._log("info",
+                              "migration: added then_action to browser_inbox")
+                except sqlite3.OperationalError:
+                    pass  # column already exists
                 conn.execute(
                     "INSERT OR REPLACE INTO schema_info (key, value) VALUES (?, ?)",
                     ("version", str(self.SCHEMA_VERSION))
@@ -1093,29 +1106,34 @@ class DownloadsDatabase:
 
     # ── browser inbox ─────────────────────────────────────────────────────────
 
-    def add_inbox_item(self, *, url, kind, received_at=None):
+    def add_inbox_item(self, *, url, kind, received_at=None, then=None):
         """Queue a browser-extension send for later processing. A URL already
-        pending is silently coalesced (returns False); a fresh row returns
-        True, which is what drives the tray ping."""
+        pending is coalesced (returns False) and takes the newest right-click
+        choice — the user's last click is what they meant; a fresh row
+        returns True, which is what drives the tray ping."""
         with self._conn() as conn:
             cur = conn.execute(
-                "INSERT OR IGNORE INTO browser_inbox (url, kind, received_at) "
-                "VALUES (?, ?, ?)",
+                "INSERT OR IGNORE INTO browser_inbox "
+                "(url, kind, received_at, then_action) VALUES (?, ?, ?, ?)",
                 (url, kind, int(received_at if received_at is not None
-                                else time.time())))
-            return cur.rowcount == 1
+                                else time.time()), then))
+            if cur.rowcount == 1:
+                return True
+            conn.execute("UPDATE browser_inbox SET then_action = ? WHERE url = ?",
+                         (then, url))
+            return False
 
     def list_inbox(self):
         """All pending browser sends, oldest first."""
         with self._conn() as conn:
             return conn.execute(
-                "SELECT id, url, kind, received_at FROM browser_inbox "
+                "SELECT id, url, kind, received_at, then_action FROM browser_inbox "
                 "ORDER BY received_at, id").fetchall()
 
     def get_inbox_item(self, item_id):
         with self._conn() as conn:
             return conn.execute(
-                "SELECT id, url, kind, received_at FROM browser_inbox "
+                "SELECT id, url, kind, received_at, then_action FROM browser_inbox "
                 "WHERE id = ?", (item_id,)).fetchone()
 
     def remove_inbox_item(self, item_id):

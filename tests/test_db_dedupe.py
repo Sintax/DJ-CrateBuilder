@@ -44,12 +44,12 @@ def _backfill(db, **kw):
 
 # ── schema ────────────────────────────────────────────────────────────────
 
-def test_schema_version_is_8(tmp_path):
+def test_schema_version_is_9(tmp_path):
     db = _new_db(tmp_path)
     with db._conn() as conn:
         v = conn.execute(
             "SELECT value FROM schema_info WHERE key = 'version'").fetchone()
-    assert v["value"] == "8"
+    assert v["value"] == "9"
 
 
 def test_fresh_db_gets_unique_path_index(tmp_path):
