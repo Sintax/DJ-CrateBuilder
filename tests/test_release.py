@@ -323,3 +323,46 @@ def test_prune_removes_old_full_and_deltas_on_a_full(rel, monkeypatch):
     assert set(deleted) == {"DJ-CrateBuilder-full-2.1.90.zip",
                             "DJ-CrateBuilder-2.1.95.zip"}
     assert "ffmpeg-9.0.1.zip" not in deleted
+
+
+def test_prune_spares_what_the_live_manifest_still_points_at(rel, monkeypatch):
+    """The raw CDN serves the previous update.json for up to 5 minutes after a
+    publish; the payload it names must still download until the next publish."""
+    deleted = []
+    assets = ["DJ-CrateBuilder-full-2.1.95.zip", "DJ-CrateBuilder-2.1.98.zip",
+              "DJ-CrateBuilder-2.1.99.zip", "DJ-CrateBuilder-2.1.100.zip"]
+    monkeypatch.setattr(rel.subprocess, "run", _fake_gh(assets, deleted))
+    rel.prune_old_zip_assets("R/E", "nightly",
+                             keep="DJ-CrateBuilder-2.1.100.zip",
+                             prefix="DJ-CrateBuilder-", exclude_substr="-full-",
+                             spare={"DJ-CrateBuilder-2.1.99.zip"})
+    assert deleted == ["DJ-CrateBuilder-2.1.98.zip"]
+
+
+def test_prune_on_a_full_spares_the_previous_delta_and_full(rel, monkeypatch):
+    deleted = []
+    assets = ["DJ-CrateBuilder-full-2.1.95.zip", "DJ-CrateBuilder-2.1.99.zip",
+              "DJ-CrateBuilder-full-2.1.100.zip"]
+    monkeypatch.setattr(rel.subprocess, "run", _fake_gh(assets, deleted))
+    rel.prune_old_zip_assets("R/E", "nightly",
+                             keep="DJ-CrateBuilder-full-2.1.100.zip",
+                             prefix="DJ-CrateBuilder-", exclude_substr=None,
+                             spare={"DJ-CrateBuilder-2.1.99.zip",
+                                    "DJ-CrateBuilder-full-2.1.95.zip"})
+    assert deleted == []
+
+
+def test_manifest_asset_names_lists_every_download_it_names(rel):
+    base = "https://github.com/R/E/releases/download/nightly/"
+    manifest = {"url": base + "DJ-CrateBuilder-2.1.99.zip",
+                "full_url": base + "DJ-CrateBuilder-full-2.1.95.zip",
+                "ffmpeg": {"url": base + "ffmpeg-9.0.2.zip"}}
+    assert rel.manifest_asset_names(manifest) == {
+        "DJ-CrateBuilder-2.1.99.zip", "DJ-CrateBuilder-full-2.1.95.zip",
+        "ffmpeg-9.0.2.zip"}
+
+
+def test_manifest_asset_names_tolerates_an_empty_or_partial_manifest(rel):
+    assert rel.manifest_asset_names({}) == set()
+    assert rel.manifest_asset_names(None) == set()
+    assert rel.manifest_asset_names({"url": "", "ffmpeg": None}) == set()
