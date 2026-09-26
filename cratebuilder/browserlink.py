@@ -13,11 +13,14 @@ MSG_NEWER = ("This send came from a newer version of the CrateBuilder "
              "extension — update DJ-CrateBuilder.")
 MSG_BAD_URL = "That link isn't a supported YouTube or SoundCloud URL."
 
+THEN_VALUES = ("batch", "download")
+
 
 @dataclass(frozen=True)
 class BrowserSend:
     kind: str   # 'channel' | 'track'
     url: str    # decoded canonical https URL
+    then: str | None = None   # 'batch' | 'download' — a track's right-click choice
 
 
 @dataclass(frozen=True)
@@ -47,6 +50,11 @@ def parse_djcrate_uri(uri):
         target = urlsplit(url)
         if target.scheme != "https" or target.hostname not in ACCEPTED_HOSTS:
             return ParseError("bad_url", MSG_BAD_URL)
-        return BrowserSend(kind=kind, url=url)
+        then = params.get("then", [None])[0]
+        # Contract §1.1: only a track carries a choice, and a value this
+        # build does not know is a plain send — the link itself is valid.
+        if kind != "track" or then not in THEN_VALUES:
+            then = None
+        return BrowserSend(kind=kind, url=url, then=then)
     except Exception:
         return ParseError("ignore", "")
