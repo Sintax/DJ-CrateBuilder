@@ -1186,6 +1186,8 @@ def test_check_prefers_the_manifests_changes_and_notice_fields(service, monkeypa
                     changes="Fixed a thing.",
                     notice="Important: stop all Watch List scans first.")
     monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: manifest)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 50})
     result = service.update_check()
     assert result["notes"] == "Fixed a thing."
     assert result["notice"] == "Important: stop all Watch List scans first."
@@ -1194,6 +1196,8 @@ def test_check_prefers_the_manifests_changes_and_notice_fields(service, monkeypa
 def test_check_reads_a_manifest_without_the_split_the_old_way(service, monkeypatch):
     manifest = dict(MANIFEST, build=99, notes="Fixed a thing.")
     monkeypatch.setattr(service_mod.ucore, "fetch_manifest", lambda url: manifest)
+    monkeypatch.setattr(service_mod, "version_info",
+                        lambda script_path=None: {"version": "2.0", "build": 50})
     result = service.update_check()
     assert result["notes"] == "Fixed a thing." and result["notice"] is None
 
