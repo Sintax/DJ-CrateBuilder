@@ -13,8 +13,9 @@ from cratebuilder.service import (BROWSER_INBOX, BROWSER_SEND, LOCAL, REMOTE,
 from cratebuilder.settings import Settings
 
 
-def _uri(kind, url):
-    return f"djcrate://add?v=1&kind={kind}&url={quote(url, safe='')}"
+def _uri(kind, url, then=None):
+    uri = f"djcrate://add?v=1&kind={kind}&url={quote(url, safe='')}"
+    return uri + (f"&then={then}" if then else "")
 
 
 CHANNEL = "https://soundcloud.com/someartist"
@@ -222,7 +223,7 @@ def test_inbox_list_take_and_remove(service, settings):
     rows = service.call("browser.inbox_list")
     assert [(r["kind"], r["url"]) for r in rows] == [
         ("channel", CHANNEL), ("track", TRACK)]
-    assert set(rows[0]) == {"id", "kind", "url", "received_at"}
+    assert set(rows[0]) == {"id", "kind", "url", "received_at", "then"}
     taken = service.call("browser.inbox_take", {"id": rows[0]["id"]})
     assert taken == {"kind": "channel", "url": CHANNEL}
     assert service.browser_inbox_count() == 1
@@ -303,3 +304,38 @@ def test_a_throwing_bring_forward_hook_does_not_break_the_receive(service):
     service.on_bring_forward = boom
     _ready(service)
     assert service.browser_receive(_uri("channel", CHANNEL)) == {"action": "opened"}
+
+
+# ── right-click choices ───────────────────────────────────────────────────────
+
+def test_a_live_send_carries_the_right_click_choice(service):
+    _ready(service)
+    service.browser_receive(_uri("track", TRACK, then="download"))
+    assert _of(service, BROWSER_SEND) == [
+        {"kind": "track", "url": TRACK, "then": "download"}]
+
+
+def test_a_parked_send_keeps_its_choice(service):
+    service.browser_receive(_uri("track", TRACK, then="batch"))
+    assert _ready(service)["browser"]["pending"] == [
+        {"kind": "track", "url": TRACK, "then": "batch"}]
+
+
+def test_an_overflowed_send_keeps_its_choice_in_the_inbox(service):
+    service.browser_receive(_uri("channel", CHANNEL))
+    service.browser_receive(_uri("track", TRACK, then="download"))
+    _ready(service)
+    rows = service.call("browser.inbox_list")
+    assert [(r["url"], r["then"]) for r in rows] == [(TRACK, "download")]
+
+
+def test_quiet_mode_remembers_the_choice_and_process_hands_it_back(service, settings):
+    settings.set("browser_receive_mode", RECEIVE_MODE_QUIET)
+    service.browser_receive(_uri("track", TRACK, then="batch"))
+    service.browser_receive(_uri("channel", CHANNEL))
+    rows = service.call("browser.inbox_list")
+    assert [(r["kind"], r["then"]) for r in rows] == [("track", "batch"), ("channel", None)]
+    assert service.call("browser.inbox_take", {"id": rows[0]["id"]}) == {
+        "kind": "track", "url": TRACK, "then": "batch"}
+    assert service.call("browser.inbox_take", {"id": rows[1]["id"]}) == {
+        "kind": "channel", "url": CHANNEL}
