@@ -286,13 +286,13 @@ def test_fresh_db_has_artwork_columns(tmp_path):
     assert _ARTWORK_COLUMNS <= _columns(db)
 
 
-def test_schema_version_is_8(tmp_path):
+def test_schema_version_is_9(tmp_path):
     db = _new_db(tmp_path)
     with db._conn() as conn:
         row = conn.execute(
             "SELECT value FROM schema_info WHERE key = 'version'").fetchone()
-    assert row["value"] == "8"
-    assert DownloadsDatabase.SCHEMA_VERSION == 8
+    assert row["value"] == "9"
+    assert DownloadsDatabase.SCHEMA_VERSION == 9
 
 
 def test_fresh_watchlist_has_no_scan_cutoff_column(tmp_path):
@@ -444,7 +444,7 @@ def test_v5_database_drops_scan_cutoff_without_data_loss(tmp_path):
             "SELECT value FROM schema_info WHERE key = 'version'"
         ).fetchone()["value"]
     assert "scan_cutoff_date" not in cols
-    assert version == "8"
+    assert version == "9"
 
     rows = db.get_all_watchlist_channels()
     assert len(rows) == 1
@@ -561,7 +561,7 @@ def test_v4_database_migrates_to_v5_without_data_loss(tmp_path):
     with db._conn() as conn:
         row = conn.execute(
             "SELECT value FROM schema_info WHERE key = 'version'").fetchone()
-    assert row["value"] == "8"
+    assert row["value"] == "9"
 
     # (c) ...and the pre-existing rows survived byte-for-byte.
     dl_rows = db.get_all_downloads()
@@ -984,7 +984,7 @@ def test_inbox_survives_reopen(tmp_path):
 
 def test_an_existing_v7_database_gains_the_inbox_table(tmp_path):
     """The CREATE TABLE IF NOT EXISTS is the migration: a database opened by
-    this build gets the table, and its version stamp moves to 8."""
+    this build gets the table, and its version stamp moves to the current one."""
     path = str(tmp_path / "old.db")
     db = DownloadsDatabase(path)
     with db._conn() as conn:
@@ -995,4 +995,45 @@ def test_an_existing_v7_database_gains_the_inbox_table(tmp_path):
     with reopened._conn() as conn:
         assert conn.execute(
             "SELECT value FROM schema_info WHERE key = 'version'"
-        ).fetchone()["value"] == "8"
+        ).fetchone()["value"] == "9"
+
+
+def test_inbox_remembers_the_right_click_choice(tmp_path):
+    db = _new_db(tmp_path)
+    db.add_inbox_item(url="https://soundcloud.com/a/b", kind="track", then="download")
+    db.add_inbox_item(url="https://soundcloud.com/a", kind="channel")
+    rows = db.list_inbox()
+    assert [r["then_action"] for r in rows] == ["download", None]
+    assert db.get_inbox_item(rows[0]["id"])["then_action"] == "download"
+
+
+def test_a_repeat_send_coalesces_and_the_newest_choice_wins(tmp_path):
+    db = _new_db(tmp_path)
+    url = "https://soundcloud.com/a/b"
+    assert db.add_inbox_item(url=url, kind="track", then="batch") is True
+    assert db.add_inbox_item(url=url, kind="track", then="download") is False
+    assert db.inbox_count() == 1
+    assert db.list_inbox()[0]["then_action"] == "download"
+    assert db.add_inbox_item(url=url, kind="track") is False
+    assert db.list_inbox()[0]["then_action"] is None
+
+
+def test_an_existing_v8_database_gains_then_action(tmp_path):
+    """v8 never shipped in a nightly but exists in local databases, so the
+    column arrives by migration, not by editing v8's CREATE TABLE."""
+    path = str(tmp_path / "v8.db")
+    db = DownloadsDatabase(path)
+    with db._conn() as conn:
+        conn.execute("DROP TABLE browser_inbox")
+        conn.execute("""CREATE TABLE browser_inbox (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL UNIQUE,
+            kind TEXT NOT NULL, received_at INTEGER NOT NULL)""")
+        conn.execute("INSERT INTO browser_inbox (url, kind, received_at) "
+                     "VALUES ('https://soundcloud.com/a', 'channel', 1)")
+        conn.execute("UPDATE schema_info SET value = '8' WHERE key = 'version'")
+    reopened = DownloadsDatabase(path)
+    assert "then_action" in _columns(reopened, "browser_inbox")
+    assert reopened.list_inbox()[0]["then_action"] is None
+    with reopened._conn() as conn:
+        assert conn.execute("SELECT value FROM schema_info "
+                            "WHERE key = 'version'").fetchone()["value"] == "9"
