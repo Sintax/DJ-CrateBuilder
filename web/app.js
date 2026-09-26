@@ -2649,6 +2649,61 @@
     });
   }
 
+  /* ── right-click choices ──────────────────────────────────────────────────
+     A track sent with "Add to batch" or "Download now" (send.then). The
+     browser can't know a genre, so this asks for one — the user chose to be
+     asked every time — and the button repeats their choice so the click that
+     commits is the one they already made. Cancel adds nothing. */
+  function openBrowserAction(send) {
+    const download = send.then === 'download';
+    const platform = platformFromUrl(send.url);
+    const sel = genreSelect($('#dl-genre').value || NO_GENRE_VALUE);
+    openModal({
+      title: 'Which genre?',
+      width: 520,
+      body(body) {
+        const url = document.createElement('div');
+        url.className = 'cb-mono';
+        url.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px';
+        url.textContent = send.url;
+        url.title = send.url;
+        body.append(labelled('Track', url), labelled('Genre', genreRow(sel, () => platform)));
+      },
+      foot(foot) {
+        const cancel = modalButton('Cancel', 'cb-btn--quiet', closeModal);
+        const go = modalButton(download ? 'Download now' : 'Add to batch', 'cb-btn--fill',
+          () => confirmBrowserAction(send, sel.value));
+        go.style.marginLeft = 'auto';
+        foot.append(cancel, go);
+      },
+    });
+  }
+
+  /* One modal at a time: the genre dialog closes before the no-genre gate
+     opens, so backing out of the gate re-asks rather than dropping the send. */
+  async function confirmBrowserAction(send, genre) {
+    closeModal();
+    if (genre === NO_GENRE_VALUE && !(await openNoGenreGate())) {
+      openBrowserAction(send);
+      return;
+    }
+    try {
+      await call('batch.add', { url: send.url, genre, platform: platformFromUrl(send.url) });
+      state.batch = await call('batch.list');
+      renderBatch();
+    } catch (_) { return; /* call() already toasted the reason */ }
+    if (send.then !== 'download') { toast('Added to batch'); return; }
+    // batch.add has already put the row into the running batch.
+    if (dl.running) { toast('Added — it will download when its turn comes.'); return; }
+    try {
+      await cbApi.call('download.start');
+      markDownloadsStarted();
+    } catch (err) {
+      toast(err.userFacing ? `Added to batch. ${err.message}`
+        : 'Added to batch — press Start once the Watch List run finishes.', true);
+    }
+  }
+
   /* ── browser extension sends ──────────────────────────────────────────────
      A djcrate:// send the host received (the extension repo's
      docs/specs/djcrate-uri-v1.md). Window mode hands it here as a
@@ -2673,6 +2728,11 @@
     closeModal();
     setTimeout(() => {
       closeModal();
+      if (send.kind === 'track' && (send.then === 'batch' || send.then === 'download')) {
+        show('downloads');
+        openBrowserAction(send);
+        return;
+      }
       if (send.kind === 'channel') {
         show('watchlist');
         openAddChannel(send.url);
@@ -7495,6 +7555,15 @@
     return true;
   }
 
+  function markDownloadsStarted() {
+    dl.running = true;
+    dl.paused = false;
+    dl.rows = {};
+    dl.current = null;
+    dl.overall = null;
+    renderDownloads();
+  }
+
   function wire() {
     wireLogScreen('activity');
     wireLogScreen('debug');
@@ -7568,12 +7637,7 @@
            Main tab did — and a backed-out genre gate starts nothing. */
         if (pendingUrl() && !(await addToBatch())) return;
         await call('download.start');
-        dl.running = true;
-        dl.paused = false;
-        dl.rows = {};
-        dl.current = null;
-        dl.overall = null;
-        renderDownloads();
+        markDownloadsStarted();
       } catch (_) { /* call() already toasted the reason */ }
     });
     /* Whichever run this panel is showing — the same rule the Overview's one
