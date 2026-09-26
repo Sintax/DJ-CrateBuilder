@@ -100,8 +100,18 @@ RECEIVE_MODE_DISPLAY = {RECEIVE_MODE_WINDOW: "Bring window forward",
                         RECEIVE_MODE_QUIET: "Collect quietly"}
 # The handler toggle is not a config key at all: its value IS the registry.
 BROWSER_HANDLER_KEY = "browser_handler"
-BROWSER_SEND = "browser.send"      # {kind, url} — window mode: open the flow
+BROWSER_SEND = "browser.send"      # {kind, url, then?} — window mode: open the flow
 BROWSER_INBOX = "browser.inbox"    # {count, added: {kind, url} | None}
+
+
+def _send_dict(kind, url, then):
+    """A browser send as the page sees it. `then` only when set, so a plain
+    send stays exactly {kind, url}."""
+    send = {"kind": kind, "url": url}
+    if then:
+        send["then"] = then
+    return send
+
 
 # The Downloads screen's queue panel is redrawn from live queue.row events and
 # collapses the moment a run ends — so an overnight Watch List download left
@@ -2479,11 +2489,11 @@ class CrateBuilderService:
                 "at": datetime.now().isoformat(timespec="seconds")})
             self._bring_forward()
             return {"action": "rejected"}
-        send = {"kind": result.kind, "url": result.url}
+        send = _send_dict(result.kind, result.url, result.then)
         if self._settings.get("browser_receive_mode") == RECEIVE_MODE_QUIET:
             try:
-                fresh = self._db_for_write().add_inbox_item(url=result.url,
-                                                            kind=result.kind)
+                fresh = self._db_for_write().add_inbox_item(
+                    url=result.url, kind=result.kind, then=result.then)
             except Exception:
                 # In quiet mode the inbox row IS the send, so a locked or
                 # corrupt database has lost it — report it the way a bad URI
@@ -2576,7 +2586,8 @@ class CrateBuilderService:
         try:
             db = self._db_for_write()
             for send in overflow:
-                if db.add_inbox_item(url=send["url"], kind=send["kind"]):
+                if db.add_inbox_item(url=send["url"], kind=send["kind"],
+                                     then=send.get("then")):
                     landed.append(send)
         except Exception:
             self.emit("notification", {
@@ -2614,7 +2625,8 @@ class CrateBuilderService:
         if db is None:
             return []
         return [{"id": r["id"], "kind": r["kind"], "url": r["url"],
-                 "received_at": r["received_at"]} for r in db.list_inbox()]
+                 "received_at": r["received_at"], "then": r["then_action"]}
+                for r in db.list_inbox()]
 
     def browser_inbox_take(self, item_id):
         """Hand one queued send to the page to open, and drop it from the
@@ -2626,7 +2638,7 @@ class CrateBuilderService:
             raise CBError("That browser send is no longer in the inbox.")
         db.remove_inbox_item(item_id)
         self.emit(BROWSER_INBOX, {"count": db.inbox_count(), "added": None})
-        return {"kind": row["kind"], "url": row["url"]}
+        return _send_dict(row["kind"], row["url"], row["then_action"])
 
     def browser_inbox_remove(self, item_id):
         db = self._db()
