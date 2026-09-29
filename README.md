@@ -63,6 +63,27 @@ Version 2.0 is a ground-up interface rework: the app is now a modern web UI runn
   </tr>
 </table>
 
+**Colour themes** — pick Red, Green or Pink under Settings ▸ Appearance, in light or dark. Here are Green and Pink on the dark background.
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/v2-overview-green.png"></td>
+    <td><img src="docs/screenshots/v2-watchlist-green.png"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Green — Overview</sub></td>
+    <td align="center"><sub>Green — Watch List</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/v2-downloads-pink.png"></td>
+    <td><img src="docs/screenshots/v2-database-pink.png"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Pink — Downloads</sub></td>
+    <td align="center"><sub>Pink — Database</sub></td>
+  </tr>
+</table>
+
 ---
 
 <a name="whats-new"></a>
