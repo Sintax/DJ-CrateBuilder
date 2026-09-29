@@ -75,6 +75,10 @@
 }
 :root[data-accent="green"] .cb-btn--warn:hover { background: var(--cb-accent-hover); }
 
+/* A greyed-out button reads the same under every accent: the ink above
+   would otherwise outrank app.css's disabled grey and letter it near-black. */
+:root[data-accent="green"] .cb-btn[disabled] { color: var(--cb-muted); }
+
 /* Start Downloads keeps the white lettering it has under the red, by
    request: the one fill that reads the same whichever accent is on. */
-:root[data-accent="green"] #dl-start { color: #fff; }
+:root[data-accent="green"] #dl-start:not([disabled]) { color: #fff; }

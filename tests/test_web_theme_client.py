@@ -336,9 +336,22 @@ def test_the_warn_button_follows_the_accent(name):
 @pytest.mark.parametrize("name", _OVERLAYS)
 def test_start_downloads_keeps_white_lettering(name):
     """The one fill that stays lettered in white whichever accent is on, the
-    way it reads under the red."""
+    way it reads under the red — but only while it can be pressed."""
     css = _strip_comments(_read(f"theme-{name}.css"))
-    assert f':root[data-accent="{name}"] #dl-start {{ color: #fff; }}' in css
+    assert (f':root[data-accent="{name}"] #dl-start:not([disabled]) '
+            '{ color: #fff; }') in css
+
+
+@pytest.mark.parametrize("name", _OVERLAYS)
+def test_a_greyed_out_button_keeps_the_disabled_grey(name):
+    """The fill ink outranks app.css's disabled rule by specificity, so the
+    overlay restates the grey after it — a greyed-out Start Downloads must
+    not turn near-black under a neon accent."""
+    css = _strip_comments(_read(f"theme-{name}.css"))
+    rule = f':root[data-accent="{name}"] .cb-btn[disabled] {{ color: var(--cb-muted); }}'
+    assert rule in css
+    assert css.index(rule) > css.index("{ color: var(--cb-fill-ink); }")
+    assert css.index(rule) > css.index(f':root[data-accent="{name}"] .cb-btn--warn {{')
 
 
 def _luminance(hex_colour):
