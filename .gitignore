@@ -88,6 +88,15 @@ skills-lock.json
 # Kept out of the public repo (local-only project material)
 scripts/
 CLAUDE.md
+AGENTS.md
+
+# AI-assisted design records — specs, plans, decision notes, the glossary and
+# the web-UI brief. Maintainer-local, not open-source material.
+docs/specs/
+docs/adr/
+docs/superpowers/
+CONTEXT.md
+UI-design/HANDOFF.md
 
 # NOTE: tests/ is intentionally tracked — the suite is the only way a
 # contributor (or CI) can verify a change. Bytecode stays out via the
