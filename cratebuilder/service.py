@@ -966,6 +966,12 @@ class CrateBuilderService:
         # guard never runs while one holds the slot) nor race a cancel that
         # lands the instant the slot is taken.
         self._update_cancel = threading.Event()
+        # The bundled-FFmpeg swap (see _maybe_update_ffmpeg): whether one is
+        # running, and the retry that waits out a busy app. Guarded by
+        # self._lock, like the job registry they are checked against.
+        self._ffmpeg_swapping = False
+        self._ffmpeg_retry = None
+        self._ffmpeg_retry_manifest = None
         # The desktop window's opener for the cookie setup guide's own
         # window (see cookies_howto_window). None everywhere else.
         self.on_open_howto = None
@@ -3502,6 +3508,12 @@ class CrateBuilderService:
         self._last_update_result = result
         if manifest is None:
             return result
+        # The FFmpeg offer rides every check, manual or silent, and is judged
+        # on its own — a newer app build is never needed for it to land.
+        try:
+            self._maybe_update_ffmpeg(manifest)
+        except Exception:
+            pass    # an FFmpeg hiccup must never cost the check its answer
         ok, _reason = ucore.validate_manifest(manifest)
         result["valid"] = ok
         if not ok:
@@ -3545,7 +3557,8 @@ class CrateBuilderService:
         the failure mode the monolith's own `_launch_updater_and_quit` polls
         around; refusing to start is simpler and just as safe."""
         if ("batch" in self._jobs or WATCHLIST_JOB in self._jobs
-                or MAINTENANCE_JOB in self._jobs or self._retags):
+                or MAINTENANCE_JOB in self._jobs or self._retags
+                or self._ffmpeg_swapping):
             raise CBError(UPDATE_NEEDS_IDLE_JOBS)
 
     def update_apply(self):
@@ -3774,6 +3787,128 @@ class CrateBuilderService:
             self._installed_components_cache = components.installed_versions(
                 bundled_ffmpeg_dir())
         return dict(self._installed_components_cache)
+
+    # ── bundled FFmpeg ────────────────────────────────────────────────────────
+    # The monolith's _maybe_update_ffmpeg, ported: the web app shipped without
+    # it, so an update swapped the app and left FFmpeg where the installer
+    # put it, however many newer FFmpeg builds the channel offered.
+
+    FFMPEG_RETRY_SECONDS = 60
+
+    def _ffmpeg_workspace(self):
+        """Beside the app update's workspace, never inside it: update_apply
+        purges its own folder on start, which must not pull an FFmpeg
+        download out from under a swap."""
+        return os.path.join(os.path.dirname(ucore.default_workspace()),
+                            "ffmpeg-update")
+
+    def _maybe_update_ffmpeg(self, manifest):
+        """Bring the bundled FFmpeg to the version *manifest* offers.
+
+        The decision is ucore.ffmpeg_update_action — the on-disk marker and
+        what the binary itself reports against the offer, never the app build,
+        so skipped builds and --full resets can't defeat it. Packaged Windows
+        builds only. A busy app (any job, a retag, a swap already going) defers
+        and retries each minute until idle, so the swap never fights a live
+        yt-dlp for the binary. Returns the action taken, for tests."""
+        if not ucore.is_frozen() or ucore.is_linux():
+            return None
+        install_dir = bundled_ffmpeg_dir()
+        if not install_dir:
+            return None
+        action = ucore.ffmpeg_update_action(
+            manifest, ucore.read_ffmpeg_version(install_dir),
+            reported_build=ucore.probe_ffmpeg_build(install_dir))
+        block = (manifest or {}).get("ffmpeg") or {}
+        version = str(block.get("version", "")).strip()
+        if action == "adopt":
+            # No marker yet and the binary agrees with the offer: record it
+            # rather than force a large download on first sight.
+            self._cancel_ffmpeg_retry()
+            try:
+                ucore.write_ffmpeg_version(install_dir, version)
+            except OSError:
+                pass
+            return action
+        if action != "update":
+            self._cancel_ffmpeg_retry()
+            return action
+        with self._lock:
+            if self._closed:
+                return None
+            busy = bool(self._jobs or self._retags or self._ffmpeg_swapping)
+            if not busy:
+                self._ffmpeg_swapping = True
+        if busy:
+            self._dbg.debug("FFMPEG UPDATE | deferred: busy — retrying when idle")
+            self._arm_ffmpeg_retry(manifest)
+            return "deferred"
+        self._cancel_ffmpeg_retry()
+        threading.Thread(target=self._ffmpeg_swap,
+                         args=(install_dir, dict(block), version),
+                         daemon=True).start()
+        return action
+
+    def _ffmpeg_swap(self, install_dir, block, version):
+        """Download, verify and swap the binaries. Any failure — network,
+        checksum, a locked binary that rolled back — is logged and dropped:
+        the marker is untouched, so the next check simply tries again."""
+        ws = self._ffmpeg_workspace()
+        try:
+            ucore.purge_dir(ws)
+            os.makedirs(ws, exist_ok=True)
+            zip_path = os.path.join(ws, "ffmpeg.zip")
+            ucore.download(block["url"], zip_path)
+            ucore.install_ffmpeg_from_zip(
+                zip_path, block["sha256"], install_dir,
+                os.path.join(ws, "staged"), os.path.join(ws, "backup"), version)
+            # The Update page's components table read the old binary.
+            self._installed_components_cache = None
+            self._dbg.debug(f"FFMPEG UPDATE | swapped to {version}")
+            short = re.match(r"\d+(?:\.\d+)*", version)
+            self.emit("notification", {
+                "level": "info",
+                "title": "FFmpeg",
+                "body": f"FFmpeg updated to {short.group(0) if short else version}.",
+                "at": datetime.now().isoformat(timespec="seconds"),
+            })
+        except Exception as exc:   # noqa: BLE001 — retried on the next check
+            self._dbg.debug(f"FFMPEG UPDATE | deferred/failed: {exc}")
+        finally:
+            ucore.purge_dir(ws)
+            with self._lock:
+                self._ffmpeg_swapping = False
+
+    def _arm_ffmpeg_retry(self, manifest):
+        """Re-run the decision in a minute. The manifest is kept so a retry
+        needs no network; the decision is made fresh each time, so an offer
+        that went away simply disarms the loop."""
+        with self._lock:
+            self._ffmpeg_retry_manifest = manifest
+            if self._closed or self._ffmpeg_retry is not None:
+                return
+            timer = threading.Timer(self.FFMPEG_RETRY_SECONDS,
+                                    self._ffmpeg_retry_fire)
+            timer.daemon = True
+            self._ffmpeg_retry = timer
+            timer.start()
+
+    def _ffmpeg_retry_fire(self):
+        with self._lock:
+            self._ffmpeg_retry = None
+            manifest = self._ffmpeg_retry_manifest
+        if manifest:
+            try:
+                self._maybe_update_ffmpeg(manifest)
+            except Exception:
+                pass
+
+    def _cancel_ffmpeg_retry(self):
+        with self._lock:
+            self._ffmpeg_retry_manifest = None
+            if self._ffmpeg_retry is not None:
+                self._ffmpeg_retry.cancel()
+                self._ffmpeg_retry = None
 
     def update_set_interval(self, value):
         if value not in UPDATE_CHECK_OPTIONS:
@@ -4272,6 +4407,9 @@ class CrateBuilderService:
             if self._update_timer is not None:
                 self._update_timer.cancel()
                 self._update_timer = None
+            if self._ffmpeg_retry is not None:
+                self._ffmpeg_retry.cancel()
+                self._ffmpeg_retry = None
         # Its thread is parked on this; setting it is what lets the wait end
         # and the loop see `_closed` rather than sleeping out a whole interval.
         self._auto_dl_wake.set()
