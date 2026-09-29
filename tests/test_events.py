@@ -227,3 +227,12 @@ def test_snapshot_running_reflects_the_job_registry(service):
         "batch": False, "watchlist": True, "maintenance": False,
         "maintenance_task": None}
     release.set()
+
+
+def test_activity_feed_lines_are_not_a_coalesced_type():
+    """Each run.activity line is a step the user must see; coalescing keeps
+    only the latest payload, which would drop steps."""
+    from cratebuilder.batchrun import ACTIVITY_EVENT
+    from cratebuilder.events import DEFAULT_COALESCED_TYPES
+    assert ACTIVITY_EVENT == "run.activity"
+    assert ACTIVITY_EVENT not in DEFAULT_COALESCED_TYPES

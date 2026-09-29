@@ -589,6 +589,44 @@ def test_download_new_consumes_the_pending_entries_and_clears_them(tmp_path):
                                                "2 tracks downloaded")
 
 
+def test_a_download_run_fills_the_activity_feed_track_by_track(tmp_path):
+    """The Downloads screen's Activity feed: a line as each channel starts,
+    one per track, and a closing line — all stamped as the Watch List's."""
+    harness = Harness(tmp_path, FakeSession())
+    cid = _scanned(harness, ("One", "Two"))
+    empty = harness.add_channel(url="https://www.youtube.com/channel/UCzzz/videos",
+                                name="Quiet One", channel_id="UCzzz")
+
+    harness.ops.run_download([cid, empty])
+
+    lines = harness.emit.of("run.activity")
+    assert {p["job"] for p in lines} == {"watchlist"}
+    assert [(p["kind"], p["title"], p["detail"]) for p in lines] == [
+        ("info", "Channel Deep House Daily", "2 tracks to download"),
+        ("start", "One", ""), ("downloaded", "One", ""),
+        ("start", "Two", ""), ("downloaded", "Two", ""),
+        ("info", "Channel Quiet One", "nothing pending"),
+        ("info", "Finished — 2 downloaded, 0 skipped, 0 failed", ""),
+    ]
+
+
+def test_a_channel_cancelled_before_it_starts_says_so(tmp_path):
+    harness = Harness(tmp_path, FakeSession())
+    cid = _scanned(harness, ("One",))
+    harness.ops._cancelled = lambda c: True
+    harness.ops.run_download([cid])
+    steps = [(p["kind"], p.get("verb"), p["title"], p["detail"])
+             for p in harness.emit.of("run.activity")]
+    assert ("info", "Stopped", "Channel Deep House Daily", "cancelled") in steps
+    assert harness.plans == []
+
+
+def test_a_scan_writes_nothing_to_the_activity_feed(tmp_path):
+    harness = Harness(tmp_path, FakeSession())
+    _scanned(harness, ("One",))
+    assert harness.emit.of("run.activity") == []
+
+
 def test_a_downloading_card_carries_the_progress_the_design_renders(tmp_path):
     harness = Harness(tmp_path, FakeSession())
     cid = _scanned(harness, ("One", "Two"))

@@ -159,10 +159,10 @@ def test_both_cancel_buttons_use_the_same_two_classes(app_js):
     assert rule % "wl.running" in app_js
 
 
-def test_the_queue_log_is_boxed_rather_than_floored(app_css):
-    """min-height let the card grow one line per queued track the moment a
-    run started. It has to be a fixed height that scrolls."""
-    rule = _slice(app_css, "#dl-queue {", "}")
+def test_the_activity_feed_is_boxed_rather_than_floored(app_css):
+    """min-height let the card grow one line per step the moment a run
+    started. It has to be a fixed height that scrolls."""
+    rule = _slice(app_css, "#dl-activity {", "}")
     assert "height: 178px" in rule and "min-height" not in rule   # nine lines
     assert "overflow-y: auto" in rule
 
@@ -177,11 +177,13 @@ const handlers = {};
 const cbApi = { on(name, fn) { handlers[name] = fn; } };
 let refreshes = 0;
 function refresh() { refreshes += 1; }
+const resets = [];
+function resetActivity(job, jobId) { resets.push([job, jobId]); }
 %(handler)s
 function fire(job) {
   dl.running = wl.running = mt.running = false;
   refreshes = 0;
-  handlers['job.started']({ job });
+  handlers['job.started']({ job, job_id: 42 });
   return { dl: dl.running, wl: wl.running, mt: mt.running, refreshes };
 }
 console.log(JSON.stringify({
@@ -191,6 +193,7 @@ console.log(JSON.stringify({
   maintenance: fire('maintenance'),
   update: fire('update'),
   unknown: fire('something-else'),
+  resets,
 }));
 """
 
@@ -211,6 +214,8 @@ def test_job_started_arms_the_category_it_names(app_js, tmp_path):
                               "refreshes": 1}
     assert r["maintenance"] == {"dl": False, "wl": False, "mt": True,
                                 "refreshes": 1}
+    # A new run starts the Activity feed afresh; nothing else touches it.
+    assert r["resets"] == [["batch", 42], ["watchlist", 42]]
 
 
 def test_job_started_leaves_the_update_job_to_the_about_screen(app_js, tmp_path):
@@ -225,154 +230,373 @@ def test_job_started_leaves_the_update_job_to_the_about_screen(app_js, tmp_path)
     assert r["unknown"]["refreshes"] == 0
 
 
-def test_the_running_line_is_kept_in_view_without_moving_the_page(app_js):
-    """A boxed log can hide the line that matters. scrollIntoView would drag
+def test_the_running_row_is_kept_in_view_without_moving_the_page(app_js):
+    """A boxed list can hide the row that matters. scrollIntoView would drag
     the screen behind it, and offsetTop answers relative to whichever ancestor
     happens to be positioned — neither is safe here."""
     fn = _slice(app_js, "  function scrollBoxToActive(",
-                "  function renderQueueLog()")
+                "  /* The kept run's title line")
     assert "getBoundingClientRect" in fn
     assert "scrollIntoView" not in fn
     assert "offsetTop" not in fn
-    # Both renderQueueLog branches end by calling it — the Watch List run
-    # borrows this same log.
-    body = _slice(app_js, "  function renderQueueLog()",
-                  "  /* Every write control funnels through here")
-    assert body.count("scrollBoxToActive(log, '.cb-log__now')") == 2
 
 
 def test_the_batch_rows_are_boxed_and_follow_the_running_row(app_css, app_js):
     """The Batch queue card used to grow one row per URL past four. It is a
-    fixed four-row box now, so like the log it has to scroll to the row that
-    is downloading — in both the manual batch and the borrowed Watch List
+    fixed four-row box now, so it has to scroll to the row that is
+    downloading — in both the manual batch and the borrowed Watch List
     view."""
     rule = _slice(app_css, "#dl-rows {", "}")
     assert "height: 171px" in rule and "min-height" not in rule
     assert "overflow-y: auto" in rule
-    for start, end in [("  function renderBatch()", "  /* One line of the queue log"),
+    for start, end in [("  function renderBatch()", "  /* The batch rows are boxed"),
                        ("  function renderWatchlistQueue()", "  function renderBatch()")]:
         assert "scrollBoxToActive(host, '.cb-qrow.is-active');" in _slice(app_js, start, end), start
 
 
-# ── a finished run stays in the queue panel until Clear ──────────────────────
-# The panel is redrawn from live events and used to collapse to "Press Start"
-# the instant a run ended — an overnight Watch List download left nothing to
-# look at in the morning. The host keeps the run's final rows (snapshot
-# `last_run`, event queue.last_run); the panel shows them, with a small Clear
-# beside its title, until they are cleared or another run takes the panel.
+# ── the Activity feed ────────────────────────────────────────────────────────
+# One line per step of a run (run.activity), appended as it arrives rather
+# than redrawn, newest at the bottom. When a run ends the host keeps its lines
+# (snapshot `last_run.activity`, event queue.last_run); the panel shows them,
+# with a small Clear beside its title, until they are cleared or another run
+# takes the panel.
 
-_LAST_RUN_HARNESS = """
-function node() {
-  const n = { children: [], textContent: '', className: '', style: {},
-              innerHTML: '', hidden: false,
-              appendChild(c) { this.children.push(c); },
-              querySelector() { return null; } };
-  return n;
+_ACT_HARNESS = """
+function node(tag) {
+  return {
+    tag, children: [], className: '', style: {}, hidden: false, parent: null,
+    scrollTop: 0, scrollHeight: 0, clientHeight: 100, _t: '',
+    get textContent() {
+      return this.children.length
+        ? this.children.map((c) => c.textContent).join('') : this._t;
+    },
+    set textContent(v) { this._t = v; this.children = []; this.scrollHeight = 0; },
+    appendChild(c) {
+      const kids = c.frag ? c.children.splice(0) : [c];
+      kids.forEach((k) => { k.parent = this; this.children.push(k); });
+      this._t = '';
+      this.scrollHeight = this.children.length * 20;
+      return c;
+    },
+    remove() {
+      const sib = this.parent.children;
+      sib.splice(sib.indexOf(this), 1);
+      this.parent.scrollHeight = sib.length * 20;
+    },
+    get firstElementChild() { return this.children[0] || null; },
+    get childElementCount() { return this.children.length; },
+  };
 }
-const document = { createElement: node };
-const els = { '#dl-queue': node(), '#dl-queue-meta': node(), '#dl-queue-clear': node() };
+const document = {
+  createElement: node,
+  createDocumentFragment() { const f = node('#frag'); f.frag = true; return f; },
+};
+const els = { '#dl-activity': node(), '#dl-activity-meta': node(),
+              '#dl-activity-clear': node() };
 function $(sel) { return els[sel] || node(); }
-const DL_MARK = { done: '✓', active: '▶', skipped: '⊘', error: '✗', queued: '·' };
-const WL_QROW_MARK = { done: '✓', active: '⬇', skipped: '⊘', error: '✗', queued: '○' };
-const DL_LOG_CLASS = { done: 'downloaded', skipped: 'skipped', error: 'error', queued: 'default' };
 function num(n) { return String(n == null ? 0 : n); }
 const gated = [];
-function gateWrite(el) { gated.push(el === els['#dl-queue-clear']); }
-function scrollBoxToActive() {}
-function wlQueueRows() { return []; }
-const dl = { running: %(dl_running)s, rows: {}, current: null };
-const wl = { running: false, rows: [] };
-function dlView() { return { kind: 'batch', running: dl.running, current: null, marks: DL_MARK }; }
-const state = { batch: %(batch)s, last_run: %(last_run)s };
-%(line)s
-%(meta)s
-%(render)s
-renderQueueLog();
-const log = els['#dl-queue'];
-console.log(JSON.stringify({
-  lines: log.children.map((l) => l.children.map((s) => s.textContent).join('|')),
-  text: log.textContent,
-  meta: els['#dl-queue-meta'].textContent,
-  clearHidden: els['#dl-queue-clear'].hidden,
-  gated,
-}));
+function gateWrite(el) { gated.push(el === els['#dl-activity-clear']); }
+let view = %(view)s;
+function dlView() { return view; }
+const state = { last_run: %(last_run)s };
+%(consts)s
+%(fns)s
+const log = els['#dl-activity'];
+function dump() {
+  return {
+    lines: log.children.map((l) => l.children.map((c) => c.textContent).join('|')),
+    classes: log.children.map((l) => l.className),
+    text: log.children.length ? '' : log.textContent,
+    meta: els['#dl-activity-meta'].textContent,
+    clearHidden: els['#dl-activity-clear'].hidden,
+    gated,
+    scrollTop: log.scrollTop,
+    scrollHeight: log.scrollHeight,
+  };
+}
+const out = {};
+%(script)s
+console.log(JSON.stringify(out));
 """
 
-_LAST_ROWS = [
-    {"id": "c1", "index": 0, "state": "done", "title": "Preview Channel", "detail": "3 tracks"},
-    {"id": "c2", "index": 1, "state": "skipped", "title": "Quiet Channel", "detail": "nothing pending"},
-    {"id": "c3", "index": 2, "state": "error", "title": "Gone Channel", "detail": "link unresolved"},
+_BATCH_VIEW = "{ kind: 'batch', running: true }"
+_IDLE_VIEW = "{ kind: 'batch', running: false }"
+
+_KEPT_ACTIVITY = [
+    {"seq": 1, "ts": "03:10:00", "kind": "info", "title": "Channel Preview Channel", "detail": "3 tracks to download"},
+    {"seq": 2, "ts": "03:10:01", "kind": "start", "title": "Track A", "detail": ""},
+    {"seq": 3, "ts": "03:10:30", "kind": "downloaded", "title": "Track A", "detail": ""},
+    {"seq": 4, "ts": "03:10:31", "kind": "skipped", "title": "Track B", "detail": "in database"},
+    {"seq": 5, "ts": "03:10:40", "kind": "error", "title": "Track C", "detail": "private video"},
 ]
 
 
-def _last_run(app_js, tmp_path, last_run, dl_running=False, batch=None):
-    return _run_node(tmp_path, "lastrun.mjs", _LAST_RUN_HARNESS % {
-        "dl_running": json.dumps(dl_running),
-        "batch": json.dumps(batch or []),
+def _act(app_js, tmp_path, script, view=_IDLE_VIEW, last_run=None):
+    return _run_node(tmp_path, "activity.mjs", _ACT_HARNESS % {
+        "view": view,
         "last_run": json.dumps(last_run),
-        "line": _slice(app_js, "  function queueLogLine(", "  /* The queue log and the batch rows"),
-        "meta": _slice(app_js, "  function lastRunMeta(", "  function renderQueueLog()"),
-        "render": _slice(app_js, "  function renderQueueLog()",
-                         "  /* Every write control funnels through here"),
+        "consts": _slice(app_js, "  const ACTIVITY_LIMIT = ", "\n  /* ── tooltips"),
+        "fns": _slice(app_js, "  function lastRunMeta(",
+                      "  /* Every write control funnels through here"),
+        "script": script,
     })
 
 
-def test_a_kept_watch_list_run_fills_the_panel_with_its_rows(app_js, tmp_path):
+def test_a_kept_run_fills_the_panel_with_its_steps(app_js, tmp_path):
     # 03:14 local, this morning — so the title line shows a time, not a date.
     import datetime as _dt
     at = _dt.datetime.now().replace(hour=3, minute=14, second=0, microsecond=0)
-    r = _last_run(app_js, tmp_path, {
+    r = _act(app_js, tmp_path, "renderActivityLog(); out.r = dump();", last_run={
         "job": "watchlist", "finished_at": at.timestamp(), "ok": True,
-        "error": None, "rows": _LAST_ROWS, "tally": None})
+        "error": None, "rows": [], "tally": None,
+        "activity": _KEPT_ACTIVITY})["r"]
     assert r["lines"] == [
-        "✓  |Preview Channel|3 tracks",
-        "⊘  |Quiet Channel|nothing pending",
-        "✗  |Gone Channel|link unresolved",
+        "03:10:00  |· |Channel Preview Channel| — 3 tracks to download",
+        "03:10:01  |▸ |Downloading|  Track A",
+        "03:10:30  |✓ |Downloaded|  Track A",
+        "03:10:31  |↷ |Skipped|  Track B| — in database",
+        "03:10:40  |✕ |Failed|  Track C| — private video",
     ]
+    assert r["classes"] == ["cb-act cb-act--info", "cb-act cb-act--start",
+                            "cb-act cb-act--downloaded", "cb-act cb-act--skipped",
+                            "cb-act cb-act--error"]
+    # No tally of its own (a Watch List run): the steps are counted instead.
     assert r["meta"].startswith("Watch List run finished ")
-    assert r["meta"].endswith(" · 1 done · 1 skipped · 1 error")
+    assert r["meta"].endswith(" · 1 downloaded · 1 skipped · 1 failed")
     assert r["clearHidden"] is False
     assert r["gated"] == [True]
+    # Opens on the newest line.
+    assert r["scrollTop"] == r["scrollHeight"] == 100
 
 
 def test_a_kept_batch_prefers_its_own_tally_and_says_cancelled(app_js, tmp_path):
-    r = _last_run(app_js, tmp_path, {
+    r = _act(app_js, tmp_path, "renderActivityLog(); out.r = dump();", last_run={
         "job": "batch", "finished_at": 1_700_000_000, "ok": True, "error": None,
-        "rows": _LAST_ROWS[:1],
-        "tally": {"downloaded": 4, "skipped": 2, "errors": 1, "cancelled": True}})
-    assert r["lines"] == ["✓  |Preview Channel|3 tracks"]
+        "rows": [], "activity": _KEPT_ACTIVITY[:1],
+        "tally": {"downloaded": 4, "skipped": 2, "errors": 1, "cancelled": True}})["r"]
+    assert len(r["lines"]) == 1
     assert r["meta"].startswith("Batch cancelled ")
     assert r["meta"].endswith(" · 4 downloaded · 2 skipped · 1 error")
 
 
-def test_the_kept_run_yields_to_a_live_one_and_hides_clear(app_js, tmp_path):
-    """While a batch runs the panel is the run's — the kept rows come back
-    only if the host still holds them once it ends (it replaces them)."""
-    r = _last_run(app_js, tmp_path, {
+def test_a_kept_run_without_steps_still_explains_itself(app_js, tmp_path):
+    r = _act(app_js, tmp_path, "renderActivityLog(); out.r = dump();", last_run={
         "job": "watchlist", "finished_at": 1, "ok": True, "error": None,
-        "rows": _LAST_ROWS, "tally": None},
-        dl_running=True, batch=[{"id": 1, "url": "https://x/y"}])
-    assert r["lines"] == ["·  |https://x/y|queued"]
-    assert r["clearHidden"] is True
-    assert r["gated"] == []
+        "rows": [{"id": 1, "index": 0, "state": "done", "title": "C", "detail": ""}],
+        "tally": None})["r"]
+    assert r["text"] == "No steps were recorded for this run."
+    assert r["meta"].endswith(" · 1 done · 0 skipped · 0 errors")
 
 
-def test_with_nothing_kept_the_panel_reads_as_before(app_js, tmp_path):
-    r = _last_run(app_js, tmp_path, None)
-    assert r["text"] == "Queue is empty — add links above, then press Start Downloads."
+def test_with_nothing_kept_the_panel_invites_a_start(app_js, tmp_path):
+    r = _act(app_js, tmp_path, "renderActivityLog(); out.r = dump();")["r"]
+    assert r["text"] == ("Nothing yet — press Start Downloads and each step "
+                         "will show here.")
     assert r["meta"] == "empty"
     assert r["clearHidden"] is True
 
 
+def test_a_live_run_appends_one_line_per_step_without_redrawing(app_js, tmp_path):
+    """The kept run yields to a live one, and each step adds exactly one line
+    — the nodes already drawn are the same nodes afterwards, not a rebuild."""
+    r = _act(app_js, tmp_path, """
+resetActivity('batch');
+renderActivityLog();
+out.start = dump();
+appendActivity({ job: 'batch', seq: 1, ts: '14:02:11', kind: 'start', verb: 'Reading link', title: 'https://x/y', detail: '' });
+const first = log.children[0];
+appendActivity({ job: 'batch', seq: 2, ts: '14:02:15', kind: 'start', title: 'Track A', detail: '' });
+appendActivity({ job: 'batch', seq: 3, ts: '14:02:40', kind: 'downloaded', title: 'Track A', detail: '' });
+appendActivity({ job: 'batch', seq: 4, ts: '14:02:41', kind: 'skipped', title: 'Track B', detail: 'in database' });
+appendActivity({ job: 'batch', seq: 5, ts: '14:02:50', kind: 'error', title: '<b>Track C</b>', detail: 'private video' });
+renderActivityLog();
+out.sameNode = log.children[0] === first;
+out.tips = log.children.map((l) => l.title);
+out.r = dump();
+""", view=_BATCH_VIEW, last_run={
+        "job": "watchlist", "finished_at": 1, "ok": True, "error": None,
+        "rows": [], "tally": None, "activity": _KEPT_ACTIVITY})
+    assert r["start"]["text"] == "Starting…"
+    assert r["start"]["clearHidden"] is True
+    assert r["sameNode"] is True
+    assert r["r"]["lines"] == [
+        "14:02:11  |▸ |Reading link|  https://x/y",
+        "14:02:15  |▸ |Downloading|  Track A",
+        "14:02:40  |✓ |Downloaded|  Track A",
+        "14:02:41  |↷ |Skipped|  Track B| — in database",
+        "14:02:50  |✕ |Failed|  <b>Track C</b>| — private video",
+    ]
+    assert r["r"]["meta"] == "1 downloaded · 1 skipped · 1 failed"
+    # Lines are clipped to one row; the full text is the line's tooltip.
+    assert r["tips"] == [l.replace("|", "") for l in r["r"]["lines"]]
+
+
+def test_a_step_already_seen_is_not_drawn_twice(app_js, tmp_path):
+    r = _act(app_js, tmp_path, """
+resetActivity('batch');
+renderActivityLog();
+appendActivity({ job: 'batch', seq: 1, ts: 't', kind: 'downloaded', title: 'A', detail: '' });
+appendActivity({ job: 'batch', seq: 1, ts: 't', kind: 'downloaded', title: 'A', detail: '' });
+out.r = dump();
+""", view=_BATCH_VIEW)["r"]
+    assert len(r["lines"]) == 1
+    assert r["meta"] == "1 downloaded · 0 skipped · 0 failed"
+
+
+def test_the_feed_follows_the_newest_line_only_from_the_bottom(app_js, tmp_path):
+    """Scrolled back to read an earlier line, the reader stays put."""
+    r = _act(app_js, tmp_path, """
+resetActivity('batch');
+renderActivityLog();
+let n = 0;
+const step = () => appendActivity({ job: 'batch', seq: ++n, ts: 't', kind: 'info', title: 'step ' + n, detail: '' });
+for (let i = 0; i < 10; i += 1) step();
+out.following = log.scrollTop;
+log.scrollTop = 0;
+step();
+out.reading = log.scrollTop;
+""", view=_BATCH_VIEW)
+    assert r["following"] == 200
+    assert r["reading"] == 0
+
+
+def test_the_feed_is_capped(app_js, tmp_path):
+    r = _act(app_js, tmp_path, """
+resetActivity('batch');
+renderActivityLog();
+for (let i = 1; i <= ACTIVITY_LIMIT + 5; i += 1) {
+  appendActivity({ job: 'batch', seq: i, ts: 't', kind: 'downloaded', title: 'T' + i, detail: '' });
+}
+out.dom = log.childElementCount;
+out.kept = act.lines.batch.length;
+out.firstDrawn = log.children[0].children[3].textContent;
+out.meta = els['#dl-activity-meta'].textContent;
+""", view=_BATCH_VIEW)
+    assert r["dom"] == r["kept"] == 1000
+    assert r["firstDrawn"] == "  T6"
+    # The tally counts every step, not only the ones still on screen.
+    assert r["meta"] == "1005 downloaded · 0 skipped · 0 failed"
+
+
+def test_another_jobs_steps_are_kept_but_not_drawn(app_js, tmp_path):
+    """A Watch List download running beside a batch keeps its own feed for
+    the moment it borrows the panel."""
+    r = _act(app_js, tmp_path, """
+resetActivity('batch');
+resetActivity('watchlist');
+renderActivityLog();
+appendActivity({ job: 'watchlist', seq: 1, ts: 't', kind: 'start', title: 'W', detail: '' });
+out.drawn = dump().lines.length;
+view = { kind: 'watchlist', running: true };
+renderActivityLog();
+out.r = dump();
+""", view=_BATCH_VIEW)
+    assert r["drawn"] == 0
+    assert r["r"]["lines"] == ["t  |▸ |Downloading|  W"]
+
+
+def test_a_reload_mid_run_merges_the_hosts_steps_with_newer_ones(app_js, tmp_path):
+    """A step can arrive while the snapshot is in flight: it is newer than
+    the snapshot's last `seq`, so it stays on the end instead of being lost."""
+    r = _act(app_js, tmp_path, """
+appendActivity({ job: 'batch', seq: 3, ts: 't3', kind: 'skipped', title: 'C', detail: '' });
+syncActivity({ running: { batch: true, watchlist: false },
+               run_activity: { batch: { job_id: null, lines: [
+                 { seq: 1, ts: 't1', kind: 'start', title: 'A', detail: '' },
+                 { seq: 2, ts: 't2', kind: 'downloaded', title: 'A', detail: '' } ] } } });
+renderActivityLog();
+out.r = dump();
+""", view=_BATCH_VIEW)["r"]
+    assert [l.split("|")[0] for l in r["lines"]] == ["t1  ", "t2  ", "t3  "]
+    assert r["meta"] == "1 downloaded · 1 skipped · 0 failed"
+
+
+def test_a_page_that_missed_a_runs_start_does_not_merge_two_runs(app_js, tmp_path):
+    """seq restarts at 1 every run. A remote page whose socket dropped across
+    run A ending and run B starting still holds A's lines; B's must replace
+    them, not be dropped as already seen."""
+    r = _act(app_js, tmp_path, """
+resetActivity('batch', 7);
+renderActivityLog();
+for (let i = 1; i <= 5; i += 1) {
+  appendActivity({ job: 'batch', job_id: 7, seq: i, ts: 'a', kind: 'downloaded', title: 'A' + i, detail: '' });
+}
+appendActivity({ job: 'batch', job_id: 8, seq: 1, ts: 'b', kind: 'error', title: 'B1', detail: '' });
+out.live = dump();
+resetActivity('batch', 7);
+appendActivity({ job: 'batch', job_id: 7, seq: 1, ts: 'a', kind: 'downloaded', title: 'A1', detail: '' });
+syncActivity({ running: { batch: true },
+               run_activity: { batch: { job_id: 9, lines: [
+                 { seq: 1, ts: 'c', kind: 'skipped', title: 'C1', detail: '' } ] } } });
+renderActivityLog();
+out.synced = dump();
+""", view=_BATCH_VIEW)
+    assert r["live"]["lines"] == ["b  |✕ |Failed|  B1"]
+    assert r["live"]["meta"] == "0 downloaded · 0 skipped · 1 failed"
+    assert r["synced"]["lines"] == ["c  |↷ |Skipped|  C1"]
+    assert r["synced"]["meta"] == "0 downloaded · 1 skipped · 0 failed"
+
+
+def test_another_jobs_reset_or_a_resync_keeps_the_readers_place(app_js, tmp_path):
+    """A Watch List scan starting (the automation timer) must not redraw the
+    batch feed, and a resync that does redraw it leaves a reader who had
+    scrolled back where they were."""
+    r = _act(app_js, tmp_path, """
+resetActivity('batch', 1);
+renderActivityLog();
+for (let i = 1; i <= 20; i += 1) {
+  appendActivity({ job: 'batch', job_id: 1, seq: i, ts: 't', kind: 'info', title: 's' + i, detail: '' });
+}
+const first = log.children[0];
+log.scrollTop = 40;
+resetActivity('watchlist', 2);
+renderActivityLog();
+out.untouched = log.children[0] === first;
+out.afterScan = log.scrollTop;
+syncActivity({ running: { batch: true },
+               run_activity: { batch: { job_id: 1, lines: [
+                 { seq: 21, ts: 't', kind: 'info', title: 's21', detail: '' } ] } } });
+renderActivityLog();
+out.redrawn = log.children[0] !== first;
+out.afterSync = log.scrollTop;
+out.count = log.childElementCount;
+log.scrollTop = log.scrollHeight - log.clientHeight;
+syncActivity({ running: { batch: true },
+               run_activity: { batch: { job_id: 1, lines: [
+                 { seq: 22, ts: 't', kind: 'info', title: 's22', detail: '' } ] } } });
+renderActivityLog();
+out.followed = log.scrollTop === log.scrollHeight;
+""", view=_BATCH_VIEW)
+    assert r["untouched"] is True
+    assert r["afterScan"] == 40
+    assert r["redrawn"] is True
+    assert r["afterSync"] == 40
+    assert r["count"] == 21
+    assert r["followed"] is True
+
+
+def test_activity_is_subscribed_and_drawn_as_text(app_js):
+    assert "cbApi.on('run.activity', appendActivity);" in app_js
+    body = _slice(app_js, "  function activityLine(e)", "  function resetActivity(")
+    assert "innerHTML" not in body
+    assert "syncActivity(state);" in _slice(app_js, "  async function refresh()",
+                                            "  function isBatchProgress(")
+    for gone in ("renderQueueLog", "queueLogLine", "DL_LOG_CLASS", "#dl-queue"):
+        assert gone not in app_js, gone
+
+
 def test_clear_asks_the_host_and_the_event_repaints_every_page(app_js, index_html):
-    assert 'id="dl-queue-clear"' in index_html
-    clear = _slice(app_js, "    $('#dl-queue-clear').addEventListener('click'",
+    assert 'id="dl-activity-clear"' in index_html
+    assert '<span class="cb-kick">Activity</span>' in index_html
+    assert 'id="dl-queue' not in index_html
+    clear = _slice(app_js, "    $('#dl-activity-clear').addEventListener('click'",
                    "    $$('#dl-platform > span')")
     assert "await call('queue.clear_last_run');" in clear
     assert "state.last_run = null;" in clear
     handler = _slice(app_js, "    cbApi.on('queue.last_run', (last) => {", "    });")
     assert "state.last_run = last || null;" in handler
-    assert "renderQueueLog();" in handler
+    assert "renderActivityLog();" in handler
 
 
 # ── the Skip row is the same setting the Settings screen shows ───────────────
@@ -711,7 +935,7 @@ const state = { batch: [] };
 const gates = [];
 function setStartDisabled(off, why) { gates.push([!!off, why]); }
 function gateWrite() {}
-function renderQueueLog() {}
+function renderActivityLog() {}
 function scrollBoxToActive() {}
 %(pending)s
 %(batch)s
@@ -732,7 +956,7 @@ def test_start_is_open_the_moment_a_link_is_pasted(app_js, tmp_path):
         "pending": _slice(app_js, "  function pendingUrl()",
                           "  /* The Main tab's \"No Genre Selected\" ask"),
         "batch": _slice(app_js, "  function renderBatch()",
-                        "  /* One line of the queue log"),
+                        "  /* The batch rows are boxed"),
     })
     why = "Add a link to the queue before starting a download."
     assert r["blank"] == [True, why]

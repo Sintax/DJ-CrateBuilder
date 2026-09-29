@@ -28,8 +28,24 @@
      rows (_wl_batch_render_rows) — a different vocabulary from the manual
      queue's on purpose, so the borrowed panel reads as the Watch List's. */
   const WL_QROW_MARK = { done: '✓', active: '⬇', skipped: '⊘', error: '✗', queued: '○' };
-  const DL_LOG_CLASS = { done: 'downloaded', skipped: 'skipped', error: 'error', queued: 'default' };
   const DL_MARK_COLOR = { done: 'var(--cb-ok)', skipped: 'var(--cb-warn)', error: 'var(--cb-err)', active: 'var(--cb-accent)' };
+
+  /* ── Activity feed state ───────────────────────────────────────────────────
+     Kept per job because a Watch List download can run beside a batch and
+     borrows the panel the moment the batch ends. `shown` names what the panel
+     currently holds, so a redraw only happens when that changes — the feed is
+     appended to line by line, and an overnight run is thousands of lines. */
+  const ACTIVITY_LIMIT = 1000;
+  const act = {
+    lines: { batch: [], watchlist: [] },
+    counts: { batch: { downloaded: 0, skipped: 0, error: 0 },
+              watchlist: { downloaded: 0, skipped: 0, error: 0 } },
+    jobId: { batch: null, watchlist: null },
+    gen: { batch: 0, watchlist: 0 },
+    shown: null,
+  };
+  const ACT_MARK = { start: '▸', downloaded: '✓', skipped: '↷', error: '✕', info: '·' };
+  const ACT_VERB = { start: 'Downloading', downloaded: 'Downloaded', skipped: 'Skipped', error: 'Failed' };
 
   /* ── tooltips ───────────────────────────────────────────────────────────
      theme.css styles a hover-only mockup; the contract requires focus,
@@ -1259,10 +1275,10 @@
     // the same job category and has no download to show here.
     if (!dl.running && wl.running && wlQueueRows().length) {
       return { kind: 'watchlist', running: true, current: wl.current,
-               overall: wl.overall, marks: WL_QROW_MARK };
+               overall: wl.overall };
     }
     return { kind: 'batch', running: dl.running, current: dl.current,
-             overall: dl.overall, marks: DL_MARK };
+             overall: dl.overall };
   }
 
   /* The run's channel rows in order. queue.row carries its own index, so the
@@ -1526,7 +1542,7 @@
     });
     bindTips(host);
     scrollBoxToActive(host, '.cb-qrow.is-active');
-    renderQueueLog();
+    renderActivityLog();
   }
 
   function renderBatch() {
@@ -1554,7 +1570,7 @@
       gateWrite($('#dl-clear'), running
         ? 'The queue is locked while a download is running. Cancel it first, or skip the row instead.'
         : '', 'main.batch_clear');
-      renderQueueLog();
+      renderActivityLog();
       return;
     }
     setStartDisabled(running, running ? 'A batch is already running.' : '');
@@ -1627,35 +1643,11 @@
     });
     bindTips(host);
     scrollBoxToActive(host, '.cb-qrow.is-active');
-    renderQueueLog();
+    renderActivityLog();
   }
 
-  /* One line of the queue log, in whichever run's mark vocabulary the panel is
-     currently showing (dlView().marks). */
-  function queueLogLine(st, title, detail, marks) {
-    const line = document.createElement('div');
-    if (st === 'active') line.className = 'cb-log__now';
-
-    const mark = document.createElement('span');
-    mark.className = DL_LOG_CLASS[st] || '';
-    mark.textContent = ((marks || DL_MARK)[st] || '·') + '  ';
-    line.appendChild(mark);
-
-    const name = document.createElement('span');
-    name.className = st === 'active' ? 'cb-log__title' : '';
-    name.textContent = title;
-    line.appendChild(name);
-
-    const note = document.createElement('span');
-    note.className = 'cb-mut';
-    note.style.marginLeft = '10px';
-    note.textContent = detail;
-    line.appendChild(note);
-    return line;
-  }
-
-  /* The queue log and the batch rows are both boxed at their idle height
-     (app.css) so neither card can grow with the queue — which means the
+  /* The batch rows are boxed at their idle height (app.css) so the card
+     cannot grow with the queue — which means the
      running line can sit below the fold, and the box has to follow it.
      Scrolled by hand rather than with scrollIntoView, which would scroll the
      screen behind it too, and measured off the two rectangles rather than
@@ -1683,6 +1675,8 @@
     if (t && t.downloaded != null) {
       came = `${num(t.downloaded)} downloaded · ${num(t.skipped)} skipped · `
         + `${num(t.errors)} error${t.errors === 1 ? '' : 's'}`;
+    } else if (last.activity && last.activity.length) {
+      came = activityCountsText(activityTally(last.activity));
     } else {
       const n = (st) => last.rows.filter((r) => r.state === st).length;
       came = `${n('done')} done · ${n('skipped')} skipped · `
@@ -1693,12 +1687,85 @@
     return `${kind} ${ended} ${when} · ${came}`;
   }
 
-  function renderQueueLog() {
+  function activityTally(lines) {
+    const t = { downloaded: 0, skipped: 0, error: 0 };
+    lines.forEach((e) => { if (e && e.kind in t) t[e.kind] += 1; });
+    return t;
+  }
+
+  function activityCountsText(t) {
+    return `${num(t.downloaded)} downloaded · ${num(t.skipped)} skipped · `
+      + `${num(t.error)} failed`;
+  }
+
+  /* One step of a run. Titles and reasons come from YouTube and SoundCloud,
+     so every piece goes in as text, never markup. The line is clipped to one
+     row, so its full text rides along as a tooltip. */
+  function activityLine(e) {
+    const kind = ACT_MARK[e.kind] ? e.kind : 'info';
+    const line = document.createElement('div');
+    line.className = 'cb-act cb-act--' + kind;
+    const parts = [];
+    const add = (cls, text) => {
+      const span = document.createElement('span');
+      span.className = cls;
+      span.textContent = text;
+      line.appendChild(span);
+      parts.push(text);
+    };
+
+    add('ts', (e.ts || '') + '  ');
+    add('cb-act__mark', ACT_MARK[kind] + ' ');
+    const verb = e.verb || ACT_VERB[kind];
+    add('cb-act__verb', verb || e.title || '');
+    if (verb && e.title) add('cb-act__title', '  ' + e.title);
+    if (e.detail) add('cb-mut', ' — ' + e.detail);
+    line.title = parts.join('');
+    return line;
+  }
+
+  function resetActivity(job, jobId) {
+    act.lines[job] = [];
+    act.counts[job] = { downloaded: 0, skipped: 0, error: 0 };
+    act.jobId[job] = jobId == null ? null : jobId;
+    act.gen[job] += 1;
+  }
+
+  /* A page that reloads mid-run takes the host's lines so far, merged by
+     `seq` with any that arrived while the snapshot was in flight. Only lines
+     this page had not seen are counted, so the tally survives the cap. A
+     different job_id is a different run — `seq` restarts every run, so a
+     page that missed the start must not merge the two. */
+  function syncActivity(snap) {
+    const live = (snap && snap.run_activity) || {};
+    ['batch', 'watchlist'].forEach((job) => {
+      if (!(snap && snap.running && snap.running[job])) return;
+      const host = live[job] || { job_id: null, lines: [] };
+      if (host.job_id != null && host.job_id !== act.jobId[job]) {
+        resetActivity(job, host.job_id);
+      }
+      const local = act.lines[job];
+      const have = new Set(local.map((e) => e.seq));
+      const unseen = (host.lines || []).filter((e) => !have.has(e.seq));
+      if (!unseen.length) return;
+      const t = activityTally(unseen);
+      Object.keys(t).forEach((k) => { act.counts[job][k] += t[k]; });
+      act.lines[job] = local.concat(unseen)
+        .sort((x, y) => (x.seq || 0) - (y.seq || 0))
+        .slice(-ACTIVITY_LIMIT);
+      act.gen[job] += 1;
+    });
+  }
+
+  function activityAtBottom(log) {
+    return log.scrollHeight - log.scrollTop - log.clientHeight < 24;
+  }
+
+  function renderActivityLog() {
     const view = dlView();
-    const log = $('#dl-queue');
-    const meta = $('#dl-queue-meta');
-    const clear = $('#dl-queue-clear');
-    log.innerHTML = '';
+    const log = $('#dl-activity');
+    const meta = $('#dl-activity-meta');
+    const clear = $('#dl-activity-clear');
     /* Only a kept run can be cleared — the button is hidden the rest of the
        time so the title line reads as it always did. */
     const last = !view.running && state && state.last_run;
@@ -1706,62 +1773,63 @@
       clear.hidden = !last;
       if (last) gateWrite(clear, '');
     }
-
-    if (last) {
-      last.rows.forEach((r) => {
-        const st = r.state || 'queued';
-        log.appendChild(queueLogLine(st, r.title || String(r.id), r.detail || '',
-          last.job === 'watchlist' ? WL_QROW_MARK : DL_MARK));
-      });
+    let lines;
+    let source;
+    let key;
+    if (view.running) {
+      lines = act.lines[view.kind];
+      source = `live:${view.kind}`;
+      key = `${source}:${act.gen[view.kind]}`;
+      meta.textContent = activityCountsText(act.counts[view.kind]);
+    } else if (last) {
+      lines = last.activity || [];
+      source = key = `last:${last.job}:${last.finished_at}`;
       meta.textContent = lastRunMeta(last);
+    } else {
+      lines = [];
+      source = key = 'empty';
+      meta.textContent = 'empty';
+    }
+    if (act.shown === key) return;
+    /* A redraw of the feed already on screen (a resync) leaves a reader who
+       scrolled back where they were; anything else opens on the newest line. */
+    const keep = act.shown && act.shown.startsWith(source + ':')
+      && !activityAtBottom(log) ? log.scrollTop : null;
+    act.shown = key;
+    log.textContent = '';
+    if (!lines.length) {
+      log.textContent = view.running ? 'Starting…'
+        : last ? 'No steps were recorded for this run.'
+        : 'Nothing yet — press Start Downloads and each step will show here.';
       return;
     }
+    const frag = document.createDocumentFragment();
+    lines.slice(-ACTIVITY_LIMIT).forEach((e) => frag.appendChild(activityLine(e)));
+    log.appendChild(frag);
+    log.scrollTop = keep == null ? log.scrollHeight : keep;
+  }
 
-    if (view.kind === 'watchlist') {
-      const channels = wlQueueRows();
-      let settled = 0;
-      channels.forEach((r) => {
-        const st = r.state || 'queued';
-        if (st === 'done' || st === 'error' || st === 'skipped') settled += 1;
-        log.appendChild(queueLogLine(st, r.title || String(r.id),
-          st === 'active'
-            ? ((view.current && (view.current.title || '')) || 'starting…')
-            : (r.detail || (st === 'queued' ? 'waiting' : '')),
-          view.marks));
-      });
-      if (!channels.length) log.textContent = 'Starting the Watch List run…';
-      meta.textContent = `${channels.length} channel` +
-        `${channels.length === 1 ? '' : 's'} · ${settled} processed`;
-      scrollBoxToActive(log, '.cb-log__now');
-      return;
-    }
-
-    const rows = state.batch || [];
-    if (!dl.running) {
-      if (!rows.length) {
-        log.textContent = 'Queue is empty — add links above, then press Start Downloads.';
-        meta.textContent = 'empty';
-      } else {
-        log.textContent = 'Press Start Downloads to begin.';
-        meta.textContent = `${rows.length} URL${rows.length === 1 ? '' : 's'} queued`;
-      }
-      return;
-    }
-
-    let processed = 0;
-    rows.forEach((row) => {
-      const rt = dl.rows[row.id];
-      const st = rt ? rt.state : (row.state === 'skipped' ? 'skipped' : 'queued');
-      if (st === 'done' || st === 'error' || st === 'skipped') processed += 1;
-
-      log.appendChild(queueLogLine(st, (rt && rt.title) || row.url,
-        st === 'active'
-          ? ((dl.current && (dl.current.speed_text || (dl.current.percent != null ? `${dl.current.percent}%` : ''))) || 'fetching…')
-          : (rt && rt.detail) || (st === 'queued' ? 'queued' : ''),
-        DL_MARK));
-    });
-    meta.textContent = `${rows.length} track${rows.length === 1 ? '' : 's'} · ${processed} processed`;
-    scrollBoxToActive(log, '.cb-log__now');
+  /* One new step, appended rather than redrawn. The box follows the newest
+     line only when the reader was already at the bottom, so scrolling back
+     to read an earlier line is not yanked away by the next one. */
+  function appendActivity(e) {
+    if (!e) return;
+    const job = e.job === 'watchlist' ? 'watchlist' : 'batch';
+    if (e.job_id != null && e.job_id !== act.jobId[job]) resetActivity(job, e.job_id);
+    const lines = act.lines[job];
+    const lastSeq = lines.length ? lines[lines.length - 1].seq : null;
+    if (e.seq != null && lastSeq != null && e.seq <= lastSeq) return;
+    lines.push(e);
+    if (lines.length > ACTIVITY_LIMIT) lines.splice(0, lines.length - ACTIVITY_LIMIT);
+    if (e.kind in act.counts[job]) act.counts[job][e.kind] += 1;
+    if (act.shown !== `live:${job}:${act.gen[job]}`) { renderActivityLog(); return; }
+    const log = $('#dl-activity');
+    const atBottom = activityAtBottom(log);
+    if (!log.firstElementChild) log.textContent = '';
+    log.appendChild(activityLine(e));
+    while (log.childElementCount > ACTIVITY_LIMIT) log.firstElementChild.remove();
+    if (atBottom) log.scrollTop = log.scrollHeight;
+    $('#dl-activity-meta').textContent = activityCountsText(act.counts[job]);
   }
 
   /* Every write control funnels through here so a read-only session (or one
@@ -7601,13 +7669,13 @@
       state.batch = [];
       renderBatch();
     });
-    // The kept run in the queue panel (queue.last_run). Cleared on the host so
-    // every page — and a reload — agrees; the event repaints this one too.
-    $('#dl-queue-clear').addEventListener('click', async () => {
+    // The kept run in the Activity panel (queue.last_run). Cleared on the host
+    // so every page — and a reload — agrees; the event repaints this one too.
+    $('#dl-activity-clear').addEventListener('click', async () => {
       try { await call('queue.clear_last_run'); }
       catch (_) { return; /* call() already toasted the reason */ }
       state.last_run = null;
-      renderQueueLog();
+      renderActivityLog();
     });
 
     $$('#dl-platform > span').forEach((seg) => {
@@ -8098,6 +8166,7 @@
     dl.running = !!(state.running && state.running.batch);
     wl.running = !!(state.running && state.running.watchlist);
     if (!wl.running) { wl.rows = []; wl.skipping = {}; }
+    syncActivity(state);
     mt.running = !!(state.running && state.running.maintenance);
     mt.task = (state.running && state.running.maintenance_task) || null;
     wl.cards = state.watchlist || [];
@@ -8130,7 +8199,7 @@
         // Watch List download as the tkinter Main tab does
         // (_begin_download_session(watchlist=True)) — unless a manual batch of
         // its own is running, which keeps the panel.
-        if (!dl.running) { renderCurrent(); renderQueueLog(); }
+        if (!dl.running) { renderCurrent(); renderActivityLog(); }
         return;
       }
       if (p && p.job === 'maintenance') {
@@ -8139,7 +8208,7 @@
       if (!dl.running || !isBatchProgress(p)) return;
       dl.current = p;
       renderCurrent();
-      renderQueueLog();
+      renderActivityLog();
       renderOverviewRunning();
     });
     cbApi.on('progress.overall', (p) => {
@@ -8161,6 +8230,7 @@
     // The pinned scan log, and nothing else: a run's closing DONE line is a
     // log line, not a state signal (see job.finished below).
     cbApi.on('scan.line', (entry) => { if (entry) wlLogAppend(entry); });
+    cbApi.on('run.activity', appendActivity);
     /* Rows name their job for the same reason progress frames do: a Watch List
        download's rows are its CHANNELS, and a manual batch running beside it
        keeps its own. */
@@ -8200,7 +8270,7 @@
     cbApi.on('queue.last_run', (last) => {
       if (!state) return;
       state.last_run = last || null;
-      renderQueueLog();
+      renderActivityLog();
     });
     /* Its mirror: a job category has just been claimed. Emitted with the slot
        already taken, so the snapshot this asks for cannot come back claiming
@@ -8217,6 +8287,7 @@
       const job = p && p.job;
       // Set before the snapshot lands so the controls close on this frame
       // rather than a round trip later; refresh() then confirms from the host.
+      if (job === 'batch' || job === 'watchlist') resetActivity(job, p.job_id);
       if (job === 'batch') dl.running = true;
       else if (job === 'watchlist') wl.running = true;
       else if (job === 'maintenance') mt.running = true;

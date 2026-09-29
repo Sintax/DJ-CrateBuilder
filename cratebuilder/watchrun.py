@@ -13,7 +13,8 @@ from cratebuilder import util
 from cratebuilder import watchlist_share
 from cratebuilder.batchresolve import (TrackSpec, channel_folders, entry_url,
                                        platform_dir)
-from cratebuilder.batchrun import BatchRunner
+from cratebuilder.batchrun import (ACTIVITY_EVENT, BatchRunner,
+                                   activity_payload)
 from cratebuilder.crate import (ChannelCrate, CrateLayout, SkipMode,
                                 classify_scan_entries)
 # cratebuilder.service does NOT import this module at import time — it reaches
@@ -231,6 +232,8 @@ class WatchlistOps:
         # it did.
         self._failed = 0
         self._track_errors = 0
+        # What the run's Activity lines have said so far, for its closing line.
+        self._act_counts = {"downloaded": 0, "skipped": 0, "error": 0}
 
     # ── Collaborators ─────────────────────────────────────────────────────────
     def _db(self):
@@ -359,6 +362,21 @@ class WatchlistOps:
             "detail": detail, "job": WATCHLIST_JOB,
         })
 
+    def _activity(self, kind, title, detail="", verb=None):
+        """One line of the Downloads screen's Activity feed for the run as a
+        whole; the per-track lines come from the BatchRunner itself."""
+        self._emit_activity(activity_payload(
+            WATCHLIST_JOB, kind, title, detail, ts=self._timestamp(),
+            verb=verb))
+
+    def _emit_activity(self, payload):
+        """Every Activity line of the run passes here, the runner's included,
+        so the closing line's tally is the one the feed itself shows."""
+        kind = payload.get("kind")
+        if kind in self._act_counts:
+            self._act_counts[kind] += 1
+        self._emit(ACTIVITY_EVENT, payload)
+
     def _publish_queue(self, start=0):
         """Announce the channels waiting their turn, so the panel shows the
         whole run from its first frame rather than growing one row at a time."""
@@ -391,6 +409,7 @@ class WatchlistOps:
             self._mode = mode
             self._failed = 0
             self._track_errors = 0
+            self._act_counts = {"downloaded": 0, "skipped": 0, "error": 0}
 
     def _end(self):
         """Close the run to joins. Cleared BEFORE the terminal flush, which
@@ -690,12 +709,19 @@ class WatchlistOps:
                     self._failed += 1
                     self._line(LINE_ERROR,
                                f"ERROR {self._name(cid)} — {str(exc)[:120]}")
+                    self._activity("error", self._name(cid), str(exc)[:120])
                     self._queue_row(cid, position, "error", str(exc)[:120])
         finally:
             self._end()
             self._flush()
             self._line(LINE_DONE, f"DONE Download complete — "
                                   f"{_plural(downloaded, 'track')} downloaded")
+            counts = self._act_counts
+            self._activity("info", ("Cancelled" if self._cancel_all.is_set()
+                                    else "Finished")
+                           + f" — {counts['downloaded']} downloaded, "
+                             f"{counts['skipped']} skipped, "
+                             f"{counts['error']} failed")
             self._patch_counts()
         # After the try/finally for the same reason run_scan's is — see there.
         # A run that lost anything is not routine, so it takes the level that
@@ -742,12 +768,15 @@ class WatchlistOps:
         db = self._db()
         row = db.get_watchlist_channel(cid)
         if row is None or self._cancelled(cid):
+            self._activity("info", f"Channel {self._name(cid)}", "cancelled",
+                           verb="Stopped")
             self._queue_row(cid, index, "skipped", "cancelled")
             return 0
         name = row.get("display_name") or row.get("url") or "Channel"
         if is_unresolved_channel(row):
             self._line(LINE_ERROR, f"ERROR {name} — link unresolved; fix the link "
                                    f"before downloading")
+            self._activity("error", name, "link unresolved")
             self._queue_row(cid, index, "error", "link unresolved", name=name)
             return 0
 
@@ -760,17 +789,21 @@ class WatchlistOps:
                            if isinstance(e, dict)]
             except scanproc.ScanCancelled:
                 self._line(LINE_DEFAULT, f"SCAN {name} — cancelled")
+                self._activity("info", f"Channel {name}", "cancelled",
+                               verb="Stopped")
                 self._queue_row(cid, index, "skipped", "cancelled", name=name)
                 return 0
             except Exception as exc:
                 self._failed += 1
                 self._line(LINE_ERROR, f"ERROR {name} — {str(exc)[:120]}")
+                self._activity("error", name, str(exc)[:120])
                 self._queue_row(cid, index, "error", str(exc)[:120], name=name)
                 return 0
         else:
             entries = pending_entries(row)
         if not entries:
             self._line(LINE_DEFAULT, f"SCAN {name} — nothing pending")
+            self._activity("info", f"Channel {name}", "nothing pending")
             self._queue_row(cid, index, "skipped", "nothing pending", name=name)
             return 0
 
@@ -782,6 +815,8 @@ class WatchlistOps:
         self._card(cid, progress=dict(state))
         self._line(LINE_DEFAULT, f"SCAN {name} — downloading "
                                  f"{_plural(len(specs), 'track')}…")
+        self._activity("info", f"Channel {name}",
+                       f"{_plural(len(specs), 'track')} to download")
         self._queue_row(cid, index, "active", _plural(len(specs), "track"),
                         name=name)
 
@@ -836,6 +871,9 @@ class WatchlistOps:
         Everything the web UI needs still arrives as a normal event — this only
         adds the per-channel card the design's downloading state renders."""
         def emit(type, payload):
+            if type == ACTIVITY_EVENT:
+                self._emit_activity(payload)
+                return
             self._emit(type, payload)
             if type == "progress.overall":
                 state["done"] = payload.get("done", state["done"])

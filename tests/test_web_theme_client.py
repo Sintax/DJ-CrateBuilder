@@ -461,7 +461,7 @@ def test_everything_placed_from_a_measurement_divides_by_the_page_zoom():
     for start, end in [
         ("  function showTip(host, text) {", "  function hideTip()"),
         ("  function toggleNotifications() {", "  function renderNotifications()"),
-        ("  function scrollBoxToActive(", "  function renderQueueLog()"),
+        ("  function scrollBoxToActive(", "  /* The kept run's title line"),
         ("      resize.addEventListener('mousedown'", "        function onUp()"),
         ("  function dbShowMenu(x, y, items) {", "  async function dbCopyText("),
     ]:

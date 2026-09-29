@@ -390,6 +390,135 @@ def test_a_failed_run_still_keeps_what_it_got_through(service):
     assert len(last["rows"]) == 2
 
 
+# ── the run's Activity lines (run.activity) ──────────────────────────────────
+# One line per step of a run for the Downloads screen's Activity feed: kept
+# while the run goes (so a reload mid-run shows the feed so far) and frozen
+# into last_run with the rows (so an overnight run is still there at breakfast).
+
+def _step(category, n, kind="downloaded"):
+    return {"job": category, "ts": "03:00:00", "kind": kind,
+            "title": f"Track {n}", "detail": "done"}
+
+
+def test_activity_lines_are_numbered_and_frozen_into_the_last_run(service):
+    out = []
+    service.events.subscribe(
+        lambda t, p: out.append(p) if t == "run.activity" else None)
+    _run_emitting(service, "batch", _RUN_ROWS, tail=lambda: [
+        service.emit("run.activity", _step("batch", n)) for n in (1, 2)])
+
+    assert [p["seq"] for p in out] == [1, 2]
+    activity = service.snapshot()["last_run"]["activity"]
+    assert activity == [
+        {"seq": 1, "ts": "03:00:00", "kind": "downloaded", "title": "Track 1",
+         "detail": "done"},
+        {"seq": 2, "ts": "03:00:00", "kind": "downloaded", "title": "Track 2",
+         "detail": "done"},
+    ]
+    # Finished runs are not live any more.
+    assert service.snapshot()["run_activity"] == {}
+
+
+def test_the_snapshot_carries_a_running_jobs_lines_so_far(service):
+    release = threading.Event()
+    seen = threading.Event()
+    done = threading.Event()
+    service.events.subscribe(
+        lambda t, p: done.set() if t == JOB_FINISHED else None)
+
+    def body():
+        service.emit("run.activity", _step("watchlist", 1, kind="start"))
+        seen.set()
+        release.wait(10)
+
+    service._start_job("watchlist", body)
+    assert seen.wait(10)
+    try:
+        live = service.snapshot()["run_activity"]["watchlist"]
+        assert live["job_id"] == service._jobs["watchlist"]
+        assert [(e["seq"], e["title"]) for e in live["lines"]] == [(1, "Track 1")]
+    finally:
+        release.set()
+    assert done.wait(10)
+
+
+def test_each_line_carries_its_runs_job_id(service):
+    """`seq` restarts every run, so a page that missed a run's start tells
+    runs apart by job_id."""
+    out = []
+    service.events.subscribe(
+        lambda t, p: out.append(p) if t == "run.activity" else None)
+    ids = []
+    service.events.subscribe(
+        lambda t, p: ids.append(p["job_id"]) if t == JOB_STARTED else None)
+    for n in (1, 2):
+        _run_emitting(service, "batch", [], tail=lambda n=n: service.emit(
+            "run.activity", _step("batch", n)))
+    assert [(p["seq"], p["job_id"]) for p in out] == [(1, ids[0]), (1, ids[1])]
+    assert ids[0] != ids[1]
+
+
+def test_a_verb_is_kept_with_the_line(service):
+    _run_emitting(service, "batch", [], tail=lambda: service.emit(
+        "run.activity", dict(_step("batch", 1, kind="start"),
+                             verb="Reading link")))
+    line = service.snapshot()["last_run"]["activity"][0]
+    assert line["verb"] == "Reading link"
+
+
+def test_a_run_with_steps_but_no_rows_is_still_kept(service):
+    _run_emitting(service, "watchlist", [], tail=lambda: service.emit(
+        "run.activity", _step("watchlist", 1)))
+    last = service.snapshot()["last_run"]
+    assert last["rows"] == []
+    assert [e["title"] for e in last["activity"]] == ["Track 1"]
+
+
+def test_the_activity_kept_is_bounded_to_the_most_recent(service, monkeypatch):
+    from cratebuilder import service as service_module
+    monkeypatch.setattr(service_module, "ACTIVITY_LIMIT", 5)
+    _run_emitting(service, "batch", _RUN_ROWS, tail=lambda: [
+        service.emit("run.activity", _step("batch", n)) for n in range(1, 9)])
+    activity = service.snapshot()["last_run"]["activity"]
+    assert [e["seq"] for e in activity] == [4, 5, 6, 7, 8]
+
+
+def test_a_new_run_starts_its_activity_afresh(service):
+    _run_emitting(service, "batch", _RUN_ROWS, tail=lambda: service.emit(
+        "run.activity", _step("batch", 1)))
+    _run_emitting(service, "batch", _RUN_ROWS, tail=lambda: service.emit(
+        "run.activity", _step("batch", 2)))
+    activity = service.snapshot()["last_run"]["activity"]
+    assert [(e["seq"], e["title"]) for e in activity] == [(1, "Track 2")]
+
+
+def test_a_scan_with_neither_rows_nor_steps_leaves_the_kept_feed(service):
+    _run_emitting(service, "watchlist", _RUN_ROWS, tail=lambda: service.emit(
+        "run.activity", _step("watchlist", 1)))
+    kept = service.snapshot()["last_run"]
+    _run_emitting(service, "watchlist", [])
+    assert service.snapshot()["last_run"] == kept
+    assert kept["activity"]
+
+
+def test_clear_drops_the_kept_feed_too(service):
+    _run_emitting(service, "batch", _RUN_ROWS, tail=lambda: service.emit(
+        "run.activity", _step("batch", 1)))
+    service.call("queue.clear_last_run")
+    assert service.snapshot()["last_run"] is None
+
+
+def test_activity_lines_are_never_coalesced_away(service):
+    """progress.* frames are rate-limited; a feed line dropped that way would
+    be a step the user never sees."""
+    out = []
+    service.events.subscribe(
+        lambda t, p: out.append(p["seq"]) if t == "run.activity" else None)
+    _run_emitting(service, "batch", [], tail=lambda: [
+        service.emit("run.activity", _step("batch", n)) for n in range(1, 51)])
+    assert out == list(range(1, 51))
+
+
 @pytest.mark.parametrize("category", ["batch", "watchlist", "maintenance"])
 def test_job_started_is_emitted_with_the_slot_already_taken(service, category):
     """The mirror of job.finished's guarantee. A frontend resyncing on this

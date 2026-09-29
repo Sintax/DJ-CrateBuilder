@@ -29,6 +29,12 @@ DEFAULT_JOB = "batch"
 # is enough to rule out a single bad video and still fire early in a batch.
 AUTH_WARN_THRESHOLD = 3
 
+# One line of the Downloads screen's Activity feed per step of a run. Separate
+# from queue.row, which says only where each pasted LINK stands: a channel link
+# holding fifty tracks is one row but fifty-odd steps.
+ACTIVITY_EVENT = "run.activity"
+ACTIVITY_KINDS = ("start", "downloaded", "skipped", "error", "info")
+
 
 # ── Pure helpers ──────────────────────────────────────────────────────────────
 def resolve_sleep_range(policy):
@@ -48,6 +54,17 @@ def pick_session_ua(policy, rng=None):
     if not policy.rotate_ua:
         return None
     return (rng or random).choice(util.USER_AGENT_POOL)
+
+
+def activity_payload(job, kind, title, detail="", ts=None, verb=None):
+    """One run.activity entry, stamped with the local wall-clock time now
+    unless *ts* is given. *verb* replaces the kind's own label ("Reading
+    link" rather than "Downloading") and is present only when given."""
+    payload = {"job": job, "ts": ts or datetime.now().strftime("%H:%M:%S"),
+               "kind": kind, "title": title or "", "detail": detail or ""}
+    if verb:
+        payload["verb"] = verb
+    return payload
 
 
 def eta_text(durations, remaining):
@@ -235,6 +252,8 @@ class BatchRunner:
         self._log_line(activitylog.separator(
             f"DOWNLOAD STARTED  —  {len(rows)} "
             f"URL{'s' if len(rows) != 1 else ''}"))
+        self._activity("info", f"Started — {len(rows)} "
+                               f"link{'s' if len(rows) != 1 else ''}")
         index = 0
         while not self._cancel.is_set():
             while seen < len(rows):
@@ -253,6 +272,7 @@ class BatchRunner:
         reason = util.condense_error(str(exc), REASON_WIDTH)
         self._errors += 1
         self._log_line(activitylog.error("Batch", "", f"{reason}: {exc}"))
+        self._activity("error", "Batch", reason)
 
     def _run_row(self, row, index):
         """One queue row: probe it, expand it, download it."""
@@ -264,11 +284,13 @@ class BatchRunner:
             # skipped when the batch started never entered the total at all.
             self._withdraw(row)
             self._log_line(activitylog.skipped(title, "", "skipped by user"))
+            self._activity("info", title, verb="Passed over")
             self._overall()
             self._row(row, index, "skipped", "skipped")
             return
 
         self._row(row, index, "active", "fetching…")
+        self._activity("start", url, verb="Reading link")
         try:
             resolved = self._resolver.resolve(row)
         except Exception as exc:
@@ -278,6 +300,7 @@ class BatchRunner:
             self._errors += 1
             self._done += 1
             self._log_line(activitylog.error(title, url, reason))
+            self._activity("error", title, reason)
             self._overall()
             self._row(row, index, "error", reason)
             return
@@ -285,10 +308,14 @@ class BatchRunner:
         tracks = resolved.tracks
         if not tracks:
             self._withdraw(row)
+            self._activity("info", title, verb="Nothing found")
             self._overall()
             self._row(row, index, "skipped", "nothing found")
             return
 
+        if len(tracks) > 1:
+            self._activity("info", f"Found {len(tracks)} tracks",
+                           resolved.channel_name or title)
         self._admit(row)                    # a no-op unless the row grew in
         self._total += len(tracks) - 1      # after the batch started
         tally = self.run_tracks(tracks, row=row, index=index)
@@ -339,8 +366,12 @@ class BatchRunner:
                                        ignore_skip_existing)
             if verdict is None:
                 started = self._now()
+                self._activity("start", spec.title)
                 outcome = self._download(spec, policy)
                 if outcome.kind == "cancelled":
+                    self._activity("info", spec.title,
+                                   "cancelled" if self._cancel.is_set()
+                                   else "skipped by user", verb="Stopped")
                     tally["stopped"] = True
                     break
                 self._durations.append(self._now() - started)
@@ -442,11 +473,14 @@ class BatchRunner:
             tally["downloaded"] += 1
             self._downloaded += 1
             state, detail = "done", "done"
+            self._activity("downloaded", title,
+                           "" if reason == "done" else reason)
         elif kind == "skipped":
             tally["skipped"] += 1
             self._skipped += 1
             state, detail = "skipped", reason
             self._log_line(activitylog.skipped(title, path, reason))
+            self._activity("skipped", title, reason)
             # Backfill tags on the file we already own, so the source URL is
             # recoverable even for tracks grabbed before tagging existed.
             if path:
@@ -455,12 +489,14 @@ class BatchRunner:
             tally["deferred"] += 1
             self._deferred += 1
             state, detail = "skipped", reason
+            self._activity("info", title, reason, verb="Held")
         else:
             # "unavailable" is counted with the errors, exactly as the
             # monolith's grand Failed counter does.
             tally["errors"] += 1
             self._errors += 1
             state, detail = "error", reason
+            self._activity("error", title, reason)
             if is_auth_reason(reason):
                 self._auth_failures += 1
                 if (self._auth_failures >= AUTH_WARN_THRESHOLD
@@ -512,6 +548,13 @@ class BatchRunner:
             "job": self._job,
         })
 
+    def _activity(self, kind, title, detail="", verb=None):
+        """One Activity line. Only the kinds the batch's own counters count
+        are "downloaded" / "skipped" / "error", so the feed's live tally and
+        the closing one agree; everything else is "info" with its own verb."""
+        self._emit(ACTIVITY_EVENT, activity_payload(self._job, kind, title,
+                                                    detail, verb=verb))
+
     def _overall(self):
         total = max(self._total, self._done)
         self._emit("progress.overall", {
@@ -531,6 +574,9 @@ class BatchRunner:
             "CANCELLED BY USER" if cancelled else
             f"BATCH COMPLETE  —  {self._downloaded} downloaded, "
             f"{self._skipped} skipped, {self._errors} failed"))
+        self._activity("info", ("Cancelled" if cancelled else "Finished")
+                       + f" — {self._downloaded} downloaded, "
+                         f"{self._skipped} skipped, {self._errors} failed")
         self._flush()
         self._emit("batch.finished", dict(counts, cancelled=cancelled))
         # The same summary as a notification, for a client that is not on the

@@ -864,3 +864,149 @@ def test_reset_clears_the_auth_counter(tmp_path):
     harness.runner._reset(3)
     _settle_failed(harness, tmp_path, "login required")
     assert len(harness.emit.of("auth.trouble")) == 1
+
+
+# ── run.activity: one line per step for the Downloads Activity feed ──────────
+def _steps(harness):
+    """(kind, verb, title, detail) per line; verb is None unless the line
+    carries its own label."""
+    return [(p["kind"], p.get("verb"), p["title"], p["detail"])
+            for p in harness.emit.of("run.activity")]
+
+
+def _counted(harness):
+    """What the page's live tally would show: the three counted kinds."""
+    kinds = [p["kind"] for p in harness.emit.of("run.activity")]
+    return {k: kinds.count(k) for k in ("downloaded", "skipped", "error")}
+
+
+def _closing(harness):
+    f = harness.emit.of("batch.finished")[-1]
+    return {"downloaded": f["downloaded"], "skipped": f["skipped"],
+            "error": f["errors"]}
+
+
+def test_every_activity_line_carries_the_job_and_a_clock_time(tmp_path):
+    harness = Harness(tmp_path, TRACK_PROBE, [])
+    harness.runner.run([_row()])
+    lines = harness.emit.of("run.activity")
+    assert lines
+    for line in lines:
+        assert set(line) - {"verb"} == {"job", "ts", "kind", "title", "detail"}
+        assert line["job"] == "batch"
+        assert len(line["ts"]) == 8 and line["ts"].count(":") == 2
+
+
+def test_a_multi_track_row_lists_every_track(tmp_path):
+    harness = Harness(tmp_path, LIST_PROBE, _entries("A", "B", "C"))
+    harness.settings.update({"skip_existing": True,
+                             "skip_mode": "In Folder Only"})
+    folder = tmp_path / "crate" / "YouTube" / "Techno" / "UKF"
+    folder.mkdir(parents=True)
+    (folder / "B.mp3").write_text("x", encoding="utf-8")
+    harness.outcomes["C"] = Outcome(kind="failed", reason="private video",
+                                    title="C")
+
+    harness.runner.run([_row()])
+
+    url = "https://youtube.com/watch?v=aaa"
+    assert _steps(harness) == [
+        ("info", None, "Started — 1 link", ""),
+        ("start", "Reading link", url, ""),
+        ("info", None, "Found 3 tracks", "UKF"),
+        ("start", None, "A", ""),
+        ("downloaded", None, "A", ""),          # a plain "done" says nothing
+        ("skipped", None, "B", "already on disk"),
+        ("start", None, "C", ""),
+        ("error", None, "C", "private video"),
+        ("info", None, "Finished — 1 downloaded, 1 skipped, 1 failed", ""),
+    ]
+    assert _counted(harness) == _closing(harness)
+
+
+def test_a_premiere_is_held_and_an_over_limit_track_is_a_skip(tmp_path):
+    harness = Harness(tmp_path, LIST_PROBE, [
+        {"id": "a", "title": "Premiere", "live_status": "is_upcoming"},
+        {"id": "b", "title": "Epic Set", "duration": 671},
+    ])
+    harness.settings.update({"limit_enabled": True, "limit_minutes": 8})
+    harness.runner.run([_row()])
+    steps = _steps(harness)
+    # The batch does not count a premiere as a skip, so neither does the feed.
+    assert ("info", "Held", "Premiere", "not out yet") in steps
+    assert ("skipped", None, "Epic Set", "exceeds limit (11:11 > 8:00)") in steps
+    assert _counted(harness) == _closing(harness)
+
+
+def test_a_row_that_will_not_resolve_says_why(tmp_path):
+    harness = Harness(tmp_path, TRACK_PROBE, [],
+                      error=YdlPermanent("Video unavailable"))
+    harness.runner.run([_row()])
+    errors = [s for s in _steps(harness) if s[0] == "error"]
+    assert len(errors) == 1
+    _, _, title, detail = errors[0]
+    assert title == "https://youtube.com/watch?v=aaa"
+    assert "gone" in detail
+    assert _counted(harness) == _closing(harness)
+
+
+def test_rows_passed_over_or_holding_nothing_are_not_counted_as_skips(tmp_path):
+    harness = Harness(tmp_path, LIST_PROBE, [])
+    harness.runner.run([_row(1, state="skipped", title="Kept Out"),
+                        _row(2, url="https://youtube.com/watch?v=b")])
+    steps = _steps(harness)
+    assert ("info", "Passed over", "Kept Out", "") in steps
+    assert ("info", "Nothing found", "https://youtube.com/watch?v=b", "") in steps
+    assert _counted(harness) == _closing(harness)
+
+
+def test_a_single_track_row_does_not_announce_a_count(tmp_path):
+    harness = Harness(tmp_path, TRACK_PROBE, [])
+    harness.runner.run([_row()])
+    assert not any(s[2].startswith("Found") for s in _steps(harness))
+
+
+def test_a_cancelled_run_says_cancelled_and_names_the_interrupted_track(tmp_path):
+    harness = Harness(tmp_path, LIST_PROBE, _entries("A", "B"))
+    harness.on_start = lambda plan: (harness.runner.cancel()
+                                     if plan.title == "B" else None)
+    harness.runner.run([_row()])
+    steps = _steps(harness)
+    assert ("info", "Stopped", "B", "cancelled") in steps
+    assert steps[-1] == ("info", None,
+                         "Cancelled — 1 downloaded, 0 skipped, 0 failed", "")
+    # Live and kept tallies agree: the interrupted track is not a skip.
+    assert _counted(harness) == _closing(harness)
+
+
+def test_a_skip_mid_track_reads_as_stopped_by_the_user(tmp_path):
+    harness = Harness(tmp_path, LIST_PROBE, _entries("A", "B"))
+    harness.on_start = lambda plan: (harness.runner.skip_row(1)
+                                     if plan.title == "B" else None)
+    harness.runner.run([_row(1)])
+    assert ("info", "Stopped", "B", "skipped by user") in _steps(harness)
+    assert _counted(harness) == _closing(harness)
+
+
+def test_an_unexpected_raise_is_an_activity_error(tmp_path):
+    def explode(**kwargs):
+        raise RuntimeError("downloader blew up")
+
+    harness = Harness(tmp_path, TRACK_PROBE, [], downloader_factory=explode)
+    harness.runner.run([_row()])
+    steps = _steps(harness)
+    assert any(s[0] == "error" and s[2] == "Batch" for s in steps)
+    assert steps[-1][2].startswith("Finished — 0 downloaded")
+    assert _counted(harness) == _closing(harness)
+
+
+def test_run_tracks_alone_lists_its_tracks_under_its_own_job(tmp_path):
+    harness = Harness(tmp_path, {}, [])
+    harness.runner._job = "watchlist"
+    harness.runner.run_tracks([_spec(tmp_path, t) for t in ("A", "B")])
+    lines = harness.emit.of("run.activity")
+    assert {p["job"] for p in lines} == {"watchlist"}
+    assert _steps(harness) == [("start", None, "A", ""),
+                               ("downloaded", None, "A", ""),
+                               ("start", None, "B", ""),
+                               ("downloaded", None, "B", "")]

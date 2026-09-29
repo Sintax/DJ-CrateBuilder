@@ -2,6 +2,7 @@
 
 import ast
 import base64
+import collections
 import getpass
 import io
 import itertools
@@ -23,7 +24,7 @@ from cratebuilder import updater_core as ucore
 from cratebuilder import watchlist_share
 from cratebuilder.artwork import DEFAULT_COVER_ART_MODE, extract_cover
 from cratebuilder.batchresolve import PLATFORM_SUBDIR, platform_dir
-from cratebuilder.batchrun import BatchRunner
+from cratebuilder.batchrun import ACTIVITY_EVENT, BatchRunner
 from cratebuilder.crate import CrateLayout
 from cratebuilder.db import DownloadsDatabase
 from cratebuilder.events import Coalescer, EventBus
@@ -113,15 +114,19 @@ def _send_dict(kind, url, then):
     return send
 
 
-# The Downloads screen's queue panel is redrawn from live queue.row events and
-# collapses the moment a run ends — so an overnight Watch List download left
+# The Downloads screen's Activity panel is drawn from live events and would
+# empty the moment a run ends — so an overnight Watch List download left
 # nothing to look at in the morning. The service keeps the finished run's
-# final rows and announces them with this event (None once cleared); the
-# snapshot carries the same record as `last_run`. Memory only, by choice: it
-# is last night's result, not a record worth outliving the process.
+# final rows and Activity lines and announces them with this event (None
+# once cleared); the snapshot carries the same record as `last_run`. Memory
+# only, by choice: it is last night's result, not a record worth outliving
+# the process.
 QUEUE_LAST_RUN = "queue.last_run"
 # The two job categories whose runs report queue rows.
 RUN_JOBS = ("batch", "watchlist")
+# How many of a run's Activity lines (run.activity) are kept, live and in
+# `last_run`. A long overnight run keeps its most recent steps, not all of them.
+ACTIVITY_LIMIT = 1000
 
 # What a crashed job is called in the error notification _start_job publishes.
 # Maintenance passes its own per-task title instead, since "Rebuild Database
@@ -925,6 +930,9 @@ class CrateBuilderService:
         # every worker thread, some of them while holding self._lock.
         self._run_lock = threading.Lock()
         self._run_rows = {}
+        self._run_activity = {}
+        self._run_seq = {}
+        self._run_job_id = {}
         self._run_tally = {}
         self._last_run = None
         self._batch_runner = None
@@ -1033,10 +1041,16 @@ class CrateBuilderService:
         self._emit.emit(type, payload)
 
     def _track_run(self, type, payload):
-        """Keep the run's rows as they arrive; when the job ends, freeze what
-        it settled on as `last_run` (see QUEUE_LAST_RUN). A job that reported
-        no rows — a Watch List SCAN claims the same slot as a download —
-        leaves the kept run alone rather than blanking it."""
+        """Keep the run's rows and Activity lines as they arrive; when the job
+        ends, freeze what it settled on as `last_run` (see QUEUE_LAST_RUN). A
+        job that reported neither — a Watch List SCAN claims the same slot as a
+        download — leaves the kept run alone rather than blanking it.
+
+        Each Activity line is stamped with its run's `job_id` and a per-run
+        `seq` on its way out, so a page that reloads mid-run can merge the
+        snapshot's lines with any that arrive while the snapshot is in flight
+        — and a page that missed a run's start still knows a new run from the
+        last one, since `seq` restarts at 1 every run."""
         payload = payload or {}
         job = payload.get("job")
         if type == "batch.finished":
@@ -1050,7 +1064,23 @@ class CrateBuilderService:
         if type == JOB_STARTED:
             with self._run_lock:
                 self._run_rows[job] = {}
+                self._run_activity[job] = collections.deque(
+                    maxlen=ACTIVITY_LIMIT)
+                self._run_seq[job] = 0
+                self._run_job_id[job] = payload.get("job_id")
                 self._run_tally.pop(job, None)
+        elif type == ACTIVITY_EVENT:
+            with self._run_lock:
+                seq = self._run_seq.get(job, 0) + 1
+                self._run_seq[job] = seq
+                payload["seq"] = seq
+                payload["job_id"] = self._run_job_id.get(job)
+                line = {k: payload.get(k)
+                        for k in ("seq", "ts", "kind", "title", "detail")}
+                if payload.get("verb"):
+                    line["verb"] = payload["verb"]
+                self._run_activity.setdefault(
+                    job, collections.deque(maxlen=ACTIVITY_LIMIT)).append(line)
         elif type == "queue.row":
             with self._run_lock:
                 self._run_rows.setdefault(job, {})[
@@ -1060,8 +1090,11 @@ class CrateBuilderService:
         elif type == JOB_FINISHED:
             with self._run_lock:
                 rows = self._run_rows.pop(job, {})
+                activity = list(self._run_activity.pop(job, ()))
+                self._run_seq.pop(job, None)
+                self._run_job_id.pop(job, None)
                 tally = self._run_tally.pop(job, None)
-                if not rows:
+                if not rows and not activity:
                     return
                 self._last_run = {
                     "job": job,
@@ -1072,6 +1105,7 @@ class CrateBuilderService:
                                    key=lambda r: (r["index"] is None,
                                                   r["index"] or 0)),
                     "tally": tally,
+                    "activity": activity,
                 }
                 last = dict(self._last_run)
             self.emit(QUEUE_LAST_RUN, last)
@@ -1079,6 +1113,14 @@ class CrateBuilderService:
     def queue_last_run(self):
         with self._run_lock:
             return dict(self._last_run) if self._last_run else None
+
+    def run_activity(self):
+        """The Activity lines of every run still in flight, job → {job_id,
+        lines}, so a page that reloads mid-run shows the feed so far."""
+        with self._run_lock:
+            return {job: {"job_id": self._run_job_id.get(job),
+                          "lines": list(lines)}
+                    for job, lines in self._run_activity.items()}
 
     def queue_clear_last_run(self):
         with self._run_lock:
@@ -1454,6 +1496,7 @@ class CrateBuilderService:
             "library": library,
             "batch": self.batch_list(),
             "last_run": self.queue_last_run(),
+            "run_activity": self.run_activity(),
             "watchlist": self.watchlist_list(),
             "running": {"batch": self._job_running("batch"),
                         "watchlist": self._job_running(WATCHLIST_JOB),

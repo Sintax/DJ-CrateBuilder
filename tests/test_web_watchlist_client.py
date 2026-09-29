@@ -345,7 +345,9 @@ const aboutUpdate = { onWatchlistStopped: null };
 function wlApplyCard() {}
 function wlLogAppend(e) { calls.push('log:' + (e.text || '')); }
 function renderCurrent() {}
-function renderQueueLog() {}
+function renderActivityLog() {}
+function appendActivity() {}
+function resetActivity() {}
 function renderOverall() {}
 function renderPanelBatchMini() {}
 function renderOverviewRunning() {}
@@ -490,7 +492,9 @@ const aboutUpdate = { onWatchlistStopped: null };
 function wlApplyCard() {}
 function wlLogAppend() {}
 function renderCurrent() { painted.push('current'); }
-function renderQueueLog() { painted.push('queuelog'); }
+function renderActivityLog() { painted.push('activitylog'); }
+function appendActivity() {}
+function resetActivity() {}
 function renderOverall() { painted.push('overall'); }
 function renderPanelBatchMini() { painted.push('mini'); }
 function renderOverviewRunning() {}
@@ -545,7 +549,7 @@ def test_watch_list_queue_rows_are_kept_and_painted_separately(app_js, tmp_path)
     assert r["wlRows"] == [[7, "active"], [9, "queued"]]
     assert r["manualRowsUntouched"] == 0
     # No manual batch: the Watch List run drives the shared progress UI.
-    assert r["paintedForWatchlist"] == ["current", "queuelog", "overall",
+    assert r["paintedForWatchlist"] == ["current", "activitylog", "overall",
                                         "mini"]
     # A manual batch owns the panel, so nothing watchlist-stamped repaints it —
     # but the rows keep being tracked for when the batch finishes.
@@ -585,7 +589,7 @@ function gateWrite(el, why) { gates.push(['gate', !!why, why]); }
 function bindTips() {}
 function call() { return Promise.resolve(); }
 function renderBatch() {}
-function renderQueueLog() {}
+function renderActivityLog() {}
 function scrollBoxToActive() {}
 function toast() {}
 %(panel)s
@@ -663,6 +667,7 @@ function renderDownloads() {}
 function renderWatchlist() {}
 function renderSettings() {}
 function renderUpdate() {}
+function syncActivity() {}
 function bindTips() {}
 const document = {};
 %(refresh)s
