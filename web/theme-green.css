@@ -8,11 +8,10 @@
    app.js's applyAccent toggles it live; with the attribute absent, nothing in
    this file applies.
 
-   The status colours are deliberately NOT here: --cb-err, --cb-log-error and
-   the warn button stay red, so a failed download still looks like a failure
-   whichever accent the page wears. The warn button is re-pinned to red below
-   precisely because theme.css fills it from --cb-line, which this sheet turns
-   green.
+   The status colours are deliberately NOT here: --cb-err and --cb-log-error
+   stay red, so a failed download still looks like a failure whichever accent
+   the page wears. The warn button is a control, not a status, so it follows
+   the accent (re-filled below, since theme.css fills it from --cb-line).
 
    The green is neon, not the reds' deep tone, and that changes one rule: a
    neon fill cannot carry white text, so every element theme.css and app.css
@@ -67,9 +66,15 @@
 :root[data-accent="green"][data-theme="dark"] .cb-bar__fill--overall { background: rgba(57, 255, 20, .60); }
 :root[data-accent="green"][data-theme="dark"] .cb-menu > *:hover { background: rgba(57, 255, 20, .16); }
 
-/* The destructive button keeps the design's reds on both grounds: the
-   literal fills theme.css and theme-dark.css use, not the now-green tokens. */
-:root[data-accent="green"] .cb-btn--warn { background: #CC0000; border-color: #CC0000; }
-:root[data-accent="green"] .cb-btn--warn:hover { background: #B00000; }
-:root[data-accent="green"][data-theme="dark"] .cb-btn--warn { background: #E00000; border-color: #E00000; }
-:root[data-accent="green"][data-theme="dark"] .cb-btn--warn:hover { background: #F21414; }
+/* The destructive button wears the page's accent like everything else, so a
+   Cancel or a Delete reads as part of the theme the user picked. theme.css
+   fills it from --cb-line, which is a hairline colour here, so it is
+   re-filled from the accent and lettered in the same ink as a fill. */
+:root[data-accent="green"] .cb-btn--warn {
+  background: var(--cb-accent); border-color: var(--cb-accent); color: var(--cb-fill-ink);
+}
+:root[data-accent="green"] .cb-btn--warn:hover { background: var(--cb-accent-hover); }
+
+/* Start Downloads keeps the white lettering it has under the red, by
+   request: the one fill that reads the same whichever accent is on. */
+:root[data-accent="green"] #dl-start { color: #fff; }

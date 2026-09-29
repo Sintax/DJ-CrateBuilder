@@ -321,6 +321,26 @@ def test_the_sheet_re_letters_every_white_on_accent_fill(name):
         assert cls in ink, cls
 
 
+@pytest.mark.parametrize("name", _OVERLAYS)
+def test_the_warn_button_follows_the_accent(name):
+    """Cancel, Delete, Skip and the rest take the theme's colour, not the
+    design's red; only the status colours (errors, failed rows) stay red."""
+    css = _strip_comments(_read(f"theme-{name}.css"))
+    start = css.index(f':root[data-accent="{name}"] .cb-btn--warn {{')
+    rule = css[start:css.index("}", start)]
+    assert "background: var(--cb-accent)" in rule
+    assert "color: var(--cb-fill-ink)" in rule
+    assert "#CC0000" not in css and "#E00000" not in css
+
+
+@pytest.mark.parametrize("name", _OVERLAYS)
+def test_start_downloads_keeps_white_lettering(name):
+    """The one fill that stays lettered in white whichever accent is on, the
+    way it reads under the red."""
+    css = _strip_comments(_read(f"theme-{name}.css"))
+    assert f':root[data-accent="{name}"] #dl-start {{ color: #fff; }}' in css
+
+
 def _luminance(hex_colour):
     """WCAG relative luminance of a #RRGGBB colour."""
     def channel(c):
