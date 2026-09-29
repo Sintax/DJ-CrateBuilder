@@ -589,6 +589,21 @@ def test_the_scanning_channel_counts_against_its_last_listing(tmp_path):
     assert any(e["count"] >= 1 for e in again)
 
 
+def test_a_never_scanned_channel_counts_against_its_downloads(tmp_path):
+    harness = Harness(tmp_path, FakeSession(listing=_entries("A", "B", "C")))
+    cid = harness.add_channel()
+    url = harness.row(cid)["url"]
+    for n in range(2):
+        harness.db.add_download(
+            video_id=f"v{n}", title=f"T{n}", channel_name="Deep House Daily",
+            channel_url=url, platform="YouTube", genre="House",
+            file_path=str(tmp_path / f"t{n}.mp3"), upload_date="20260101",
+            bitrate=320)
+    harness.ops.run_scan([cid])
+    first = [e for e in _progress_events(harness) if e["state"] == "scanning"]
+    assert first[0]["expected"] == 2
+
+
 def test_a_failed_listing_keeps_the_last_listing_count(tmp_path):
     harness = Harness(tmp_path, FakeSession(listing=_entries("A", "B")))
     cid = harness.add_channel()

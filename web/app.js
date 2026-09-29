@@ -2235,7 +2235,9 @@
     else if (row.status === 'scanning') head.appendChild(tagNode('Scanning', 'cb-tag--fill'));
     if (row.unresolved) head.appendChild(tagNode('Link unresolved', 'cb-tag--attn'));
     const scan = wl.scan[row.id];
-    if (scan && !downloading) head.appendChild(wlScanNode(row.id, scan));
+    if (scan && scan.state === 'scanning' && !downloading) {
+      head.appendChild(wlScanNode(row.id, scan));
+    }
     const count = document.createElement('span');
     count.className = 'cb-wlcard__new';
     count.textContent = `${num(row.new_count)} new` +
@@ -2331,35 +2333,36 @@
 
   /* ── scan bar ──
      The listing is the slow part of a scan and arrives page by page, so the
-     bar measures entries read against what the channel's last scan listed.
-     With nothing to measure against (a first scan) it sweeps instead of
-     pretending to know; a channel that grew past last time holds just short
-     of full rather than claiming it is done. Elapsed time comes from the
-     host, so a remote browser's clock can't skew it. */
+     bar measures entries read against what the channel's last scan listed, or
+     failing that the tracks already downloaded from it. With nothing to
+     measure against it stays empty and the count carries it; a channel that
+     passes its total holds just short of full rather than claiming it is
+     done. Elapsed time comes from the host, so a remote browser's clock
+     can't skew it. Only the channel being read carries a bar; queued ones
+     would just be a column of empty bars. */
   function wlScanView(p) {
-    if (p.state === 'waiting') return { sweep: false, percent: 0, text: 'Waiting' };
     const count = Number(p.count) || 0;
     const expected = Number(p.expected) || 0;
     const secs = Number(p.elapsed) || 0;
     const clock = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
     if (expected && count < expected) {
-      return { sweep: false, percent: Math.round(count / expected * 100),
+      return { percent: Math.round(count / expected * 100),
                text: `Reading channel… ${num(count)} of ~${num(expected)} tracks · ${clock}` };
     }
-    return { sweep: !expected, percent: expected ? 99 : 0,
+    return { percent: expected ? 99 : 0,
              text: `Reading channel… ${num(count)} tracks so far · ${clock}` };
   }
 
   function wlScanNode(cid, p) {
     const view = wlScanView(p);
     const box = document.createElement('div');
-    box.className = 'cb-wlscan' + (p.state === 'waiting' ? ' is-waiting' : '');
+    box.className = 'cb-wlscan';
     box.id = `wl-scan-${cid}`;
     const bar = document.createElement('div');
     bar.className = 'cb-bar';
     const fill = document.createElement('div');
-    fill.className = 'cb-bar__fill' + (view.sweep ? ' cb-bar__fill--sweep' : '');
-    if (!view.sweep) fill.style.width = view.percent + '%';
+    fill.className = 'cb-bar__fill';
+    fill.style.width = view.percent + '%';
     bar.appendChild(fill);
     const text = document.createElement('span');
     text.className = 'cb-wlscan__text';
@@ -2369,8 +2372,8 @@
   }
 
   /* A progress tick repaints the bar it belongs to and nothing else; only a
-     change of shape (waiting → scanning, a first sweep → a measured bar, or
-     the bar going away) rebuilds the card. */
+     change of shape (waiting → scanning, or the bar going away) rebuilds the
+     card. */
   function wlApplyScan(p) {
     if (!p || p.channel_id == null) return;
     const cid = p.channel_id;
@@ -2379,11 +2382,9 @@
     else wl.scan[cid] = Object.assign({}, before, p);
     const now = wl.scan[cid];
     const box = $(`#wl-scan-${cid}`);
-    if (box && now && before && before.state === now.state
-        && wlScanView(before).sweep === wlScanView(now).sweep) {
+    if (box && now && before && before.state === now.state) {
       const view = wlScanView(now);
-      const fill = box.querySelector('.cb-bar__fill');
-      if (!view.sweep) fill.style.width = view.percent + '%';
+      box.querySelector('.cb-bar__fill').style.width = view.percent + '%';
       box.querySelector('.cb-wlscan__text').textContent = view.text;
       return;
     }

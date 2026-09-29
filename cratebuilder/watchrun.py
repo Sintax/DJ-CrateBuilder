@@ -578,8 +578,12 @@ class WatchlistOps:
             return self._scan_cancelled(db, cid, name)
 
         db.update_watchlist_status(cid, "scanning")
+        # A channel never scanned before has no listing count yet; the tracks
+        # already downloaded from it are the next best yardstick for the bar.
+        expected = (row.get("last_listing_count")
+                    or db.get_channel_download_count(row.get("url") or ""))
         self._progress(cid, state="scanning", count=0, elapsed=0,
-                       expected=row.get("last_listing_count") or None)
+                       expected=expected or None)
         self._card(cid)
         self._line(LINE_DEFAULT, f"SCAN {name} — enumerating uploads…")
 

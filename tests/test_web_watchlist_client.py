@@ -1095,22 +1095,25 @@ def _scan_fns(app_js):
 def test_the_bar_measures_against_the_last_scan(app_js, tmp_path):
     out = _run_node(tmp_path, "scanview.mjs", _SCAN_HARNESS + _scan_fns(app_js) + """
 console.log(JSON.stringify([
-  wlScanView({ state: 'waiting' }),
   wlScanView({ state: 'scanning', count: 120, expected: 480, elapsed: 42 }),
   wlScanView({ state: 'scanning', count: 30, expected: null, elapsed: 5 }),
   wlScanView({ state: 'scanning', count: 500, expected: 480, elapsed: 125 }),
 ]));
 """)
-    waiting, measured, first, grew = out
-    assert waiting == {"sweep": False, "percent": 0, "text": "Waiting"}
-    assert measured == {"sweep": False, "percent": 25,
+    measured, first, grew = out
+    assert measured == {"percent": 25,
                         "text": "Reading channel… 120 of ~480 tracks · 0:42"}
-    # A first scan has nothing to compare with: it sweeps, and says so.
-    assert first["sweep"] is True
-    assert first["text"] == "Reading channel… 30 tracks so far · 0:05"
+    # Nothing to compare with: the bar stays empty and still, the count talks.
+    assert first == {"percent": 0,
+                     "text": "Reading channel… 30 tracks so far · 0:05"}
     # A channel that grew holds short of full instead of claiming it's done.
-    assert grew == {"sweep": False, "percent": 99,
+    assert grew == {"percent": 99,
                     "text": "Reading channel… 500 tracks so far · 2:05"}
+
+
+def test_only_the_channel_being_read_shows_a_bar(app_js):
+    assert "if (scan && scan.state === 'scanning' && !downloading) {" in app_js
+    assert "sweep" not in _scan_fns(app_js)
 
 
 def test_a_tick_repaints_the_bar_in_place(app_js, tmp_path):
@@ -1144,4 +1147,4 @@ console.log(JSON.stringify({
 def test_the_scan_bar_is_wired_and_seeded_from_the_snapshot(app_js):
     assert "cbApi.on('watchlist.scan_progress', wlApplyScan);" in app_js
     assert "(state.scan_progress || []).forEach(" in app_js
-    assert "if (scan && !downloading) head.appendChild(wlScanNode(row.id, scan));" in app_js
+    assert "head.appendChild(wlScanNode(row.id, scan));" in app_js
