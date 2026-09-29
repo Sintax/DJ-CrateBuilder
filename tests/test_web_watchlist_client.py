@@ -343,6 +343,7 @@ function maintPaint() {}
 function maintSettle() { mt.running = false; calls.push('settle'); }
 const aboutUpdate = { onWatchlistStopped: null };
 function wlApplyCard() {}
+function wlApplyScan() {}
 function wlLogAppend(e) { calls.push('log:' + (e.text || '')); }
 function renderCurrent() {}
 function renderActivityLog() {}
@@ -490,6 +491,7 @@ function maintPaint() {}
 function maintSettle() {}
 const aboutUpdate = { onWatchlistStopped: null };
 function wlApplyCard() {}
+function wlApplyScan() {}
 function wlLogAppend() {}
 function renderCurrent() { painted.push('current'); }
 function renderActivityLog() { painted.push('activitylog'); }
@@ -1054,3 +1056,92 @@ def test_the_card_being_scanned_is_scrolled_into_view_once_per_hop(app_js, tmp_p
     assert r["afterDownload"] == 1             # download frames never do
     assert [c[0] for c in r["calls"]] == ["2", "3", "8"]
     assert all(c[1] == {"block": "center", "behavior": "smooth"} for c in r["calls"])
+
+
+# ── the scan bar ─────────────────────────────────────────────────────────────
+
+_SCAN_HARNESS = """
+const num = (n) => Number(n || 0).toLocaleString('en-US');
+function el() {
+  return { className: '', id: '', style: {}, textContent: '', children: [],
+    append(...k) { this.children.push(...k); },
+    appendChild(k) { this.children.push(k); return k; },
+    querySelector(sel) {
+      const want = sel.replace('.', '');
+      const walk = (n) => {
+        for (const c of n.children || []) {
+          if ((c.className || '').split(' ').includes(want)) return c;
+          const hit = walk(c); if (hit) return hit;
+        }
+        return null;
+      };
+      return walk(this);
+    } };
+}
+const document = { createElement: () => el() };
+const nodes = {};
+const $ = (sel) => nodes[sel] || null;
+const wl = { scan: {}, cards: [] };
+let rebuilt = 0;
+function wlCardNode() { rebuilt += 1; return el(); }
+function bindTips() {}
+"""
+
+
+def _scan_fns(app_js):
+    return _slice(app_js, "  function wlScanView(p) {", "  function wlPaintProgress() {")
+
+
+def test_the_bar_measures_against_the_last_scan(app_js, tmp_path):
+    out = _run_node(tmp_path, "scanview.mjs", _SCAN_HARNESS + _scan_fns(app_js) + """
+console.log(JSON.stringify([
+  wlScanView({ state: 'waiting' }),
+  wlScanView({ state: 'scanning', count: 120, expected: 480, elapsed: 42 }),
+  wlScanView({ state: 'scanning', count: 30, expected: null, elapsed: 5 }),
+  wlScanView({ state: 'scanning', count: 500, expected: 480, elapsed: 125 }),
+]));
+""")
+    waiting, measured, first, grew = out
+    assert waiting == {"sweep": False, "percent": 0, "text": "Waiting"}
+    assert measured == {"sweep": False, "percent": 25,
+                        "text": "Reading channel… 120 of ~480 tracks · 0:42"}
+    # A first scan has nothing to compare with: it sweeps, and says so.
+    assert first["sweep"] is True
+    assert first["text"] == "Reading channel… 30 tracks so far · 0:05"
+    # A channel that grew holds short of full instead of claiming it's done.
+    assert grew == {"sweep": False, "percent": 99,
+                    "text": "Reading channel… 500 tracks so far · 2:05"}
+
+
+def test_a_tick_repaints_the_bar_in_place(app_js, tmp_path):
+    """Once a second per channel: rebuilding the whole card each time would
+    flicker and drop any hover the user is on."""
+    out = _run_node(tmp_path, "scanapply.mjs", _SCAN_HARNESS + _scan_fns(app_js) + """
+wl.cards = [{ id: 7 }];
+const card = el();
+nodes['#wl-cards'] = { querySelector: () => card, replaceChild() {} };
+wlApplyScan({ channel_id: 7, state: 'scanning', count: 0, expected: 100, elapsed: 0 });
+const afterStart = rebuilt;
+nodes['#wl-scan-7'] = wlScanNode(7, wl.scan[7]);
+wlApplyScan({ channel_id: 7, state: 'scanning', count: 40, elapsed: 3 });
+const box = nodes['#wl-scan-7'];
+const inPlace = rebuilt;
+wlApplyScan({ channel_id: 7, state: 'done' });
+console.log(JSON.stringify({
+  afterStart, inPlace, afterDone: rebuilt,
+  width: box.querySelector('.cb-bar__fill').style.width,
+  text: box.querySelector('.cb-wlscan__text').textContent,
+  expectedKept: 'expected' in (wl.scan[7] || {}), gone: !(7 in wl.scan),
+}));
+""")
+    assert out["afterStart"] == 1           # new bar: the card is rebuilt once
+    assert out["inPlace"] == 1              # a tick: no rebuild
+    assert out["width"] == "40%"            # expected carried over from the start
+    assert out["text"] == "Reading channel… 40 of ~100 tracks · 0:03"
+    assert out["afterDone"] == 2 and out["gone"] is True
+
+
+def test_the_scan_bar_is_wired_and_seeded_from_the_snapshot(app_js):
+    assert "cbApi.on('watchlist.scan_progress', wlApplyScan);" in app_js
+    assert "(state.scan_progress || []).forEach(" in app_js
+    assert "if (scan && !downloading) head.appendChild(wlScanNode(row.id, scan));" in app_js

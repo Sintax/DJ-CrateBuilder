@@ -427,6 +427,19 @@ a.cb-wlcard__name { border-bottom: 1px dotted var(--cb-line); }
 .cb-wlcard__factsep { color: var(--cb-dim); }
 .cb-wlcard__added { margin-left: 8px; color: var(--cb-muted); }
 .cb-wlcard__new { margin-left: auto; font: 500 12.5px var(--cb-mono); color: var(--cb-line); }
+/* The scan bar takes the head row's free space between the status tag and the
+   new-count, and wraps under the name on a narrow window. */
+.cb-wlscan { flex: 1 1 160px; min-width: 140px; display: flex; flex-direction: column; gap: 3px; }
+.cb-wlscan .cb-bar { height: 6px; }
+.cb-wlscan__text { font: 11px var(--cb-mono); color: var(--cb-muted); }
+.cb-wlscan.is-waiting .cb-bar { opacity: .55; }
+/* A first scan has no count to measure against, so the fill sweeps rather
+   than pretend to a percentage. */
+.cb-bar__fill--sweep { width: 30%; animation: cb-sweep 1.4s ease-in-out infinite; }
+@keyframes cb-sweep { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+@media (prefers-reduced-motion: reduce) {
+  .cb-bar__fill--sweep { width: 100%; opacity: .35; animation: none; }
+}
 .cb-wlcard__meta { font-size: 11px; font-weight: 700; }
 .cb-wlcard__actions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 /* Fix Link is the design's one unresolved-orange control; --cb-unresolved is

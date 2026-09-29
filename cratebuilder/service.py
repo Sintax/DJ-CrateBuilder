@@ -1507,6 +1507,10 @@ class CrateBuilderService:
             "last_run": self.queue_last_run(),
             "run_activity": self.run_activity(),
             "watchlist": self.watchlist_list(),
+            # Each card's scan bar, for a page that loads mid-scan. Read off
+            # the ops object only if one exists, like maintenance_task below.
+            "scan_progress": (self._watchlist_ops.scan_progress()
+                              if self._watchlist_ops is not None else []),
             "running": {"batch": self._job_running("batch"),
                         "watchlist": self._job_running(WATCHLIST_JOB),
                         "maintenance": self._job_running(MAINTENANCE_JOB),

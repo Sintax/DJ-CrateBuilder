@@ -52,10 +52,13 @@ class FakeSession:
         self.error = error
         self.listed = []
 
-    def list_channel(self, url, ignore_no_formats=False):
+    def list_channel(self, url, ignore_no_formats=False, on_count=None):
         self.listed.append(url)
         if self.error:
             raise self.error
+        if on_count is not None:
+            for n in range(1, len(self.listing) + 1):
+                on_count(n)
         return [dict(e) for e in self.listing]
 
     def probe_identity(self, url):
@@ -463,8 +466,9 @@ class FakeIsolated:
         self.calls = []
 
     def __call__(self, url, cookies=None, ignore_no_formats=False,
-                 should_cancel=None, debug=None):
+                 should_cancel=None, debug=None, on_progress=None):
         self.calls.append(url)
+        self.on_progress = on_progress
         if self.on_call:
             self.on_call()
         if self.error:
@@ -545,6 +549,93 @@ def test_a_forced_download_lists_through_the_same_worker(tmp_path):
     assert len(fake.calls) == 1
     assert harness.session.listed == []
     assert sorted(p.title for p in harness.plans) == ["A", "B"]
+
+
+# ── scan progress (each card's bar) ──────────────────────────────────────────
+
+def _progress_events(harness):
+    return harness.emit.of(watchrun.SCAN_PROGRESS_EVENT)
+
+
+def test_a_scan_marks_every_queued_channel_waiting_first(tmp_path):
+    harness = Harness(tmp_path, FakeSession(listing=_entries("A", "B")))
+    a = harness.add_channel()
+    b = harness.add_channel(url="https://www.youtube.com/channel/UCdef/videos",
+                            name="Techno Daily", channel_id="UCdef")
+    harness.ops.run_scan([a, b])
+    events = _progress_events(harness)
+    assert [(e["channel_id"], e["state"]) for e in events[:2]] == [
+        (a, "waiting"), (b, "waiting")]
+    # Each channel then scans and finishes; nothing is left in the map.
+    assert [e["state"] for e in events if e["channel_id"] == b][-1] == "done"
+    assert harness.ops.scan_progress() == []
+
+
+def test_the_scanning_channel_counts_against_its_last_listing(tmp_path):
+    """The first scan has nothing to compare with; it saves the count so the
+    next scan's bar does."""
+    harness = Harness(tmp_path, FakeSession(listing=_entries("A", "B", "C")))
+    cid = harness.add_channel()
+    harness.ops.run_scan([cid])
+    first = [e for e in _progress_events(harness) if e["state"] == "scanning"]
+    assert first[0]["expected"] is None and first[0]["count"] == 0
+    assert harness.row(cid)["last_listing_count"] == 3
+
+    harness.emit = Recorder()
+    harness.ops._emit = harness.emit
+    harness.ops.run_scan([cid])
+    again = [e for e in _progress_events(harness) if e["state"] == "scanning"]
+    assert again[0]["expected"] == 3
+    assert any(e["count"] >= 1 for e in again)
+
+
+def test_a_failed_listing_keeps_the_last_listing_count(tmp_path):
+    harness = Harness(tmp_path, FakeSession(listing=_entries("A", "B")))
+    cid = harness.add_channel()
+    harness.ops.run_scan([cid])
+    harness.session.error = RuntimeError("HTTP Error 503")
+    harness.ops.run_scan([cid])
+    assert harness.row(cid)["last_listing_count"] == 2
+
+
+def test_the_worker_listing_feeds_the_bar_and_the_clock(tmp_path):
+    clock = [0.0]
+    harness, fake = _worker_harness(tmp_path)
+    harness.ops._now = lambda: clock[0]
+    cid = harness.add_channel()
+
+    def listing():
+        for count, at in ((30, 1.0), (30, 1.5), (30, 2.2), (60, 3.0)):
+            clock[0] = at
+            fake.on_progress(count)
+    fake.on_call = listing
+    harness.ops.run_scan([cid])
+    ticks = [(e["count"], e["elapsed"]) for e in _progress_events(harness)
+             if e["state"] == "scanning" and e["count"]]
+    # A repeated count re-reports only once a second has passed.
+    assert ticks == [(30, 1), (30, 2), (60, 3)]
+
+
+def test_a_forced_download_listing_draws_no_scan_bar(tmp_path):
+    harness, fake = _worker_harness(tmp_path)
+    cid = harness.add_channel()
+    harness.ops.run_download([cid], force=True)
+    assert fake.on_progress is None
+    assert _progress_events(harness) == []
+
+
+def test_cancel_all_returns_every_queued_card_to_plain(tmp_path):
+    harness, fake = _worker_harness(tmp_path)
+    fake.on_call = harness.ops.cancel_all
+    a = harness.add_channel()
+    b = harness.add_channel(url="https://www.youtube.com/channel/UCdef/videos",
+                            name="Techno Daily", channel_id="UCdef")
+    harness.ops.run_scan([a, b])
+    last = {}
+    for e in _progress_events(harness):
+        last[e["channel_id"]] = e["state"]
+    assert last == {a: "done", b: "done"}
+    assert harness.ops.scan_progress() == []
 
 
 def test_cancelling_a_forced_listing_is_not_a_failure(tmp_path):

@@ -46,6 +46,10 @@ LINE_LEVELS = (LINE_DEFAULT, LINE_DONE, LINE_HELD, LINE_ERROR)
 # immediately (see WatchlistOps._card_progress).
 CARD_PROGRESS_INTERVAL = 0.5
 
+# One channel's scan progress: {channel_id, state: waiting|scanning|done,
+# count, expected, elapsed}. See WatchlistOps.scan_progress.
+SCAN_PROGRESS_EVENT = "watchlist.scan_progress"
+
 # Mirrors DJ-CrateBuilder_v2.0.py's MP3DownloaderApp._AUDIO_EXTS: what counts as
 # "this channel folder holds real tracks" when deciding whether a genre change
 # has to move files. A duplicate literal rather than an import for the same
@@ -234,6 +238,8 @@ class WatchlistOps:
         self._track_errors = 0
         # What the run's Activity lines have said so far, for its closing line.
         self._act_counts = {"downloaded": 0, "skipped": 0, "error": 0}
+        # Scan progress per channel id — see scan_progress.
+        self._scan_prog = {}
 
     # ── Collaborators ─────────────────────────────────────────────────────────
     def _db(self):
@@ -249,7 +255,7 @@ class WatchlistOps:
         right now — built per operation, like every other session in the app."""
         return self._session_factory(cookies=self._settings.cookie_config())
 
-    def _list_channel(self, url, cid):
+    def _list_channel(self, url, cid, progress=False):
         """A channel's listing, answered by the scan worker when one is wired.
 
         A flat-extraction is a long yt-dlp crawl; run in a child process the
@@ -258,19 +264,70 @@ class WatchlistOps:
         in flight instead of waiting it out. The monolith's own
         _scan_list_channel, ported: if the worker cannot even start, the
         listing falls back in-process — one uncancellable scan beats a Watch
-        List that cannot scan at all."""
+        List that cannot scan at all. *progress* feeds the card's scan bar;
+        only a scan asks for it."""
+        on_count = self._scan_counter(cid) if progress else None
         if self._list_isolated is None:
-            return self._session().list_channel(url)
+            return self._session().list_channel(url, on_count=on_count)
         try:
             return self._list_isolated(
                 url, cookies=self._settings.cookie_config(),
                 should_cancel=lambda: self._cancelled(cid),
-                debug=self._debug.info if self._debug else None)
+                debug=self._debug.info if self._debug else None,
+                on_progress=on_count)
         except OSError as exc:
             if self._debug:
                 self._debug.error(
                     f"SCAN WORKER SPAWN FAIL | {exc} — listing in-process")
-            return self._session().list_channel(url)
+            return self._session().list_channel(url, on_count=on_count)
+
+    # ── Scan progress ─────────────────────────────────────────────────────────
+    # Each card's bar during a scan: channels still queued read "waiting", the
+    # one being listed carries its running entry count against what its last
+    # scan listed, and a channel leaves the map once its listing is over.
+    # Elapsed time is measured here, not by the page, so a remote browser's
+    # clock can't skew it.
+
+    # A listing reports once per entry when it runs in-process; this spaces
+    # the events out. A stalled listing still re-reports each second through
+    # the worker's heartbeat.
+    SCAN_PROGRESS_EVERY = 0.4
+
+    def scan_progress(self):
+        """The live map, for a page that (re)loads mid-scan."""
+        with self._lock:
+            return [dict(p) for p in self._scan_prog.values()]
+
+    def _progress(self, cid, **fields):
+        with self._lock:
+            entry = self._scan_prog.setdefault(cid, {"channel_id": cid})
+            entry.update(fields)
+            payload = dict(entry)
+        self._emit(SCAN_PROGRESS_EVENT, payload)
+
+    def _progress_done(self, cid):
+        with self._lock:
+            known = self._scan_prog.pop(cid, None) is not None
+        if known:
+            self._emit(SCAN_PROGRESS_EVENT, {"channel_id": cid, "state": "done"})
+
+    def _scan_counter(self, cid):
+        """The on_count/on_progress callback for one channel's listing."""
+        last = {"count": None, "at": None}
+        started = self._now()
+
+        def report(count):
+            now = self._now()
+            if (last["at"] is not None and count == last["count"]
+                    and now - last["at"] < 1.0):
+                return
+            if (last["at"] is not None and count != last["count"]
+                    and now - last["at"] < self.SCAN_PROGRESS_EVERY):
+                return
+            last["count"], last["at"] = count, now
+            self._progress(cid, state="scanning", count=int(count),
+                           elapsed=int(now - started))
+        return report
 
     def _row(self, cid):
         row = self._db().get_watchlist_channel(cid)
@@ -453,6 +510,11 @@ class WatchlistOps:
         self._begin("scan")
         total_new = 0
         scanned = 0
+        with self._lock:
+            self._scan_prog = {}
+        for cid in cids:
+            self._progress(cid, state="waiting", count=None, expected=None,
+                           elapsed=None)
         try:
             for cid in cids:
                 if self._cancel_all.is_set():
@@ -471,7 +533,11 @@ class WatchlistOps:
                 if count is not None:
                     scanned += 1
                     total_new += count
+                self._progress_done(cid)
         finally:
+            # Whatever a cancel or a crash left queued goes back to plain.
+            for cid in [p["channel_id"] for p in self.scan_progress()]:
+                self._progress_done(cid)
             self._end()
             self._flush()
             self._line(LINE_DONE, f"DONE Scan complete — {total_new} new across "
@@ -512,6 +578,8 @@ class WatchlistOps:
             return self._scan_cancelled(db, cid, name)
 
         db.update_watchlist_status(cid, "scanning")
+        self._progress(cid, state="scanning", count=0, elapsed=0,
+                       expected=row.get("last_listing_count") or None)
         self._card(cid)
         self._line(LINE_DEFAULT, f"SCAN {name} — enumerating uploads…")
 
@@ -520,7 +588,7 @@ class WatchlistOps:
         # scan and download crawl the channel identically.
         url = watch_fetch_url(platform, row.get("url") or "")
         try:
-            entries = [e for e in self._list_channel(url, cid)
+            entries = [e for e in self._list_channel(url, cid, progress=True)
                        if isinstance(e, dict)]
         except scanproc.ScanCancelled:
             return self._scan_cancelled(db, cid, name)
@@ -556,7 +624,8 @@ class WatchlistOps:
         db.update_watchlist_scan_result(
             cid, timestamp=int(time.time()), pending_count=count,
             pending_entries=new_entries,
-            status="found" if count else "idle")
+            status="found" if count else "idle",
+            listing_count=len(entries))
 
         self._line(LINE_DEFAULT, f"SCAN {name} — {len(entries)} entries, "
                                  f"{count} new since last scan")

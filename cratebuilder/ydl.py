@@ -1,4 +1,5 @@
 """YdlSession: the single read-only yt-dlp boundary — probe, list, search."""
+import re
 import socket
 import urllib.parse
 from dataclasses import dataclass
@@ -149,6 +150,37 @@ def _flatten_tabs(entries):
     return out
 
 
+class _ItemCounter:
+    """A yt-dlp logger that counts a listing's entries as they are fetched.
+
+    extract_info walks the whole playlist before it returns, announcing each
+    entry ("[download] Downloading item 37 of NA") as it goes; with a logger
+    set, that announcement reaches logger.debug even under quiet. A bare
+    channel URL's tabs are announced too, so the count can run a few over —
+    the caller reports the exact total once the listing is back. Everything
+    else yt-dlp says is dropped, exactly as quiet/no_warnings dropped it."""
+
+    _ITEM = re.compile(r"Downloading item\D*(\d+)")
+
+    def __init__(self, on_count):
+        self._on_count = on_count
+        self._seen = 0
+
+    def debug(self, message):
+        if self._ITEM.search(str(message)):
+            self._seen += 1
+            self._on_count(self._seen)
+
+    def info(self, message):
+        pass
+
+    def warning(self, message):
+        pass
+
+    def error(self, message):
+        pass
+
+
 class YdlSession:
     """The single module through which the app asks yt-dlp anything read-only.
 
@@ -222,20 +254,27 @@ class YdlSession:
             raw=info,
         )
 
-    def list_channel(self, url, ignore_no_formats=False):
+    def list_channel(self, url, ignore_no_formats=False, on_count=None):
         """Enumerate a channel's uploads, lazily and flat.
 
         Returns the RAW yt-dlp entry dicts on purpose: the scan classifier, the
         cleanup partitioner and the artwork index all read yt-dlp's own fields,
         so the schema is part of this interface. *ignore_no_formats* is for the
         artwork backfill, which wants the listing even from a channel whose
-        videos serve no formats."""
+        videos serve no formats. *on_count* is called with the running entry
+        count while the listing is fetched, then once with the exact total
+        (the Watch List's scan bar)."""
         extra = {"extract_flat": "in_playlist", "lazy_playlist": True}
         if ignore_no_formats:
             extra["ignore_no_formats_error"] = True
-        return self._run(
+        if on_count is not None:
+            extra["logger"] = _ItemCounter(on_count)
+        entries = self._run(
             "list_channel", url, self._opts(**extra), require_answer=True,
             shape=lambda info: _flatten_tabs(info.get("entries") or []))
+        if on_count is not None:
+            on_count(len(entries))
+        return entries
 
     def search_channels(self, name, max_results=3):
         """Search YouTube for a channel by display name. Returns up to

@@ -81,7 +81,7 @@ def _row_richness(row):
 
 
 class DownloadsDatabase:
-    SCHEMA_VERSION = 9
+    SCHEMA_VERSION = 10
 
     # True when the v6 migration could not drop watchlist.scan_cutoff_date and
     # the legacy NOT NULL column is still there. Nothing reads it, but an
@@ -350,6 +350,19 @@ class DownloadsDatabase:
                         "ALTER TABLE browser_inbox ADD COLUMN then_action TEXT")
                     self._log("info",
                               "migration: added then_action to browser_inbox")
+                except sqlite3.OperationalError:
+                    pass  # column already exists
+
+                # schema v10: watchlist.last_listing_count — how many entries
+                # the channel's last scan listed, so the next scan's progress
+                # bar has something to measure against. NULL until a scan has
+                # run; older builds never read it.
+                try:
+                    conn.execute(
+                        "ALTER TABLE watchlist "
+                        "ADD COLUMN last_listing_count INTEGER")
+                    self._log("info",
+                              "migration: added last_listing_count to watchlist")
                 except sqlite3.OperationalError:
                     pass  # column already exists
                 conn.execute(
@@ -1147,17 +1160,20 @@ class DownloadsDatabase:
 
     def update_watchlist_scan_result(self, channel_id, *, timestamp,
                                       pending_count, pending_entries, status,
-                                      last_error=None):
+                                      last_error=None, listing_count=None):
+        """*listing_count* is kept only when given, so a caller that doesn't
+        know it never wipes the last scan's."""
         try:
             with self._conn() as conn:
                 conn.execute("""
                     UPDATE watchlist
                     SET last_scanned_timestamp = ?, pending_new_count = ?,
-                        pending_entries_json = ?, status = ?, last_error = ?
+                        pending_entries_json = ?, status = ?, last_error = ?,
+                        last_listing_count = COALESCE(?, last_listing_count)
                     WHERE id = ?
                 """, (timestamp, pending_count,
                       json.dumps(pending_entries or []), status,
-                      last_error, channel_id))
+                      last_error, listing_count, channel_id))
         except Exception as e:
             self._log("error", f"update_watchlist_scan_result failed: {e}")
 

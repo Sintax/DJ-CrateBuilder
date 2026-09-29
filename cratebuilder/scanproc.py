@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import asdict
 
@@ -43,6 +44,14 @@ WORKER_TIMEOUT = 900.0
 
 # How often the waiting parent wakes to check for cancellation.
 _POLL_SECONDS = 0.25
+
+# The child's running entry count travels on stderr, one line per report,
+# marked so the parent can tell it from yt-dlp's own chatter. Reports are
+# spaced out so a fast listing doesn't flood the pipe; the parent repeats
+# the last one each second so a stalled page still ticks the clock.
+PROGRESS_MARK = "CB-SCAN-COUNT "
+_PROGRESS_EVERY = 0.4
+_HEARTBEAT_SECONDS = 1.0
 
 # Typed ydl error <-> wire kind. Every YdlError subclass must appear here or
 # the child's verdict would arrive downgraded to a worker crash.
@@ -155,7 +164,8 @@ def worker_main(stdin=None, stdout=None, session_factory=None):
                 cookies=c, debug=lambda line: print(line, file=sys.stderr))
         try:
             entries = session_factory(cookies).list_channel(
-                url, ignore_no_formats=ignore_no_formats)
+                url, ignore_no_formats=ignore_no_formats,
+                on_count=_progress_reporter(sys.stderr))
             out.write(encode_result(entries))
             return 0
         except YdlError as exc:
@@ -169,6 +179,35 @@ def worker_main(stdin=None, stdout=None, session_factory=None):
             out.flush()
         except Exception:
             pass
+
+
+def _progress_reporter(stream, clock=time.monotonic):
+    """The child's on_count: write the running count to *stream*, at most
+    every _PROGRESS_EVERY seconds. Never raises — a closed pipe must not
+    cost the listing."""
+    last = [None]
+
+    def report(count):
+        now = clock()
+        if last[0] is not None and now - last[0] < _PROGRESS_EVERY:
+            return
+        last[0] = now
+        try:
+            stream.write(f"{PROGRESS_MARK}{int(count)}\n")
+            stream.flush()
+        except Exception:
+            pass
+    return report
+
+
+def parse_progress(line):
+    """The count on a progress line, or None for any other stderr line."""
+    if not line.startswith(PROGRESS_MARK):
+        return None
+    try:
+        return int(line[len(PROGRESS_MARK):].strip())
+    except ValueError:
+        return None
 
 
 # ── the parent ───────────────────────────────────────────────────────────────
@@ -188,7 +227,8 @@ def worker_command():
 
 def list_channel_isolated(url, cookies=None, ignore_no_formats=False,
                           should_cancel=None, debug=None,
-                          timeout=WORKER_TIMEOUT, command=None):
+                          timeout=WORKER_TIMEOUT, command=None,
+                          on_progress=None):
     """YdlSession.list_channel, answered by a subprocess.
 
     Same contract as the in-process intent — returns the raw yt-dlp entry
@@ -199,6 +239,10 @@ def list_channel_isolated(url, cookies=None, ignore_no_formats=False,
     ScanWorkerError; OSError from the spawn itself propagates, so a caller
     can fall back to listing in-process.
 
+    *on_progress* hears the child's running entry count (0 until the first
+    one), from this thread: whenever it changes, and once a second regardless
+    while the listing runs.
+
     *command* overrides the worker argv (tests drive stub children with it).
     """
     argv, cwd = (command, None) if command is not None else worker_command()
@@ -207,41 +251,84 @@ def list_channel_isolated(url, cookies=None, ignore_no_formats=False,
         argv, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, text=True, encoding="utf-8",
         errors="replace", creationflags=creationflags)
+    # Both pipes are drained on their own threads so the progress lines can
+    # be read while the child still runs, and neither pipe can fill and
+    # stall it.
+    out_parts, err_lines, latest = [], [], [None]
+
+    def pump_out():
+        try:
+            out_parts.append(proc.stdout.read())
+        except Exception:
+            pass
+
+    def pump_err():
+        try:
+            for line in proc.stderr:
+                count = parse_progress(line)
+                if count is None:
+                    err_lines.append(line)
+                else:
+                    latest[0] = count
+        except Exception:
+            pass
+
+    pumps = [threading.Thread(target=pump_out, daemon=True),
+             threading.Thread(target=pump_err, daemon=True)]
+    for pump in pumps:
+        pump.start()
     try:
         try:
             proc.stdin.write(encode_request(url, cookies, ignore_no_formats))
             proc.stdin.close()
         except OSError:
-            pass    # child died before reading; communicate() has the story
+            pass    # child died before reading; its stderr has the story
         deadline = time.monotonic() + timeout
+        told, told_at = None, 0.0
         while True:
             try:
-                out, err = proc.communicate(timeout=_POLL_SECONDS)
+                proc.wait(timeout=_POLL_SECONDS)
                 break
             except subprocess.TimeoutExpired:
                 if should_cancel is not None and should_cancel():
                     _kill(proc)
                     raise ScanCancelled(url)
-                if time.monotonic() >= deadline:
+                now = time.monotonic()
+                if now >= deadline:
                     _kill(proc)
                     raise ScanWorkerError(
                         f"scan worker timed out after {int(timeout)}s")
+                # Before the first entry the count is 0, not unknown: a slow
+                # first page still ticks the clock beside the bar.
+                count = latest[0] or 0
+                if on_progress is not None and (
+                        count != told or now - told_at >= _HEARTBEAT_SECONDS):
+                    told, told_at = count, now
+                    try:
+                        on_progress(count)
+                    except Exception:
+                        pass
     except BaseException:
         _kill(proc)
         raise
+    finally:
+        for pump in pumps:
+            pump.join(timeout=5)
+    out, err = "".join(out_parts), "".join(err_lines)
     _forward_stderr(err, debug)
     return decode_result(out, returncode=proc.returncode,
                          stderr_tail=err[-300:] if err else "")
 
 
 def _kill(proc):
-    """Stop a child for good, reaping it so no zombie outlives the scan."""
+    """Stop a child for good, reaping it so no zombie outlives the scan. The
+    pipes belong to the pump threads, so this only waits."""
     try:
         proc.kill()
     except OSError:
         pass
     try:
-        proc.communicate(timeout=5)
+        proc.wait(timeout=5)
     except Exception:
         pass
 

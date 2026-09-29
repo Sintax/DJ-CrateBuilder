@@ -286,13 +286,13 @@ def test_fresh_db_has_artwork_columns(tmp_path):
     assert _ARTWORK_COLUMNS <= _columns(db)
 
 
-def test_schema_version_is_9(tmp_path):
+def test_schema_version_is_10(tmp_path):
     db = _new_db(tmp_path)
     with db._conn() as conn:
         row = conn.execute(
             "SELECT value FROM schema_info WHERE key = 'version'").fetchone()
-    assert row["value"] == "9"
-    assert DownloadsDatabase.SCHEMA_VERSION == 9
+    assert row["value"] == "10"
+    assert DownloadsDatabase.SCHEMA_VERSION == 10
 
 
 def test_fresh_watchlist_has_no_scan_cutoff_column(tmp_path):
@@ -444,7 +444,7 @@ def test_v5_database_drops_scan_cutoff_without_data_loss(tmp_path):
             "SELECT value FROM schema_info WHERE key = 'version'"
         ).fetchone()["value"]
     assert "scan_cutoff_date" not in cols
-    assert version == "9"
+    assert version == "10"
 
     rows = db.get_all_watchlist_channels()
     assert len(rows) == 1
@@ -561,7 +561,7 @@ def test_v4_database_migrates_to_v5_without_data_loss(tmp_path):
     with db._conn() as conn:
         row = conn.execute(
             "SELECT value FROM schema_info WHERE key = 'version'").fetchone()
-    assert row["value"] == "9"
+    assert row["value"] == "10"
 
     # (c) ...and the pre-existing rows survived byte-for-byte.
     dl_rows = db.get_all_downloads()
@@ -995,7 +995,7 @@ def test_an_existing_v7_database_gains_the_inbox_table(tmp_path):
     with reopened._conn() as conn:
         assert conn.execute(
             "SELECT value FROM schema_info WHERE key = 'version'"
-        ).fetchone()["value"] == "9"
+        ).fetchone()["value"] == "10"
 
 
 def test_inbox_remembers_the_right_click_choice(tmp_path):
@@ -1036,4 +1036,37 @@ def test_an_existing_v8_database_gains_then_action(tmp_path):
     assert reopened.list_inbox()[0]["then_action"] is None
     with reopened._conn() as conn:
         assert conn.execute("SELECT value FROM schema_info "
-                            "WHERE key = 'version'").fetchone()["value"] == "9"
+                            "WHERE key = 'version'").fetchone()["value"] == "10"
+
+
+def test_an_existing_v9_database_gains_last_listing_count(tmp_path):
+    """The Watch List scan bar's yardstick. A v9 channel keeps everything it
+    had and starts with no count — its next scan fills it in."""
+    path = str(tmp_path / "v9.db")
+    db = DownloadsDatabase(path)
+    cid = db.add_watchlist_channel(
+        url="https://www.youtube.com/channel/UCabc/videos",
+        display_name="Deep House Daily", platform="YouTube", genre="House",
+        channel_id="UCabc")
+    with db._conn() as conn:
+        conn.execute("ALTER TABLE watchlist DROP COLUMN last_listing_count")
+        conn.execute("UPDATE schema_info SET value = '9' WHERE key = 'version'")
+    reopened = DownloadsDatabase(path)
+    assert "last_listing_count" in _columns(reopened, "watchlist")
+    row = reopened.get_watchlist_channel(cid)
+    assert row["display_name"] == "Deep House Daily"
+    assert row["last_listing_count"] is None
+
+
+def test_a_scan_result_without_a_count_keeps_the_last_one(tmp_path):
+    db = _new_db(tmp_path)
+    cid = db.add_watchlist_channel(
+        url="https://www.youtube.com/channel/UCabc/videos",
+        display_name="Deep House Daily", platform="YouTube", genre="House",
+        channel_id="UCabc")
+    db.update_watchlist_scan_result(cid, timestamp=1, pending_count=0,
+                                    pending_entries=[], status="idle",
+                                    listing_count=480)
+    db.update_watchlist_scan_result(cid, timestamp=2, pending_count=0,
+                                    pending_entries=[], status="idle")
+    assert db.get_watchlist_channel(cid)["last_listing_count"] == 480

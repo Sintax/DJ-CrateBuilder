@@ -99,6 +99,33 @@ def test_probe_identity_blank_answer_is_not_an_error():
             ident.display_name) == ("", "", "", "")
 
 
+def test_list_channel_counts_entries_while_yt_dlp_fetches_them():
+    """The Watch List scan bar: extract_info walks the whole playlist before
+    it returns, so the count has to come from its per-item announcements,
+    which reach a logger even under quiet — then the exact total."""
+    heard = []
+
+    class Runner:
+        def __call__(self, opts, target):
+            self.opts = opts
+            log = opts["logger"]
+            log.debug("[youtube:tab] Downloading page 1")
+            for i in (1, 2, 3):
+                log.debug(f"[download] Downloading item {i} of NA")
+            log.warning("some warning")      # dropped, as quiet dropped it
+            return {"entries": [{"id": "v1"}, {"id": "v2"}, {"id": "v3"}]}
+    session = ydl.YdlSession(runner=Runner(), network_probe=_never_probed)
+    entries = session.list_channel("https://yt/c/UC1", on_count=heard.append)
+    assert [e["id"] for e in entries] == ["v1", "v2", "v3"]
+    assert heard == [1, 2, 3, 3]
+
+
+def test_list_channel_sets_no_logger_when_nobody_counts():
+    session, runner = _session({"entries": []})
+    session.list_channel("https://yt/c/UC1")
+    assert "logger" not in runner.opts
+
+
 def test_list_channel_opts_are_flat_and_lazy_without_js():
     session, runner = _session({"entries": [{"id": "v1"}, {"id": "v2"}]})
     assert session.list_channel("https://yt/c/UC1/videos") == [

@@ -88,10 +88,10 @@ def test_a_partly_failed_scan_reports_both_halves(tmp_path):
 
     real = good.list_channel
 
-    def flaky(url, ignore_no_formats=False):
+    def flaky(url, ignore_no_formats=False, on_count=None):
         if "UCbad" in url:
             raise YdlPermanent("gone", intent="list_channel", target=url)
-        return real(url, ignore_no_formats)
+        return real(url, ignore_no_formats, on_count)
 
     good.list_channel = flaky
     h.ops.run_scan([ok, bad])

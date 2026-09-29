@@ -104,8 +104,10 @@ class _Session:
         self.calls = []
         self._entries, self._error = entries, error
 
-    def list_channel(self, url, ignore_no_formats=False):
+    def list_channel(self, url, ignore_no_formats=False, on_count=None):
         self.calls.append((url, ignore_no_formats))
+        if on_count is not None:
+            on_count(len(self._entries or []))
         if self._error is not None:
             raise self._error
         return list(self._entries)
@@ -175,7 +177,7 @@ def test_a_listing_survives_the_real_pipes():
         "https://yt/c", cookies=COOKIES,
         command=_stub_worker_command(
             "class S:\n"
-            "    def list_channel(self, url, ignore_no_formats=False):\n"
+            "    def list_channel(self, url, ignore_no_formats=False, **kw):\n"
             "        return [{'id': 'v1', 'title': 'Track One'}]\n"
             "factory = lambda c: S()"))
     assert entries == [{"id": "v1", "title": "Track One"}]
@@ -187,10 +189,66 @@ def test_a_typed_error_survives_the_real_pipes():
             "https://yt/c",
             command=_stub_worker_command(
                 "class S:\n"
-                "    def list_channel(self, url, ignore_no_formats=False):\n"
+                "    def list_channel(self, url, ignore_no_formats=False, **kw):\n"
                 "        raise YdlPermanent('gone for real',\n"
                 "                           intent='list_channel')\n"
                 "factory = lambda c: S()"))
+
+
+def test_the_running_count_reaches_the_parent_while_the_child_lists():
+    """The Watch List's scan bar: counts arrive mid-listing, not at the end,
+    and the result JSON is untouched by them."""
+    heard = []
+    entries = scanproc.list_channel_isolated(
+        "https://yt/c", on_progress=heard.append,
+        command=_stub_worker_command(
+            "import time\n"
+            "class S:\n"
+            "    def list_channel(self, url, ignore_no_formats=False,\n"
+            "                     on_count=None):\n"
+            "        for n in (30, 60, 90):\n"
+            "            on_count(n)\n"
+            "            time.sleep(0.6)\n"
+            "        return [{'id': 'v1'}]\n"
+            "factory = lambda c: S()"))
+    assert entries == [{"id": "v1"}]
+    # A 0 may lead: the clock ticks before the child's first report lands.
+    assert [n for n in heard if n][:1] == [30] and 90 in heard
+    assert heard == sorted(heard)
+
+
+def test_progress_lines_never_reach_the_debug_log():
+    forwarded = []
+    scanproc.list_channel_isolated(
+        "https://yt/c", debug=forwarded.append,
+        command=_stub_worker_command(
+            "import sys\n"
+            "class S:\n"
+            "    def list_channel(self, url, ignore_no_formats=False,\n"
+            "                     on_count=None):\n"
+            "        on_count(5)\n"
+            "        sys.stderr.write('a yt-dlp warning\\n')\n"
+            "        return []\n"
+            "factory = lambda c: S()"))
+    assert any("a yt-dlp warning" in line for line in forwarded)
+    assert not any(scanproc.PROGRESS_MARK in line for line in forwarded)
+
+
+def test_the_reporter_spaces_out_its_lines():
+    out, now = io.StringIO(), [0.0]
+    report = scanproc._progress_reporter(out, clock=lambda: now[0])
+    report(1)
+    now[0] = 0.1
+    report(2)                                 # too soon — dropped
+    now[0] = 0.5
+    report(3)
+    assert [scanproc.parse_progress(l) for l in out.getvalue().splitlines()] == [1, 3]
+
+
+def test_parse_progress_ignores_everything_else():
+    assert scanproc.parse_progress(scanproc.PROGRESS_MARK + "42\n") == 42
+    assert scanproc.parse_progress("WARNING: something") is None
+    assert scanproc.parse_progress(scanproc.PROGRESS_MARK + "lots") is None
 
 
 def test_cancelling_kills_the_child_instead_of_waiting_it_out():

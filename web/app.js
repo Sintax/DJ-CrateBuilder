@@ -2121,6 +2121,7 @@
     overall: null,    // last progress.overall stamped job:"watchlist"
     rows: [],         // queue.row stamped job:"watchlist" — one per CHANNEL
     skipping: {},     // channel id -> a Skip the host has been told about
+    scan: {},         // channel id -> watchlist.scan_progress (waiting/scanning)
   };
 
   /* ── auth-trouble pop-up ──
@@ -2233,6 +2234,8 @@
     if (downloading) head.appendChild(tagNode('Downloading', 'cb-tag--fill'));
     else if (row.status === 'scanning') head.appendChild(tagNode('Scanning', 'cb-tag--fill'));
     if (row.unresolved) head.appendChild(tagNode('Link unresolved', 'cb-tag--attn'));
+    const scan = wl.scan[row.id];
+    if (scan && !downloading) head.appendChild(wlScanNode(row.id, scan));
     const count = document.createElement('span');
     count.className = 'cb-wlcard__new';
     count.textContent = `${num(row.new_count)} new` +
@@ -2324,6 +2327,73 @@
     if (percent != null) parts[0] += ` — ${percent}%`;
     parts.push(`${num(row.downloaded)} downloaded`);
     return parts.join(' · ');
+  }
+
+  /* ── scan bar ──
+     The listing is the slow part of a scan and arrives page by page, so the
+     bar measures entries read against what the channel's last scan listed.
+     With nothing to measure against (a first scan) it sweeps instead of
+     pretending to know; a channel that grew past last time holds just short
+     of full rather than claiming it is done. Elapsed time comes from the
+     host, so a remote browser's clock can't skew it. */
+  function wlScanView(p) {
+    if (p.state === 'waiting') return { sweep: false, percent: 0, text: 'Waiting' };
+    const count = Number(p.count) || 0;
+    const expected = Number(p.expected) || 0;
+    const secs = Number(p.elapsed) || 0;
+    const clock = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+    if (expected && count < expected) {
+      return { sweep: false, percent: Math.round(count / expected * 100),
+               text: `Reading channel… ${num(count)} of ~${num(expected)} tracks · ${clock}` };
+    }
+    return { sweep: !expected, percent: expected ? 99 : 0,
+             text: `Reading channel… ${num(count)} tracks so far · ${clock}` };
+  }
+
+  function wlScanNode(cid, p) {
+    const view = wlScanView(p);
+    const box = document.createElement('div');
+    box.className = 'cb-wlscan' + (p.state === 'waiting' ? ' is-waiting' : '');
+    box.id = `wl-scan-${cid}`;
+    const bar = document.createElement('div');
+    bar.className = 'cb-bar';
+    const fill = document.createElement('div');
+    fill.className = 'cb-bar__fill' + (view.sweep ? ' cb-bar__fill--sweep' : '');
+    if (!view.sweep) fill.style.width = view.percent + '%';
+    bar.appendChild(fill);
+    const text = document.createElement('span');
+    text.className = 'cb-wlscan__text';
+    text.textContent = view.text;
+    box.append(bar, text);
+    return box;
+  }
+
+  /* A progress tick repaints the bar it belongs to and nothing else; only a
+     change of shape (waiting → scanning, a first sweep → a measured bar, or
+     the bar going away) rebuilds the card. */
+  function wlApplyScan(p) {
+    if (!p || p.channel_id == null) return;
+    const cid = p.channel_id;
+    const before = wl.scan[cid];
+    if (p.state === 'done') delete wl.scan[cid];
+    else wl.scan[cid] = Object.assign({}, before, p);
+    const now = wl.scan[cid];
+    const box = $(`#wl-scan-${cid}`);
+    if (box && now && before && before.state === now.state
+        && wlScanView(before).sweep === wlScanView(now).sweep) {
+      const view = wlScanView(now);
+      const fill = box.querySelector('.cb-bar__fill');
+      if (!view.sweep) fill.style.width = view.percent + '%';
+      box.querySelector('.cb-wlscan__text').textContent = view.text;
+      return;
+    }
+    const row = wl.cards.find((c) => c.id === cid);
+    const host = $('#wl-cards');
+    const old = host && host.querySelector(`[data-cid="${cid}"]`);
+    if (!row || !old) return;
+    const node = wlCardNode(row);
+    host.replaceChild(node, old);
+    bindTips(node);
   }
 
   function wlPaintProgress() {
@@ -8193,6 +8263,8 @@
     mt.running = !!(state.running && state.running.maintenance);
     mt.task = (state.running && state.running.maintenance_task) || null;
     wl.cards = state.watchlist || [];
+    wl.scan = {};
+    (state.scan_progress || []).forEach((p) => { wl.scan[p.channel_id] = p; });
     renderShell();
     renderOverview();
     renderGenres();
@@ -8250,6 +8322,7 @@
       renderOverviewRunning();
     });
     cbApi.on('watchlist.card', wlApplyCard);
+    cbApi.on('watchlist.scan_progress', wlApplyScan);
     // The pinned scan log, and nothing else: a run's closing DONE line is a
     // log line, not a state signal (see job.finished below).
     cbApi.on('scan.line', (entry) => { if (entry) wlLogAppend(entry); });
