@@ -100,6 +100,45 @@ def test_the_swap_announces_itself_and_drops_the_stale_components_read(service, 
     assert service._installed_components_cache is None
 
 
+def _swap_states(seen):
+    return [p["state"] for t, p in seen if t == "update.ffmpeg"]
+
+
+def test_the_update_page_hears_the_swap_start_and_finish(service, frozen):
+    """The bug: the swap finished after the check had answered, so the
+    Update page kept the old FFmpeg until the app was restarted."""
+    seen = []
+    service.events.subscribe(lambda t, p: seen.append((t, p)))
+    assert service.update_status()["ffmpeg"] is None
+    service._maybe_update_ffmpeg(MANIFEST)
+    assert frozen["done"].wait(5)
+    _wait_idle(service)
+    service._emit.flush()
+    assert _swap_states(seen) == ["updating", "updated"]
+    assert service.update_status()["ffmpeg"] == {"state": "updated", "version": OFFER}
+
+
+def test_a_busy_app_says_it_is_waiting(service, frozen, monkeypatch):
+    monkeypatch.setattr(service, "FFMPEG_RETRY_SECONDS", 30)
+    service._jobs["batch"] = 1
+    service._maybe_update_ffmpeg(MANIFEST)
+    service._ffmpeg_retry.cancel()
+    assert service.update_status()["ffmpeg"]["state"] == "waiting"
+
+
+def test_a_failed_swap_says_so(service, frozen, monkeypatch):
+    def boom(*a, **kw):
+        raise OSError("network down")
+    monkeypatch.setattr(ucore, "download", boom)
+    seen = []
+    service.events.subscribe(lambda t, p: seen.append((t, p)))
+    service._maybe_update_ffmpeg(MANIFEST)
+    _wait_idle(service)
+    service._emit.flush()
+    assert _swap_states(seen) == ["updating", "failed"]
+    assert service.update_status()["ffmpeg"]["state"] == "failed"
+
+
 def test_a_busy_app_defers_and_retries_instead_of_swapping(service, frozen, monkeypatch):
     monkeypatch.setattr(service, "FFMPEG_RETRY_SECONDS", 30)
     service._jobs["batch"] = 1

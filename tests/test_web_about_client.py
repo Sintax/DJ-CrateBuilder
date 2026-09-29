@@ -705,6 +705,29 @@ def test_the_update_page_draws_the_components_table_after_the_controls(app_js):
     assert ".cb-comp__new { color: var(--cb-warn); font-weight: 700; }" in css
 
 
+def test_the_ffmpeg_swap_shows_on_the_heading_and_the_ffmpeg_row(app_js, tmp_path):
+    """The swap runs after the check answered: its tag sits on the heading
+    (seen while folded) and beside the FFmpeg the install has."""
+    rows = [dict(r) for r in _ROWS]
+    rows[2].update(installed="9.0.2", offered="9.0.2", state="same")
+    for state, label in [("updating", "Updating…"),
+                         ("waiting", "Waiting for downloads to finish"),
+                         ("updated", "Updated"),
+                         ("failed", "Update failed, will retry on the next check")]:
+        status = {"components": {"build": 83, "available": True, "rows": rows},
+                  "ffmpeg": {"state": state, "version": "9.0.2"}}
+        folded = _components(app_js, tmp_path, status, open=False)
+        assert "FFmpeg: " + label in folded["badge"]
+        opened = _components(app_js, tmp_path, status)
+        assert opened["rows"][2]["cells"][1] == "9.0.2 " + label
+        assert opened["rows"][1]["cells"][1] == "2026.8.19"
+    quiet = _components(app_js, tmp_path, {"components": {
+        "build": 83, "available": True, "rows": rows}, "ffmpeg": None})
+    assert quiet["rows"][2]["cells"][1] == "9.0.2"
+    handler = _slice(app_js, "    cbApi.on('update.ffmpeg',", ");\n")
+    assert "aboutRefreshUpdateStatus()" in handler
+
+
 def test_the_components_list_starts_folded_behind_a_show_button(app_js, tmp_path):
     """Folded: the heading and its badge still say whether anything would
     change, but no note and no table. Show flips the flag and redraws;

@@ -7458,6 +7458,22 @@
     missing: 'not installed',
   };
 
+  /* The FFmpeg swap runs in the background after a check has answered, so
+     its progress rides its own tag — on the heading, where it shows while the
+     list is folded, and on the FFmpeg row. */
+  const FFMPEG_SWAP_TAG = {
+    waiting: ['Waiting for downloads to finish', 'cb-tag--attn'],
+    updating: ['Updating…', 'cb-tag--attn'],
+    updated: ['Updated', 'cb-tag--ok'],
+    failed: ['Update failed, will retry on the next check', 'cb-tag--err'],
+  };
+
+  function ffmpegSwapTag(prefix) {
+    const swap = aboutUpdate.status && aboutUpdate.status.ffmpeg;
+    const spec = swap && FFMPEG_SWAP_TAG[swap.state];
+    return spec ? tagNode(prefix + spec[0], spec[1]) : null;
+  }
+
   function renderUpdateComponents(host) {
     const status = aboutUpdate.status;
     const comp = status && status.components;
@@ -7477,6 +7493,8 @@
     } else if (comp.build) {
       head.appendChild(tagNode('All current', 'cb-tag--ok'));
     }
+    const swapTag = ffmpegSwapTag('FFmpeg: ');
+    if (swapTag) head.appendChild(swapTag);
     host.appendChild(head);
     /* The list is detail most visits never need, so it starts folded and
        the badge alone says whether anything would change. The toggle sits on
@@ -7532,6 +7550,11 @@
       const have = document.createElement('td');
       have.className = 'cb-mono';
       have.textContent = row.installed || COMPONENT_STATE_TEXT.missing;
+      const rowSwap = row.key === 'ffmpeg' && ffmpegSwapTag('');
+      if (rowSwap) {
+        have.appendChild(document.createTextNode(' '));
+        have.appendChild(rowSwap);
+      }
       const will = document.createElement('td');
       will.className = 'cb-mono cb-comp__offered';
       if (row.state === 'newer') {
@@ -8428,6 +8451,10 @@
       renderOverviewUpdate();
       aboutRefreshUpdateStatus();
     });
+    /* The background FFmpeg swap moved on (waiting, updating, updated,
+       failed). Re-reading the status picks up both the new tag and, once
+       it's done, the new version in the You have column. */
+    cbApi.on('update.ffmpeg', () => aboutRefreshUpdateStatus());
   }
 
   let booted = false;

@@ -972,6 +972,9 @@ class CrateBuilderService:
         self._ffmpeg_swapping = False
         self._ffmpeg_retry = None
         self._ffmpeg_retry_manifest = None
+        # Where the latest swap stands, for the Update page: None, or
+        # {"state": waiting|updating|updated|failed, "version": ...}.
+        self._ffmpeg_state = None
         # The desktop window's opener for the cookie setup guide's own
         # window (see cookies_howto_window). None everywhere else.
         self.on_open_howto = None
@@ -3764,6 +3767,7 @@ class CrateBuilderService:
             "can_self_update": ucore.can_self_update(),
             "running": self._job_running(UPDATE_JOB),
             "components": self.update_components(),
+            "ffmpeg": dict(self._ffmpeg_state) if self._ffmpeg_state else None,
         }
 
     def update_components(self):
@@ -3842,8 +3846,10 @@ class CrateBuilderService:
         if busy:
             self._dbg.debug("FFMPEG UPDATE | deferred: busy — retrying when idle")
             self._arm_ffmpeg_retry(manifest)
+            self._set_ffmpeg_state("waiting", version)
             return "deferred"
         self._cancel_ffmpeg_retry()
+        self._set_ffmpeg_state("updating", version)
         threading.Thread(target=self._ffmpeg_swap,
                          args=(install_dir, dict(block), version),
                          daemon=True).start()
@@ -3864,6 +3870,7 @@ class CrateBuilderService:
                 os.path.join(ws, "staged"), os.path.join(ws, "backup"), version)
             # The Update page's components table read the old binary.
             self._installed_components_cache = None
+            self._set_ffmpeg_state("updated", version)
             self._dbg.debug(f"FFMPEG UPDATE | swapped to {version}")
             short = re.match(r"\d+(?:\.\d+)*", version)
             self.emit("notification", {
@@ -3874,10 +3881,18 @@ class CrateBuilderService:
             })
         except Exception as exc:   # noqa: BLE001 — retried on the next check
             self._dbg.debug(f"FFMPEG UPDATE | deferred/failed: {exc}")
+            self._set_ffmpeg_state("failed", version)
         finally:
             ucore.purge_dir(ws)
             with self._lock:
                 self._ffmpeg_swapping = False
+
+    def _set_ffmpeg_state(self, state, version):
+        """Record and announce where the swap stands. The swap runs after the
+        check has already answered, so without this the Update page would keep
+        showing the old FFmpeg until something happened to re-read it."""
+        self._ffmpeg_state = {"state": state, "version": version}
+        self.emit("update.ffmpeg", dict(self._ffmpeg_state))
 
     def _arm_ffmpeg_retry(self, manifest):
         """Re-run the decision in a minute. The manifest is kept so a retry
