@@ -5764,8 +5764,26 @@
     });
   }
 
+  const EXTENSION_RELEASES_URL =
+    'https://github.com/Sintax/DJ-CrateBuilder-Browser_Extensions/releases';
+
   const SECTION_EXTRAS = {
     'Appearance': appearanceRows,
+
+    /* The handler toggle is no use to someone who has never heard of the
+       extension, and it is not in any store — this is where they find it. */
+    'Browser Integration': (card) => {
+      const row = document.createElement('div');
+      row.className = 'cb-set-row';
+      const lab = document.createElement('span');
+      lab.className = 'cb-lab';
+      lab.textContent = 'Get the browser extension (Firefox and Chrome)';
+      const link = aboutLinkButton('Download from GitHub', EXTENSION_RELEASES_URL,
+        null, 'ext-link', 'end');
+      link.id = 'settings-extension-link';
+      row.append(lab, readOnlyOk(link));
+      card.appendChild(row);
+    },
 
     'Default Save Directory': (card) => {
       const row = card.querySelector('[data-key="base_dir"]')?.closest('.cb-set-row');

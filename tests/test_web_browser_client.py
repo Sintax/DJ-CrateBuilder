@@ -71,6 +71,17 @@ def test_the_section_carries_its_help_icon(app_js):
     assert "'Browser Integration': 'settings.browser_integration'" in app_js
 
 
+def test_the_section_links_to_where_the_extension_is_downloaded(app_js):
+    """The extension is in no store, so the section itself says where to get
+    it: the extension repo's releases page, opened through the same openUrl
+    path About's GitHub links use (host browser locally, copied remotely)."""
+    assert ("'https://github.com/Sintax/DJ-CrateBuilder-Browser_Extensions/releases'"
+            in app_js)
+    body = _slice(app_js, "    'Browser Integration': (card) => {", "\n    },\n")
+    assert "aboutLinkButton('Download from GitHub', EXTENSION_RELEASES_URL," in body
+    assert "readOnlyOk(link)" in body
+
+
 # ── node: handleBrowserSend opens the right flow ─────────────────────────────
 
 _HARNESS = """
