@@ -352,6 +352,59 @@ def test_prune_on_a_full_spares_the_previous_delta_and_full(rel, monkeypatch):
     assert deleted == []
 
 
+def test_stray_sweep_removes_everything_no_manifest_names(rel, monkeypatch):
+    """Hand-attached files (a probe, a test upload) are not .zip payloads, so
+    the per-channel prune never saw them; the sweep does."""
+    deleted = []
+    assets = ["DJ-CrateBuilder-full-2.1.95.zip", "DJ-CrateBuilder-2.1.100.zip",
+              "DJ-CrateBuilder-2.1.101.zip", "ffmpeg-9.0.2.zip",
+              "probe.txt", "upload_test.txt", "ffmpeg-9.0.1.zip"]
+    monkeypatch.setattr(rel.subprocess, "run", _fake_gh(assets, deleted))
+    rel.prune_stray_assets("R/E", "nightly", keep={
+        "DJ-CrateBuilder-full-2.1.95.zip", "DJ-CrateBuilder-2.1.101.zip",
+        "ffmpeg-9.0.2.zip", "DJ-CrateBuilder-2.1.100.zip"})
+    assert deleted == ["probe.txt", "upload_test.txt", "ffmpeg-9.0.1.zip"]
+
+
+def test_stray_sweep_refuses_an_empty_keep_set(rel, monkeypatch):
+    """No known manifest assets must never read as "delete everything"."""
+    deleted = []
+    monkeypatch.setattr(rel.subprocess, "run",
+                        _fake_gh(["DJ-CrateBuilder-2.1.101.zip"], deleted))
+    rel.prune_stray_assets("R/E", "nightly", keep=set())
+    assert deleted == []
+
+
+def test_release_page_text_names_the_build_the_day_and_the_changes(rel):
+    manifest = {"version": "2.1", "build": 102, "changes": "Faster scans.",
+                "ffmpeg": {"version": "9.0.2+abc"}}
+    title, notes = rel.nightly_release_text(
+        manifest, today=rel.datetime.date(2026, 9, 29))
+    assert title == "Nightly builds — v2.1.102 (Sep 29, 2026)"
+    assert notes.startswith(rel.NIGHTLY_BLURB)
+    assert "**Current build:** v2.1.102, published Sep 29, 2026" in notes
+    assert "**What changed:** Faster scans." in notes
+    assert "**FFmpeg offered:** 9.0.2+abc" in notes
+
+
+def test_release_page_text_leaves_out_what_the_manifest_lacks(rel):
+    _title, notes = rel.nightly_release_text(
+        {"version": "2.1", "build": 5}, today=rel.datetime.date(2026, 1, 2))
+    assert "What changed" not in notes and "FFmpeg" not in notes
+
+
+def test_every_publish_sweeps_and_refreshes_after_the_manifest_push(rel):
+    """Both publish paths: the sweep only after update.json is live (so it can
+    trust the new manifest's names), then the page refresh."""
+    src = open(rel.__file__, encoding="utf-8").read()
+    for push in ('publish_manifest(manifest_text, manifest.get("build", "?"))',
+                 "publish_manifest(manifest_text, new_build)"):
+        at = src.index(push)
+        tail = src[at:at + 300]
+        assert "prune_stray_assets(REPO, NIGHTLY_TAG, " in tail
+        assert tail.index("prune_stray_assets") < tail.index("refresh_release_page")
+
+
 def test_manifest_asset_names_lists_every_download_it_names(rel):
     base = "https://github.com/R/E/releases/download/nightly/"
     manifest = {"url": base + "DJ-CrateBuilder-2.1.99.zip",
