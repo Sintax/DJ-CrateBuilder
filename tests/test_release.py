@@ -419,3 +419,27 @@ def test_manifest_asset_names_tolerates_an_empty_or_partial_manifest(rel):
     assert rel.manifest_asset_names({}) == set()
     assert rel.manifest_asset_names(None) == set()
     assert rel.manifest_asset_names({"url": "", "ffmpeg": None}) == set()
+
+
+def test_prune_local_installers_keeps_the_two_newest_builds(rel, tmp_path):
+    names = ["DJ-CrateBuilder_v2.0.87_Setup_Windows.exe",
+             "DJ-CrateBuilder_v2.1.101_Setup_Windows.exe",
+             "DJ-CrateBuilder_v1.3.60_Setup_Windows.exe",
+             "DJ-CrateBuilder_v2.0.9_Setup_Windows.exe",
+             "[BACKUP] icon.ico", "notes.txt"]
+    for i, n in enumerate(names):
+        p = tmp_path / n
+        p.write_bytes(b"x")
+        # File dates run opposite to build order: ranking must use the name.
+        os.utime(p, (1000 - i, 1000 - i))
+    removed = rel.prune_local_installers(str(tmp_path), keep=2)
+    assert sorted(removed) == ["DJ-CrateBuilder_v1.3.60_Setup_Windows.exe",
+                               "DJ-CrateBuilder_v2.0.9_Setup_Windows.exe"]
+    assert sorted(os.listdir(tmp_path)) == sorted(
+        ["DJ-CrateBuilder_v2.0.87_Setup_Windows.exe",
+         "DJ-CrateBuilder_v2.1.101_Setup_Windows.exe",
+         "[BACKUP] icon.ico", "notes.txt"])
+
+
+def test_prune_local_installers_tolerates_a_missing_folder(rel, tmp_path):
+    assert rel.prune_local_installers(str(tmp_path / "nope")) == []
