@@ -87,7 +87,15 @@ def test_an_unknown_then_is_a_plain_send_not_an_error():
     assert isinstance(r, BrowserSend) and r.then is None
 
 
-def test_then_is_ignored_on_a_channel():
-    r = parse_djcrate_uri(
-        "djcrate://add?v=1&kind=channel&url=https%3A%2F%2Fsoundcloud.com%2Fa&then=download")
-    assert r == BrowserSend(kind="channel", url="https://soundcloud.com/a")
+_CHANNEL = "djcrate://add?v=1&kind=channel&url=https%3A%2F%2Fsoundcloud.com%2Fa"
+
+
+def test_a_channel_keeps_batch_for_the_whole_channel_button():
+    assert parse_djcrate_uri(_CHANNEL + "&then=batch") == BrowserSend(
+        kind="channel", url="https://soundcloud.com/a", then="batch")
+
+
+def test_a_channel_drops_download_and_unknown_choices():
+    for then in ("download", "play"):
+        assert parse_djcrate_uri(_CHANNEL + "&then=" + then) == BrowserSend(
+            kind="channel", url="https://soundcloud.com/a")

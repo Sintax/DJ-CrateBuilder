@@ -20,7 +20,7 @@ THEN_VALUES = ("batch", "download")
 class BrowserSend:
     kind: str   # 'channel' | 'track'
     url: str    # decoded canonical https URL
-    then: str | None = None   # 'batch' | 'download' — a track's right-click choice
+    then: str | None = None   # 'batch' | 'download' (track), 'batch' (channel)
 
 
 @dataclass(frozen=True)
@@ -51,10 +51,13 @@ def parse_djcrate_uri(uri):
         if target.scheme != "https" or target.hostname not in ACCEPTED_HOSTS:
             return ParseError("bad_url", MSG_BAD_URL)
         then = params.get("then", [None])[0]
-        # Contract §1.1: only a track carries a choice, and a value this
-        # build does not know is a plain send — the link itself is valid.
-        if kind != "track" or then not in THEN_VALUES:
-            then = None
+        # Contract §1.1: a track takes either choice; a channel only "batch"
+        # (the whole-channel button). Anything else is a plain send — the
+        # link itself is valid.
+        if kind == "track":
+            then = then if then in THEN_VALUES else None
+        else:
+            then = then if then == "batch" else None
         return BrowserSend(kind=kind, url=url, then=then)
     except Exception:
         return ParseError("ignore", "")
