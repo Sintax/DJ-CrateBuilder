@@ -370,3 +370,31 @@ def test_backing_out_of_the_no_genre_gate_reopens_the_genre_dialog(app_js, tmp_p
                   _action_src(app_js, harness, then="batch", genre="(none)"))
     assert r["calls"] == []
     assert r["reopened"] == ["https://soundcloud.com/a/b"]
+
+
+def test_a_channel_batch_send_asks_for_a_genre(app_js):
+    body = _slice(app_js, "  function handleBrowserSend(send)",
+                  "  function drainBrowserPending()")
+    assert "(send.kind === 'channel' && send.then === 'batch')" in body
+    assert body.index("openBrowserAction(send);") < body.index("if (send.kind === 'channel') {")
+
+
+def test_the_genre_dialog_names_a_channel_as_a_channel(app_js):
+    body = _slice(app_js, "  function openBrowserAction(send)",
+                  "  async function confirmBrowserAction(send, genre)")
+    assert "send.kind === 'channel' ? 'Channel' : 'Track'" in body
+
+
+_CHANNEL_HARNESS = _ACTION_HARNESS.replace(
+    "{ kind: 'track', url: 'https://soundcloud.com/a/b', then: '%(then)s' }",
+    "{ kind: 'channel', url: 'https://soundcloud.com/a', then: '%(then)s' }")
+
+
+def test_a_channel_is_queued_with_its_kind_and_starts_nothing(app_js, tmp_path):
+    r = _run_node(tmp_path, "action_channel.mjs",
+                  _action_src(app_js, _CHANNEL_HARNESS, then="batch"))
+    assert r["calls"][0] == ["batch.add", {"url": "https://soundcloud.com/a",
+                                           "genre": "House", "platform": "SoundCloud",
+                                           "kind": "channel"}]
+    assert ["download.start", None] not in r["calls"]
+    assert r["toasts"] == [["Channel added to batch", False]]

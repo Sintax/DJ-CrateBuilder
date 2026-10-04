@@ -2789,10 +2789,11 @@
   }
 
   /* ── right-click choices ──────────────────────────────────────────────────
-     A track sent with "Add to batch" or "Download now" (send.then). The
-     browser can't know a genre, so this asks for one — the user chose to be
-     asked every time — and the button repeats their choice so the click that
-     commits is the one they already made. Cancel adds nothing. */
+     A track sent with Add to batch / Download now, or a channel sent with the
+     whole-channel button (then=batch, always batch-only). The browser can't
+     know a genre, so this asks for one — the user chose to be asked every time
+     — and the button repeats their choice so the click that commits is the one
+     they already made. Cancel adds nothing. */
   function openBrowserAction(send) {
     const download = send.then === 'download';
     const platform = platformFromUrl(send.url);
@@ -2806,7 +2807,7 @@
         url.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px';
         url.textContent = send.url;
         url.title = send.url;
-        body.append(labelled('Track', url), labelled('Genre', genreRow(sel, () => platform)));
+        body.append(labelled(send.kind === 'channel' ? 'Channel' : 'Track', url), labelled('Genre', genreRow(sel, () => platform)));
       },
       foot(foot) {
         const cancel = modalButton('Cancel', 'cb-btn--quiet', closeModal);
@@ -2827,11 +2828,15 @@
       return;
     }
     try {
-      await call('batch.add', { url: send.url, genre, platform: platformFromUrl(send.url) });
+      await call('batch.add', { url: send.url, genre, platform: platformFromUrl(send.url),
+        ...(send.kind === 'channel' ? { kind: 'channel' } : {}) });
       state.batch = await call('batch.list');
       renderBatch();
     } catch (_) { return; /* call() already toasted the reason */ }
-    if (send.then !== 'download') { toast('Added to batch'); return; }
+    if (send.then !== 'download') {
+      toast(send.kind === 'channel' ? 'Channel added to batch' : 'Added to batch');
+      return;
+    }
     // batch.add has already put the row into the running batch.
     if (dl.running) { toast('Added — it will download when its turn comes.'); return; }
     try {
@@ -2867,7 +2872,8 @@
     closeModal();
     setTimeout(() => {
       closeModal();
-      if (send.kind === 'track' && (send.then === 'batch' || send.then === 'download')) {
+      if ((send.kind === 'track' && (send.then === 'batch' || send.then === 'download'))
+          || (send.kind === 'channel' && send.then === 'batch')) {
         show('downloads');
         openBrowserAction(send);
         return;
