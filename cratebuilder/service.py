@@ -2791,6 +2791,8 @@ class CrateBuilderService:
             "platform": platform or "",
             "state": "queued",
         }
+        if kind == "channel":
+            row["kind"] = "channel"      # run with the Watch List skip rule
         with self._lock:
             self._batch.append(row)
         return dict(row)

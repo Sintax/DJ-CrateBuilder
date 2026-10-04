@@ -318,7 +318,10 @@ class BatchRunner:
                            resolved.channel_name or title)
         self._admit(row)                    # a no-op unless the row grew in
         self._total += len(tracks) - 1      # after the batch started
-        tally = self.run_tracks(tracks, row=row, index=index)
+        # A whole-channel row skips what is already owned the way the Watch
+        # List does, not by the user's Skip-Existing setting.
+        skip_mode = SkipMode.WATCH_LIST if row.get("kind") == "channel" else None
+        tally = self.run_tracks(tracks, skip_mode=skip_mode, row=row, index=index)
         if resolved.watchlist_id is not None and tally["downloaded"]:
             # The card was raised before a single track landed, so the total it
             # was inserted with predates this run.

@@ -682,6 +682,31 @@ def test_run_tracks_honours_an_explicit_watch_list_skip_mode(tmp_path):
     assert tally["skipped"] == 1
 
 
+def _spy_skip_modes(harness):
+    seen = []
+    real = harness.runner._pre_flight
+
+    def spy(spec, policy, skip_mode, ignore_skip_existing):
+        seen.append(skip_mode)
+        return real(spec, policy, skip_mode, ignore_skip_existing)
+    harness.runner._pre_flight = spy
+    return seen
+
+
+def test_a_channel_row_runs_with_the_watch_list_skip_rule(tmp_path):
+    harness = Harness(tmp_path, LIST_PROBE, _entries("A"))
+    seen = _spy_skip_modes(harness)
+    harness.runner.run([_row(kind="channel")])
+    assert seen == [SkipMode.WATCH_LIST]
+
+
+def test_a_plain_row_keeps_the_users_skip_policy(tmp_path):
+    harness = Harness(tmp_path, LIST_PROBE, _entries("A"))
+    seen = _spy_skip_modes(harness)
+    harness.runner.run([_row()])
+    assert seen == [None]
+
+
 # ── Activity log ─────────────────────────────────────────────────────────────
 def test_the_downloader_logs_through_the_injected_log_line(tmp_path):
     harness = Harness(tmp_path, TRACK_PROBE, [])
@@ -1028,6 +1053,14 @@ def test_a_legacy_youtube_channel_url_is_left_to_yt_dlp(service):
     row = service.batch_add("https://www.youtube.com/c/someartist", "House",
                             "YouTube", kind="channel")
     assert row["url"] == "https://www.youtube.com/c/someartist"
+
+
+def test_only_a_channel_row_carries_its_kind(service):
+    ch = service.batch_add("https://www.youtube.com/@someartist", "House",
+                           "YouTube", kind="channel")
+    assert ch["kind"] == "channel"
+    plain = service.batch_add("https://www.youtube.com/watch?v=a", "House", "YouTube")
+    assert "kind" not in plain
 
 
 def test_a_plain_link_is_queued_untouched(service):
