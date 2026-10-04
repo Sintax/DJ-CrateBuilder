@@ -1010,3 +1010,33 @@ def test_run_tracks_alone_lists_its_tracks_under_its_own_job(tmp_path):
                                ("downloaded", None, "A", ""),
                                ("start", None, "B", ""),
                                ("downloaded", None, "B", "")]
+
+
+# ── Service batch_add tests ──────────────────────────────────────────────────
+def test_a_channel_is_queued_as_its_uploads_listing(service):
+    yt = service.batch_add("https://www.youtube.com/@someartist", "House",
+                           "YouTube", kind="channel")
+    assert yt["url"] == "https://www.youtube.com/@someartist/videos"
+    sc = service.batch_add("https://soundcloud.com/someartist", "House",
+                           "SoundCloud", kind="channel")
+    assert sc["url"] == "https://soundcloud.com/someartist/tracks"
+
+
+def test_a_legacy_youtube_channel_url_is_left_to_yt_dlp(service):
+    # watch_scan_url only appends /videos to @handle and /channel/ forms; the
+    # Watch List behaves the same, so this is deliberate.
+    row = service.batch_add("https://www.youtube.com/c/someartist", "House",
+                            "YouTube", kind="channel")
+    assert row["url"] == "https://www.youtube.com/c/someartist"
+
+
+def test_a_plain_link_is_queued_untouched(service):
+    row = service.batch_add("https://www.youtube.com/@someartist", "House", "YouTube")
+    assert row["url"] == "https://www.youtube.com/@someartist"
+
+
+def test_the_rpc_passes_kind_through(service):
+    row = service._methods()["batch.add"]({
+        "url": "https://soundcloud.com/a", "genre": "House",
+        "platform": "SoundCloud", "kind": "channel"})
+    assert row["url"] == "https://soundcloud.com/a/tracks"

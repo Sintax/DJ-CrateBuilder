@@ -33,7 +33,8 @@ from cratebuilder import components
 from cratebuilder import remoteauth
 from cratebuilder.remoteauth import REMOTE_FILE_NAME, RemoteState
 from cratebuilder.settings import Settings
-from cratebuilder.sidecar import UNRESOLVED_URL_PREFIX, is_unresolved_channel
+from cratebuilder.sidecar import (UNRESOLVED_URL_PREFIX, is_unresolved_channel,
+                                  watch_fetch_url)
 
 MAIN_SCRIPT = "DJ-CrateBuilder_v2.0.py"
 DB_NAME = "cratebuilder.db"
@@ -1374,7 +1375,7 @@ class CrateBuilderService:
                                                         p.get("value")),
             "batch.list": lambda p: self.batch_list(),
             "batch.add": lambda p: self.batch_add(p.get("url"), p.get("genre"),
-                                                  p.get("platform")),
+                                                  p.get("platform"), p.get("kind")),
             "batch.remove": lambda p: self.batch_remove(p.get("id")),
             "batch.move": lambda p: self.batch_move(p.get("id"),
                                                     p.get("delta", 0)),
@@ -2774,10 +2775,15 @@ class CrateBuilderService:
         with self._lock:
             return [dict(row) for row in self._batch]
 
-    def batch_add(self, url, genre=None, platform=None):
+    def batch_add(self, url, genre=None, platform=None, kind=None):
         url = (url or "").strip()
         if not url:
             raise CBError("Paste a YouTube or SoundCloud link first.")
+        if kind == "channel":
+            # A whole-channel browser send: queue the same uploads listing the
+            # Watch List feeds yt-dlp, so the run takes the catalogue in one
+            # extraction and skips what is already on disk.
+            url = watch_fetch_url(platform or "YouTube", url)
         row = {
             "id": next(self._ids),
             "url": url,
