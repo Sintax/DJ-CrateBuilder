@@ -1,11 +1,11 @@
 {
   "version": "2.1",
-  "build": 105,
-  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.1.105.zip",
-  "sha256": "273addd8e9cbc91557737d2947b894dd9c5c1959b37581a6e6639ca1b5c5b5a8",
-  "notes": "Smoother Watch List scan progress bar.",
+  "build": 106,
+  "url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-2.1.106.zip",
+  "sha256": "a7d2c8d8ca1389f1e4e269f5119689a0835e75e56359dedb8bfcc5a883fae2be",
+  "notes": "Browser extension can send a whole channel to the queue; it picks up only tracks you don't already own.",
   "base": 104,
-  "changes": "Smoother Watch List scan progress bar.",
+  "changes": "Browser extension can send a whole channel to the queue; it picks up only tracks you don't already own.",
   "notice": "",
   "full_url": "https://github.com/Sintax/DJ-CrateBuilder/releases/download/nightly/DJ-CrateBuilder-full-2.1.104.zip",
   "full_sha256": "7ea33e3a8d25292379b4d43bcd85775a474bee0ba79825e796e1204237c0753b",
@@ -26,7 +26,7 @@
     "mutagen": "1.48.1",
     "pywebview": "6.2.1",
     "bottle": "0.13.4",
-    "fastapi": "0.141.1",
+    "fastapi": "0.142.2",
     "uvicorn": "0.54.0"
   }
 }
